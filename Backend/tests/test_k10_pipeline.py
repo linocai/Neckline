@@ -16,7 +16,7 @@ from neckline.k10.verification import VerificationEvidenceBundle
 from neckline.k10.windows import SHANGHAI
 from neckline.llm.base import LLMProvider, LLMResult
 from neckline.k10.types import Task
-from neckline.k10.worker import TaskContext
+from neckline.k10.worker import TaskContext, run_once
 
 
 DAY = date(2026, 9, 7)
@@ -93,6 +93,23 @@ class _Model:
         return tuple(dict.fromkeys((item.event.canonical_key, item.mapping.company_code) for item in candidates))
 
 
+class _FixtureVerificationGateway:
+    """Explicit, independently traceable verification fixture; never contacts Tavily."""
+
+    def fetch(self, *, event, retrieved_at, cutoff_at, cutoff_inclusive=False):
+        document = DiscoveryDocument(f"tavily-{event.canonical_key}", 1,
+                                     (cutoff_at - timedelta(minutes=1)).isoformat(), retrieved_at.isoformat(),
+                                     "独立核验原文", None, {"provider": "fixture"})
+        return VerificationEvidenceBundle("available", (document,), (document,), {"state": "available"})
+
+
+class _VerifiedModel(_Model):
+    """Fixture model that cites the explicit independent evidence supplied above."""
+
+    def verify(self, event):
+        return Verification("verified", "已核验", (EvidenceRef(f"tavily-{event.canonical_key}", 1),))
+
+
 class _Metadata:
     def lookup(self, *, company_code, as_of):
         return CompanyMetadata(company_code, "chinext", False, "801080.SI", as_of)
@@ -105,6 +122,19 @@ def _watermark(path: Path):
     store.append_source_watermark(watermark_id="previous-watermark", source_key="fixture-source", cursor_value="old-cursor",
                                   success_cutoff_at="2026-09-04T21:00:00+08:00", fetched_at="2026-09-04T21:01:00+08:00",
                                   scan_id="previous", created_at="2026-09-04T21:01:00+08:00", db_path=path)
+
+
+def _append_targeted_verification_document(path: Path) -> str:
+    document_id = "tavily-directed-fixture"
+    store.append_document_version(
+        document_id=document_id, source_key="tavily_verification", external_id="directed-fixture",
+        canonical_url="https://example.invalid/verification", content_sha256="a" * 64,
+        published_at=(CUTOFF - timedelta(hours=1)).isoformat(), published_precision="exact",
+        fetched_at=(CUTOFF - timedelta(minutes=30)).isoformat(), original_text="定向核验资料，不能再次发现",
+        excerpt=None, fetch_version="fixture", metadata={"provider": "fixture"},
+        created_at=CREATED.isoformat(), db_path=path,
+    )
+    return document_id
 
 
 def _frozen_config(path: Path) -> int:
@@ -127,8 +157,9 @@ def test_evening_scan_uses_prior_source_watermark_and_persists_fake_end_to_end(t
     adapter = _Adapter()
 
     result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED,
-                          config_id="fixture", config_revision=1)
+                          adapter=adapter, model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
+                          config_id="fixture", config_revision=1,
+                          verification_gateway=_FixtureVerificationGateway())
 
     assert result.status == "completed"
     assert result.checkpoint["candidateCount"] == 1
@@ -150,6 +181,132 @@ def test_evening_scan_uses_prior_source_watermark_and_persists_fake_end_to_end(t
                          config_id="fixture", config_revision=1, scan_identity="replay-task")
     assert replay.status == "completed"
     assert fixed.status == "completed" and again.stage == "scan_replayed"
+
+
+def test_discovery_reads_only_the_active_market_wide_source_not_prior_tavily_evidence(tmp_path):
+    path = tmp_path / "discovery-source-boundary.sqlite"
+    initialize_schema(path); _watermark(path)
+    _append_targeted_verification_document(path)
+
+    class RecordingModel(_VerifiedModel):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        def understand(self, *, document):
+            self.seen.append(document.original_text)
+            return super().understand(document=document)
+
+    model = RecordingModel()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                          verification_gateway=_FixtureVerificationGateway())
+    assert result.status == "completed" and result.checkpoint["candidateCount"] == 1
+    assert model.seen == ["公司的原始公告文本"]
+
+
+def test_targeted_verification_without_market_wide_input_cannot_start_discovery(tmp_path):
+    path = tmp_path / "targeted-only.sqlite"
+    initialize_schema(path); _watermark(path)
+    _append_targeted_verification_document(path)
+
+    class EmptyAdapter(_Adapter):
+        def fetch_incremental(self, request):
+            self.request = request
+            return SourceFetchResult(documents=(), next_cursor=None, success_watermark=request.window.cutoff_at,
+                                     pages_fetched=1, pages_expected=1, exhausted=True)
+
+    class RecordingModel(_VerifiedModel):
+        def __init__(self):
+            super().__init__()
+            self.understand_calls = 0
+
+        def understand(self, *, document):
+            self.understand_calls += 1
+            return super().understand(document=document)
+
+    model = RecordingModel()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=EmptyAdapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                          verification_gateway=_FixtureVerificationGateway())
+    assert result.status == "completed" and result.checkpoint["candidateCount"] == 0
+    assert model.understand_calls == 0
+
+
+def test_legacy_frozen_targeted_input_is_refused_before_any_replay_or_publication(tmp_path):
+    path = tmp_path / "legacy-frozen-targeted.sqlite"
+    initialize_schema(path)
+    document_id = _append_targeted_verification_document(path)
+    identity = "legacy-frozen-input"
+    import neckline.k10.pipeline as pipeline
+    scan_id = pipeline._scan_id(kind="evening", cutoff_at=CUTOFF, identity=identity)
+    original_coverage = {
+        "inputSnapshotFrozen": True,
+        "inputDocumentRefs": [{"documentId": document_id, "revision": 1}],
+        # A completed scan without a batch normally enters thaw/publish recovery.  Its frozen
+        # source boundary must be checked before that shortcut is allowed.
+        "discoveryDraft": {},
+    }
+    store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id=None,
+                      config_revision=None, status="completed", coverage=original_coverage,
+                      created_at=CREATED.isoformat(), completed_at=CREATED.isoformat(), db_path=path)
+
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=_Adapter(), model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
+                          scan_identity=identity, verification_gateway=_FixtureVerificationGateway())
+    assert result.status == "failed" and result.stage == "source_boundary"
+    assert "未授权来源" in result.error
+    stored = store.get_scan(scan_id=scan_id, db_path=path)
+    assert stored["status"] == "completed"
+    assert stored["coverage"] == original_coverage
+
+
+def test_running_frozen_targeted_input_finishes_failed_without_rewriting_evidence(tmp_path):
+    path = tmp_path / "running-frozen-targeted.sqlite"
+    initialize_schema(path)
+    document_id = _append_targeted_verification_document(path)
+    identity = "running-frozen-input"
+    import neckline.k10.pipeline as pipeline
+    scan_id = pipeline._scan_id(kind="evening", cutoff_at=CUTOFF, identity=identity)
+    original_coverage = {
+        "inputSnapshotFrozen": True,
+        "inputDocumentRefs": [{"documentId": document_id, "revision": 1}],
+        "state": "completed",
+        "ingestionState": "completed",
+        "sourceOutcomes": [{"sourceKey": "fixture-source", "state": "completed"}],
+        "pipelineState": "discovery_persisted",
+        "window": {"kind": "evening", "startAt": "2026-09-04T21:00:00+08:00",
+                   "cutoffAt": CUTOFF.isoformat(), "startInclusive": False, "cutoffInclusive": True},
+    }
+    store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id=None,
+                      config_revision=None, status="running", coverage=original_coverage,
+                      created_at=CREATED.isoformat(), completed_at=None, db_path=path)
+    store.enqueue_task(task_id=identity, kind="evening_scan", idempotency_key="fixture-boundary",
+                       input_version="fixture@1", input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    lease_calls = []
+
+    def handler(_context):
+        return execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                            adapter=_Adapter(), model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
+                            scan_identity=identity, verification_gateway=_FixtureVerificationGateway(),
+                            leaseguard=lambda: lease_calls.append(True))
+
+    task = run_once(db_path=path, worker_id="boundary-worker", lease_for=timedelta(minutes=5),
+                    handlers={"evening_scan": handler}, clock=lambda: CREATED)
+    assert task is not None and task.status == "failed"
+    assert lease_calls
+    stored = store.get_scan(scan_id=scan_id, db_path=path)
+    assert stored["status"] == "failed" and stored["completedAt"] is not None
+    assert stored["coverage"]["inputDocumentRefs"] == original_coverage["inputDocumentRefs"]
+    assert stored["coverage"]["sourceOutcomes"] == original_coverage["sourceOutcomes"]
+    assert stored["coverage"]["pipelineState"] == "source_boundary"
+
+    retry = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                         adapter=_Adapter(), model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
+                         scan_identity=identity, verification_gateway=_FixtureVerificationGateway())
+    assert retry.status == "failed" and retry.stage == "source_boundary"
+    assert store.get_scan(scan_id=scan_id, db_path=path) == stored
 
 
 def test_evening_scan_without_explicit_bootstrap_never_calls_source(tmp_path):
@@ -243,10 +400,45 @@ def test_recovery_reuses_frozen_window_and_snapshot_after_source_watermark_advan
     assert adapter.request.previous_cursor == "old-cursor"
 
 
+def test_frozen_retry_keeps_only_the_original_market_wide_documents(tmp_path):
+    path = tmp_path / "frozen-source-boundary.sqlite"
+    initialize_schema(path); _watermark(path)
+    _append_targeted_verification_document(path)
+
+    class FailsOnce(_VerifiedModel):
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+            self.seen = []
+
+        def understand(self, *, document):
+            self.seen.append(document.original_text)
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("interrupt after frozen input")
+            return super().understand(document=document)
+
+    model = FailsOnce()
+    with pytest.raises(RuntimeError):
+        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                     scan_identity="frozen-source-boundary", verification_gateway=_FixtureVerificationGateway())
+    scan_id = _scan_id_for(path, "frozen-source-boundary")
+    frozen = store.get_scan(scan_id=scan_id, db_path=path)["coverage"]["inputDocumentRefs"]
+    assert len(frozen) == 1
+    assert store.load_document_versions(refs=frozen, db_path=path)[0]["sourceKey"] == "fixture-source"
+
+    recovered = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                             adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                             scan_identity="frozen-source-boundary", verification_gateway=_FixtureVerificationGateway())
+    assert recovered.status == "completed"
+    assert model.seen == ["公司的原始公告文本", "公司的原始公告文本"]
+
+
 def test_recovery_publishes_frozen_model_draft_without_second_model_run(tmp_path, monkeypatch):
     path = tmp_path / "frozen-draft.sqlite"
     initialize_schema(path); _watermark(path)
-    model = _Model()
+    model = _VerifiedModel()
     import neckline.k10.pipeline as pipeline
     original = pipeline.persist_discovery
     calls = {"persist": 0}
@@ -259,13 +451,14 @@ def test_recovery_publishes_frozen_model_draft_without_second_model_run(tmp_path
     import pytest
     with pytest.raises(RuntimeError):
         execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="draft")
+                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="draft",
+                     verification_gateway=_FixtureVerificationGateway())
     scan_id = _scan_id_for(path, "draft")
     assert "discoveryDraft" in store.get_scan(scan_id=scan_id, db_path=path)["coverage"]
     calls_before = len(model.usage_records)
     completed = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
                              adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
-                             scan_identity="draft")
+                             scan_identity="draft", verification_gateway=_FixtureVerificationGateway())
     assert completed.status == "completed"
     assert len(model.usage_records) == calls_before
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
@@ -288,8 +481,8 @@ def test_source_failure_does_not_freeze_empty_input_before_successful_retry(tmp_
     scan_id = _scan_id_for(path, "source-retry")
     assert store.get_scan(scan_id=scan_id, db_path=path)["coverage"]["inputSnapshotFrozen"] is False
     second = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
-                          scan_identity="source-retry")
+                          adapter=adapter, model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                          scan_identity="source-retry", verification_gateway=_FixtureVerificationGateway())
     assert second.status == "completed"
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
 
@@ -308,13 +501,14 @@ def test_crash_after_candidate_write_replays_same_event_revision_and_candidate(t
     import pytest
     with pytest.raises(RuntimeError):
         execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                     adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED, scan_identity="candidate-replay")
+                     adapter=_Adapter(), model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED, scan_identity="candidate-replay",
+                     verification_gateway=_FixtureVerificationGateway())
     scan_id = _scan_id_for(path, "candidate-replay")
     event_id = store.list_candidates(scan_id=scan_id, state="offered", db_path=path)[0]["eventId"]
     assert store.latest_event_revision(event_id=event_id, db_path=path).revision == 1
     completed = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                             adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
-                             scan_identity="candidate-replay")
+                             adapter=_Adapter(), model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                             scan_identity="candidate-replay", verification_gateway=_FixtureVerificationGateway())
     assert completed.status == "completed"
     assert store.latest_event_revision(event_id=event_id, db_path=path).revision == 1
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
@@ -361,7 +555,8 @@ def test_morning_data_is_retained_without_auto_candidate_replacement(tmp_path):
     adapter = _Adapter()
     morning = datetime(2026, 9, 7, 9, tzinfo=SHANGHAI)
     result = execute_scan(kind="morning", cutoff_at=morning, configuration=_configuration(), db_path=path,
-                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED)
+                          adapter=adapter, model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
+                          verification_gateway=_FixtureVerificationGateway())
     assert result.status == "completed"
     assert result.stage == "discovery_completed"
     assert result.checkpoint["candidateCount"] == 1
@@ -590,7 +785,7 @@ def test_scan_continues_from_missing_verification_refs_to_other_verified_compari
                           adapter=Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
                           verification_gateway=Gateway())
     assert result.status == "completed"
-    assert result.checkpoint["candidateCount"] == 2
+    assert result.checkpoint["candidateCount"] == 1
     assert sorted(model.verification_states) == ["needs_review", "verified"]
 
 
@@ -694,7 +889,8 @@ def test_morning_review_universe_excludes_unpublished_and_expired_candidates(tmp
     initialize_schema(path)
     _watermark(path)
     execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                 adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED)
+                 adapter=_Adapter(), model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
+                 verification_gateway=_FixtureVerificationGateway())
     published = store.list_candidates(scan_id=None, state=None, db_path=path)[0]
     store.create_candidate(candidate_id="draft-never-published", scan_id=published["scanId"],
                            event_id=published["eventId"], event_revision=published["eventRevision"],

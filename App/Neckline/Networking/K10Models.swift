@@ -13,9 +13,28 @@ enum K10APIError: LocalizedError, Equatable {
     case .incompatibleVersion(let message): return message
     } }
     var permitsOfflineCache: Bool { if case .networkUnavailable = self { return true }; return false }
+
+    static func decodeServerFailure(_ data: Data, status: Int) -> K10APIError {
+        let decoder = JSONDecoder()
+        let direct = try? decoder.decode(K10Failure.self, from: data)
+        let envelope = try? decoder.decode(K10FailureEnvelope.self, from: data)
+        let failure = direct ?? envelope?.detail
+        let fallback = (try? decoder.decode(K10StringFailureEnvelope.self, from: data))?.detail
+        let loose = try? decoder.decode(K10LooseFailureEnvelope.self, from: data)
+        let message = failure?.message ?? loose?.detail.message ?? loose?.detail.reason ?? fallback ?? "服务返回 \(status)"
+        if status == 401 { return .unauthorized }
+        if status == 404 { return .notFound(message) }
+        if status == 409 { return .conflict(message) }
+        if failure?.reason == "not_configured" { return .notConfigured(message, failure?.missing ?? []) }
+        return .server(status, message)
+    }
 }
 
 struct K10Failure: Codable, Equatable { let reason: String; let message: String; let missing: [String]? }
+private struct K10FailureEnvelope: Decodable { let detail: K10Failure }
+private struct K10StringFailureEnvelope: Decodable { let detail: String }
+private struct K10LooseFailureEnvelope: Decodable { let detail: K10LooseFailure }
+private struct K10LooseFailure: Decodable { let reason: String?; let message: String? }
 struct K10Health: Codable, Equatable { let status: String; let version: String? }
 struct K10Page: Codable, Equatable { let nextCursor: String? }
 struct K10SourceReference: Codable, Identifiable, Equatable {

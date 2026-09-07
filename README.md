@@ -4,6 +4,8 @@ Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI �
 **3.0.0 / 双端 Build 31 / K10-v1.4**，后端发布集合为 `v3.0.0-b31`。K9 已退出活动生产。
 [下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.0-b31-hf1)；Mac 已换装，iOS development IPA 由用户自行安装。
 
+**3.0.1 / 双端 Build 32 发布中**：本轮 Review 的 9 项问题及复审边界均已闭环；后端 565 项测试通过，Swift 三项构建通过，XCTest 21 项通过、1 项外部 smoke 按条件跳过。用户已授权一条龙发布，完成前生产基线仍为上面的 Build 31；证据和当前步骤统一记录在工程计划中。
+
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
 运行时不读取或导入研究仓。根目录仅保留 App、Backend、archive、AGENTS.md、PROJECT_PLAN.md 和本文件。

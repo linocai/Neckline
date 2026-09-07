@@ -14,7 +14,8 @@ from neckline.k10.pipeline import execute_scan
 from neckline.k10.schema import initialize_schema
 from neckline.k10.worker import run_once
 from neckline.k10.windows import SHANGHAI
-from tests.test_k10_pipeline import _Adapter, _Metadata, _Model, _configuration, _watermark
+from tests.test_k10_pipeline import (_Adapter, _FixtureVerificationGateway, _Metadata, _VerifiedModel,
+                                    _configuration, _watermark)
 
 
 DAY = date(2026, 9, 7)
@@ -126,9 +127,10 @@ def test_cli_enqueue_then_worker_handler_reaches_source_event_and_candidate(tmp_
     def evening(context):
         config = store.read_run_config(config_id="fixture", revision=revision, db_path=path)
         return execute_scan(kind="evening", cutoff_at=datetime.fromisoformat(context.input_cutoff_at),
-                            configuration=config["payload"], db_path=path, adapter=adapter, model=_Model(),
+                            configuration=config["payload"], db_path=path, adapter=adapter, model=_VerifiedModel(),
                             metadata=_Metadata(), created_at=NOW + timedelta(minutes=6), config_id="fixture",
-                            config_revision=revision, publication_clock=lambda: NOW + timedelta(minutes=6))
+                            config_revision=revision, publication_clock=lambda: NOW + timedelta(minutes=6),
+                            verification_gateway=_FixtureVerificationGateway())
 
     task = run_once(db_path=path, worker_id="fixture-worker", lease_for=timedelta(minutes=5),
                     handlers={"evening_scan": evening}, clock=lambda: NOW + timedelta(minutes=1))
@@ -137,3 +139,4 @@ def test_cli_enqueue_then_worker_handler_reaches_source_event_and_candidate(tmp_
     with sqlite3.connect(path) as conn:
         checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
     assert len(store.list_candidates(scan_id=checkpoint["scanId"], state="offered", db_path=path)) == 1
+    assert adapter.request is not None

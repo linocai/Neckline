@@ -371,11 +371,14 @@ class SqliteCompanyMetadataProvider(CompanyMetadataProvider):
 
 
 def _docs_for_window(*, window: ScanWindow, db_path: Path, completed_at: datetime,
-                     frozen_refs: Sequence[Mapping[str, Any]] = (), frozen_snapshot: bool = False) -> tuple[DiscoveryDocument,...]:
+                     source_keys: Sequence[str], frozen_refs: Sequence[Mapping[str, Any]] = (),
+                     frozen_snapshot: bool = False) -> tuple[DiscoveryDocument,...]:
     # Publication time defines the report window.  Fetch time only establishes that a version
     # existed by this scan's actual completion, so delayed fetches are retained and later
     # corrections cannot rewrite this scan's input.
-    rows = store.load_document_versions(refs=frozen_refs, db_path=db_path) if frozen_snapshot else store.list_source_document_versions(cutoff_at=None, db_path=db_path)
+    rows = (store.load_document_versions(refs=frozen_refs, db_path=db_path, source_keys=source_keys)
+            if frozen_snapshot else store.list_source_document_versions(cutoff_at=None, db_path=db_path,
+                                                                         source_keys=source_keys))
     out=[]
     for row in rows:
         try: published=datetime.fromisoformat(str(row["publishedAt"])) if row["publishedAt"] else None
@@ -386,7 +389,51 @@ def _docs_for_window(*, window: ScanWindow, db_path: Path, completed_at: datetim
             out.append(DiscoveryDocument(document_id=row["documentId"], revision=int(row["revision"]),
                                          published_at=row["publishedAt"], fetched_at=row["fetchedAt"],
                                          original_text=row["originalText"], excerpt=row["excerpt"], metadata=row["metadata"]))
-    return tuple(out)
+    documents = tuple(out)
+    if frozen_snapshot:
+        expected: set[EvidenceRef] = set()
+        for ref in frozen_refs:
+            if not isinstance(ref, Mapping) or not isinstance(ref.get("documentId"), str) or not isinstance(ref.get("revision"), int):
+                raise PipelineError("冻结发现输入包含无效资料引用，拒绝伪作原样重试")
+            expected.add(EvidenceRef(ref["documentId"], ref["revision"]))
+        actual = {document.evidence_ref for document in documents}
+        if actual != expected:
+            # A prior Build may have frozen targeted verification material.  Do not silently
+            # drop it and claim this is the same retry, and never let it re-enter discovery.
+            raise PipelineError("冻结发现输入包含未授权来源或不可读版本，拒绝伪作原样重试")
+    return documents
+
+
+def _validate_frozen_discovery_source_boundary(*, frozen_refs: Sequence[Mapping[str, Any]], db_path: Path,
+                                               source_keys: Sequence[str]) -> None:
+    """Reject a historical snapshot that cannot be replayed under the active source boundary."""
+    expected: set[EvidenceRef] = set()
+    for ref in frozen_refs:
+        if not isinstance(ref, Mapping) or not isinstance(ref.get("documentId"), str) or not isinstance(ref.get("revision"), int):
+            raise PipelineError("冻结发现输入包含无效资料引用，拒绝伪作原样重试")
+        expected.add(EvidenceRef(ref["documentId"], ref["revision"]))
+    rows = store.load_document_versions(refs=frozen_refs, db_path=db_path, source_keys=source_keys)
+    actual = {EvidenceRef(str(row["documentId"]), int(row["revision"])) for row in rows}
+    if actual != expected or any(row.get("sourceKey") not in source_keys for row in rows):
+        raise PipelineError("冻结发现输入包含未授权来源或不可读版本，拒绝伪作原样重试")
+
+
+def _finalize_running_source_boundary(*, scan_id: str, coverage: Mapping[str, Any], completed_at: datetime,
+                                      db_path: Path) -> None:
+    """Make a contaminated running snapshot retryable without rewriting its evidence."""
+    final_coverage = {**coverage, "pipelineState": "source_boundary"}
+    window = _scan_window_from_coverage(coverage)
+    if window is None:
+        # There is no trustworthy ingestion window to reconstruct.  The controlled store
+        # finalizer can still record the terminal source-boundary failure without inventing one.
+        store.finalize_scan(scan_id=scan_id, status="failed", coverage=final_coverage,
+                            completed_at=_text(completed_at), db_path=db_path)
+        return
+    ingestion_state = coverage.get("ingestionState", coverage.get("state", "failed"))
+    run = IngestionRun(state=ingestion_state if isinstance(ingestion_state, str) else "failed", scan_id=scan_id,
+                       window=window, missing_configuration=(), outcomes=())
+    finalize_ingestion_scan(run=run, scan_id=scan_id, completed_at=completed_at, db_path=db_path,
+                            status="failed", pipeline_state="source_boundary", coverage_extra=final_coverage)
 
 
 def _scan_id(*, kind: str, cutoff_at: datetime, identity: str) -> str:
@@ -608,6 +655,19 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     if not isinstance(scan_created_at, str):
         scan_created_at = _text(created_at)
     coverage: dict[str, Any] = dict(existing.get("coverage", {})) if isinstance(existing, Mapping) else {}
+    frozen_refs = coverage.get("inputDocumentRefs")
+    if coverage.get("inputSnapshotFrozen") is True and isinstance(frozen_refs, list):
+        try:
+            _validate_frozen_discovery_source_boundary(
+                frozen_refs=frozen_refs, db_path=db_path, source_keys=(adapter.coverage.source_key,),
+            )
+        except PipelineError as exc:
+            if existing is not None and existing["status"] == "running":
+                if leaseguard is not None:
+                    leaseguard()
+                _finalize_running_source_boundary(scan_id=scan_id, coverage=coverage,
+                                                  completed_at=completed_at or _now(), db_path=db_path)
+            return TaskResult("failed", "source_boundary", {"scanId": scan_id}, str(exc))
     if existing is not None and existing["status"] in {"completed", "partial"}:
         batch = store.get_publication_batch(batch_id="publication_" + scan_id, db_path=db_path)
         if batch is None:
@@ -685,9 +745,14 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         if base_coverage.get("inputSnapshotFrozen") is not True or not isinstance(frozen, list):
             raise PipelineError("冻结发现草稿缺少精确输入快照")
         snapshot_at = completed_at or _now()
-        documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
-                                     frozen_refs=frozen, frozen_snapshot=True)
         running_coverage = dict(base_coverage)
+        try:
+            documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
+                                         source_keys=(adapter.coverage.source_key,), frozen_refs=frozen, frozen_snapshot=True)
+        except PipelineError as exc:
+            finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=snapshot_at, db_path=db_path,
+                                    status="failed", pipeline_state="source_boundary", coverage_extra=running_coverage)
+            return TaskResult("failed", "source_boundary", {"scanId": scan_id}, str(exc))
     else:
         ingestion = ingest_to_sqlite(db_path=db_path, scan_id=scan_id, window=window, adapters=(adapter,),
             source_watermarks={adapter.coverage.source_key: stored_watermark or window.start_at},
@@ -712,8 +777,15 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         frozen = base_coverage.get("inputDocumentRefs")
         snapshot_frozen = base_coverage.get("inputSnapshotFrozen") is True and isinstance(frozen, list)
         snapshot_at = completed_at or _now()
-        documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
-                                     frozen_refs=frozen if isinstance(frozen, list) else (), frozen_snapshot=snapshot_frozen)
+        try:
+            documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
+                                         source_keys=(adapter.coverage.source_key,),
+                                         frozen_refs=frozen if isinstance(frozen, list) else (), frozen_snapshot=snapshot_frozen)
+        except PipelineError as exc:
+            running_coverage = dict(base_coverage)
+            finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=snapshot_at, db_path=db_path,
+                                    status="failed", pipeline_state="source_boundary", coverage_extra=running_coverage)
+            return TaskResult("failed", "source_boundary", {"scanId": scan_id}, str(exc))
         if not snapshot_frozen:
             frozen = [{"documentId": doc.document_id, "revision": doc.revision} for doc in documents]
             snapshot_frozen = True

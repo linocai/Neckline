@@ -240,6 +240,16 @@ def run_discovery(
                     canonical_key=event.canonical_key, stage_key=event.stage_key,
                     company_code=mapping.company_code, previous=prior,
                 )
+                if decision["kind"] in NEW_KINDS and verification.state != "verified":
+                    # A model cannot promote a source document into a formal opportunity by
+                    # calling it ``initial``/``material_stage``/``independent`` while the
+                    # independent check is still unresolved or has found contrary evidence.
+                    # For a linked old opportunity this remains an update/risk record; for a
+                    # first-seen item it is retained as pending below.
+                    prefix = ("重点核验已发现反证，不能作为新机会发布。"
+                              if verification.state == "contradicted"
+                              else "重点核验尚未完成，不能作为新机会发布。")
+                    decision = {**decision, "kind": "needs_review", "reason": prefix + decision["reason"]}
                 if decision["kind"] == "invalidated" and verification.state not in {"verified", "contradicted"}:
                     decision = {**decision, "kind": "needs_review", "reason": "重大反证尚待核实。" + decision["reason"]}
                 candidate = DiscoveryCandidate(event, verification, mapping, comparison, status, decision)
@@ -266,12 +276,16 @@ def run_discovery(
                     excluded.append(candidate)
     # Rank companies once, while retaining every formally recommended catalyst for each
     # admitted company. Continuations have already been separated from the new-company quota.
-    choices = getattr(model, "prioritize", None)
-    if not callable(choices):
-        raise ValueError("发现模型缺少跨事件公司比较")
-    if leaseguard is not None:
-        leaseguard()
-    ordered_keys = tuple(choices(candidates=tuple(all_candidates)))
+    # An empty formal set is a normal outcome: events, pending evidence, exclusions and
+    # continuation/risk updates must still persist without spending a model call on ordering.
+    ordered_keys: tuple[tuple[str, str], ...] = ()
+    if all_candidates:
+        choices = getattr(model, "prioritize", None)
+        if not callable(choices):
+            raise ValueError("发现模型缺少跨事件公司比较")
+        if leaseguard is not None:
+            leaseguard()
+        ordered_keys = tuple(choices(candidates=tuple(all_candidates)))
     unique_by_company: dict[str, list[DiscoveryCandidate]] = {}
     for candidate in all_candidates:
         unique_by_company.setdefault(candidate.mapping.company_code, []).append(candidate)

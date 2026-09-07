@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import pytest
 
@@ -23,7 +24,10 @@ from neckline.k10.store import (
     get_task,
     latest_document_version,
     latest_source_watermark,
+    list_company_window_evaluations,
+    list_source_document_versions,
     load_candidate_context,
+    load_document_versions,
     load_observation_context,
     load_analysis_revision,
     load_task_analysis_config,
@@ -81,6 +85,45 @@ def _seed_candidate(path, *, independent_evidence=False):
     )
 
 
+def test_document_reads_return_source_key_and_enforce_explicit_source_allow_list(tmp_path):
+    path = tmp_path / "source-filter.sqlite"
+    _seed_candidate(path)
+    append_document_version(
+        document_id="doc-verification", source_key="tavily_verification", external_id="search-1",
+        canonical_url="https://e/search", content_sha256="s" * 64,
+        published_at=NOW, published_precision="exact", fetched_at=NOW, original_text=None,
+        excerpt="定向核验", fetch_version="tavily-v1", metadata={}, created_at=NOW, db_path=path,
+    )
+
+    approved = list_source_document_versions(cutoff_at=None, source_keys=("source-a",), db_path=path)
+    assert [(row["documentId"], row["sourceKey"]) for row in approved] == [("doc-1", "source-a")]
+    assert list_source_document_versions(cutoff_at=None, source_keys=(), db_path=path) == []
+    frozen = load_document_versions(
+        refs=({"documentId": "doc-1", "revision": 1}, {"documentId": "doc-verification", "revision": 1}),
+        source_keys=("source-a",), db_path=path,
+    )
+    assert [(row["documentId"], row["sourceKey"]) for row in frozen] == [("doc-1", "source-a")]
+
+
+def test_latest_company_window_evaluation_is_selected_per_window(tmp_path):
+    path = tmp_path / "evaluation-latest.sqlite"
+    initialize_schema(path)
+    with sqlite3.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO k10_company_window_evaluation_revisions(company_window_id,revision,state,fact_refs_json,result_json,evaluated_at,created_at) VALUES(?,?,?,?,?,?,?)",
+            [
+                ("window-a", 1, "pending", "[]", "{}", NOW, NOW),
+                ("window-a", 2, "completed", "[]", "{}", NOW, NOW),
+                ("window-b", 1, "incomplete", "[]", "{}", NOW, NOW),
+                ("window-b", 2, "completed", "[]", "{}", NOW, NOW),
+                ("window-b", 3, "completed", "[]", "{}", NOW, NOW),
+            ],
+        )
+
+    latest = list_company_window_evaluations(db_path=path)
+    assert [(row["companyWindowId"], row["revision"]) for row in latest] == [("window-a", 2), ("window-b", 3)]
+
+
 def test_document_and_event_versions_are_append_only_and_idempotent(tmp_path):
     path = tmp_path / "k10.db"
     _seed_candidate(path)
@@ -132,7 +175,7 @@ def test_observation_uses_event_frozen_document_revision_even_when_fetch_is_afte
         "documentId": "doc-1", "revision": 1, "contentSha256": "a" * 64,
         "publishedAt": "2026-09-06T12:00:00+00:00", "publishedPrecision": "exact",
         "fetchedAt": NOW, "originalText": "原文", "excerpt": "摘录", "fetchVersion": "source-v1",
-        "metadata": {"page": 1}, "createdAt": NOW,
+        "metadata": {"page": 1}, "createdAt": NOW, "sourceKey": "source-a",
     }]
     candidate = load_candidate_context(candidate_id="candidate-1", cutoff_at="2026-09-06T13:00:00+00:00", db_path=path)
     assert candidate["candidate"]["state"] == "observed"

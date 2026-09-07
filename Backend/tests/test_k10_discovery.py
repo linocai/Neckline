@@ -297,3 +297,80 @@ def test_first_needs_review_is_persisted_pending_without_a_window_or_sample(tmp_
         db_path=path, clock=lambda: NOW)
     assert [item["companyCode"] for item in store.list_company_windows(db_path=path)] == ["300436.SZ"]
     assert [item["companyCode"] for item in store.list_opportunities(db_path=path)] == ["300436.SZ"]
+
+
+@pytest.mark.parametrize("verification_state", ["needs_review", "contradicted"])
+def test_unresolved_or_contradicted_first_seen_new_opportunity_stays_pending(verification_state):
+    """A model classification never self-certifies a new candidate over verification state."""
+    document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
+    run = run_discovery(
+        documents=(document,), configuration=_configuration(), model=_Model(),
+        verify=lambda event: Verification(verification_state, "核验资料不足或存在反证", event.source_refs),
+        metadata=_Metadata(), cutoff_at=NOW,
+    )
+    assert not run.candidates and not run.deferred
+    assert [(item.mapping.company_code, item.opportunity["kind"]) for item in run.metadata_pending] == [
+        ("300000.SZ", "needs_review")
+    ]
+
+
+def test_contradicted_material_stage_is_a_risk_update_not_a_new_candidate():
+    class NewStage(_Model):
+        def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
+            return {"kind": "material_stage", "relatedOpportunityId": "old", "reason": "新阶段披露",
+                    "newFacts": "补充事项", "changedJudgment": "范围扩大", "twoDayReason": "新阶段理由"}
+
+    document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
+    previous = ({"opportunityId": "old", "companyCode": "300000.SZ", "canonicalKey": "event-shared",
+                 "opportunityKey": "event-shared\x1f300000.SZ"},)
+    run = run_discovery(
+        documents=(document,), configuration=_configuration(), model=NewStage(),
+        verify=lambda event: Verification("contradicted", "新阶段资料被反证", event.source_refs),
+        metadata=_Metadata(), cutoff_at=NOW, previous_opportunities=previous,
+    )
+    assert not run.candidates and not run.metadata_pending
+    assert [(item.mapping.company_code, item.opportunity["kind"]) for item in run.updates] == [
+        ("300000.SZ", "needs_review")
+    ]
+    assert "反证" in run.updates[0].opportunity["reason"]
+
+
+def test_empty_formal_set_skips_prioritization_but_preserves_other_discovery_outputs():
+    class EmptyFormalSet(_Model):
+        def understand(self, *, document):
+            key = document.document_id
+            return (EventDraft(key, "stage", "announcement", key, "disclosure", {}, (document.evidence_ref,)),)
+
+        def map_companies(self, *, event, verification):
+            codes = {"pending": "300001.SZ", "excluded": "300002.SZ", "update": "300003.SZ"}
+            return (CompanyMappingDraft(codes[event.canonical_key], "supply", event.source_refs,
+                                        {"basis": "公告"}, "fixture"),)
+
+        def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
+            if event.canonical_key == "update":
+                return {"kind": "continuation", "relatedOpportunityId": "old", "reason": "常规进展",
+                        "newFacts": None, "changedJudgment": None, "twoDayReason": None}
+            return {"kind": "initial", "relatedOpportunityId": None, "reason": "首次披露",
+                    "newFacts": "本轮披露", "changedJudgment": None, "twoDayReason": "两日理由"}
+
+        def prioritize(self, *, candidates):
+            raise AssertionError("empty formal set must not request a ranking")
+
+    documents = tuple(DiscoveryDocument(key, 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
+                      for key in ("pending", "excluded", "update"))
+
+    def verify(event):
+        state = "needs_review" if event.canonical_key == "pending" else "verified"
+        return Verification(state, "待核" if state == "needs_review" else "核验完成", event.source_refs)
+
+    previous = ({"opportunityId": "old", "companyCode": "300003.SZ", "canonicalKey": "update",
+                 "opportunityKey": "update\x1f300003.SZ"},)
+    run = run_discovery(documents=documents, configuration=_configuration(), model=EmptyFormalSet(), verify=verify,
+                        metadata=_Metadata(excluded={"300002.SZ"}), cutoff_at=NOW,
+                        previous_opportunities=previous)
+    assert run.state == "completed"
+    assert [event.canonical_key for event in run.events] == ["pending", "excluded", "update"]
+    assert not run.candidates and not run.deferred
+    assert [item.mapping.company_code for item in run.metadata_pending] == ["300001.SZ"]
+    assert [item.mapping.company_code for item in run.excluded] == ["300002.SZ"]
+    assert [item.mapping.company_code for item in run.updates] == ["300003.SZ"]

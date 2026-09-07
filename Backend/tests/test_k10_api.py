@@ -364,3 +364,21 @@ def test_metrics_require_boolean_limit_observation_and_never_assign_unfrozen_gro
     assert metrics.eligibleCount == 1 and metrics.touchRate == 1.0 and metrics.selectionPendingCount == 1
     incomplete_limit = item.model_copy(update={"d2": item.d2.model_copy(update={"touchedLimitUp": None})})
     assert _metrics([incomplete_limit], windows={"window": {"d2CloseAt": "2026-01-03T15:00:00+08:00"}}).eligibleCount == 0
+
+
+def test_touch_rate_uses_the_same_eligible_or_observed_samples_for_numerator_and_denominator() -> None:
+    day = lambda trade_date, touched: MarketDayOut(tradeDate=trade_date, availability="available", closeLimitUp=False,
+        touchedLimitUp=touched, open=10, high=11, low=9, close=10, preClose=10, limitUpPrice=11)
+    matured = CompanyWindowEvaluationOut(companyWindowId="matured", opportunityIds=[], companyCode="300001.SZ",
+        sampleClass="primary", selection=None, state="completed", revision=1, updatedAt="2026-01-03T15:00:00+08:00",
+        d1=day("2026-01-02", True), d2=day("2026-01-03", False), primaryEligible=True, closeLimitHitAny=False)
+    not_due = matured.model_copy(update={"companyWindowId": "not-due"})
+    primary = _metrics([matured, not_due], windows={
+        "matured": {"d2CloseAt": "2026-01-03T15:00:00+08:00"},
+        "not-due": {"d2CloseAt": "2027-01-03T15:00:00+08:00"},
+    })
+    assert primary.eligibleCount == 1 and primary.touchRate == 1.0 and primary.touchCount == 2
+
+    incomplete_overlap = not_due.model_copy(update={"companyWindowId": "incomplete-overlap", "d2": day("2026-01-03", None)})
+    overlap = _metrics([matured, incomplete_overlap], touch_denominator="observed")
+    assert overlap.observedCompleteCount == 1 and overlap.touchRate == 1.0 and overlap.touchCount == 2

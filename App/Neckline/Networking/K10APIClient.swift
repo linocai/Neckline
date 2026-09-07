@@ -49,7 +49,7 @@ actor K10APIClient: K10Servicing {
         if let body { request.httpBody = try JSONEncoder().encode(body) }
         do { let (data, response) = try await session.data(for: request); guard let http = response as? HTTPURLResponse else { throw K10APIError.server(0, "服务未返回 HTTP 响应") }; guard 200..<300 ~= http.statusCode else { throw decodeError(data, status: http.statusCode) }; do { return try JSONDecoder().decode(T.self, from: data) } catch { throw K10APIError.decoding("服务响应无法按 K10-v1.4 契约读取") } } catch let error as K10APIError { throw error } catch { throw K10APIError.networkUnavailable(error.localizedDescription) }
     }
-    private func decodeError(_ data: Data, status: Int) -> K10APIError { let failure = try? JSONDecoder().decode(K10Failure.self, from: data); let message = failure?.message ?? "服务返回 \(status)"; if status == 401 { return .unauthorized }; if status == 404 { return .notFound(message) }; if status == 409 { return .conflict(message) }; if failure?.reason == "not_configured" { return .notConfigured(message, failure?.missing ?? []) }; return .server(status, message) }
+    private func decodeError(_ data: Data, status: Int) -> K10APIError { K10APIError.decodeServerFailure(data, status: status) }
 }
 
 private protocol K10Paginated { associatedtype Item; static var emptyItems: [Item] { get }; var anyItems: [Item] { get }; var nextCursor: String? { get }; static func from(items: [Item]) -> Self }

@@ -113,7 +113,7 @@ actor K10SyntheticUIService: K10Servicing {
 
     private var actions: [String: WindowAction] = [:]
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.0") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.1") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"

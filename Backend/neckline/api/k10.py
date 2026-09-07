@@ -654,8 +654,12 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
     hits = [item for item in eligible if item.closeLimitHitAny is True]
     def has_day(item: CompanyWindowEvaluationOut, state: str) -> bool:
         return any(day is not None and day.availability == state for day in (item.d1, item.d2))
-    touch_count = sum(any(day is not None and day.touchedLimitUp is True for day in (item.d1, item.d2)) for item in records)
-    touch_base = len(eligible) if touch_denominator == "eligible" else sum(complete_observation(item) for item in records)
+    touch_records = eligible if touch_denominator == "eligible" else [item for item in records if complete_observation(item)]
+    touch_count = sum(any(day is not None and day.touchedLimitUp is True for day in (item.d1, item.d2)) for item in touch_records)
+    touch_base = len(touch_records)
+    # Keep the independently useful known count: it may include pending or incomplete samples,
+    # but it must never be the numerator of a rate whose denominator excludes them.
+    known_touch_count = sum(any(day is not None and day.touchedLimitUp is True for day in (item.d1, item.d2)) for item in records)
     return EvaluationMetricsOut(sampleCount=len(records), eligibleCount=len(eligible), hitCount=len(hits),
                                 hitRate=len(hits) / len(eligible) if eligible else None,
                                 touchRate=touch_count / touch_base if touch_base else None,
@@ -663,7 +667,7 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
                                 pendingCount=sum(item.state in {"pending", "due"} for item in records),
                                 observedCompleteCount=sum(complete_observation(item) for item in records),
                                 knownHitCount=sum(item.closeLimitHitAny is True for item in records),
-                                touchCount=touch_count,
+                                touchCount=known_touch_count,
                                 suspendedCount=sum(has_day(item, "suspended") for item in records),
                                 dataGapCount=sum(has_day(item, "data_gap") for item in records),
                                 anomalyCount=sum(has_day(item, "anomaly") for item in records),

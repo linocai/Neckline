@@ -145,6 +145,204 @@ final class K10V3Tests: XCTestCase {
         XCTAssertNil(K10PushRoute(userInfo: ["companyCandidateId": "retired-k9-id"]))
     }
 
+    func testFastAPIErrorEnvelopePreservesActionableDetails() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FailureEnvelopeProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let conflict = K10APIClient(baseURL: URL(string: "https://conflict.example")!, token: "synthetic", session: session)
+        do {
+            _ = try await conflict.results()
+            XCTFail("409 must be surfaced")
+        } catch let error as K10APIError {
+            XCTAssertEqual(error, .conflict("公司窗口已到期，不能修改选择"))
+            XCTAssertEqual(error.localizedDescription, "公司窗口已到期，不能修改选择")
+        } catch { XCTFail("unexpected error: \(error)") }
+
+        let unavailable = K10APIClient(baseURL: URL(string: "https://configuration.example")!, token: "synthetic", session: session)
+        do {
+            _ = try await unavailable.configuration()
+            XCTFail("503 must be surfaced")
+        } catch let error as K10APIError {
+            XCTAssertEqual(error, .notConfigured("两日评价参数未配置", ["evaluationPolicy", "marketCollection"]))
+            XCTAssertEqual(error.localizedDescription, "两日评价参数未配置：evaluationPolicy、marketCollection")
+        } catch { XCTFail("unexpected error: \(error)") }
+    }
+
+    @MainActor func testHealthyEmptyFirstRunIsReady() async {
+        let model = AppModel(serviceFactory: { ControlledK10Service(batchID: "empty", empty: true) })
+        await model.refresh()
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertTrue(model.scanSummaries.isEmpty)
+        XCTAssertTrue(model.publications.isEmpty)
+        XCTAssertTrue(model.companyWindows.isEmpty)
+    }
+
+    @MainActor func testConnectionGenerationIgnoresStaleSuccessAndItsCacheWrite() async {
+        let gate = RefreshGate()
+        let old = ControlledK10Service(batchID: "batch-old", publicationGate: gate)
+        let current = ControlledK10Service(batchID: "batch-current")
+        let services = ServiceBox(old)
+        let caches = CacheRecorder()
+        let contexts = CacheContextBox(K10CacheContext(baseURL: URL(string: "https://a.example")!, scope: "test-a"))
+        let model = AppModel(
+            serviceFactory: { services.service },
+            cacheContextFactory: { contexts.context },
+            cacheLoader: { caches.load($0) },
+            cacheSaver: { caches.save($0, for: $1) },
+            cacheClearer: { caches.clear() }
+        )
+
+        let oldRefresh = Task { await model.refresh() }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        services.service = current
+        contexts.context = K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")
+        await model.refresh()
+        await gate.open()
+        await oldRefresh.value
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
+        XCTAssertEqual(caches.savedContexts, [K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")])
+        XCTAssertEqual(caches.snapshots[K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")]?.publications.map(\.batchId), ["batch-current"])
+    }
+
+    @MainActor func testConnectionGenerationIgnoresStaleFailure() async {
+        let gate = RefreshGate()
+        let old = ControlledK10Service(batchID: "batch-old", healthGate: gate, healthFailure: .networkUnavailable("旧连接超时"))
+        let current = ControlledK10Service(batchID: "batch-current")
+        let services = ServiceBox(old)
+        let model = AppModel(serviceFactory: { services.service }, cacheClearer: {})
+
+        let oldRefresh = Task { await model.refresh() }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        services.service = current
+        await model.refresh()
+        await gate.open()
+        await oldRefresh.value
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
+        XCTAssertFalse(model.offline)
+    }
+
+    @MainActor func testAdminSettingsCannotCrossConnectionGenerations() async {
+        let suite = "top.linotsai.neckline.tests.admin-generation"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let config = AppConfig(defaults: defaults, tokenStore: RecordingTokenStore())
+        config.apiToken = "synthetic-token"
+        config.baseURLOverride = "https://a.example"
+        let gate = RefreshGate()
+        let old = ControlledAdminService(providerName: "old-provider", tavilyKeySet: true, providersGate: gate)
+        let current = ControlledAdminService(providerName: "current-provider", tavilyKeySet: false)
+        let admins = AdminServiceBox(old)
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, adminServiceFactory: { _, _ in admins.service })
+        model.bind(config: config)
+
+        let oldRefresh = Task { await model.refreshAdminSettings() }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        config.baseURLOverride = "https://b.example"
+        admins.service = current
+        model.bind(config: config)
+        await model.refreshAdminSettings()
+        await gate.open()
+        await oldRefresh.value
+
+        XCTAssertEqual(model.providers.map(\.name), ["current-provider"])
+        XCTAssertFalse(model.tavilyKeySet)
+        XCTAssertEqual(model.toast, nil)
+    }
+
+    @MainActor func testStaleAdminSaveDoesNotRefreshTheNewConnection() async {
+        let suite = "top.linotsai.neckline.tests.admin-save-generation"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let config = AppConfig(defaults: defaults, tokenStore: RecordingTokenStore())
+        config.apiToken = "synthetic-token"
+        config.baseURLOverride = "https://a.example"
+        let gate = RefreshGate()
+        let old = ControlledAdminService(providerName: "deepseek", tavilyKeySet: true, updateGate: gate)
+        let current = ControlledAdminService(providerName: "current-provider", tavilyKeySet: false)
+        let admins = AdminServiceBox(old)
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, adminServiceFactory: { _, _ in admins.service })
+        model.bind(config: config)
+        model.providers = [old.provider]
+
+        let saving = Task { await model.saveDeepSeekConnection(name: "deepseek", apiKey: "new-key", enabled: true) }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        config.baseURLOverride = "https://b.example"
+        admins.service = current
+        model.bind(config: config)
+        await gate.open()
+        await saving.value
+
+        XCTAssertTrue(model.providers.isEmpty)
+        XCTAssertFalse(model.tavilyKeySet)
+        XCTAssertEqual(model.toast, nil)
+        let currentReads = await current.providerReadCount()
+        XCTAssertEqual(currentReads, 0)
+    }
+
+    @MainActor func testNotificationRoutingOpensExactV14ObjectAndNeverFallsBack() async {
+        let service = ControlledK10Service(batchID: "batch-current")
+        let model = AppModel(serviceFactory: { service })
+
+        await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["companyWindowId": "synthetic-morning-late-window"])))
+        XCTAssertEqual(model.tab, .focus)
+        XCTAssertEqual(model.selectedWindow?.companyWindowId, "synthetic-morning-late-window")
+        XCTAssertNil(model.selectedOpportunity)
+
+        await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["opportunityId": "synthetic-opportunity-1"])))
+        XCTAssertEqual(model.tab, .opportunities)
+        XCTAssertEqual(model.selectedOpportunity?.opportunityId, "synthetic-opportunity-1")
+        XCTAssertNil(model.selectedWindow)
+
+        await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["companyWindowId": "withdrawn-window"])))
+        XCTAssertEqual(model.tab, .focus)
+        XCTAssertNil(model.selectedWindow)
+        XCTAssertNil(model.selectedOpportunity)
+        XCTAssertEqual(model.toast, "通知关联的公司窗口已不可用")
+    }
+
+    @MainActor func testNotificationRefreshFailureDoesNotOpenOldReadingContext() async {
+        let model = AppModel(serviceFactory: { ControlledK10Service(batchID: "failed", healthFailure: .networkUnavailable("暂时不可达")) })
+        let previousWindows = try! await K10SyntheticUIService().companyWindows()
+        model.selectedWindow = previousWindows.first
+        await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["companyWindowId": "synthetic-evening-window"])))
+        XCTAssertEqual(model.tab, .focus)
+        XCTAssertNil(model.selectedWindow)
+        XCTAssertNil(model.selectedOpportunity)
+        XCTAssertEqual(model.state, .failed("网络不可用：暂时不可达"))
+    }
+
+    @MainActor func testNotificationDoesNotOpenOldDetailAfterConnectionChanges() async {
+        let gate = RefreshGate()
+        let old = ControlledK10Service(batchID: "batch-old", opportunityGate: gate)
+        let current = ControlledK10Service(batchID: "batch-current")
+        let services = ServiceBox(old)
+        let model = AppModel(serviceFactory: { services.service }, cacheClearer: {})
+        let route = try! XCTUnwrap(K10PushRoute(userInfo: ["opportunityId": "synthetic-opportunity-1"]))
+
+        let opening = Task { await model.openNotification(route) }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        services.service = current
+        await model.refresh()
+        await gate.open()
+        await opening.value
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
+        XCTAssertNil(model.selectedOpportunity)
+        XCTAssertNil(model.selectedWindow)
+    }
+
     func testResultsSeparatePrimaryAndOverlap() async throws {
         let results = try await K10SyntheticUIService().results()
         XCTAssertEqual(results.primary["selected"]?.sampleCount, 1)
@@ -280,4 +478,172 @@ private final class PagingProtocol: URLProtocol {
         client.urlProtocol(self, didLoad: Data(body.utf8)); client.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+private final class FailureEnvelopeProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        ["conflict.example", "configuration.example"].contains(request.url?.host)
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, let client else { return }
+        let status: Int
+        let body: String
+        if url.host == "conflict.example" {
+            status = 409
+            body = #"{"detail":{"reason":"window_expired","message":"公司窗口已到期，不能修改选择","missing":[]}}"#
+        } else {
+            status = 503
+            body = #"{"detail":{"reason":"not_configured","message":"两日评价参数未配置","missing":["evaluationPolicy","marketCollection"]}}"#
+        }
+        client.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client.urlProtocol(self, didLoad: Data(body.utf8))
+        client.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+private actor RefreshGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !opened else { return }
+        let entered = enteredWaiters
+        enteredWaiters.removeAll()
+        entered.forEach { $0.resume() }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        guard waiters.isEmpty else { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        let paused = waiters
+        waiters.removeAll()
+        paused.forEach { $0.resume() }
+    }
+}
+
+private actor ControlledK10Service: K10Servicing {
+    private let batchID: String
+    private let empty: Bool
+    private let healthGate: RefreshGate?
+    private let publicationGate: RefreshGate?
+    private let opportunityGate: RefreshGate?
+    private let healthFailure: K10APIError?
+    private let fixture = K10SyntheticUIService()
+
+    init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, healthFailure: K10APIError? = nil) {
+        self.batchID = batchID
+        self.empty = empty
+        self.healthGate = healthGate
+        self.publicationGate = publicationGate
+        self.opportunityGate = opportunityGate
+        self.healthFailure = healthFailure
+    }
+
+    func health() async throws -> K10Health {
+        if let healthGate { await healthGate.wait() }
+        if let healthFailure { throw healthFailure }
+        return K10Health(status: "ok", version: "v3.0.1")
+    }
+
+    func latestScan(window: String) async throws -> K10Scan {
+        if empty { throw K10APIError.notFound("尚无扫描") }
+        return try await fixture.latestScan(window: window)
+    }
+
+    func publications() async throws -> [K10Publication] {
+        if let publicationGate { await publicationGate.wait() }
+        guard !empty else { return [] }
+        return [K10Publication(schemaVersion: "k10-api-v2", batchId: batchID, scanId: "scan-\(batchID)", publicationKind: "evening", availableAt: "2026-09-07T21:00:00+08:00", createdAt: "2026-09-07T21:00:00+08:00", sampleCount: 1)]
+    }
+
+    func companyWindows() async throws -> [K10CompanyWindow] {
+        if empty { return [] }
+        return try await fixture.companyWindows()
+    }
+    func opportunity(id: String) async throws -> K10OpportunityDetail {
+        if let opportunityGate { await opportunityGate.wait() }
+        return try await fixture.opportunity(id: id)
+    }
+    func act(companyWindowID: String, request: K10SelectionRequest) async throws -> K10SelectionAction { try await fixture.act(companyWindowID: companyWindowID, request: request) }
+    func selections() async throws -> [K10SelectionDetail] {
+        if empty { return [] }
+        return try await fixture.selections()
+    }
+    func document(id: String, revision: Int?, offset: Int, limit: Int) async throws -> K10DocumentPage { try await fixture.document(id: id, revision: revision, offset: offset, limit: limit) }
+    func job(id: String) async throws -> K10Job { try await fixture.job(id: id) }
+    func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job { try await fixture.retryJob(id: id, expectedAttemptCount: expectedAttemptCount) }
+    func results() async throws -> K10Results { try await fixture.results() }
+    func configuration() async throws -> K10Configuration { try await fixture.configuration() }
+    func usageSummary() async throws -> K10UsageSummary { try await fixture.usageSummary() }
+}
+
+private actor ControlledAdminService: K10AdminServicing {
+    let provider: K10Provider
+    private let tavilyValue: Bool
+    private let providersGate: RefreshGate?
+    private let updateGate: RefreshGate?
+    private var providerReads = 0
+
+    init(providerName: String, tavilyKeySet: Bool, providersGate: RefreshGate? = nil, updateGate: RefreshGate? = nil) {
+        self.provider = K10Provider(name: providerName, baseUrl: "https://api.deepseek.com/v1/chat/completions", model: "deepseek-v4-pro", hasWebSearch: false, searchEngine: nil, notes: "test", enabled: true, keySet: true)
+        self.tavilyValue = tavilyKeySet
+        self.providersGate = providersGate
+        self.updateGate = updateGate
+    }
+
+    func providers() async throws -> [K10Provider] {
+        if let providersGate { await providersGate.wait() }
+        providerReads += 1
+        return [provider]
+    }
+    func createProvider(_ provider: K10ProviderCreate) async throws -> K10Provider {
+        if let updateGate { await updateGate.wait() }
+        return self.provider
+    }
+    func updateProvider(name: String, _ provider: K10ProviderUpdate) async throws -> K10Provider {
+        if let updateGate { await updateGate.wait() }
+        return self.provider
+    }
+    func tavilyStatus() async throws -> K10TavilyStatus { K10TavilyStatus(keySet: tavilyValue) }
+    func setTavilyKey(_ key: String) async throws -> K10TavilyStatus {
+        if let updateGate { await updateGate.wait() }
+        return K10TavilyStatus(keySet: true)
+    }
+    func clearTavilyKey() async throws { if let updateGate { await updateGate.wait() } }
+    func registerDevice(token: String) async throws {}
+    func providerReadCount() -> Int { providerReads }
+}
+
+@MainActor private final class ServiceBox {
+    var service: any K10Servicing
+    init(_ service: any K10Servicing) { self.service = service }
+}
+
+@MainActor private final class CacheContextBox {
+    var context: K10CacheContext
+    init(_ context: K10CacheContext) { self.context = context }
+}
+
+@MainActor private final class AdminServiceBox {
+    var service: any K10AdminServicing
+    init(_ service: any K10AdminServicing) { self.service = service }
+}
+
+@MainActor private final class CacheRecorder {
+    private(set) var snapshots: [K10CacheContext: K10CacheSnapshot] = [:]
+    private(set) var savedContexts: [K10CacheContext] = []
+    func load(_ context: K10CacheContext) -> K10CacheSnapshot? { snapshots[context] }
+    func save(_ snapshot: K10CacheSnapshot, for context: K10CacheContext) {
+        snapshots[context] = snapshot
+        savedContexts.append(context)
+    }
+    func clear() { snapshots.removeAll(); savedContexts.removeAll() }
 }

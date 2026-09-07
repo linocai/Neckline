@@ -175,9 +175,41 @@ def rollback_notifications_schema(db_path: Path, *, target_version: int = 0) -> 
     return 0
 
 
+_CURRENT_DEEP_LINK_KEYS = frozenset(("companyWindowId", "opportunityId", "batchId", "scanId"))
+_LEGACY_DEEP_LINK_KEYS = frozenset(("observationId", "companyCandidateId"))
+_LEGACY_ANALYSIS_BODY = "可查看正反全文，以及资料与价位草案的完成状态。"
+
+
 def _deep_link(payload: Mapping[str, object]) -> dict[str, str]:
-    permitted = ("observationId", "companyCandidateId", "scanId")
-    return {key: value for key in permitted if isinstance((value := payload.get(key)), str) and value}
+    return {key: value for key in _CURRENT_DEEP_LINK_KEYS if isinstance((value := payload.get(key)), str) and value}
+
+
+def _legacy_deep_link_only(payload: Mapping[str, object]) -> bool:
+    """Recognize a B31 outbox value without treating arbitrary keys as compatible.
+
+    Existing queued rows are data, rather than a schema version.  They may have
+    been enqueued before the V1.4 ID allow-list and contain only the two retired
+    identifiers plus the still-valid scan ID.  A duplicate terminal hook must be
+    idempotent across that upgrade, but arbitrary persisted keys must still be
+    rejected as a content conflict.
+    """
+    keys = set(payload)
+    return bool(keys & _LEGACY_DEEP_LINK_KEYS) and keys <= _LEGACY_DEEP_LINK_KEYS | _CURRENT_DEEP_LINK_KEYS
+
+
+def _stored_deep_link(value: object) -> dict[str, str]:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    return _deep_link(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def _outbound_message(notification: Notification) -> tuple[str, str]:
+    """Normalize user-visible B31 analysis rows without rewriting the outbox."""
+    if notification.kind == notify_kinds.KIND_K10_ANALYSIS:
+        return _message(notification.kind, terminal_status=notification.terminal_status, stage="")
+    return notification.title, notification.body
 
 
 def _kind(*, task_kind: str, terminal_status: str, payload: Mapping[str, object], requested: str | None) -> str:
@@ -194,7 +226,7 @@ def _kind(*, task_kind: str, terminal_status: str, payload: Mapping[str, object]
 
 def _message(kind: str, *, terminal_status: str, stage: str) -> tuple[str, str]:
     if kind == notify_kinds.KIND_K10_ANALYSIS:
-        return "K10 分析已更新", "可查看正反全文，以及资料与价位草案的完成状态。"
+        return "K10 分析已更新", "可查看正反分析全文，以及资料完成状态。"
     if kind == notify_kinds.KIND_K10_MORNING:
         return "K10 晨间变化已更新", "隔夜资料与相关观察对象已更新，请查看重大反证和待核事项。"
     if kind == notify_kinds.KIND_K10_EVENING:
@@ -247,9 +279,32 @@ def enqueue_task_notification(
         ).fetchone()
         if existing is not None:
             expected = (task_id, kind, terminal_status, task_attempt_count, title, body, _json(deep_link))
-            if tuple(existing[1:8]) != expected:
+            try:
+                stored_payload = json.loads(existing[7])
+            except json.JSONDecodeError:
+                raise NotificationConflict("K10 通知幂等键对应深链无效") from None
+            if not isinstance(stored_payload, Mapping) or set(stored_payload) - (_CURRENT_DEEP_LINK_KEYS | _LEGACY_DEEP_LINK_KEYS):
+                raise NotificationConflict("K10 通知幂等键对应深链无效")
+            if kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) not in {body, _LEGACY_ANALYSIS_BODY}:
                 raise NotificationConflict("K10 通知幂等键对应内容已变化")
-            return _notification(existing)
+            stored_link = _stored_deep_link(existing[7])
+            actual = (*tuple(existing[1:6]), body if str(existing[2]) == notify_kinds.KIND_K10_ANALYSIS else existing[6],
+                      _json(stored_link))
+            immutable_match = tuple(existing[1:6]) == (task_id, kind, terminal_status, task_attempt_count, title)
+            permitted_analysis_body = kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) in {body, _LEGACY_ANALYSIS_BODY}
+            matching_current_ids = all(
+                key not in stored_payload or stored_payload[key] == deep_link.get(key)
+                for key in _CURRENT_DEEP_LINK_KEYS
+            )
+            legacy_upgrade_match = (immutable_match and permitted_analysis_body and
+                                    _legacy_deep_link_only(stored_payload) and matching_current_ids)
+            if actual != expected and not legacy_upgrade_match:
+                raise NotificationConflict("K10 通知幂等键对应内容已变化")
+            # Keep a legacy row readable but return the current public contract to
+            # the task hook.  Dispatch applies the same filter for rows which never
+            # receive another terminal hook.
+            return Notification(str(existing[0]), task_id, kind, terminal_status, task_attempt_count,
+                                title, body, deep_link, str(existing[8]), int(existing[9]), str(existing[10]))
         notification_id = str(uuid4())
         conn.execute(
             "INSERT INTO k10_task_notifications(notification_id,idempotency_key,task_id,kind,terminal_status,task_attempt_count,title,body,"
@@ -394,9 +449,10 @@ def dispatch_task_notifications(
                 ).rowcount
                 if owned != 1:
                     raise NotificationConflict("通知租约已失效")
+            title, body = _outbound_message(notification)
             try:
-                result = sender(token=token, title=notification.title, body=notification.body, kind=notification.kind,
-                                deep_link=notification.deep_link, collapse_id=notification.notification_id)
+                result = sender(token=token, title=title, body=body, kind=notification.kind,
+                                deep_link=_deep_link(notification.deep_link), collapse_id=notification.notification_id)
             except Exception:
                 transient_error = True
                 continue

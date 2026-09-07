@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
 from neckline.k10 import store
 from neckline.k10.notifications import (
     DeliveryResult,
+    NotificationConflict,
     NotificationSchemaUnavailable,
     dispatch_task_notifications,
     enqueue_task_notification,
@@ -17,6 +20,8 @@ from neckline.k10.notifications import (
     initialize_notifications_schema,
 )
 from neckline.k10.schema import initialize_schema, read_connection
+from neckline.k10.types import OpportunityPublicationInput
+from neckline.k10.windows import SHANGHAI
 
 
 NOW = datetime(2026, 9, 6, 13, 0, tzinfo=timezone.utc)
@@ -40,7 +45,7 @@ def test_worker_maintenance_recovers_missing_terminal_hook_and_uses_device_prefe
     maintain()
     maintain()
     assert len(calls) == 1
-    assert calls[0][1]["custom"]["observationId"] == "observation-1"
+    assert calls[0][1]["custom"]["companyWindowId"] == "window-1"
     assert "untrusted" not in calls[0][1]["custom"]
 
 
@@ -88,8 +93,9 @@ def _finish_task(
         input_version="K10-v1.3",
         input_cutoff_at=_stamp(),
         payload=payload or {
-            "observationId": "observation-1",
-            "companyCandidateId": "candidate-1",
+            "companyWindowId": "window-1",
+            "opportunityId": "opportunity-1",
+            "batchId": "batch-1",
             "scanId": "scan-1",
             "untrusted": "not-a-deep-link",
         },
@@ -113,6 +119,47 @@ def _finish_task(
     return task.attempt_count
 
 
+def _finish_real_window_analysis_task(db_path: Path) -> tuple[str, str]:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE trade_cal(exchange TEXT, cal_date TEXT, is_open INTEGER)")
+        conn.executemany("INSERT INTO trade_cal VALUES ('SSE',?,?)", [("20260906", 1), ("20260907", 1), ("20260908", 1)])
+    stamp = "2026-09-07T09:20:00+08:00"
+    store.create_scan(scan_id="scan-real", window_kind="morning", cutoff_at=stamp, config_id=None,
+                      config_revision=None, status="completed", coverage={}, created_at=stamp,
+                      completed_at=stamp, db_path=db_path)
+    event = store.append_event_revision(event_id="event-real", stable_key="event-real", headline="真实窗口测试",
+                                        event_kind="news", facts={}, source_refs=[], supersedes_revision=None,
+                                        created_at=stamp, db_path=db_path)
+    store.create_candidate(candidate_id="candidate-real", scan_id="scan-real", event_id=event.event_id,
+                           event_revision=event.revision, company_code="300001.SZ", comparison={"rank": 1},
+                           evidence=[], created_at=stamp, db_path=db_path)
+    comparison = {
+        "summary": "完整比较", "differences": {"role": "primary", "priorityReason": "资料", "gap": "差异",
+        "rankChangeConditions": "反证条件", "twoDayReason": "新事实"}, "evidenceRefs": [], "rank": 1,
+        "classification": {"kind": "initial", "opportunityKey": "real", "reason": "首发", "newFacts": "资料",
+        "changedJudgment": None, "twoDayReason": "新事实", "relatedOpportunityId": None},
+    }
+    store.publish_opportunities(
+        batch_id="batch-real", scan_id="scan-real", publication_kind="morning",
+        inputs=(OpportunityPublicationInput(candidate_id="candidate-real", company_code="300001.SZ", event_id="event-real",
+            event_revision=1, opportunity_key="real", catalyst_stage="initial", category="primary",
+            comparison=comparison, evidence_refs=(), source_marker="morning"),), db_path=db_path,
+        clock=lambda: datetime(2026, 9, 7, 9, 29, tzinfo=SHANGHAI),
+    )
+    window = store.list_company_windows(db_path=db_path)[0]
+    opportunity = store.list_opportunities(batch_id="batch-real", db_path=db_path)[0]
+    store.observe_company_window(
+        action_id="keep-real", observation_id="observation-real", task_id="task-real", outbox_id="outbox-real",
+        company_window_id=window["companyWindowId"], idempotency_key="keep-real", task_input_version="cfg@1",
+        task_input_cutoff_at=stamp, task_payload={"opportunityId": opportunity["opportunityId"], "batchId": "batch-real",
+        "scanId": "scan-real"}, task_budget={"maxAttempts": 1}, created_at=stamp, db_path=db_path,
+    )
+    task = store.claim_tasks(worker_id="task-worker", now=NOW, lease_for=timedelta(minutes=5), limit=1, db_path=db_path)[0]
+    store.finish_task(task_id=task.task_id, worker_id="task-worker", status="completed", stage="done", checkpoint={},
+                      error_text=None, finished_at=NOW + timedelta(minutes=1), db_path=db_path)
+    return window["companyWindowId"], opportunity["opportunityId"]
+
+
 def test_terminal_hook_is_idempotent_and_payload_is_whitelisted(tmp_path: Path):
     db_path = _db(tmp_path)
     _finish_task(db_path)
@@ -124,8 +171,9 @@ def test_terminal_hook_is_idempotent_and_payload_is_whitelisted(tmp_path: Path):
     assert first.kind == "k10_analysis"
     assert first.task_attempt_count == 1
     assert first.deep_link == {
-        "observationId": "observation-1",
-        "companyCandidateId": "candidate-1",
+        "companyWindowId": "window-1",
+        "opportunityId": "opportunity-1",
+        "batchId": "batch-1",
         "scanId": "scan-1",
     }
 
@@ -141,6 +189,84 @@ def test_terminal_hook_is_idempotent_and_payload_is_whitelisted(tmp_path: Path):
     ) == 1
     assert sent == [("device-a", first.notification_id)]
     assert get_notification(notification_id=first.notification_id, db_path=db_path).status == "sent"
+
+
+def test_real_company_window_analysis_task_produces_only_v14_push_ids(tmp_path, monkeypatch):
+    from neckline.api.stores import upsert_device
+    from neckline.k10 import notification_runtime
+
+    db_path = _db(tmp_path)
+    company_window_id, opportunity_id = _finish_real_window_analysis_task(db_path)
+    upsert_device("synthetic-device", db_path=db_path)
+    calls = []
+    monkeypatch.setattr(notification_runtime, "send_push", lambda *args, **kwargs: calls.append((args, kwargs)) or type("Result", (), {"ok": True, "reason": "ok"})())
+
+    notification_runtime.create_notification_maintenance(db_path=db_path, worker_id="fixture-worker")()
+
+    assert len(calls) == 1
+    assert calls[0][1]["custom"] == {"kind": "k10_analysis", "companyWindowId": company_window_id,
+                                      "opportunityId": opportunity_id, "batchId": "batch-real", "scanId": "scan-real"}
+    assert "价位" not in calls[0][0][2] and "预案" not in calls[0][0][2]
+
+
+def test_legacy_queued_and_expired_sending_rows_are_normalized_only_at_push_boundary(tmp_path):
+    db_path = _db(tmp_path)
+    _finish_task(db_path, task_id="queued-task")
+    _finish_task(db_path, task_id="expired-task")
+    queued = enqueue_task_notification(task_id="queued-task", db_path=db_path, created_at=NOW)
+    expired = enqueue_task_notification(task_id="expired-task", db_path=db_path, created_at=NOW)
+    legacy_link = json.dumps({"observationId": "obsolete-observation", "companyCandidateId": "obsolete-candidate",
+                              "scanId": "scan-1"})
+    legacy_body = "可查看正反全文，以及资料与价位草案的完成状态。"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE k10_task_notifications SET deep_link_json=?,body=? WHERE notification_id=?",
+                     (legacy_link, legacy_body, queued.notification_id))
+        conn.execute("UPDATE k10_task_notifications SET deep_link_json=?,body=?,status='sending',lease_owner='old-worker',lease_until=? WHERE notification_id=?",
+                     (legacy_link, legacy_body, _stamp(NOW - timedelta(minutes=1)), expired.notification_id))
+
+    # A duplicate terminal hook after the upgrade must accept a recognizable B31
+    # row and expose the current IDs from the immutable task payload.
+    replayed = enqueue_task_notification(task_id="queued-task", db_path=db_path, created_at=NOW + timedelta(minutes=1))
+    assert replayed.deep_link == {"companyWindowId": "window-1", "opportunityId": "opportunity-1",
+                                  "batchId": "batch-1", "scanId": "scan-1"}
+
+    outbound: list[tuple[dict[str, str], str]] = []
+    assert dispatch_task_notifications(
+        db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
+        sender=lambda **kwargs: outbound.append((kwargs["deep_link"], kwargs["body"])) or DeliveryResult(ok=True),
+        worker_id="push-worker", now=NOW + timedelta(minutes=2),
+    ) == 2
+    assert [deep_link for deep_link, _body in outbound] == [{"scanId": "scan-1"}, {"scanId": "scan-1"}]
+    assert all("observationId" not in deep_link and "companyCandidateId" not in deep_link for deep_link, _body in outbound)
+    assert all("价位" not in body and "预案" not in body for _deep_link, body in outbound)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("task_id", "another-task"),
+        ("kind", "k10_morning"),
+        ("terminal_status", "failed"),
+        ("task_attempt_count", 2),
+        ("title", "已被篡改"),
+        ("deep_link_json", json.dumps({"observationId": "old", "companyCandidateId": "old", "scanId": "wrong-scan"})),
+    ],
+)
+def test_legacy_notification_idempotency_does_not_hide_non_migration_field_changes(tmp_path, field, value):
+    case = tmp_path / field
+    case.mkdir()
+    db_path = _db(case)
+    _finish_task(db_path)
+    notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    legacy_link = json.dumps({"observationId": "old", "companyCandidateId": "old", "scanId": "scan-1"})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE k10_task_notifications SET deep_link_json=?,body=?,{field}=? WHERE notification_id=?",
+            (legacy_link, "可查看正反全文，以及资料与价位草案的完成状态。", value, notification.notification_id),
+        )
+
+    with pytest.raises(NotificationConflict):
+        enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW + timedelta(minutes=1))
 
 
 def test_failure_after_retry_creates_a_new_attempt_notification(tmp_path: Path):

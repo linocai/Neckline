@@ -615,19 +615,45 @@ def latest_document_version(*, document_id: str, db_path: Path) -> Optional[Docu
     return None if row is None else DocumentVersion(document_id, int(row[0]), str(row[1]))
 
 
-def list_source_document_versions(*, cutoff_at: Optional[str], db_path: Path) -> list[dict[str, Any]]:
-    """读取可追溯原始资料版本；不按公司过滤，发现阶段始终从全市场来源开始。"""
+def _validated_source_keys(source_keys: Sequence[str] | None) -> tuple[str, ...] | None:
+    """Return an explicit, de-duplicated source allow-list for a read query.
+
+    ``None`` deliberately preserves the historic all-source read for callers that
+    already hold an explicit frozen reference.  An empty sequence is an empty
+    allow-list: it must never quietly become a fallback source selection.
+    """
+    if source_keys is None:
+        return None
+    if isinstance(source_keys, (str, bytes)) or any(not isinstance(key, str) or not key for key in source_keys):
+        raise ValueError("source_keys 必须是非空来源键序列")
+    return tuple(dict.fromkeys(source_keys))
+
+
+def list_source_document_versions(
+    *, cutoff_at: Optional[str], db_path: Path, source_keys: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read traceable document versions, optionally limited to explicit source keys."""
+    allowed_source_keys = _validated_source_keys(source_keys)
+    if allowed_source_keys == ():
+        return []
     with read_connection(db_path) as conn:
         require_schema(conn)
-        query = ("SELECT document_id,revision,content_sha256,published_at,published_precision,fetched_at,"
-                 "original_text,excerpt,fetch_version,metadata_json,created_at FROM k10_source_document_versions")
-        args: tuple[Any, ...] = ()
+        query = ("SELECT v.document_id,v.revision,v.content_sha256,v.published_at,v.published_precision,v.fetched_at,"
+                 "v.original_text,v.excerpt,v.fetch_version,v.metadata_json,v.created_at,d.source_key "
+                 "FROM k10_source_document_versions v JOIN k10_source_documents d ON d.document_id=v.document_id")
+        clauses: list[str] = []
+        args: list[Any] = []
         if cutoff_at is not None:
-            query += " WHERE fetched_at <= ?"; args = (cutoff_at,)
-        rows = conn.execute(query + " ORDER BY fetched_at,document_id,revision", args).fetchall()
+            clauses.append("v.fetched_at <= ?"); args.append(cutoff_at)
+        if allowed_source_keys is not None:
+            clauses.append("d.source_key IN (" + ",".join("?" for _ in allowed_source_keys) + ")")
+            args.extend(allowed_source_keys)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        rows = conn.execute(query + " ORDER BY v.fetched_at,v.document_id,v.revision", tuple(args)).fetchall()
     return [{"documentId": r[0], "revision": r[1], "contentSha256": r[2], "publishedAt": r[3],
              "publishedPrecision": r[4], "fetchedAt": r[5], "originalText": r[6], "excerpt": r[7],
-             "fetchVersion": r[8], "metadata": json.loads(r[9]), "createdAt": r[10]} for r in rows]
+             "fetchVersion": r[8], "metadata": json.loads(r[9]), "createdAt": r[10], "sourceKey": r[11]} for r in rows]
 
 
 def latest_event_revision(*, event_id: str, db_path: Path) -> Optional[EventRevision]:
@@ -713,8 +739,12 @@ def get_observation(*, observation_id: str, db_path: Path) -> Optional[dict[str,
 
 def _frozen_documents(
     conn, refs: Sequence[Mapping[str, Any]], *, cutoff_at: str | None = None,
+    source_keys: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve only explicit document revisions; never substitute a newer correction."""
+    allowed_source_keys = _validated_source_keys(source_keys)
+    if allowed_source_keys == ():
+        return []
     cutoff: datetime | None = None
     if cutoff_at is not None:
         try:
@@ -727,12 +757,17 @@ def _frozen_documents(
     for ref in refs:
         if not isinstance(ref, Mapping) or not ref.get("documentId") or not isinstance(ref.get("revision"), int):
             continue
-        row = conn.execute(
-            "SELECT document_id,revision,content_sha256,published_at,published_precision,fetched_at,"
-            "original_text,excerpt,fetch_version,metadata_json,created_at "
-            "FROM k10_source_document_versions WHERE document_id=? AND revision=?",
-            (str(ref["documentId"]), int(ref["revision"])),
-        ).fetchone()
+        query = (
+            "SELECT v.document_id,v.revision,v.content_sha256,v.published_at,v.published_precision,v.fetched_at,"
+            "v.original_text,v.excerpt,v.fetch_version,v.metadata_json,v.created_at,d.source_key "
+            "FROM k10_source_document_versions v JOIN k10_source_documents d ON d.document_id=v.document_id "
+            "WHERE v.document_id=? AND v.revision=?"
+        )
+        args: list[Any] = [str(ref["documentId"]), int(ref["revision"])]
+        if allowed_source_keys is not None:
+            query += " AND d.source_key IN (" + ",".join("?" for _ in allowed_source_keys) + ")"
+            args.extend(allowed_source_keys)
+        row = conn.execute(query, tuple(args)).fetchone()
         if row is not None:
             if cutoff is not None:
                 try:
@@ -744,15 +779,17 @@ def _frozen_documents(
             documents.append({"documentId": row[0], "revision": row[1], "contentSha256": row[2],
                               "publishedAt": row[3], "publishedPrecision": row[4], "fetchedAt": row[5],
                               "originalText": row[6], "excerpt": row[7], "fetchVersion": row[8],
-                              "metadata": json.loads(row[9]), "createdAt": row[10]})
+                              "metadata": json.loads(row[9]), "createdAt": row[10], "sourceKey": row[11]})
     return documents
 
 
-def load_document_versions(*, refs: Sequence[Mapping[str, Any]], db_path: Path) -> list[dict[str, Any]]:
-    """Read explicit source document versions for a frozen task payload; no DDL or time fallback."""
+def load_document_versions(
+    *, refs: Sequence[Mapping[str, Any]], db_path: Path, source_keys: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read frozen document revisions, optionally enforcing an explicit source allow-list."""
     with read_connection(db_path) as conn:
         require_schema(conn)
-        return _frozen_documents(conn, refs)
+        return _frozen_documents(conn, refs, source_keys=source_keys)
 
 
 def _explicit_refs(value: Any) -> list[dict[str, Any]]:
@@ -1549,7 +1586,7 @@ def list_company_window_evaluations(*, company_window_id: str | None = None, db_
         args: tuple[Any, ...] = ()
         if company_window_id is not None:
             query += " WHERE company_window_id=?"; args = (company_window_id,)
-        query += ") current ON current.company_window_id=e.company_window_id AND current.revision=e.revision ORDER BY e.company_window_id"
+        query += " GROUP BY company_window_id) current ON current.company_window_id=e.company_window_id AND current.revision=e.revision ORDER BY e.company_window_id"
         rows = conn.execute(query, args).fetchall()
     return [{"companyWindowId":r[0],"revision":r[1],"state":r[2],"factRefs":json.loads(r[3]),"result":json.loads(r[4]),"evaluatedAt":r[5],"createdAt":r[6]} for r in rows]
 

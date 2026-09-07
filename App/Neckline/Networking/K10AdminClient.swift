@@ -1,7 +1,17 @@
 import Foundation
 
+protocol K10AdminServicing: Sendable {
+    func providers() async throws -> [K10Provider]
+    func createProvider(_ provider: K10ProviderCreate) async throws -> K10Provider
+    func updateProvider(name: String, _ provider: K10ProviderUpdate) async throws -> K10Provider
+    func tavilyStatus() async throws -> K10TavilyStatus
+    func setTavilyKey(_ key: String) async throws -> K10TavilyStatus
+    func clearTavilyKey() async throws
+    func registerDevice(token: String) async throws
+}
+
 /// Stable generic settings endpoints. Secrets are write-only and never cached or returned.
-actor K10AdminClient {
+actor K10AdminClient: K10AdminServicing {
     private let baseURL: URL
     private let token: String
     private let session: URLSession
@@ -34,21 +44,10 @@ actor K10AdminClient {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw K10APIError.server(0, "服务未返回 HTTP 响应") }
             guard 200..<300 ~= http.statusCode else {
-                if http.statusCode == 401 { throw K10APIError.unauthorized }
-                let message = Self.message(from: data) ?? "服务返回 \(http.statusCode)"
-                if http.statusCode == 404 { throw K10APIError.notFound(message) }
-                if http.statusCode == 409 { throw K10APIError.conflict(message) }
-                throw K10APIError.server(http.statusCode, message)
+                throw K10APIError.decodeServerFailure(data, status: http.statusCode)
             }
             do { return try JSONDecoder().decode(T.self, from: data) } catch { throw K10APIError.decoding("服务响应无法按设置契约读取") }
         } catch let error as K10APIError { throw error }
         catch { throw K10APIError.networkUnavailable(error.localizedDescription) }
-    }
-
-    private static func message(from data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        if let detail = object["detail"] as? String { return detail }
-        if let detail = object["detail"] as? [String: Any] { return detail["message"] as? String ?? detail["reason"] as? String }
-        return nil
     }
 }
