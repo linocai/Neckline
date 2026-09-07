@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from neckline.k10 import store
-from neckline.k10.discovery import CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventDraft, Verification
+from neckline.k10.discovery import CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventComparison, EventDraft, Verification
 from neckline.k10.pipeline import DeepSeekDiscoveryModel, PipelineError, _run_morning_reviews, execute_scan
 from neckline.k10.schema import initialize_schema as _initialize_schema
 from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchResult
@@ -80,8 +80,8 @@ class _Model:
     def map_companies(self, *, event, verification):
         return (CompanyMappingDraft("300001.SZ", "supply", event.source_refs, {"basis": "公告"}, "fixture"),)
 
-    def compare(self, *, event, verification, mapping, peers):
-        return CandidateComparison("具体比较", {"role": "primary", "priorityReason": "公司证据", "gap": "比较关系差异", "rankChangeConditions": "新披露", "twoDayReason": "新披露进入两日观察"}, mapping.relation_evidence)
+    def compare_event(self, *, event, verification, mappings):
+        return EventComparison("事件共同事实", {mapping.company_code: CandidateComparison("具体比较", {"role": "primary", "priorityReason": "公司证据", "gap": "比较关系差异", "rankChangeConditions": "新披露", "twoDayReason": "新披露进入两日观察"}, mapping.relation_evidence, 1) for mapping in mappings}, event.source_refs)
 
     def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
         exact = next((old for old in previous if old.get("canonicalKey") == event.canonical_key), None)
@@ -571,7 +571,7 @@ class _Provider(LLMProvider):
             '{"events":[{"canonicalKey":"event","stageKey":"stage","eventState":"confirmed","headline":"公告","eventKind":"disclosure","facts":{},"sourceRefs":[{"documentId":"doc","revision":1}]}]}',
             '{"state":"verified","summary":"核验","sourceRefs":[{"documentId":"tavily-doc","revision":1}]}',
             '{"mappings":[{"companyCode":"300001.SZ","affectedStage":"supply","relationEvidence":[{"documentId":"tavily-doc","revision":1}],"inference":{},"uncertainty":"公开资料"}]}',
-            '{"summary":"比较","differences":{},"sourceRefs":[{"documentId":"tavily-doc","revision":1}]}',
+            '{"summary":"事件共同比较","sourceRefs":[{"documentId":"tavily-doc","revision":1}],"candidates":[{"companyCode":"300001.SZ","summary":"比较","role":"primary","rank":1,"priorityReason":"公司证据","gap":"比较差异","rankChangeConditions":"新披露","twoDayReason":"两日催化","sourceRefs":[{"documentId":"tavily-doc","revision":1}]}]}',
         )
         if wrap_compare:
             outputs = (*outputs[:3], json.dumps({"output": json.loads(outputs[3])}))
@@ -594,9 +594,10 @@ def test_deepseek_discovery_model_uses_structured_json_and_preserves_usage():
     model.set_verification_documents(event=event, documents=(independent,))
     verification = model.verify(event)
     mapping = model.map_companies(event=event, verification=verification)[0]
-    comparison = model.compare(event=event, verification=verification, mapping=mapping, peers=(mapping,))
+    comparison = model.compare_event(event=event, verification=verification, mappings=(mapping,))
 
-    assert comparison.summary == "比较"
+    assert comparison.summary == "事件共同比较"
+    assert comparison.candidates["300001.SZ"].summary == "比较"
     assert verification.state == "verified"
     assert all(search is False and output == {"type": "json_object"} for _, search, output in provider.calls)
     assert "不可信证据数据" in provider.calls[0][0][0].content
@@ -674,7 +675,7 @@ def test_deepseek_compare_accepts_only_the_actual_sole_output_wrapper():
     model.set_verification_documents(event=event, documents=(evidence,))
     verification = model.verify(event)
     mapping = model.map_companies(event=event, verification=verification)[0]
-    assert model.compare(event=event, verification=verification, mapping=mapping, peers=(mapping,)).summary == "比较"
+    assert model.compare_event(event=event, verification=verification, mappings=(mapping,)).summary == "事件共同比较"
 
 
 def test_deepseek_mapping_discards_hk_counterparty_but_rejects_unknown_code_formats():
@@ -902,3 +903,33 @@ def test_morning_review_universe_excludes_unpublished_and_expired_candidates(tmp
     expired = _active_published_candidates(opportunities=history,
         as_of=datetime(2026, 9, 9, 15, tzinfo=SHANGHAI), db_path=path)
     assert expired == []
+
+
+def test_event_comparison_classifies_historical_case_only_from_frozen_source_quote():
+    class Provider:
+        def chat(self, *_args, **_kwargs):
+            return LLMResult(ok=True, content=json.dumps({
+                "summary": "整体比较", "sourceRefs": [{"documentId": "doc-current", "revision": 1}],
+                "historicalAssessments": [{"caseId": "external:doc-history@1", "outcome": "success",
+                    "summary": "来源明示成功", "sourceQuote": "该案例最终成功", "sourceRefs": [{"documentId": "doc-history", "revision": 1}]}],
+                "candidates": [{"companyCode": "300001.SZ", "summary": "公司比较", "role": "primary", "rank": 1,
+                    "priorityReason": "证据", "gap": "差异", "rankChangeConditions": "反证", "twoDayReason": "催化",
+                    "sourceRefs": [{"documentId": "doc-current", "revision": 1}]}],
+            }, ensure_ascii=False), provider="fixture", model="fixture")
+
+    event = EventDraft("current", "order", "confirmed", "当前事件", "disclosure", {"mechanism": "材料"}, (EvidenceRef("doc-current", 1),))
+    model = DeepSeekDiscoveryModel(Provider(), historical_context_loader=lambda **_: {
+        "historicalCases": [{"caseId": "external:doc-history@1", "outcome": "unclassified", "summary": "历史资料",
+            "observedAt": "2026-08-01T09:00:00+08:00", "sourceRefs": [{"documentId": "doc-history", "revision": 1}],
+            "marketFacts": [], "sourceBasedDescription": "该案例最终成功，且有公开复盘。"}],
+        "historicalCoverage": {"state": "partial", "requestedOutcomes": ["success", "flat", "failure"],
+            "presentOutcomes": [], "missingOutcomes": ["success", "flat", "failure"], "reason": "gap",
+            "sourceRefs": [{"documentId": "doc-history", "revision": 1}]},
+    })
+    model.set_scan_cutoff(CUTOFF)
+    model._documents[event.source_refs[0]] = DiscoveryDocument("doc-current", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "当前资料", None, {})
+    comparison = model.compare_event(event=event, verification=Verification("needs_review", "待核", ()),
+        mappings=(CompanyMappingDraft("300001.SZ", "order", event.source_refs, {}, "fixture"),))
+    history = comparison.candidates["300001.SZ"].historical_cases
+    assert history[0]["outcome"] == "success"
+    assert history[0]["categoryEvidence"] == [{"documentId": "doc-history", "revision": 1, "quote": "该案例最终成功"}]

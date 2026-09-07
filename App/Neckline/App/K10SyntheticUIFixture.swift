@@ -65,7 +65,9 @@ actor K10SyntheticUIService: K10Servicing {
         priorityReason: "现有资料把合成科技列为直接相关方。",
         gap: "其他公司仅有间接关联，尚未形成同等证据链。",
         rankChangeConditions: "若出现新的直接订单或公司否认，当前排序需要重看。",
-        twoDayReason: "只观察固定 D1/D2 的市场事实，不生成交易计划。"
+        twoDayReason: "只观察固定 D1/D2 的市场事实，不生成交易计划。",
+        historicalCases: nil,
+        historicalCoverage: nil
     )
     private static let first = K10Opportunity(
         schemaVersion: "k10-api-v2", opportunityId: "synthetic-opportunity-1", opportunityKey: "synthetic-independent-stage",
@@ -113,7 +115,7 @@ actor K10SyntheticUIService: K10Servicing {
 
     private var actions: [String: WindowAction] = [:]
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.1") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.2 Build 33") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"

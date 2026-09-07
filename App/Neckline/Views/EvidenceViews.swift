@@ -37,7 +37,7 @@ struct OpportunitySheet: View {
                                     if let summary = sample.comparison.summary {
                                         Text(summary).font(NKFont.body)
                                     }
-                                    ComparisonDetails(comparison: sample.comparison)
+                                    ComparisonDetails(comparison: sample.comparison, model: model)
                                     EvidenceBlock(evidence: sample.evidence, model: model)
                                 }
                                 if sample.id != detail.samples.last?.id { Divider().overlay(NK.hairline) }
@@ -144,6 +144,9 @@ struct LifecycleBlock: View {
                             if let reason = item.reason, !reason.isEmpty {
                                 Text(reason).font(NKFont.callout)
                             }
+                            if !item.content.isEmpty {
+                                LifecycleContentView(content: item.content)
+                            }
                             if !item.sourceRefs.isEmpty {
                                 ForEach(item.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
                             }
@@ -152,6 +155,35 @@ struct LifecycleBlock: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct LifecycleContentView: View {
+    let content: [String: K10Value]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("事件资料").font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.textSecondary)
+            ForEach(content.keys.sorted(), id: \.self) { key in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(key).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    Text(text(content[key] ?? .null)).font(NKFont.caption).foregroundStyle(NK.textPrimary)
+                }
+            }
+        }
+        .padding(8)
+        .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+    }
+
+    private func text(_ value: K10Value) -> String {
+        switch value {
+        case .string(let item): return item
+        case .number(let item): return String(item)
+        case .bool(let item): return item ? "是" : "否"
+        case .null: return "未记录"
+        case .array(let items): return items.isEmpty ? "[]" : "[\(items.map(text).joined(separator: "、"))]"
+        case .object(let object): return object.isEmpty ? "{}" : "{\(object.keys.sorted().map { "\($0): \(text(object[$0] ?? .null))" }.joined(separator: "；"))}"
         }
     }
 }
@@ -219,6 +251,7 @@ struct SourceReferenceLine: View {
                         .foregroundStyle(NK.textSecondary)
                 }
             }
+            .layoutPriority(1)
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 5) {
                 if source.documentId != nil && !isMarketSnapshot {
@@ -230,7 +263,8 @@ struct SourceReferenceLine: View {
                         }
                     }
                     .buttonStyle(V3SecondaryButtonStyle())
-                    .frame(width: 82)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .disabled(loading)
                 }
                 if let canonicalURL {

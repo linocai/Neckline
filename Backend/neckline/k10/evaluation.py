@@ -60,12 +60,25 @@ def _select(facts: Sequence[Mapping[str, Any]], trade_date: str) -> Mapping[str,
     return same[0]
 
 
+def _field_audit(fact: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    metadata = fact.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return [], None
+    checks = metadata.get("fieldChecks")
+    safe_checks = [dict(item) for item in checks if isinstance(item, Mapping)] if isinstance(checks, list) else []
+    reason = metadata.get("anomalyReason")
+    return safe_checks, str(reason) if isinstance(reason, str) and reason else None
+
+
 def _day(fact: Mapping[str, Any] | None, trade_date: str) -> dict[str, Any]:
-    if fact is None: return {"tradeDate": trade_date, "availability": "data_gap", "open":None,"high":None,"low":None,"close":None,"preClose":None,"limitUpPrice":None,"closeLimitUp":None,"touchedLimitUp":None,"sourceRefs":[]}
+    if fact is None: return {"tradeDate": trade_date, "availability": "data_gap", "open":None,"high":None,"low":None,"close":None,"preClose":None,"limitUpPrice":None,"closeLimitUp":None,"touchedLimitUp":None,"sourceRefs":[],"fieldChecks":[],"anomalyReason":None}
     availability = fact.get("availability")
     if availability not in _AVAILABILITY: raise EvaluationInputError("行情事实 availability 无效")
     refs = [dict(x) for x in fact.get("sourceRefs", []) if isinstance(x, Mapping)]
-    out = {"tradeDate": trade_date, "availability": availability, "sourceRefs": refs, "revision": fact.get("revision"), "factId": fact.get("factId")}
+    checks, anomaly_reason = _field_audit(fact)
+    if availability == "available" and any(check.get("state") == "conflict" for check in checks):
+        availability, anomaly_reason = "anomaly", anomaly_reason or "cross_source_conflict"
+    out = {"tradeDate": trade_date, "availability": availability, "sourceRefs": refs, "revision": fact.get("revision"), "factId": fact.get("factId"), "obtainedAt": fact.get("obtainedAt"), "fieldChecks": checks, "anomalyReason": anomaly_reason}
     if availability != "available":
         return {**out, "open":None,"high":None,"low":None,"close":None,"preClose":None,"limitUpPrice":None,"closeLimitUp":None,"touchedLimitUp":None}
     op, hi, lo, close, pre, limit = (_decimal(fact.get(key)) for key in ("open","high","low","close","preClose","limitUpPrice"))
@@ -74,7 +87,7 @@ def _day(fact: Mapping[str, Any] | None, trade_date: str) -> dict[str, Any]:
             or (limit is not None and hi > limit)):
         # Raw prices remain in the source fact revision. Invalid data must never
         # flow into gap/price-change calculations as if it were verified.
-        return {**out, "availability":"anomaly", "anomaly":"invalid_ohlc_or_limit", "open":None,"high":None,"low":None,"close":None,"preClose":None,"limitUpPrice":None,"closeLimitUp":None,"touchedLimitUp":None}
+        return {**out, "availability":"anomaly", "anomaly":"invalid_ohlc_or_limit", "anomalyReason": anomaly_reason or "invalid_ohlc_or_limit", "open":None,"high":None,"low":None,"close":None,"preClose":None,"limitUpPrice":None,"closeLimitUp":None,"touchedLimitUp":None}
     return {**out, "open":_float(op),"high":_float(hi),"low":_float(lo),"close":_float(close),"preClose":_float(pre),"limitUpPrice":_float(limit),
             "closeLimitUp": close == limit if limit is not None else None, "touchedLimitUp": hi >= limit if limit is not None else None,
             "adjFactor": _float(_factor(fact.get("adjFactor"))), "metadata": dict(fact.get("metadata") or {}) if isinstance(fact.get("metadata"), Mapping) else {}}

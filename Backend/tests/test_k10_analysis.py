@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from neckline.k10.analysis import AnalysisInputError, record_debate, run_and_record_debate, run_debate
+from neckline.k10.analysis import AnalysisInputError, augment_analysis_context, record_debate, run_and_record_debate, run_debate, run_pro
 from neckline.llm.base import LLMResult
 
 
@@ -181,3 +181,27 @@ def test_pro_and_con_share_every_explicit_frozen_evidence_version(tmp_path: Path
         assert artifact.input_lineage["frozenEvidenceRefs"] == [
             {"documentId": "doc-original", "revision": 1}, {"documentId": "doc-verified", "revision": 1},
         ]
+
+
+def test_append_request_carries_parent_full_text_question_and_exact_added_version():
+    snapshot = {
+        "observationId": "obs-1", "cutoffAt": "2026-09-06T21:00:00+08:00",
+        "candidate": {"candidateId": "candidate-1"},
+        "event": {"eventId": "event-1", "revision": 1, "headline": "事件", "kind": "policy", "facts": {}, "sourceRefs": [{"documentId": "doc-base", "revision": 1}]},
+        "mappings": [], "frozenEvidenceRefs": [{"documentId": "doc-base", "revision": 1}],
+        "documents": [{"documentId": "doc-base", "revision": 1, "contentSha256": "a", "publishedAt": "2026-09-06T20:00:00+08:00", "publishedPrecision": "exact", "fetchedAt": "2026-09-06T20:01:00+08:00", "fetchVersion": "fixture"}],
+    }
+    added = {"documentId": "doc-added", "revision": 3, "contentSha256": "b", "publishedAt": "2026-09-06T20:10:00+08:00", "publishedPrecision": "exact", "fetchedAt": "2026-09-06T20:11:00+08:00", "fetchVersion": "fixture"}
+    context = augment_analysis_context(
+        context=snapshot,
+        request={"requestId": "request-2", "kind": "user_question", "question": "新增资料改变了吗？", "globalRevision": 2, "parentRevision": 1, "sourceRefs": [added]},
+        request_documents=[added],
+        prior_analyses=[
+            {"analysisId": "pro-1", "revision": 1, "role": "pro", "status": "completed", "content": {"fullText": "上一版正方全文"}},
+            {"analysisId": "con-1", "revision": 1, "role": "con", "status": "completed", "content": {"fullText": "上一版反方全文"}},
+        ],
+    )
+    artifact = run_pro(context=context, cutoff_at="2026-09-06T21:00:00+08:00", provider=FakeProvider([_ok("新正方")]), revision=2)
+    assert artifact.revision == 2
+    assert artifact.input_lineage["chain"] == {"requestId": "request-2", "kind": "user_question", "parentRevision": 1, "question": "新增资料改变了吗？", "addedEvidenceRefs": [added]}
+    assert [(ref["documentId"], ref["revision"]) for ref in artifact.source_refs] == [("doc-base", 1), ("doc-added", 3)]

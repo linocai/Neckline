@@ -556,6 +556,211 @@ def enqueue_task(
                             budget=budget, created_at=created_at)
 
 
+def _window_related_document_refs(conn, *, company_window_id: str) -> set[tuple[str, int]]:
+    """Return only document versions already attached to this window's immutable history."""
+    allowed: set[tuple[str, int]] = set()
+    def add(raw: Any) -> None:
+        for ref in _explicit_refs(raw):
+            allowed.add((ref["documentId"], ref["revision"]))
+    sample_rows = conn.execute(
+        "SELECT evidence_refs_json,comparison_json FROM k10_publication_samples WHERE company_window_id=?", (company_window_id,)
+    ).fetchall()
+    for refs_json, comparison_json in sample_rows:
+        add(json.loads(refs_json))
+        comparison = json.loads(comparison_json)
+        if isinstance(comparison, Mapping):
+            add(_frozen_evidence_refs(event_source_refs=(), event_facts={}, comparison=comparison, mappings=()))
+    lifecycle_rows = conn.execute(
+        "SELECT e.source_refs_json,e.content_json FROM k10_opportunity_lifecycle_events e JOIN k10_opportunities o "
+        "ON o.opportunity_id=e.opportunity_id WHERE o.company_window_id=?", (company_window_id,)
+    ).fetchall()
+    for refs_json, content_json in lifecycle_rows:
+        add(json.loads(refs_json))
+        content = json.loads(content_json)
+        if isinstance(content, Mapping):
+            add(content.get("sourceRefs")); add(content.get("materialContraryEvidence"))
+    request_rows = conn.execute("SELECT source_refs_json FROM k10_analysis_requests WHERE company_window_id=?", (company_window_id,)).fetchall()
+    for (refs_json,) in request_rows:
+        add(json.loads(refs_json))
+    analysis_rows = conn.execute(
+        "SELECT a.input_lineage_json FROM k10_analysis_revisions a JOIN k10_company_window_observations w "
+        "ON w.observation_id=a.observation_id WHERE w.company_window_id=?", (company_window_id,)
+    ).fetchall()
+    for (lineage_json,) in analysis_rows:
+        lineage = json.loads(lineage_json)
+        if isinstance(lineage, Mapping):
+            add(lineage.get("frozenEvidenceRefs")); add(lineage.get("documentVersions"))
+    morning_rows = conn.execute(
+        "SELECT i.content_json FROM k10_morning_report_items i WHERE i.company_window_id=?", (company_window_id,)
+    ).fetchall()
+    for (content_json,) in morning_rows:
+        content = json.loads(content_json)
+        if isinstance(content, Mapping):
+            add(content.get("sourceRefs")); add(content.get("materialContraryEvidence"))
+    return allowed
+
+
+def _request_source_refs(
+    conn, *, company_window_id: str, source_refs: Sequence[Mapping[str, Any]], cutoff_at: str, require_nonempty: bool,
+) -> list[dict[str, Any]]:
+    if isinstance(source_refs, (str, bytes)) or not isinstance(source_refs, Sequence) or (require_nonempty and not source_refs):
+        raise ValueError("证据追加分析必须提供冻结资料版本")
+    try:
+        cutoff = datetime.fromisoformat(cutoff_at)
+    except ValueError as exc:
+        raise ValueError("追加分析截止时间必须是带时区 ISO 时间") from exc
+    if cutoff.tzinfo is None:
+        raise ValueError("追加分析截止时间必须带时区")
+    allowed = _window_related_document_refs(conn, company_window_id=company_window_id)
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in source_refs:
+        if not isinstance(raw, Mapping):
+            raise ValueError("追加分析 sourceRefs 每项必须是对象")
+        document_id, revision = raw.get("documentId"), raw.get("revision")
+        if not isinstance(document_id, str) or not document_id or isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError("追加分析 sourceRefs 必须精确引用 documentId 与 revision")
+        key = (document_id, revision)
+        if key in seen:
+            raise ValueError("追加分析 sourceRefs 不可重复")
+        if key not in allowed:
+            raise K10Conflict("追加分析资料未关联到该公司窗口")
+        source = conn.execute(
+            "SELECT d.source_key,v.fetched_at,v.published_at,v.published_precision FROM k10_source_document_versions v "
+            "JOIN k10_source_documents d ON d.document_id=v.document_id WHERE v.document_id=? AND v.revision=?",
+            key,
+        ).fetchone()
+        if source is None:
+            raise K10Conflict("追加分析引用的资料版本不存在")
+        try:
+            fetched_at = datetime.fromisoformat(str(source[1]))
+        except ValueError as exc:
+            raise K10Conflict("追加分析引用的资料取得时间无效") from exc
+        if fetched_at.tzinfo is None or fetched_at.astimezone(timezone.utc) > cutoff.astimezone(timezone.utc):
+            raise K10Conflict("追加分析引用的资料晚于冻结截止")
+        refs.append({"documentId": document_id, "revision": revision, "sourceKey": source[0],
+                     "fetchedAt": source[1], "publishedAt": source[2], "publishedPrecision": source[3]})
+        seen.add(key)
+    return refs
+
+
+def _analysis_request_intent_refs(source_refs: Sequence[Mapping[str, Any]], *, require_nonempty: bool) -> tuple[tuple[str, int], ...]:
+    if isinstance(source_refs, (str, bytes)) or not isinstance(source_refs, Sequence) or (require_nonempty and not source_refs):
+        raise ValueError("证据追加分析必须提供冻结资料版本")
+    values: set[tuple[str, int]] = set()
+    for raw in source_refs:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("documentId"), str) or not raw["documentId"] or isinstance(raw.get("revision"), bool) or not isinstance(raw.get("revision"), int) or raw["revision"] < 1:
+            raise ValueError("追加分析 sourceRefs 必须精确引用 documentId 与 revision")
+        values.add((raw["documentId"], raw["revision"]))
+    return tuple(sorted(values))
+
+
+def create_analysis_request(
+    *, request_id: str, task_id: str, company_window_id: str, kind: str, question: str | None,
+    source_refs: Sequence[Mapping[str, Any]], idempotency_key: str, input_cutoff_at: str,
+    task_input_version: str, task_payload: Mapping[str, Any], task_budget: Mapping[str, Any],
+    created_at: str, db_path: Path,
+) -> dict[str, Any]:
+    """Queue one immutable follow-up analysis for an already observed company window.
+
+    The initial keep-created task remains the parent context.  Each new request receives the
+    next observation-global revision and captures the inherited task configuration/budget plus
+    exactly the supplied document versions.  Retrying a task never creates another request.
+    """
+    if kind not in {"user_question", "evidence_update"}:
+        raise ValueError("追加分析 kind 必须是 user_question 或 evidence_update")
+    if kind == "user_question" and (not isinstance(question, str) or not question.strip()):
+        raise ValueError("用户追问必须提供 question")
+    if question is not None and (not isinstance(question, str) or not question.strip()):
+        raise ValueError("question 必须是非空字符串或 null")
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        raise ValueError("追加分析必须提供 idempotencyKey")
+    if not isinstance(task_input_version, str) or not task_input_version or not isinstance(task_payload, Mapping) or not isinstance(task_budget, Mapping):
+        raise ValueError("追加分析必须显式提供冻结任务版本、输入和预算")
+    normalized_question = question.strip() if isinstance(question, str) else None
+    intent_refs = _analysis_request_intent_refs(source_refs, require_nonempty=kind == "evidence_update")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        observation = conn.execute(
+            "SELECT observation_id,task_id FROM k10_company_window_observations WHERE company_window_id=?", (company_window_id,)
+        ).fetchone()
+        if observation is None:
+            raise K10Conflict("公司窗口尚未留下，不能追加分析")
+        observation_id = str(observation[0])
+        existing = conn.execute(
+            "SELECT request_id,company_window_id,observation_id,task_id,global_revision,parent_revision,kind,question,source_refs_json,"
+            "task_input_version,task_payload_json,task_budget_json,input_cutoff_at,created_at "
+            "FROM k10_analysis_requests WHERE idempotency_key=?", (idempotency_key,),
+        ).fetchone()
+        if existing is not None:
+            stored_refs = tuple(sorted((item["documentId"], item["revision"]) for item in json.loads(existing[8])))
+            if (existing[1], existing[2], existing[6], existing[7], stored_refs) != (company_window_id, observation_id, kind, normalized_question, intent_refs):
+                raise K10Conflict("追加分析幂等键被不同请求复用")
+            return _analysis_request_from_row(existing, replayed=True)
+        refs = _request_source_refs(conn, company_window_id=company_window_id, source_refs=source_refs, cutoff_at=input_cutoff_at,
+                                    require_nonempty=kind == "evidence_update")
+        old_task = conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if old_task is not None:
+            raise K10Conflict("追加分析 task ID 已存在")
+        prior_request = conn.execute("SELECT MAX(global_revision) FROM k10_analysis_requests WHERE observation_id=?", (observation_id,)).fetchone()[0]
+        # V2 databases can contain retired morning analysis rows.  They are audit history, not
+        # a pro/con parent revision for a new user analysis request.
+        prior_artifact = conn.execute(
+            "SELECT MAX(revision) FROM k10_analysis_revisions WHERE observation_id=? AND analysis_kind IN ('pro','con')",
+            (observation_id,),
+        ).fetchone()[0]
+        parent_revision = max(int(prior_request or 0), int(prior_artifact or 0))
+        if parent_revision < 1:
+            raise K10Conflict("初始分析尚未完成，不能创建追加版本")
+        attempt_rows = conn.execute(
+            "SELECT analysis_kind,status FROM k10_analysis_revisions WHERE observation_id=? AND revision=? "
+            "AND analysis_kind IN ('pro','con') ORDER BY rowid", (observation_id, parent_revision),
+        ).fetchall()
+        latest_attempts = {row[0]: row[1] for row in attempt_rows}
+        if latest_attempts != {"pro": "completed", "con": "completed"}:
+            raise K10Conflict("上一分析版本尚未完整完成；请先等待或重试同一版本")
+        global_revision = parent_revision + 1
+        payload = {**dict(task_payload), "observationId": observation_id, "companyWindowId": company_window_id,
+                   "analysisRequestId": request_id, "globalRevision": global_revision, "targetRevision": global_revision,
+                   "parentRevision": parent_revision, "analysisRequestKind": kind, "question": normalized_question,
+                   "frozenEvidenceRefs": refs}
+        budget = dict(task_budget)
+        task_key = "analysis-request:" + idempotency_key
+        _insert_task(conn, task_id=task_id, kind="analysis", idempotency_key=task_key,
+                     input_version=task_input_version, input_cutoff_at=input_cutoff_at, payload=payload,
+                     budget=budget, created_at=created_at)
+        conn.execute(
+            "INSERT INTO k10_analysis_requests(request_id,company_window_id,observation_id,task_id,idempotency_key,global_revision,parent_revision,kind,question,source_refs_json,task_input_version,task_payload_json,task_budget_json,input_cutoff_at,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (request_id, company_window_id, observation_id, task_id, idempotency_key, global_revision, parent_revision,
+             kind, normalized_question, _json(refs), task_input_version, _json(payload), _json(budget), input_cutoff_at, created_at),
+        )
+        row = conn.execute(
+            "SELECT request_id,company_window_id,observation_id,task_id,global_revision,parent_revision,kind,question,source_refs_json,"
+            "task_input_version,task_payload_json,task_budget_json,input_cutoff_at,created_at FROM k10_analysis_requests WHERE request_id=?", (request_id,),
+        ).fetchone()
+    return _analysis_request_from_row(row, replayed=False)
+
+
+def _analysis_request_from_row(row, *, replayed: bool = False) -> dict[str, Any]:
+    return {"requestId": row[0], "companyWindowId": row[1], "observationId": row[2], "taskId": row[3],
+            "globalRevision": int(row[4]), "targetRevision": int(row[4]), "parentRevision": None if row[5] is None else int(row[5]),
+            "kind": row[6], "question": row[7], "sourceRefs": json.loads(row[8]),
+            "taskInputVersion": row[9], "taskPayload": json.loads(row[10]), "taskBudget": json.loads(row[11]),
+            "inputCutoffAt": row[12], "createdAt": row[13], "replayed": replayed}
+
+
+def get_analysis_request_by_idempotency_key(*, idempotency_key: str, db_path: Path) -> dict[str, Any] | None:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT request_id,company_window_id,observation_id,task_id,global_revision,parent_revision,kind,question,source_refs_json,"
+            "task_input_version,task_payload_json,task_budget_json,input_cutoff_at,created_at FROM k10_analysis_requests WHERE idempotency_key=?",
+            (idempotency_key,),
+        ).fetchone()
+    return None if row is None else _analysis_request_from_row(row)
+
+
 def append_analysis_revision(
     *, analysis_id: str, observation_id: str, revision: int, analysis_kind: str, input_cutoff_at: str,
     input_lineage: Mapping[str, Any], content: Mapping[str, Any], status: str, created_at: str, db_path: Path,
@@ -589,6 +794,134 @@ def append_morning_update(
             "INSERT INTO k10_morning_updates(update_id,observation_id,candidate_id,cutoff_at,content_json,created_at) "
             "VALUES(?,?,?,?,?,?)", (update_id, *expected),
         )
+
+
+_MORNING_REPORT_GROUPS = (
+    "major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review",
+)
+
+
+def append_morning_report(
+    *, report_id: str, scan_id: str, cutoff_at: str, generated_at: str, status: str,
+    coverage: Mapping[str, Any], groups: Mapping[str, Sequence[Mapping[str, Any]]],
+    created_at: str, db_path: Path,
+) -> dict[str, Any]:
+    """Persist one complete, ordered morning report for a completed morning scan.
+
+    All five product groups are written in one transaction, including empty groups.  A retry
+    may replay byte-identical content, but cannot overwrite a prior report or change its actual
+    generation time.
+    """
+    if status not in {"completed", "partial", "failed", "not_configured"}:
+        raise ValueError("晨报状态无效")
+    if set(groups) != set(_MORNING_REPORT_GROUPS):
+        raise ValueError("晨报必须包含固定五组")
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    for group in _MORNING_REPORT_GROUPS:
+        raw_items = groups[group]
+        if isinstance(raw_items, (str, bytes)) or not isinstance(raw_items, Sequence):
+            raise ValueError("晨报分组必须是项目列表")
+        values: list[dict[str, Any]] = []
+        for position, raw in enumerate(raw_items):
+            if not isinstance(raw, Mapping):
+                raise ValueError("晨报项目必须是对象")
+            item = dict(raw)
+            item_id = item.get("itemId")
+            state = item.get("status")
+            content = item.get("content")
+            if not isinstance(item_id, str) or not item_id or not isinstance(state, str) or not state or not isinstance(content, Mapping):
+                raise ValueError("晨报项目缺少 itemId、status 或 content")
+            values.append({"itemId": item_id, "section": group, "position": position,
+                           "opportunityId": item.get("opportunityId"), "companyWindowId": item.get("companyWindowId"),
+                           "status": state, "content": dict(content)})
+        if len({item["itemId"] for item in values}) != len(values):
+            raise ValueError("同一晨报分组 itemId 不可重复")
+        normalized[group] = values
+    payload = {group: normalized[group] for group in _MORNING_REPORT_GROUPS}
+    opportunity_ids = [item["opportunityId"] for values in normalized.values() for item in values if item["opportunityId"] is not None]
+    if any(not isinstance(opportunity_id, str) or not opportunity_id for opportunity_id in opportunity_ids) or len(opportunity_ids) != len(set(opportunity_ids)):
+        raise ValueError("同一晨报的正式机会只能出现一次")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        scan = conn.execute("SELECT window_kind,cutoff_at FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone()
+        if scan is None or scan[0] != "morning" or scan[1] != cutoff_at:
+            raise K10Conflict("晨报必须绑定同一截止时间的晨间扫描")
+        existing = conn.execute(
+            "SELECT scan_id,revision,cutoff_at,generated_at,status,coverage_json,created_at FROM k10_morning_reports WHERE report_id=?",
+            (report_id,),
+        ).fetchone()
+        expected = (scan_id, cutoff_at, generated_at, status, _json(coverage), created_at)
+        if existing is not None:
+            if (existing[0], existing[2], existing[3], existing[4], existing[5], existing[6]) != expected:
+                raise K10Conflict("晨报 ID 已存在但内容不同")
+            stored_items = conn.execute(
+                "SELECT group_key,item_id,position,opportunity_id,company_window_id,status,content_json "
+                "FROM k10_morning_report_items WHERE report_id=? ORDER BY group_key,position,item_id", (report_id,)
+            ).fetchall()
+            supplied_items = sorted(
+                (group, item["itemId"], item["position"], item["opportunityId"], item["companyWindowId"], item["status"], _json(item["content"]))
+                for group, values in normalized.items() for item in values
+            )
+            if [tuple(item) for item in stored_items] != supplied_items:
+                raise K10Conflict("晨报 ID 已存在但项目内容不同")
+            return _morning_report_from_connection(conn, report_id=report_id) or {}
+        revision = int(conn.execute("SELECT COALESCE(MAX(revision),0) FROM k10_morning_reports WHERE scan_id=?", (scan_id,)).fetchone()[0]) + 1
+        for group, values in normalized.items():
+            for item in values:
+                opportunity_id = item["opportunityId"]
+                window_id = item["companyWindowId"]
+                if opportunity_id is not None:
+                    row = conn.execute("SELECT company_window_id FROM k10_opportunities WHERE opportunity_id=?", (opportunity_id,)).fetchone()
+                    if row is None or (window_id is not None and row[0] != window_id):
+                        raise K10Conflict("晨报项目机会与公司窗口不一致")
+                if window_id is not None and conn.execute("SELECT 1 FROM k10_company_windows WHERE company_window_id=?", (window_id,)).fetchone() is None:
+                    raise K10Conflict("晨报项目公司窗口不存在")
+        conn.execute(
+            "INSERT INTO k10_morning_reports(report_id,scan_id,revision,cutoff_at,generated_at,status,coverage_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (report_id, scan_id, revision, cutoff_at, generated_at, status, _json(coverage), created_at),
+        )
+        for group, values in normalized.items():
+            for item in values:
+                conn.execute(
+                    "INSERT INTO k10_morning_report_items(report_id,item_id,group_key,position,opportunity_id,company_window_id,status,content_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (report_id, item["itemId"], group, item["position"], item["opportunityId"], item["companyWindowId"],
+                     item["status"], _json(item["content"]), created_at),
+                )
+    return {"reportId": report_id, "scanId": scan_id, "revision": revision, "cutoffAt": cutoff_at, "generatedAt": generated_at,
+            "status": status, "coverage": dict(coverage), "groups": payload, "createdAt": created_at}
+
+
+def _morning_report_from_connection(conn, *, report_id: str) -> dict[str, Any] | None:
+    report = conn.execute(
+        "SELECT scan_id,revision,cutoff_at,generated_at,status,coverage_json,created_at FROM k10_morning_reports WHERE report_id=?", (report_id,)
+    ).fetchone()
+    if report is None:
+        return None
+    groups: dict[str, list[dict[str, Any]]] = {group: [] for group in _MORNING_REPORT_GROUPS}
+    rows = conn.execute(
+        "SELECT item_id,group_key,position,opportunity_id,company_window_id,status,content_json,created_at "
+        "FROM k10_morning_report_items WHERE report_id=? ORDER BY CASE group_key "
+        "WHEN 'major_contrary' THEN 0 WHEN 'thesis_changed' THEN 1 WHEN 'continuing_or_expiring' THEN 2 "
+        "WHEN 'new' THEN 3 ELSE 4 END,position,item_id", (report_id,),
+    ).fetchall()
+    for row in rows:
+        groups[str(row[1])].append({"itemId": row[0], "section": row[1], "opportunityId": row[3], "companyWindowId": row[4],
+                                    "status": row[5], "content": json.loads(row[6]), "createdAt": row[7]})
+    return {"reportId": report_id, "scanId": report[0], "revision": int(report[1]), "cutoffAt": report[2], "generatedAt": report[3],
+            "status": report[4], "coverage": json.loads(report[5]), "groups": groups, "createdAt": report[6]}
+
+
+def get_morning_report(*, report_id: str, db_path: Path) -> dict[str, Any] | None:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        return _morning_report_from_connection(conn, report_id=report_id)
+
+
+def list_morning_reports(*, db_path: Path) -> list[dict[str, Any]]:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        ids = conn.execute("SELECT report_id FROM k10_morning_reports ORDER BY generated_at DESC,revision DESC,report_id DESC").fetchall()
+        return [_morning_report_from_connection(conn, report_id=str(row[0])) for row in ids]
 
 
 def _task_from_row(row) -> Task:
@@ -822,6 +1155,17 @@ def _frozen_evidence_refs(
             groups.append(verification.get("evidenceRefs"))
     if isinstance(comparison, Mapping):
         groups.append(comparison.get("evidenceRefs"))
+        # Historical cases are part of the frozen comparison decision.  They are not a search
+        # expansion: only the exact document revisions already recorded on the comparison are
+        # admitted to later analysis context.
+        historical_cases = comparison.get("historicalCases")
+        if isinstance(historical_cases, Sequence) and not isinstance(historical_cases, (str, bytes)):
+            for case in historical_cases:
+                if isinstance(case, Mapping):
+                    groups.extend((case.get("sourceRefs"), case.get("evidenceRefs")))
+        coverage = comparison.get("historicalCoverage")
+        if isinstance(coverage, Mapping):
+            groups.extend((coverage.get("sourceRefs"), coverage.get("evidenceRefs")))
     groups.extend(mapping.get("relationEvidence") for mapping in mappings)
     refs: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
@@ -852,7 +1196,7 @@ def _mapping_payloads(rows: Sequence[Any]) -> list[dict[str, Any]]:
              "uncertainty": row[5], "createdAt": row[6]} for row in rows]
 
 
-def _opportunity_for_candidate_conn(conn, candidate_id: str) -> dict[str, Any] | None:
+def _opportunity_for_candidate_conn(conn, candidate_id: str, *, as_of: datetime | None = None) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT o.opportunity_id,o.company_window_id,w.d1_trade_date,w.d2_trade_date "
         "FROM k10_publication_samples s JOIN k10_opportunities o ON o.opportunity_id=s.opportunity_id "
@@ -863,7 +1207,7 @@ def _opportunity_for_candidate_conn(conn, candidate_id: str) -> dict[str, Any] |
     if row is None:
         return None
     return {"opportunityId": row[0], "companyWindowId": row[1], "d1TradeDate": row[2],
-            "d2TradeDate": row[3], "state": _opportunity_state(conn, str(row[0]))}
+            "d2TradeDate": row[3], "state": _opportunity_state(conn, str(row[0]), as_of=as_of)}
 
 
 def get_opportunity_for_candidate(*, candidate_id: str, db_path: Path) -> dict[str, Any] | None:
@@ -872,7 +1216,8 @@ def get_opportunity_for_candidate(*, candidate_id: str, db_path: Path) -> dict[s
         return _opportunity_for_candidate_conn(conn, candidate_id)
 
 
-def load_candidate_context(*, candidate_id: str, cutoff_at: str, db_path: Path) -> Optional[dict[str, Any]]:
+def load_candidate_context(*, candidate_id: str, cutoff_at: str, db_path: Path,
+                           lifecycle_as_of: datetime | None = None) -> Optional[dict[str, Any]]:
     """Read an offered or observed candidate's frozen event/mapping evidence for morning review."""
     with read_connection(db_path) as conn:
         require_schema(conn)
@@ -894,7 +1239,7 @@ def load_candidate_context(*, candidate_id: str, cutoff_at: str, db_path: Path) 
         observations = conn.execute("SELECT observation_id FROM k10_observations WHERE candidate_id=? ORDER BY rowid", (candidate_id,)).fetchall()
         return {"candidateId": candidate_id, "cutoffAt": cutoff_at,
                 "observationIds": [row[0] for row in observations],
-                "opportunity": _opportunity_for_candidate_conn(conn, candidate_id),
+                "opportunity": _opportunity_for_candidate_conn(conn, candidate_id, as_of=lifecycle_as_of),
                 "candidate": {"candidateId": candidate_id, "eventId": base[0], "eventRevision": base[1],
                               "companyCode": base[2], "comparison": comparison,
                               "evidence": candidate_evidence, "state": _state_in_connection(conn, candidate_id)},
@@ -981,12 +1326,110 @@ def load_analysis_revision(
         row = conn.execute(
             "SELECT analysis_id,revision,input_lineage_json,content_json,status,created_at "
             "FROM k10_analysis_revisions WHERE observation_id=? AND input_cutoff_at=? AND analysis_kind=? "
-            "ORDER BY revision DESC LIMIT 1", (observation_id, input_cutoff_at, analysis_kind),
+            "ORDER BY revision DESC,rowid DESC LIMIT 1", (observation_id, input_cutoff_at, analysis_kind),
         ).fetchone()
     if row is None:
         return None
     return {"analysisId": row[0], "revision": int(row[1]), "inputLineage": json.loads(row[2]),
             "content": json.loads(row[3]), "status": row[4], "createdAt": row[5]}
+
+
+def load_analysis_request_context(*, request_id: str, db_path: Path) -> Optional[dict[str, Any]]:
+    """Read the exact follow-up request snapshot, including only its frozen source versions."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT observation_id,company_window_id,source_refs_json,input_cutoff_at,kind,question,global_revision,parent_revision "
+            "FROM k10_analysis_requests WHERE request_id=?", (request_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    base = load_observation_context(observation_id=str(row[0]), cutoff_at=str(row[3]), db_path=db_path)
+    if base is None:
+        return None
+    request_refs = json.loads(row[2])
+    # A follow-up must retain the initial frozen case as well as the explicitly supplied
+    # additions.  Exact document+revision identity prevents either list from drifting.
+    merged_refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in [*(base.get("frozenEvidenceRefs") or ()), *request_refs]:
+        if isinstance(raw, Mapping) and isinstance(raw.get("documentId"), str) and isinstance(raw.get("revision"), int):
+            key = (raw["documentId"], raw["revision"])
+            if key not in seen:
+                merged_refs.append(dict(raw)); seen.add(key)
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        documents = _frozen_documents(conn, merged_refs, cutoff_at=str(row[3]))
+        prior_attempt_rows = [] if row[7] is None else conn.execute(
+            "SELECT analysis_id,revision,analysis_kind,status,input_cutoff_at,input_lineage_json,content_json,created_at "
+            "FROM k10_analysis_revisions WHERE observation_id=? AND revision=? AND analysis_kind IN ('pro','con') "
+            "ORDER BY rowid",
+            (str(row[0]), int(row[7])),
+        ).fetchall()
+    if len(documents) != len(merged_refs):
+        raise K10Conflict("追加分析冻结资料版本不可读取")
+    request_documents = [document for document in documents if (document.get("documentId"), document.get("revision"))
+                         in {(ref["documentId"], ref["revision"]) for ref in request_refs}]
+    latest_prior_by_role = {item[2]: item for item in prior_attempt_rows}
+    prior_analyses = [{"analysisId": item[0], "revision": int(item[1]), "role": item[2], "status": item[3], "inputCutoffAt": item[4],
+                       "inputLineage": json.loads(item[5]), "content": json.loads(item[6]), "createdAt": item[7]}
+                      for _role, item in sorted(latest_prior_by_role.items())]
+    return {**base, "companyWindowId": row[1], "cutoffAt": row[3], "frozenEvidenceRefs": merged_refs,
+            "documents": documents, "requestDocuments": request_documents, "priorAnalyses": prior_analyses,
+            "analysisRequest": {"requestId": request_id, "kind": row[4], "question": row[5],
+            "globalRevision": int(row[6]), "targetRevision": int(row[6]),
+            "parentRevision": None if row[7] is None else int(row[7]), "sourceRefs": request_refs}}
+
+
+def list_analysis_chain(*, company_window_id: str, db_path: Path) -> dict[str, Any]:
+    """Return every analysis revision for one shared company-window observation in revision order."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        binding = conn.execute(
+            "SELECT observation_id,task_id FROM k10_company_window_observations WHERE company_window_id=?", (company_window_id,)
+        ).fetchone()
+        if binding is None:
+            return {"companyWindowId": company_window_id, "items": []}
+        observation_id, initial_task_id = str(binding[0]), str(binding[1])
+        requests = conn.execute(
+            "SELECT request_id,task_id,global_revision,parent_revision,kind,question,source_refs_json,input_cutoff_at,created_at "
+            "FROM k10_analysis_requests WHERE company_window_id=? AND observation_id=? ORDER BY global_revision",
+            (company_window_id, observation_id),
+        ).fetchall()
+        request_by_revision = {int(row[2]): row for row in requests}
+        artifacts = conn.execute(
+            "SELECT rowid,analysis_id,revision,analysis_kind,input_cutoff_at,input_lineage_json,content_json,status,created_at "
+            "FROM k10_analysis_revisions WHERE observation_id=? AND analysis_kind IN ('pro','con') ORDER BY revision,rowid",
+            (observation_id,),
+        ).fetchall()
+        grouped_attempts: dict[int, dict[str, Any]] = {}
+        for row in artifacts:
+            grouped_attempts.setdefault(int(row[2]), {})[str(row[3])] = row
+        grouped = {revision: [by_role[key] for key in sorted(by_role, key=lambda role: {"pro": 0, "con": 1}.get(role, 2))]
+                   for revision, by_role in grouped_attempts.items()}
+        revisions = sorted(set(grouped) | set(request_by_revision))
+        items: list[dict[str, Any]] = []
+        for revision in revisions:
+            request = request_by_revision.get(revision)
+            rows = grouped.get(revision, [])
+            first = rows[0] if rows else None
+            lineage = json.loads(first[5]) if first is not None else {}
+            source_refs = json.loads(request[6]) if request is not None else list(lineage.get("frozenEvidenceRefs") or lineage.get("documentVersions") or [])
+            task_id = str(request[1]) if request is not None else initial_task_id
+            task = conn.execute("SELECT status,stage,attempt_count,error_text,created_at,updated_at FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+            analyses = [{"analysisId": row[1], "role": row[3], "status": row[7], "inputCutoffAt": row[4],
+                         "inputLineage": json.loads(row[5]), "content": json.loads(row[6]), "createdAt": row[8]}
+                        for row in rows]
+            items.append({"revision": revision,
+                          "inputCutoffAt": request[7] if request is not None else (first[4] if first is not None else None),
+                          "requestId": request[0] if request is not None else None,
+                          "kind": request[4] if request is not None else "initial",
+                          "question": request[5] if request is not None else None,
+                          "parentRevision": None if request is None or request[3] is None else int(request[3]),
+                          "sourceRefs": source_refs, "analyses": analyses,
+                          "job": None if task is None else {"taskId": task_id, "status": task[0], "stage": task[1],
+                                  "attemptCount": int(task[2]), "error": task[3], "createdAt": task[4], "updatedAt": task[5]}})
+    return {"companyWindowId": company_window_id, "items": items}
 
 
 def candidate_state(*, candidate_id: str, db_path: Path) -> Optional[str]:
@@ -1157,6 +1600,101 @@ def _publication_input_payload(value) -> dict[str, Any]:
             "sourceMarker": value.source_marker, "relatedOpportunityId": value.related_opportunity_id}
 
 
+_HISTORICAL_OUTCOMES = {"success", "flat", "failure", "unclassified"}
+_HISTORICAL_COVERAGE_STATES = {"complete", "partial", "unavailable"}
+_HISTORICAL_REQUESTED_OUTCOMES = ("success", "flat", "failure")
+
+
+def _historical_ref_keys(conn, refs: Any, *, field: str, require_nonempty: bool) -> tuple[tuple[str, int], ...]:
+    """Validate frozen document-version references in a published historical context."""
+    if isinstance(refs, (str, bytes)) or not isinstance(refs, Sequence) or (require_nonempty and not refs):
+        raise ValueError(f"{field} 必须包含可追溯资料")
+    keys: list[tuple[str, int]] = []
+    for ref in refs:
+        if (not isinstance(ref, Mapping) or not isinstance(ref.get("documentId"), str) or not ref["documentId"].strip()
+                or isinstance(ref.get("revision"), bool) or not isinstance(ref.get("revision"), int) or ref["revision"] < 1):
+            raise ValueError(f"{field} 必须精确引用 documentId 与 revision")
+        key = (ref["documentId"], ref["revision"])
+        if key in keys:
+            raise ValueError(f"{field} 不可重复引用同一资料版本")
+        if conn.execute("SELECT 1 FROM k10_source_document_versions WHERE document_id=? AND revision=?", key).fetchone() is None:
+            raise K10Conflict(f"{field} 引用了未保存的资料版本")
+        keys.append(key)
+    return tuple(keys)
+
+
+def _validate_historical_context(conn, comparison: Mapping[str, Any]) -> None:
+    """Reject malformed frozen history before a publication transaction becomes visible.
+
+    V2 comparison snapshots legitimately have neither history field.  Once either Schema 3
+    field is supplied, however, it is a complete frozen context rather than best-effort JSON.
+    """
+    has_cases = "historicalCases" in comparison
+    has_coverage = "historicalCoverage" in comparison
+    if not has_cases and not has_coverage:
+        return
+    if not has_cases or not has_coverage:
+        raise ValueError("历史案例与覆盖面必须成对冻结")
+    cases, coverage = comparison["historicalCases"], comparison["historicalCoverage"]
+    if not isinstance(cases, list) or not isinstance(coverage, Mapping):
+        raise ValueError("历史案例上下文结构无效")
+    required_coverage = {"state", "requestedOutcomes", "presentOutcomes", "missingOutcomes", "reason", "sourceRefs"}
+    if set(coverage) != required_coverage or coverage.get("state") not in _HISTORICAL_COVERAGE_STATES:
+        raise ValueError("历史案例覆盖面无效")
+    requested, present, missing = (coverage[name] for name in ("requestedOutcomes", "presentOutcomes", "missingOutcomes"))
+    if (not all(isinstance(value, list) for value in (requested, present, missing))
+            or tuple(requested) != _HISTORICAL_REQUESTED_OUTCOMES
+            or any(value not in _HISTORICAL_REQUESTED_OUTCOMES for value in [*present, *missing])
+            or len(set(present)) != len(present) or len(set(missing)) != len(missing)
+            or set(present) & set(missing) or set(present) | set(missing) != set(requested)
+            or not isinstance(coverage["reason"], str) or not coverage["reason"].strip()):
+        raise ValueError("历史案例覆盖结果不完整")
+    _historical_ref_keys(conn, coverage["sourceRefs"], field="历史案例 coverage.sourceRefs", require_nonempty=False)
+    case_ids: set[str] = set()
+    for case in cases:
+        if not isinstance(case, Mapping):
+            raise ValueError("历史案例必须是对象")
+        case_id = case.get("caseId")
+        if not isinstance(case_id, str) or not case_id.strip() or case_id in case_ids:
+            raise ValueError("历史案例身份无效")
+        case_ids.add(case_id)
+        if (case.get("outcome") not in _HISTORICAL_OUTCOMES
+                or not isinstance(case.get("summary"), str) or not case["summary"].strip()
+                or not isinstance(case.get("marketFacts"), list)):
+            raise ValueError("历史案例缺少结果、摘要或行情事实")
+        try:
+            observed_at = datetime.fromisoformat(str(case.get("observedAt")))
+        except ValueError as exc:
+            raise ValueError("历史案例 observedAt 无效") from exc
+        if observed_at.tzinfo is None:
+            raise ValueError("历史案例 observedAt 必须带时区")
+        _historical_ref_keys(conn, case.get("sourceRefs"), field="历史案例 sourceRefs", require_nonempty=True)
+        if "sourceBasedDescription" in case and (not isinstance(case["sourceBasedDescription"], str) or not case["sourceBasedDescription"].strip()):
+            raise ValueError("历史案例 sourceBasedDescription 无效")
+
+
+def _validate_event_comparison_inputs(values: Sequence["OpportunityPublicationInput"]) -> None:
+    """Enforce one event-level ranking decision before any sample is written."""
+    grouped: dict[tuple[str, int], list["OpportunityPublicationInput"]] = {}
+    for item in values:
+        grouped.setdefault((item.event_id, item.event_revision), []).append(item)
+    for _event, peers in grouped.items():
+        primary = [item for item in peers if item.category == "primary"]
+        if len(primary) > 1:
+            raise ValueError("同一事件修订至多一个 primary")
+        by_rank: dict[int, list["OpportunityPublicationInput"]] = {}
+        for item in peers:
+            rank = item.comparison.get("rank") if isinstance(item.comparison, Mapping) else None
+            if rank is None:
+                continue
+            if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+                raise ValueError("发布样本 rank 必须是正整数或 null")
+            by_rank.setdefault(rank, []).append(item)
+        for rank, tied in by_rank.items():
+            if len(tied) > 1 and any(item.category != "tied" for item in tied):
+                raise ValueError("同一事件修订的同 rank 仅允许 tied")
+
+
 def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                           inputs: Sequence["OpportunityPublicationInput"], db_path: Path,
                           clock: "Callable[[], datetime]") -> "PublicationBatch":
@@ -1210,7 +1748,7 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                 raise ValueError("source_marker 必须与首发批次一致")
             comparison = item.comparison
             required_comparison = {"summary", "differences", "evidenceRefs", "rank", "classification"}
-            allowed_comparison = required_comparison | {"marketContext"}
+            allowed_comparison = required_comparison | {"marketContext", "historicalCases", "historicalCoverage"}
             if not isinstance(comparison, Mapping) or not required_comparison <= set(comparison) or not set(comparison) <= allowed_comparison:
                 raise ValueError("正式推荐缺少完整比较快照")
             differences = comparison["differences"]
@@ -1230,6 +1768,7 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                 ("marketContext" in comparison and not isinstance(comparison["marketContext"], Mapping)) or
                 _json(comparison["evidenceRefs"]) != _json(item.evidence_refs)):
                 raise ValueError("正式推荐比较、分类或精确证据引用不一致")
+            _validate_historical_context(conn, comparison)
             candidate = conn.execute("SELECT event_id,event_revision,company_code FROM k10_candidates WHERE candidate_id=?", (item.candidate_id,)).fetchone()
             if candidate is None or tuple(candidate) != (item.event_id, item.event_revision, item.company_code):
                 raise K10Conflict("发布样本与候选快照不一致")
@@ -1240,6 +1779,7 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
             old = conn.execute("SELECT opportunity_id FROM k10_opportunities WHERE opportunity_key=?", (item.opportunity_key,)).fetchone()
             if old is not None:
                 raise K10Conflict("既有机会不得作为新首发样本重复发布")
+        _validate_event_comparison_inputs(values)
         now = clock()
         if not isinstance(now, datetime) or now.tzinfo is None:
             raise ValueError("publication clock 必须返回带时区 datetime")
@@ -1270,8 +1810,6 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                           item.catalyst_stage, item.related_opportunity_id, batch_id, window_id, available_at))
             sample_id = _stable_id("sample", batch_id, item.candidate_id)
             rank = item.comparison.get("rank") if isinstance(item.comparison, Mapping) else None
-            if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int) or rank < 1):
-                raise ValueError("发布样本 rank 必须是正整数或 null")
             conn.execute("INSERT INTO k10_publication_samples(sample_id,batch_id,candidate_id,opportunity_id,company_window_id,event_id,event_revision,company_code,category,source_marker,comparison_json,evidence_refs_json,rank,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (sample_id, batch_id, item.candidate_id, opportunity_id, window_id, item.event_id, item.event_revision,
                           item.company_code, item.category, item.source_marker, _json(item.comparison), _json(item.evidence_refs), rank, available_at))
@@ -1380,6 +1918,21 @@ def _company_window_action_rows(conn, *, company_window_id: str):
     ).fetchall()
 
 
+def _current_company_window_action(conn, *, company_window_id: str) -> tuple[str, str, datetime, int] | None:
+    """Project the latest action from the unified window/candidate append-only ledger."""
+    actions: list[tuple[str, str, datetime, int]] = []
+    for action_id, action, created_at, rowid in _company_window_action_rows(conn, company_window_id=company_window_id):
+        try:
+            occurred = datetime.fromisoformat(str(created_at))
+        except ValueError:
+            continue
+        if occurred.tzinfo is not None:
+            actions.append((str(action_id), str(action), occurred, int(rowid)))
+    # Compare actual instants.  Row IDs deterministically resolve simultaneous timestamps.
+    actions.sort(key=lambda item: (item[2].astimezone(timezone.utc), item[3]))
+    return actions[-1] if actions else None
+
+
 def get_company_window_selection(*, company_window_id: str, db_path: Path) -> dict[str, Any] | None:
     """Read the current and frozen company-window selection without writing a snapshot.
 
@@ -1411,16 +1964,7 @@ def get_company_window_selection(*, company_window_id: str, db_path: Path) -> di
             "SELECT observation_id,task_id FROM k10_company_window_observations WHERE company_window_id=?",
             (company_window_id,),
         ).fetchone()
-        prior: list[tuple[str, str, datetime, int]] = []
-        for action_id, action, created_at, rowid in _company_window_action_rows(conn, company_window_id=company_window_id):
-            try:
-                occurred = datetime.fromisoformat(str(created_at))
-            except ValueError:
-                continue
-            if occurred.tzinfo is not None:
-                prior.append((str(action_id), str(action), occurred, int(rowid)))
-        prior.sort(key=lambda item: (item[2].astimezone(timezone.utc), item[3]))
-    last = prior[-1] if prior else None
+        last = _current_company_window_action(conn, company_window_id=company_window_id)
     current = "kept" if last and last[1] == "observe" else ("skipped" if last and last[1] == "skip" else "unhandled")
     snapshot_state = None if snapshot is None else {"selected": "kept", "skipped": "skipped", "unhandled": "unhandled"}[str(snapshot[0])]
     return {
@@ -1444,7 +1988,7 @@ def append_market_day_fact(*, company_code: str, trade_date: str, availability: 
                            source_refs: Sequence[Mapping[str, Any]], obtained_at: str, created_at: str,
                            db_path: Path, adj_factor: float | None = None,
                            metadata: Mapping[str, Any] | None = None) -> int:
-    if availability not in {"available", "suspended", "data_gap"}:
+    if availability not in {"available", "suspended", "data_gap", "anomaly"}:
         raise ValueError("行情事实 availability 无效")
     payload = (availability, open_price, high_price, low_price, close_price, pre_close, limit_up_price,
                None if close_limit_up is None else int(close_limit_up), None if touched_limit_up is None else int(touched_limit_up),
@@ -1477,13 +2021,19 @@ def append_company_window_evaluation(*, company_window_id: str, state: str, fact
 
 
 def _opportunity_state(conn, opportunity_id: str, *, as_of: datetime | None = None) -> str:
-    row = conn.execute("SELECT kind FROM k10_opportunity_lifecycle_events WHERE opportunity_id=? ORDER BY rowid DESC LIMIT 1", (opportunity_id,)).fetchone()
-    persisted = {"withdrawal": "withdrawn", "expired": "expired"}.get(row[0], "active") if row else "active"
-    if persisted != "active":
-        return persisted
+    # Lifecycle updates are append-only evidence.  A later ordinary update must never turn a
+    # withdrawn or expired opportunity back into an active one merely because it is newest.
     instant = datetime.now(timezone.utc) if as_of is None else as_of
     if instant.tzinfo is None:
         raise ValueError("机会状态查询 as_of 必须带时区")
+    terminal = conn.execute(
+        "SELECT kind FROM k10_opportunity_lifecycle_events WHERE opportunity_id=? "
+        "AND kind IN ('withdrawal','expired') AND (? IS NULL OR (julianday(occurred_at)<=julianday(?) "
+        "AND julianday(created_at)<=julianday(?))) ORDER BY CASE kind WHEN 'withdrawal' THEN 0 ELSE 1 END,rowid DESC LIMIT 1",
+        (opportunity_id, None if as_of is None else instant.isoformat(), instant.isoformat(), instant.isoformat()),
+    ).fetchone()
+    if terminal is not None:
+        return "withdrawn" if terminal[0] == "withdrawal" else "expired"
     close = conn.execute(
         "SELECT w.d2_close_at FROM k10_opportunities o JOIN k10_company_windows w ON w.company_window_id=o.company_window_id "
         "WHERE o.opportunity_id=?", (opportunity_id,),
@@ -1513,31 +2063,71 @@ def get_publication_batch(*, batch_id: str, db_path: Path) -> dict[str, Any] | N
 def list_company_windows(*, company_code: str | None = None, db_path: Path) -> list[dict[str, Any]]:
     with read_connection(db_path) as conn:
         require_schema(conn)
-        query = "SELECT w.company_window_id,w.company_code,w.first_batch_id,w.d0_trade_date,w.d1_trade_date,w.d2_trade_date,w.d1_selection_at,w.d2_close_at,w.sample_class,w.overlaps_window_id,s.state,s.action_ids_json,s.frozen_at FROM k10_company_windows w LEFT JOIN k10_company_window_selection_snapshots s ON s.company_window_id=w.company_window_id"
+        query = "SELECT w.company_window_id,w.company_code,w.first_batch_id,w.d0_trade_date,w.d1_trade_date,w.d2_trade_date,w.d1_selection_at,w.d2_close_at,w.sample_class,w.overlaps_window_id,s.state,s.action_ids_json,s.frozen_at,b.available_at,MIN(p.rank) FROM k10_company_windows w JOIN k10_publication_batches b ON b.batch_id=w.first_batch_id LEFT JOIN k10_company_window_selection_snapshots s ON s.company_window_id=w.company_window_id LEFT JOIN k10_publication_samples p ON p.company_window_id=w.company_window_id"
         args: tuple[Any, ...] = ()
         if company_code is not None:
             query += " WHERE w.company_code=?"; args = (company_code,)
-        rows = conn.execute(query + " ORDER BY w.d1_trade_date,w.company_window_id", args).fetchall()
-    return [{"companyWindowId": r[0], "companyCode": r[1], "firstBatchId": r[2], "d0TradeDate": r[3], "d1TradeDate": r[4], "d2TradeDate": r[5], "d1SelectionAt": r[6], "d2CloseAt": r[7], "sampleClass": r[8], "overlapsWindowId": r[9], "selection": None if r[10] is None else {"state": r[10], "actionIds": json.loads(r[11]), "frozenAt": r[12]}} for r in rows]
+        query += " GROUP BY w.company_window_id ORDER BY b.available_at DESC,CASE WHEN MIN(p.rank) IS NULL THEN 1 ELSE 0 END,MIN(p.rank),w.company_window_id"
+        rows = conn.execute(query, args).fetchall()
+    return [{"companyWindowId": r[0], "companyCode": r[1], "firstBatchId": r[2], "d0TradeDate": r[3], "d1TradeDate": r[4], "d2TradeDate": r[5], "d1SelectionAt": r[6], "d2CloseAt": r[7], "sampleClass": r[8], "overlapsWindowId": r[9], "selection": None if r[10] is None else {"state": r[10], "actionIds": json.loads(r[11]), "frozenAt": r[12]}, "availableAt": r[13], "displayRank": r[14]} for r in rows]
 
 
 def list_opportunities(*, company_code: str | None = None, state: str | None = None, batch_id: str | None = None,
                        as_of: datetime | None = None, db_path: Path) -> list[dict[str, Any]]:
     with read_connection(db_path) as conn:
         require_schema(conn)
-        query = "SELECT o.opportunity_id,o.opportunity_key,o.company_code,o.catalyst_event_id,o.catalyst_event_revision,o.catalyst_stage,o.related_opportunity_id,o.first_batch_id,o.company_window_id,o.created_at,b.available_at,w.d0_trade_date,w.d1_trade_date,w.d2_trade_date,w.sample_class,s.source_marker,p.content_json FROM k10_opportunities o JOIN k10_publication_batches b ON b.batch_id=o.first_batch_id JOIN k10_company_windows w ON w.company_window_id=o.company_window_id JOIN k10_publication_samples s ON s.opportunity_id=o.opportunity_id JOIN k10_opportunity_lifecycle_events p ON p.opportunity_id=o.opportunity_id AND p.kind='published'"
+        query = "SELECT o.opportunity_id,o.opportunity_key,o.company_code,o.catalyst_event_id,o.catalyst_event_revision,o.catalyst_stage,o.related_opportunity_id,o.first_batch_id,o.company_window_id,o.created_at,b.available_at,w.d0_trade_date,w.d1_trade_date,w.d2_trade_date,w.sample_class,s.source_marker,p.content_json,s.rank FROM k10_opportunities o JOIN k10_publication_batches b ON b.batch_id=o.first_batch_id JOIN k10_company_windows w ON w.company_window_id=o.company_window_id JOIN k10_publication_samples s ON s.opportunity_id=o.opportunity_id JOIN k10_opportunity_lifecycle_events p ON p.opportunity_id=o.opportunity_id AND p.kind='published'"
         clauses=[]; args=[]
         if company_code is not None: clauses.append("o.company_code=?"); args.append(company_code)
         if batch_id is not None: clauses.append("o.first_batch_id=?"); args.append(batch_id)
         if clauses: query += " WHERE " + " AND ".join(clauses)
-        rows = conn.execute(query + " ORDER BY b.available_at,o.opportunity_id", tuple(args)).fetchall()
+        rows = conn.execute(query + " ORDER BY b.available_at DESC,CASE WHEN s.rank IS NULL THEN 1 ELSE 0 END,s.rank,o.opportunity_id", tuple(args)).fetchall()
         events = {r[0]: _opportunity_state(conn, str(r[0]), as_of=as_of) for r in rows}
-    items=[{"opportunityId":r[0],"opportunityKey":r[1],"companyCode":r[2],"eventId":r[3],"eventRevision":r[4],"catalystStage":r[5],"relatedOpportunityId":r[6],"firstBatchId":r[7],"companyWindowId":r[8],"createdAt":r[9],"availableAt":r[10],"d0TradeDate":r[11],"d1TradeDate":r[12],"d2TradeDate":r[13],"sampleClass":r[14],"sourceMarker":r[15],"latePublication":bool(json.loads(r[16]).get("latePublication", False)),"state":events[r[0]]} for r in rows]
+    items=[{"opportunityId":r[0],"opportunityKey":r[1],"companyCode":r[2],"eventId":r[3],"eventRevision":r[4],"catalystStage":r[5],"relatedOpportunityId":r[6],"firstBatchId":r[7],"companyWindowId":r[8],"createdAt":r[9],"availableAt":r[10],"d0TradeDate":r[11],"d1TradeDate":r[12],"d2TradeDate":r[13],"sampleClass":r[14],"sourceMarker":r[15],"latePublication":bool(json.loads(r[16]).get("latePublication", False)),"displayRank":r[17],"state":events[r[0]]} for r in rows]
     return [item for item in items if state is None or item["state"] == state]
 
 
 def get_opportunity(*, opportunity_id: str, as_of: datetime | None = None, db_path: Path) -> dict[str, Any] | None:
     return next((item for item in list_opportunities(as_of=as_of, db_path=db_path) if item["opportunityId"] == opportunity_id), None)
+
+
+def list_morning_report_targets(*, as_of: datetime, db_path: Path, scan_id: str | None = None) -> list[dict[str, Any]]:
+    """Enumerate every formally published target for a morning report; none are inferred away.
+
+    This deliberately includes withdrawn and expired opportunities, and projects user choice
+    from the same append-only company-window action ledger used elsewhere.
+    """
+    if as_of.tzinfo is None:
+        raise ValueError("晨报目标查询 as_of 必须带时区")
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            "SELECT o.opportunity_id,o.company_window_id,s.candidate_id,o.company_code,w.d1_trade_date,w.d2_trade_date,"
+            "s.evidence_refs_json,s.rank,b.available_at,b.scan_id FROM k10_opportunities o JOIN k10_publication_samples s ON s.opportunity_id=o.opportunity_id "
+            "JOIN k10_company_windows w ON w.company_window_id=o.company_window_id JOIN k10_publication_batches b ON b.batch_id=o.first_batch_id "
+            "ORDER BY b.available_at DESC,CASE WHEN s.rank IS NULL THEN 1 ELSE 0 END,s.rank,o.opportunity_id"
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            snapshot = conn.execute(
+                "SELECT state,frozen_at FROM k10_company_window_selection_snapshots WHERE company_window_id=?", (row[1],)
+            ).fetchone()
+            if snapshot is not None:
+                selection_state = {"selected": "kept", "skipped": "skipped", "unhandled": "unhandled"}[snapshot[0]]
+                selection_frozen_at = snapshot[1]
+            else:
+                action = _current_company_window_action(conn, company_window_id=str(row[1]))
+                selection_state = "kept" if action is not None and action[1] == "observe" else ("skipped" if action is not None and action[1] == "skip" else "unhandled")
+                selection_frozen_at = None
+            state = _opportunity_state(conn, str(row[0]), as_of=as_of)
+            lifecycle = list_opportunity_lifecycle_events(opportunity_id=str(row[0]), db_path=db_path)
+            items.append({"opportunityId": row[0], "companyWindowId": row[1], "candidateId": row[2], "companyCode": row[3],
+                          "d1TradeDate": row[4], "d2TradeDate": row[5], "selectionState": selection_state,
+                          "selectionFrozenAt": selection_frozen_at, "state": state,
+                          "windowState": "expired" if state == "expired" else "active", "sourceRefs": json.loads(row[6]),
+                          "displayRank": row[7], "availableAt": row[8], "isNew": scan_id is not None and row[9] == scan_id,
+                          "lifecycle": lifecycle})
+    return items
 
 
 def list_publication_samples(*, batch_id: str, db_path: Path) -> list[dict[str, Any]]:

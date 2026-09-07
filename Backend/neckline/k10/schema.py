@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class K10SchemaError(RuntimeError):
@@ -363,10 +364,63 @@ CREATE TABLE k10_company_window_evaluation_revisions (
 );
 """
 
+
+# V3 is additive: it records morning reports and user-requested analysis follow-ups without
+# rewriting V2 publication, fixed-window, selection, or analysis history.
+_V3 = r"""
+CREATE TABLE k10_morning_reports (
+  report_id TEXT PRIMARY KEY,
+  scan_id TEXT NOT NULL REFERENCES k10_scans(scan_id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  cutoff_at TEXT NOT NULL,
+  generated_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('completed','partial','failed','not_configured')),
+  coverage_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(scan_id, revision)
+);
+CREATE INDEX idx_k10_morning_reports_generated ON k10_morning_reports(scan_id, revision DESC, generated_at DESC, report_id);
+CREATE TABLE k10_morning_report_items (
+  report_id TEXT NOT NULL REFERENCES k10_morning_reports(report_id) ON DELETE RESTRICT,
+  item_id TEXT NOT NULL,
+  group_key TEXT NOT NULL CHECK(group_key IN ('major_contrary','thesis_changed','continuing_or_expiring','new','needs_review')),
+  position INTEGER NOT NULL CHECK(position >= 0),
+  opportunity_id TEXT REFERENCES k10_opportunities(opportunity_id) ON DELETE RESTRICT,
+  company_window_id TEXT REFERENCES k10_company_windows(company_window_id) ON DELETE RESTRICT,
+  status TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(report_id, item_id),
+  UNIQUE(report_id, group_key, position)
+);
+CREATE INDEX idx_k10_morning_items_report ON k10_morning_report_items(report_id, group_key, position);
+
+CREATE TABLE k10_analysis_requests (
+  request_id TEXT PRIMARY KEY,
+  company_window_id TEXT NOT NULL REFERENCES k10_company_windows(company_window_id) ON DELETE RESTRICT,
+  observation_id TEXT NOT NULL REFERENCES k10_observations(observation_id) ON DELETE RESTRICT,
+  task_id TEXT NOT NULL UNIQUE REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  global_revision INTEGER NOT NULL CHECK(global_revision >= 1),
+  parent_revision INTEGER CHECK(parent_revision >= 1),
+  kind TEXT NOT NULL CHECK(kind IN ('user_question','evidence_update')),
+  question TEXT,
+  source_refs_json TEXT NOT NULL,
+  task_input_version TEXT NOT NULL,
+  task_payload_json TEXT NOT NULL,
+  task_budget_json TEXT NOT NULL,
+  input_cutoff_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(observation_id, global_revision),
+  CHECK((kind='user_question' AND question IS NOT NULL AND length(trim(question)) > 0) OR kind='evidence_update')
+);
+CREATE INDEX idx_k10_analysis_requests_window ON k10_analysis_requests(company_window_id, global_revision);
+"""
+
 _DROP_V1 = (
     # Delete dependency children first.  This path is exercised only after a verified backup,
     # but must still work on a populated V1.4 database with foreign keys enabled.
-    "k10_task_outbox", "k10_company_window_observations", "k10_tasks", "k10_evaluation_records", "k10_morning_updates",
+    "k10_task_outbox", "k10_analysis_requests", "k10_morning_report_items", "k10_morning_reports", "k10_company_window_observations", "k10_tasks", "k10_evaluation_records", "k10_morning_updates",
     "k10_company_window_evaluation_revisions", "k10_market_day_fact_revisions", "k10_company_window_selection_snapshots", "k10_company_window_actions", "k10_opportunity_lifecycle_events", "k10_publication_samples", "k10_opportunities", "k10_company_windows", "k10_publication_batches", "k10_plan_commands", "k10_plan_revisions", "k10_analysis_revisions", "k10_observations", "k10_candidate_actions",
     "k10_candidates", "k10_source_watermark_updates", "k10_scans", "k10_company_mappings",
     "k10_event_revisions", "k10_events", "k10_source_document_versions", "k10_source_documents",
@@ -459,9 +513,16 @@ def initialize_schema(db_path: Path) -> int:
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (1,?)", (_now(),))
             _apply_v2(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (2,?)", (_now(),))
+            _apply_v3(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
         elif version == 1:
             _apply_v2(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (2,?)", (_now(),))
+            _apply_v3(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
+        elif version == 2:
+            _apply_v3(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
     return SCHEMA_VERSION
@@ -483,12 +544,138 @@ def _apply_v2(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
+def _apply_v3(conn: sqlite3.Connection) -> None:
+    """Add V3 ledgers and preserve raw anomalous market facts during the CHECK upgrade."""
+    _upgrade_market_fact_availability(conn)
+    _upgrade_analysis_revision_attempts(conn)
+    for statement in _V3.split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+
+
+def _upgrade_market_fact_availability(conn: sqlite3.Connection) -> None:
+    """Allow the explicit ``anomaly`` raw-fact state while proving the V2 rows survive intact."""
+    rows = conn.execute("SELECT * FROM k10_market_day_fact_revisions ORDER BY company_code,trade_date,revision").fetchall()
+    before = sha256(repr([tuple(row) for row in rows]).encode("utf-8")).hexdigest()
+    conn.execute("ALTER TABLE k10_market_day_fact_revisions RENAME TO k10_market_day_fact_revisions_v2")
+    conn.execute("""
+        CREATE TABLE k10_market_day_fact_revisions (
+          company_code TEXT NOT NULL,
+          trade_date TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          availability TEXT NOT NULL CHECK(availability IN ('available','suspended','data_gap','anomaly')),
+          open REAL, high REAL, low REAL, close REAL, pre_close REAL, limit_up_price REAL,
+          close_limit_up INTEGER, touched_limit_up INTEGER, adj_factor REAL,
+          metadata_json TEXT NOT NULL, source_refs_json TEXT NOT NULL, obtained_at TEXT NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY(company_code, trade_date, revision)
+        )
+    """)
+    conn.execute("INSERT INTO k10_market_day_fact_revisions SELECT * FROM k10_market_day_fact_revisions_v2")
+    restored = conn.execute("SELECT * FROM k10_market_day_fact_revisions ORDER BY company_code,trade_date,revision").fetchall()
+    after = sha256(repr([tuple(row) for row in restored]).encode("utf-8")).hexdigest()
+    if len(rows) != len(restored) or before != after or conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise K10SchemaError("行情事实 v2→v3 重建核验失败")
+    conn.execute("DROP TABLE k10_market_day_fact_revisions_v2")
+    conn.execute("CREATE INDEX idx_k10_market_facts_latest ON k10_market_day_fact_revisions(company_code, trade_date, revision DESC)")
+
+
+def _downgrade_market_fact_availability(conn: sqlite3.Connection) -> None:
+    """Rebuild the V2 CHECK only when it cannot discard an anomaly fact."""
+    if conn.execute("SELECT 1 FROM k10_market_day_fact_revisions WHERE availability='anomaly' LIMIT 1").fetchone() is not None:
+        raise K10SchemaError("schema 3 含 anomaly 行情事实，须恢复已核备份，不能降级丢失数据")
+    rows = conn.execute("SELECT * FROM k10_market_day_fact_revisions ORDER BY company_code,trade_date,revision").fetchall()
+    digest = sha256(repr([tuple(row) for row in rows]).encode("utf-8")).hexdigest()
+    conn.execute("ALTER TABLE k10_market_day_fact_revisions RENAME TO k10_market_day_fact_revisions_v3")
+    conn.execute("""
+        CREATE TABLE k10_market_day_fact_revisions (
+          company_code TEXT NOT NULL, trade_date TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision >= 1),
+          availability TEXT NOT NULL CHECK(availability IN ('available','suspended','data_gap')),
+          open REAL, high REAL, low REAL, close REAL, pre_close REAL, limit_up_price REAL,
+          close_limit_up INTEGER, touched_limit_up INTEGER, adj_factor REAL, metadata_json TEXT NOT NULL,
+          source_refs_json TEXT NOT NULL, obtained_at TEXT NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY(company_code, trade_date, revision)
+        )
+    """)
+    conn.execute("INSERT INTO k10_market_day_fact_revisions SELECT * FROM k10_market_day_fact_revisions_v3")
+    restored = conn.execute("SELECT * FROM k10_market_day_fact_revisions ORDER BY company_code,trade_date,revision").fetchall()
+    if len(rows) != len(restored) or digest != sha256(repr([tuple(row) for row in restored]).encode("utf-8")).hexdigest() or conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise K10SchemaError("行情事实 v3→v2 重建核验失败")
+    conn.execute("DROP TABLE k10_market_day_fact_revisions_v3")
+    conn.execute("CREATE INDEX idx_k10_market_facts_latest ON k10_market_day_fact_revisions(company_code, trade_date, revision DESC)")
+
+
+def _upgrade_analysis_revision_attempts(conn: sqlite3.Connection) -> None:
+    """Retain failed/successful retry attempts at one immutable global analysis revision."""
+    rows = conn.execute("SELECT * FROM k10_analysis_revisions ORDER BY rowid").fetchall()
+    digest = sha256(repr([tuple(row) for row in rows]).encode("utf-8")).hexdigest()
+    conn.execute("ALTER TABLE k10_analysis_revisions RENAME TO k10_analysis_revisions_v2")
+    conn.execute("""
+        CREATE TABLE k10_analysis_revisions (
+          analysis_id TEXT PRIMARY KEY,
+          observation_id TEXT NOT NULL REFERENCES k10_observations(observation_id) ON DELETE RESTRICT,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          analysis_kind TEXT NOT NULL CHECK(analysis_kind IN ('pro','con','morning')),
+          input_cutoff_at TEXT NOT NULL, input_lineage_json TEXT NOT NULL, content_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('queued','completed','partial','failed','not_configured')),
+          created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("INSERT INTO k10_analysis_revisions SELECT * FROM k10_analysis_revisions_v2")
+    restored = conn.execute("SELECT * FROM k10_analysis_revisions ORDER BY rowid").fetchall()
+    if len(rows) != len(restored) or digest != sha256(repr([tuple(row) for row in restored]).encode("utf-8")).hexdigest() or conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise K10SchemaError("分析修订 v2→v3 重建核验失败")
+    conn.execute("DROP TABLE k10_analysis_revisions_v2")
+    conn.execute("CREATE INDEX idx_k10_analysis_attempts_latest ON k10_analysis_revisions(observation_id, revision, analysis_kind, created_at DESC, analysis_id DESC)")
+
+
+def _downgrade_analysis_revision_attempts(conn: sqlite3.Connection) -> None:
+    duplicates = conn.execute(
+        "SELECT 1 FROM k10_analysis_revisions GROUP BY observation_id,revision,analysis_kind HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicates is not None:
+        raise K10SchemaError("schema 3 含分析重试历史，须恢复已核备份，不能降级丢失尝试")
+    rows = conn.execute("SELECT * FROM k10_analysis_revisions ORDER BY rowid").fetchall()
+    digest = sha256(repr([tuple(row) for row in rows]).encode("utf-8")).hexdigest()
+    conn.execute("ALTER TABLE k10_analysis_revisions RENAME TO k10_analysis_revisions_v3")
+    conn.execute("""
+        CREATE TABLE k10_analysis_revisions (
+          analysis_id TEXT PRIMARY KEY,
+          observation_id TEXT NOT NULL REFERENCES k10_observations(observation_id) ON DELETE RESTRICT,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          analysis_kind TEXT NOT NULL CHECK(analysis_kind IN ('pro','con','morning')),
+          input_cutoff_at TEXT NOT NULL, input_lineage_json TEXT NOT NULL, content_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('queued','completed','partial','failed','not_configured')),
+          created_at TEXT NOT NULL,
+          UNIQUE(observation_id, revision, analysis_kind)
+        )
+    """)
+    conn.execute("INSERT INTO k10_analysis_revisions SELECT * FROM k10_analysis_revisions_v3")
+    restored = conn.execute("SELECT * FROM k10_analysis_revisions ORDER BY rowid").fetchall()
+    if len(rows) != len(restored) or digest != sha256(repr([tuple(row) for row in restored]).encode("utf-8")).hexdigest() or conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise K10SchemaError("分析修订 v3→v2 重建核验失败")
+    conn.execute("DROP TABLE k10_analysis_revisions_v3")
+
+
 def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
-    """仅用于演练/受控回滚；会删除 K10 表，调用方必须先完成备份验证。"""
-    if target_version != 0:
-        raise ValueError("当前 K10 仅支持回滚到 schema 0")
+    """仅用于演练/受控回滚；调用方必须先完成备份验证。"""
+    if target_version not in {0, 2}:
+        raise ValueError("当前 K10 仅支持回滚到 schema 0 或 2")
     with write_connection(db_path) as conn:
         version = _version(conn)
+        if target_version == 2:
+            if version == 2:
+                return 2
+            if version != 3:
+                raise K10SchemaError(f"不能从未知 K10 schema {version} 回滚到 2")
+            # This is a controlled DDL rollback for rehearsal only. Production rollback must
+            # restore the verified pre-migration backup so no V3 ledger is silently discarded.
+            for table in ("k10_analysis_requests", "k10_morning_report_items", "k10_morning_reports"):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            _downgrade_analysis_revision_attempts(conn)
+            _downgrade_market_fact_availability(conn)
+            conn.execute("DELETE FROM k10_schema_migrations WHERE version=3")
+            return 2
         if version == 0:
             return 0
         if version != SCHEMA_VERSION:

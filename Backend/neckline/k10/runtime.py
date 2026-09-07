@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Callable, Mapping
 
 from . import store
-from .analysis import AnalysisArtifact, AnalysisInputError, record_analysis_artifact, run_con, run_pro
+from .analysis import AnalysisArtifact, AnalysisInputError, augment_analysis_context, record_analysis_artifact, run_con, run_pro
 from .market_context import MarketContextError, attach_frozen_market_context
 from .providers import resolve_deepseek_v4_pro
 from .worker import TaskContext, TaskResult
@@ -41,6 +41,70 @@ def _checkpoint(*, pro: AnalysisArtifact, con: AnalysisArtifact | None = None) -
     return value
 
 
+def _chain_artifact(*, company_window_id: str, revision: int, role: str, db_path) -> AnalysisArtifact | None:
+    """Read only the exact global revision; cutoff is not an analysis identity."""
+    chain = store.list_analysis_chain(company_window_id=company_window_id, db_path=db_path)
+    for item in chain.get("items", ()) if isinstance(chain, Mapping) else ():
+        if not isinstance(item, Mapping) or item.get("revision") != revision:
+            continue
+        for raw in item.get("analyses", ()):
+            if isinstance(raw, Mapping) and raw.get("role") == role and raw.get("status") == "completed":
+                content = raw.get("content")
+                return _artifact(content) if isinstance(content, Mapping) else None
+    return None
+
+
+def _ref_identity(value: Any) -> tuple[tuple[str, int], ...] | None:
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        return None
+    result: list[tuple[str, int]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("documentId"), str) or not isinstance(raw.get("revision"), int):
+            return None
+        result.append((raw["documentId"], raw["revision"]))
+    return tuple(result)
+
+
+def _requested_snapshot(context: TaskContext, observation_id: str) -> tuple[Mapping[str, Any], int, str | None, str | None] | None:
+    """Resolve initial versus append-only request input without any cutoff-based fallback."""
+    payload = context.task.payload
+    request_id = payload.get("analysisRequestId")
+    if request_id is None:
+        global_revision = payload.get("globalRevision", 1)
+        if isinstance(global_revision, bool) or global_revision != 1:
+            return None
+        snapshot = store.load_observation_context(
+            observation_id=observation_id, cutoff_at=context.input_cutoff_at, db_path=context.db_path,
+        )
+        return None if snapshot is None else (snapshot, 1, None, None)
+    if not isinstance(request_id, str) or not request_id:
+        return None
+    loaded = store.load_analysis_request_context(request_id=request_id, db_path=context.db_path)
+    if not isinstance(loaded, Mapping):
+        return None
+    request = loaded.get("analysisRequest")
+    if (not isinstance(request, Mapping) or loaded.get("observationId") != observation_id
+            or loaded.get("cutoffAt") != context.input_cutoff_at
+            or request.get("globalRevision") != payload.get("globalRevision")
+            or request.get("targetRevision") != payload.get("targetRevision")
+            or request.get("parentRevision") != payload.get("parentRevision")
+            or request.get("kind") != payload.get("analysisRequestKind")
+            or request.get("question") != payload.get("question")
+            or _ref_identity(request.get("sourceRefs")) != _ref_identity(payload.get("frozenEvidenceRefs"))):
+        return None
+    window_id = loaded.get("companyWindowId")
+    if not isinstance(window_id, str) or not window_id:
+        return None
+    try:
+        snapshot = augment_analysis_context(
+            context=loaded, request=request, request_documents=loaded.get("requestDocuments", ()),
+            prior_analyses=loaded.get("priorAnalyses", ()),
+        )
+    except AnalysisInputError:
+        return None
+    return snapshot, int(request["globalRevision"]), request_id, window_id
+
+
 def analysis_handler(
     context: TaskContext,
     *,
@@ -61,9 +125,10 @@ def analysis_handler(
     resolution = resolver(configuration=configuration, task="analysis", db_path=context.db_path)
     if resolution.provider is None or not isinstance(configuration, Mapping):
         return TaskResult("not_configured", "configuration", context.checkpoint, resolution.error or "模型未配置")
-    snapshot = store.load_observation_context(observation_id=observation_id, cutoff_at=context.input_cutoff_at, db_path=context.db_path)
-    if snapshot is None:
-        return TaskResult("failed", "input", context.checkpoint, "观察对象或冻结资料不存在")
+    requested = _requested_snapshot(context, observation_id)
+    if requested is None:
+        return TaskResult("failed", "input", context.checkpoint, "观察对象、追加请求或冻结资料不存在")
+    snapshot, revision, request_id, company_window_id = requested
     publication = {
         "companyWindow": context.task.payload.get("companyWindow"),
         "opportunities": context.task.payload.get("opportunities"),
@@ -73,22 +138,25 @@ def analysis_handler(
         if not isinstance(publication["companyWindow"], Mapping) or not isinstance(publication["opportunities"], list) or not isinstance(publication["publicationSamples"], list):
             return TaskResult("failed", "input", context.checkpoint, "冻结公司窗口发布上下文无效")
         snapshot = {**snapshot, "publicationContext": publication}
-    prior = store.load_analysis_revision(
-        observation_id=observation_id, input_cutoff_at=context.input_cutoff_at, analysis_kind="pro", db_path=context.db_path,
-    )
-    if prior and prior.get("status") == "completed" and isinstance(prior.get("content"), Mapping):
-        pro = _artifact(prior["content"])
+    if company_window_id is not None:
+        pro = _chain_artifact(company_window_id=company_window_id, revision=revision, role="pro", db_path=context.db_path)
+        prior = None
+    else:
+        prior = store.load_analysis_revision(
+            observation_id=observation_id, input_cutoff_at=context.input_cutoff_at, analysis_kind="pro", db_path=context.db_path,
+        )
+        pro = _artifact(prior["content"]) if prior and prior.get("status") == "completed" and isinstance(prior.get("content"), Mapping) else None
+    if pro is not None:
         frozen_market = pro.input_lineage.get("marketContext")
     else:
         frozen_market = context.task.payload.get("marketContext")
-        revision = (int(prior["revision"]) + 1) if prior else 1
     try:
         snapshot = attach_frozen_market_context(
             observation_context=snapshot, market_context=frozen_market, cutoff_at=context.input_cutoff_at,
         )
     except MarketContextError:
         return TaskResult("failed", "input", context.checkpoint, "冻结行情上下文无效")
-    if not (prior and prior.get("status") == "completed" and isinstance(prior.get("content"), Mapping)):
+    if pro is None:
         try:
             pro = _with_pricing(run_pro(context=snapshot, cutoff_at=context.input_cutoff_at, provider=resolution.provider, revision=revision), configuration)
         except (AnalysisInputError, ValueError):
@@ -97,15 +165,19 @@ def analysis_handler(
         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=pro)
     if pro.status != "completed":
         return TaskResult("failed", "pro_failed", _checkpoint(pro=pro), pro.error or "正方分析失败")
-    completed_con = store.load_analysis_revision(
-        observation_id=observation_id, input_cutoff_at=context.input_cutoff_at, analysis_kind="con", db_path=context.db_path,
-    )
-    if completed_con and completed_con.get("status") == "completed" and isinstance(completed_con.get("content"), Mapping):
-        con = _artifact(completed_con["content"])
+    if company_window_id is not None:
+        con = _chain_artifact(company_window_id=company_window_id, revision=revision, role="con", db_path=context.db_path)
+        completed_con = None
     else:
-        con_revision = (int(completed_con["revision"]) + 1) if completed_con else pro.revision
+        completed_con = store.load_analysis_revision(
+            observation_id=observation_id, input_cutoff_at=context.input_cutoff_at, analysis_kind="con", db_path=context.db_path,
+        )
+        con = _artifact(completed_con["content"]) if completed_con and completed_con.get("status") == "completed" and isinstance(completed_con.get("content"), Mapping) else None
+    if con is not None:
+        pass
+    else:
         try:
-            con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at, provider=resolution.provider, pro=pro, revision=con_revision), configuration)
+            con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at, provider=resolution.provider, pro=pro, revision=revision), configuration)
         except (AnalysisInputError, ValueError):
             return TaskResult("failed", "con_input", _checkpoint(pro=pro), "反方冻结输入无效")
         context.require_lease()
@@ -113,7 +185,10 @@ def analysis_handler(
         if con.status != "completed":
             return TaskResult("failed", "con_failed", _checkpoint(pro=pro, con=con), con.error or "反方分析失败")
     context.require_lease()
-    return TaskResult("completed", "analysis_ready", _checkpoint(pro=pro, con=con))
+    checkpoint = _checkpoint(pro=pro, con=con)
+    if request_id is not None:
+        checkpoint.update({"analysisRequestId": request_id, "globalRevision": revision})
+    return TaskResult("completed", "analysis_ready", checkpoint)
 
 
 def production_analysis_handler(

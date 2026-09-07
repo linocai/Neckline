@@ -127,6 +127,110 @@ def _source_refs(value: Any) -> tuple[Mapping[str, Any], ...]:
     return tuple(result)
 
 
+def _exact_refs(value: Any, *, field: str, required: bool) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or (required and not value):
+        raise AnalysisInputError(f"{field} 必须是资料版本列表")
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("documentId"), str) or not raw["documentId"]:
+            raise AnalysisInputError(f"{field} 必须包含 documentId")
+        revision = raw.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise AnalysisInputError(f"{field} 必须包含精确 revision")
+        key = (raw["documentId"], revision)
+        if key in seen:
+            raise AnalysisInputError(f"{field} 不可重复")
+        seen.add(key)
+        refs.append(dict(raw))
+    return tuple(refs)
+
+
+def augment_analysis_context(
+    *, context: Mapping[str, Any], request: Mapping[str, Any], request_documents: Sequence[Mapping[str, Any]],
+    prior_analyses: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Attach one immutable follow-up request to an observation snapshot.
+
+    Store retrieves the exact document versions and complete prior revision.  This pure adapter
+    only joins those frozen inputs, so an added request cannot silently read a later document or
+    an unrelated analysis revision.
+    """
+    request_id = _require_text(request.get("requestId") or request.get("analysisRequestId"), "requestId")
+    kind = request.get("kind") or request.get("analysisRequestKind")
+    if kind not in {"user_question", "evidence_update"}:
+        raise AnalysisInputError("追加分析 kind 无效")
+    global_revision = request.get("globalRevision")
+    parent_revision = request.get("parentRevision")
+    if isinstance(global_revision, bool) or not isinstance(global_revision, int) or global_revision < 2:
+        raise AnalysisInputError("追加分析缺少 globalRevision")
+    if (parent_revision is not None and (isinstance(parent_revision, bool) or not isinstance(parent_revision, int)
+                                        or parent_revision < 1 or parent_revision >= global_revision)):
+        raise AnalysisInputError("追加分析 parentRevision 无效")
+    question = request.get("question")
+    if kind == "user_question" and (not isinstance(question, str) or not question.strip()):
+        raise AnalysisInputError("用户追问缺少 question")
+    if question is not None and (not isinstance(question, str) or not question.strip()):
+        raise AnalysisInputError("question 无效")
+    added_refs = _exact_refs(
+        request.get("sourceRefs") if "sourceRefs" in request else request.get("frozenEvidenceRefs"),
+        field="addedEvidenceRefs", required=kind == "evidence_update",
+    )
+    documents = context.get("documents")
+    if isinstance(documents, (str, bytes)) or not isinstance(documents, Sequence):
+        raise AnalysisInputError("原分析资料快照无效")
+    by_ref = {
+        (item.get("documentId"), item.get("revision")): dict(item)
+        for item in request_documents if isinstance(item, Mapping)
+        and isinstance(item.get("documentId"), str) and isinstance(item.get("revision"), int)
+    }
+    if any((ref["documentId"], ref["revision"]) not in by_ref for ref in added_refs):
+        raise AnalysisInputError("追加分析冻结资料不存在或版本不匹配")
+    original_refs = context.get("frozenEvidenceRefs")
+    if isinstance(original_refs, (str, bytes)) or not isinstance(original_refs, Sequence):
+        raise AnalysisInputError("原分析缺少冻结资料引用")
+    merged_refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in [*original_refs, *added_refs]:
+        if not isinstance(raw, Mapping):
+            raise AnalysisInputError("冻结资料引用无效")
+        ref = dict(raw)
+        key = (ref.get("documentId"), ref.get("revision"))
+        if not isinstance(key[0], str) or not isinstance(key[1], int):
+            raise AnalysisInputError("冻结资料引用必须有精确版本")
+        if key not in seen:
+            seen.add(key); merged_refs.append(ref)
+    merged_documents = [dict(item) for item in documents if isinstance(item, Mapping)]
+    existing_documents = {(item.get("documentId"), item.get("revision")) for item in merged_documents}
+    for ref in added_refs:
+        key = (ref["documentId"], ref["revision"])
+        if key not in existing_documents:
+            merged_documents.append(by_ref[key])
+    prior: list[dict[str, Any]] = []
+    for raw in prior_analyses:
+        if not isinstance(raw, Mapping):
+            continue
+        content = raw.get("content")
+        # Store chain rows retain metadata beside the persisted artifact.  Prompts receive the
+        # actual full artifact body, never just a summary/projection.
+        item = {**dict(content), "analysisId": raw.get("analysisId"), "role": raw.get("role"),
+                "status": raw.get("status"), "revision": raw.get("revision", request.get("parentRevision"))} \
+            if isinstance(content, Mapping) else dict(raw)
+        prior.append(item)
+    if parent_revision is not None:
+        roles = {item.get("role") for item in prior}
+        if roles != {"pro", "con"} or any(item.get("revision") != parent_revision or not isinstance(item.get("fullText"), str) for item in prior):
+            raise AnalysisInputError("追加分析缺少上一版完整正反全文")
+    chain = {"requestId": request_id, "kind": kind, "parentRevision": parent_revision,
+             "question": question.strip() if isinstance(question, str) else None,
+             "addedEvidenceRefs": [dict(ref) for ref in added_refs]}
+    return {**dict(context), "frozenEvidenceRefs": merged_refs, "documents": merged_documents,
+            "analysisRequest": {**dict(request), "requestId": request_id, "kind": kind,
+                                "globalRevision": global_revision, "parentRevision": parent_revision,
+                                "question": chain["question"], "sourceRefs": [dict(ref) for ref in added_refs]},
+            "priorAnalyses": prior, "analysisChain": chain}
+
+
 def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str, Any]:
     """Adapt core's read-only snapshot to the worker's explicit prompt contract.
 
@@ -194,22 +298,30 @@ def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str,
     if isinstance(publication, Mapping):
         publication_copy = dict(publication)
         evidence.append({"kind": "company_window", "publicationContext": publication_copy})
+    request_chain = context.get("analysisChain")
+    prior_analyses = context.get("priorAnalyses")
+    if request_chain is not None:
+        if not isinstance(request_chain, Mapping) or not isinstance(prior_analyses, Sequence) or isinstance(prior_analyses, (str, bytes)):
+            raise AnalysisInputError("追加分析谱系无效")
+        evidence.extend({"kind": "previous_analysis", "analysis": dict(item)} for item in prior_analyses if isinstance(item, Mapping))
+    lineage = {
+        "candidateId": candidate.get("candidateId"),
+        "event": {"eventId": event.get("eventId"), "revision": event.get("revision")},
+        "mappingIds": [item.get("mappingId") for item in mappings if isinstance(item, Mapping)],
+        "documentVersions": versions,
+        "frozenEvidenceRefs": [dict(item) for item in frozen_refs if isinstance(item, Mapping)],
+        "inputCutoffAt": cutoff_at,
+        **({"marketContext": market_copy} if isinstance(market, Mapping) else {}),
+        **({"publicationContext": publication_copy} if isinstance(publication, Mapping) else {}),
+        **({"chain": dict(request_chain)} if isinstance(request_chain, Mapping) else {}),
+    }
     return {
         "isObserved": True,
         "observationId": context.get("observationId"),
         "companyCandidateId": candidate.get("candidateId"),
         "inputCutoffAt": cutoff_at,
         "sourceRefs": refs,
-        "inputLineage": {
-            "candidateId": candidate.get("candidateId"),
-            "event": {"eventId": event.get("eventId"), "revision": event.get("revision")},
-            "mappingIds": [item.get("mappingId") for item in mappings if isinstance(item, Mapping)],
-            "documentVersions": versions,
-            "frozenEvidenceRefs": [dict(item) for item in frozen_refs if isinstance(item, Mapping)],
-            "inputCutoffAt": cutoff_at,
-            **({"marketContext": market_copy} if isinstance(market, Mapping) else {}),
-            **({"publicationContext": publication_copy} if isinstance(publication, Mapping) else {}),
-        },
+        "inputLineage": lineage,
         "evidence": evidence,
         "userConstraints": {},
     }
@@ -421,5 +533,6 @@ def run_and_record_debate(
 
 __all__ = [
     "ANALYSIS_STATUSES", "AnalysisArtifact", "AnalysisInputError", "AnalysisRepository", "DebateResult",
-    "record_analysis_artifact", "record_debate", "run_and_record_debate", "run_con", "run_debate", "run_pro",
+    "augment_analysis_context", "record_analysis_artifact", "record_debate", "run_and_record_debate", "run_con",
+    "run_debate", "run_pro",
 ]

@@ -52,6 +52,28 @@ class Evidence(K10Model):
     uncertainty: str | None = None
 
 
+class HistoricalCaseOut(K10Model):
+    caseId: str
+    outcome: Literal["success", "flat", "failure", "unclassified"]
+    summary: str
+    observedAt: str | None = None
+    eventTime: str | None = None
+    companyCode: str | None = None
+    stage: str | None = None
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+    marketFacts: list[SourceReference] = Field(default_factory=list)
+    outcomeFacts: dict[str, object] | None = None
+
+
+class HistoricalCoverageOut(K10Model):
+    state: Literal["complete", "partial", "unavailable"]
+    requestedOutcomes: list[str] = Field(default_factory=list)
+    presentOutcomes: list[str] = Field(default_factory=list)
+    missingOutcomes: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+
+
 class CandidateComparison(K10Model):
     summary: str | None = None
     rationale: str | None = None
@@ -60,6 +82,8 @@ class CandidateComparison(K10Model):
     gap: str | None = None
     rankChangeConditions: str | None = None
     twoDayReason: str | None = None
+    historicalCases: list[HistoricalCaseOut] = Field(default_factory=list)
+    historicalCoverage: HistoricalCoverageOut | None = None
 
 
 class CommonFactOut(K10Model):
@@ -124,6 +148,7 @@ class OpportunityOut(K10Model):
     relatedOpportunityId: str | None = None
     companyWindowId: str
     firstBatchId: str
+    displayRank: int | None = None
     availableAt: str
     sourceMarker: Literal["evening", "morning"] | None = None
     latePublication: bool | None = None
@@ -178,6 +203,8 @@ class CompanyWindowOut(K10Model):
     companyCode: str
     companyName: str | None = None
     firstBatchId: str
+    displayRank: int | None = None
+    availableAt: str | None = None
     d0TradeDate: str
     d1TradeDate: str
     d2TradeDate: str
@@ -248,6 +275,8 @@ class AnalysisInputLineage(K10Model):
     inputCutoffAt: str | None = None
     marketContext: dict[str, object] | None = None
     proAnalysis: dict[str, object] | None = None
+    chain: dict[str, object] | None = None
+    historicalContext: dict[str, object] | None = None
 
 
 class AnalysisArtifactOut(K10Model):
@@ -255,7 +284,7 @@ class AnalysisArtifactOut(K10Model):
     observationId: str
     revision: int
     role: Literal["pro", "con"]
-    status: Literal["queued", "completed", "failed", "not_configured"]
+    status: Literal["queued", "completed", "partial", "failed", "not_configured"]
     inputCutoffAt: str
     sourceRefs: list[SourceReference] = Field(default_factory=list)
     inputLineage: AnalysisInputLineage
@@ -304,6 +333,19 @@ class JobRetryIn(K10Model):
     expectedAttemptCount: int = Field(ge=0)
 
 
+class MarketFieldSourceOut(K10Model):
+    source: str
+    value: float | str | bool | None = None
+    observedAt: str | None = None
+
+
+class MarketFieldCheckOut(K10Model):
+    field: str
+    state: Literal["verified", "conflict", "single_source", "unavailable"]
+    reason: str
+    sourceValues: list[MarketFieldSourceOut] = Field(default_factory=list)
+
+
 class MarketDayOut(K10Model):
     tradeDate: str
     availability: Literal["available", "suspended", "data_gap", "anomaly"]
@@ -318,6 +360,8 @@ class MarketDayOut(K10Model):
     limitUpPrice: float | None = None
     sourceRefs: list[SourceReference] = Field(default_factory=list)
     obtainedAt: str | None = None
+    fieldChecks: list[MarketFieldCheckOut] = Field(default_factory=list)
+    anomalyReason: str | None = None
 
 
 class CompanyWindowEvaluationOut(K10Model):
@@ -364,6 +408,7 @@ class EvaluationMetricsOut(K10Model):
 
 class ResultsCohortOut(K10Model):
     batchId: str
+    batchIds: list[str] = Field(default_factory=list)
     d1TradeDate: str
     d2TradeDate: str
     evaluationVersion: str | None = None
@@ -423,3 +468,88 @@ class ConfigurationOut(K10Model):
     configId: str | None = None
     configRevision: int | None = None
     scopes: list[ConfigurationScopeOut]
+
+
+class MorningReportItemOut(K10Model):
+    itemId: str
+    reportId: str
+    scanId: str
+    companyWindowId: str | None = None
+    opportunityId: str | None = None
+    companyCode: str | None = None
+    companyName: str | None = None
+    displayRank: int | None = None
+    selectionState: str | None = None
+    lifecycle: str | None = None
+    section: Literal["major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review"]
+    priority: int
+    summary: str
+    coverage: dict[str, object]
+    coverageStatus: str
+    coverageGaps: list[str] = Field(default_factory=list)
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+    independentVerificationRefs: list[SourceReference] = Field(default_factory=list)
+    lifecycleEventId: str | None = None
+    deadlineAt: str | None = None
+    createdAt: str
+
+
+class MorningReportOut(K10Model):
+    schemaVersion: str = SCHEMA_VERSION
+    reportId: str
+    scanId: str
+    revision: int
+    cutoffAt: str
+    createdAt: str
+    status: str
+    coverage: dict[str, object]
+    coverageStatus: str
+    coverageGaps: list[str] = Field(default_factory=list)
+    items: list[MorningReportItemOut] = Field(default_factory=list)
+
+
+class MorningReportListOut(K10Model):
+    items: list[MorningReportOut] = Field(default_factory=list)
+    page: PageMeta = Field(default_factory=PageMeta)
+
+
+class AnalysisDocumentRefIn(K10Model):
+    documentId: str = Field(min_length=1, max_length=256)
+    revision: int = Field(ge=1)
+
+
+class AnalysisRequestIn(K10Model):
+    kind: Literal["user_question", "evidence_update"]
+    question: str | None = Field(default=None, max_length=6000)
+    sourceRefs: list[AnalysisDocumentRefIn] = Field(default_factory=list, max_length=100)
+    idempotencyKey: str = Field(min_length=1, max_length=256)
+
+
+class AnalysisRequestOut(K10Model):
+    schemaVersion: str = SCHEMA_VERSION
+    requestId: str
+    companyWindowId: str
+    observationId: str
+    analysisJobId: str
+    revision: int
+    parentRevision: int
+    inputCutoffAt: str
+    replayed: bool
+
+
+class AnalysisChainItemOut(K10Model):
+    revision: int
+    inputCutoffAt: str
+    requestId: str | None = None
+    kind: Literal["initial", "user_question", "evidence_update"]
+    question: str | None = None
+    parentRevision: int | None = None
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+    analyses: list[AnalysisArtifactOut] = Field(default_factory=list)
+    job: JobOut | None = None
+
+
+class AnalysisChainOut(K10Model):
+    schemaVersion: str = SCHEMA_VERSION
+    companyWindowId: str
+    items: list[AnalysisChainItemOut] = Field(default_factory=list)

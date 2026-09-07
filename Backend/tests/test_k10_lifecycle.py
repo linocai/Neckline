@@ -43,7 +43,7 @@ def _input(candidate_id: str, event_id: str, *, key: str, company: str = "300001
 def test_schema_v1_migrates_to_v2_without_partial_tables(tmp_path):
     path=tmp_path/"v1.sqlite"
     initialize_schema(path)
-    assert schema_version(path) == 2
+    assert schema_version(path) == 3
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
@@ -56,9 +56,9 @@ def test_existing_v1_schema_forwards_to_v2_in_one_controlled_transaction(tmp_pat
         conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
         schema._apply_v1(conn)
         conn.execute("INSERT INTO k10_schema_migrations VALUES(1,'2026-09-01T00:00:00+00:00')")
-    assert initialize_schema(path) == 2
+    assert initialize_schema(path) == 3
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (2,)
+        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (3,)
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
 
@@ -94,7 +94,7 @@ def test_later_overlapping_opportunity_is_fixed_overlap_and_withdrawal_keeps_win
     new,e_new=_candidate(path,suffix="new",scan_id="scan-new")
     store.publish_opportunities(batch_id="batch-new",scan_id="scan-new",publication_kind="morning",inputs=(_input(new,e_new,key="new"),),db_path=path,clock=lambda:datetime(2026,9,9,9,29,tzinfo=SHANGHAI))
     windows=store.list_company_windows(db_path=path)
-    assert [item["sampleClass"] for item in windows] == ["primary","overlap"]
+    assert [item["sampleClass"] for item in windows] == ["overlap","primary"]
     opportunity=store.list_opportunities(batch_id="batch-new",db_path=path)[0]
     store.withdraw_opportunity(opportunity_id=opportunity["opportunityId"],reason="反证",source_refs=(),withdrawn_at="2026-09-09T10:00:00+08:00",db_path=path)
     withdrawn=store.get_opportunity(opportunity_id=opportunity["opportunityId"],db_path=path)
@@ -301,12 +301,13 @@ def test_overlap_chain_remains_overlap_after_unfollow_and_withdrawal(tmp_path):
     store.publish_opportunities(batch_id="batch-wed-thu",scan_id="scan-wed-thu",publication_kind="evening",inputs=(_input(second,event_second,key="wed-thu",source_marker="evening"),),db_path=path,clock=lambda:datetime(2026,9,8,21,0,tzinfo=SHANGHAI))
     store.publish_opportunities(batch_id="batch-thu-fri",scan_id="scan-thu-fri",publication_kind="evening",inputs=(_input(third,event_third,key="thu-fri",source_marker="evening"),),db_path=path,clock=lambda:datetime(2026,9,9,21,0,tzinfo=SHANGHAI))
     windows=store.list_company_windows(db_path=path)
-    assert [(item["d1TradeDate"],item["d2TradeDate"],item["sampleClass"]) for item in windows] == [("2026-09-08","2026-09-09","primary"),("2026-09-09","2026-09-10","overlap"),("2026-09-10","2026-09-11","overlap")]
-    assert windows[1]["overlapsWindowId"] == windows[0]["companyWindowId"]
-    assert windows[2]["overlapsWindowId"] == windows[1]["companyWindowId"]
+    assert [(item["d1TradeDate"],item["d2TradeDate"],item["sampleClass"]) for item in windows] == [("2026-09-10","2026-09-11","overlap"),("2026-09-09","2026-09-10","overlap"),("2026-09-08","2026-09-09","primary")]
+    assert windows[0]["overlapsWindowId"] == windows[1]["companyWindowId"]
+    assert windows[1]["overlapsWindowId"] == windows[2]["companyWindowId"]
+    assert windows[2]["overlapsWindowId"] is None
     store.observe_company_window(action_id="follow-first",observation_id="ob-follow-first",task_id="task-follow-first",outbox_id="outbox-follow-first",company_window_id=windows[0]["companyWindowId"],idempotency_key="follow-first",task_input_version="config@1",task_input_cutoff_at="2026-09-08T09:00:00+08:00",task_payload={},task_budget={"maxAttempts":1},created_at="2026-09-08T09:00:00+08:00",db_path=path)
     store.append_company_window_action(action_id="unfollow-first",company_window_id=windows[0]["companyWindowId"],action="restore",idempotency_key="unfollow-first",reason="取消关注",created_at="2026-09-08T09:01:00+08:00",db_path=path)
     first_opportunity=store.list_opportunities(batch_id="batch-tue-wed",db_path=path)[0]
     store.withdraw_opportunity(opportunity_id=first_opportunity["opportunityId"],reason="重大反证",source_refs=(),withdrawn_at="2026-09-08T10:00:00+08:00",db_path=path)
     persisted=store.list_company_windows(db_path=path)
-    assert [(item["sampleClass"],item["overlapsWindowId"]) for item in persisted] == [("primary",None),("overlap",windows[0]["companyWindowId"]),("overlap",windows[1]["companyWindowId"])]
+    assert [(item["sampleClass"],item["overlapsWindowId"]) for item in persisted] == [("overlap",windows[1]["companyWindowId"]),("overlap",windows[2]["companyWindowId"]),("primary",None)]

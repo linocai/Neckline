@@ -94,6 +94,26 @@ def test_anomalous_ohlc_and_ex_right_cross_day_change_are_not_silently_scored():
     assert clean.window_price_changes["low"] == pytest.approx(9.9 / 10.2 - 1)
 
 
+def test_field_check_conflict_is_anomaly_and_keeps_audit_without_deriving_metrics():
+    conflicted = _fact("20260908", close=10.8, high=10.9, metadata={
+        "anomalyReason": "cross_source_conflict:high",
+        "fieldChecks": [{"field": "high", "state": "conflict", "reason": "same_day_post_close_sources_disagree",
+                         "sourceValues": [{"source": "tushare.daily", "value": 10.9, "observedAt": "2026-09-08T16:00:00+08:00"},
+                                          {"source": "realtime.sina", "value": 10.9, "observedAt": "2026-09-08T15:01:00+08:00"},
+                                          {"source": "realtime.tencent", "value": 10.8, "observedAt": "2026-09-08T15:01:00+08:00"}]}],
+    })
+    result = evaluate_company_window(window=_window(), market_facts=[
+        conflicted, _fact("20260909", close=11.0, high=11.0),
+    ], as_of="2026-09-09T16:00:00+08:00")
+    assert result.d1["availability"] == "anomaly"
+    assert result.d1["anomalyReason"] == "cross_source_conflict:high"
+    assert result.d1["fieldChecks"][0]["state"] == "conflict"
+    assert result.d1_price_changes == {"high": None, "low": None, "close": None}
+    # The independently complete D2 hit remains observable, but the primary
+    # denominator rejects the two-day record because D1 is anomalous.
+    assert result.close_limit_hit_any is True and not result.primary_eligible
+
+
 def test_two_day_price_changes_use_d1_open_not_prior_close():
     result = evaluate_company_window(window=_window(), market_facts=[
         _fact("20260908", close=10.5, high=11.0),

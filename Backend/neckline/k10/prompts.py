@@ -52,6 +52,12 @@ def pro_messages(
 资金为何可能选择它；为何看接下来两日；什么会推翻判断。区分原始事实、公司映射、
 资金关注推断和已有价格反应。提出最有依据的两日关注理由和你自己的最强反证；
 允许结论为暂不支持。不要输出机械买卖结论。"""
+    chain = input_lineage.get("chain") if isinstance(input_lineage, Mapping) else None
+    if isinstance(chain, Mapping):
+        question = chain.get("question")
+        task += "\n这是一次追加分析：必须阅读给出的上一版完整正反全文和本次新增冻结资料。"
+        if isinstance(question, str) and question.strip():
+            task += "\n用户问题：" + question.strip() + "。请直接回答这个问题，并说明证据边界。"
     return [
         ChatMessage(role="system", content=_SAFETY),
         ChatMessage(role="user", content=task + "\n" + _evidence_payload(

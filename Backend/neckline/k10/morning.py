@@ -20,6 +20,142 @@ class MorningUpdateError(ValueError):
     pass
 
 
+MORNING_SECTIONS = (
+    "major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review",
+)
+
+
+class MorningReportError(ValueError):
+    """A report item cannot honestly be placed in one of the five fixed sections."""
+
+
+@dataclass(frozen=True)
+class MorningReportItem:
+    """The normalized, immutable item passed from review workers to the scan orchestrator.
+
+    ``content`` deliberately keeps the complete update payload.  The store owns persistence;
+    this module owns the product classification rules so a partial review cannot look like a
+    verified continuation.
+    """
+
+    item_id: str
+    opportunity_id: str
+    company_window_id: str
+    display_rank: int
+    selection_state: str
+    lifecycle: str
+    section: str
+    priority: str
+    summary: str
+    coverage: Mapping[str, Any]
+    source_refs: tuple[Mapping[str, Any], ...]
+    independent_verification_refs: tuple[Mapping[str, Any], ...]
+    lifecycle_event_id: str | None
+    content: Mapping[str, Any]
+
+    def to_store_item(self) -> dict[str, Any]:
+        return {
+            "itemId": self.item_id,
+            "opportunityId": self.opportunity_id,
+            "companyWindowId": self.company_window_id,
+            "status": "completed",
+            "content": {
+                "displayRank": self.display_rank,
+                "selectionState": self.selection_state,
+                "lifecycle": self.lifecycle,
+                "section": self.section,
+                "priority": self.priority,
+                "summary": self.summary,
+                "coverage": dict(self.coverage),
+                "sourceRefs": [dict(ref) for ref in self.source_refs],
+                "independentVerificationRefs": [dict(ref) for ref in self.independent_verification_refs],
+                "lifecycleEventId": self.lifecycle_event_id,
+                **dict(self.content),
+            },
+        }
+
+
+def _versioned_refs(value: Sequence[Mapping[str, Any]], *, field: str, required: bool) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or (required and not value):
+        raise MorningReportError(f"{field} 必须是非空资料版本列表")
+    result: list[Mapping[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("documentId"), str) or not raw["documentId"]:
+            raise MorningReportError(f"{field} 必须含 documentId")
+        revision = raw.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise MorningReportError(f"{field} 必须含精确 revision")
+        key = (raw["documentId"], revision)
+        if key in seen:
+            raise MorningReportError(f"{field} 不可重复")
+        seen.add(key)
+        result.append(dict(raw))
+    return tuple(result)
+
+
+def morning_section(*, lifecycle: str, reason_status: str, source_status: str,
+                    material: bool, is_new: bool, task_status: str = "completed") -> str:
+    """Classify exactly once; incomplete coverage is never described as no change."""
+    if task_status != "completed" or source_status != "complete":
+        return "needs_review"
+    if lifecycle == "withdrawn" or reason_status == "invalidated":
+        return "major_contrary"
+    if material:
+        return "thesis_changed"
+    if is_new:
+        return "new"
+    return "continuing_or_expiring"
+
+
+def build_morning_report_item(
+    *, item_id: str, opportunity_id: str, company_window_id: str, display_rank: int,
+    selection_state: str, lifecycle: str, source_status: str, reason_status: str,
+    material: bool, is_new: bool, summary: str, coverage: Mapping[str, Any],
+    source_refs: Sequence[Mapping[str, Any]], independent_verification_refs: Sequence[Mapping[str, Any]],
+    lifecycle_event_id: str | None = None, task_status: str = "completed",
+    content: Mapping[str, Any] | None = None,
+) -> MorningReportItem:
+    if not all(isinstance(value, str) and value for value in (item_id, opportunity_id, company_window_id, selection_state, lifecycle)):
+        raise MorningReportError("晨报项目缺少正式机会、窗口或状态")
+    if isinstance(display_rank, bool) or not isinstance(display_rank, int) or display_rank < 1:
+        raise MorningReportError("晨报项目缺少冻结 displayRank")
+    if not isinstance(summary, str) or not summary.strip() or not isinstance(coverage, Mapping):
+        raise MorningReportError("晨报项目缺少 summary 或 coverage")
+    if task_status not in {"completed", "failed", "not_configured"}:
+        raise MorningReportError("晨报项目任务状态无效")
+    refs = _versioned_refs(source_refs, field="sourceRefs", required=True)
+    independent = _versioned_refs(independent_verification_refs, field="independentVerificationRefs", required=False)
+    section = morning_section(lifecycle=lifecycle, reason_status=reason_status, source_status=source_status,
+                              material=material, is_new=is_new, task_status=task_status)
+    # A fresh material/withdrawal conclusion needs an independent frozen source.  A window
+    # that was already withdrawn and a complete, unchanged continuation may reuse their
+    # existing frozen evidence; forcing a new source would turn genuine no-change into a gap.
+    if material and lifecycle != "withdrawn" and not independent:
+        raise MorningReportError("新增重大判断必须带独立核验资料版本")
+    priority = "high" if section == "major_contrary" else ("review" if section == "needs_review" else "normal")
+    return MorningReportItem(
+        item_id=item_id, opportunity_id=opportunity_id, company_window_id=company_window_id,
+        display_rank=display_rank, selection_state=selection_state, lifecycle=lifecycle,
+        section=section, priority=priority, summary=summary.strip(), coverage=dict(coverage),
+        source_refs=refs, independent_verification_refs=independent,
+        lifecycle_event_id=lifecycle_event_id, content=dict(content or {}),
+    )
+
+
+def group_morning_report_items(items: Sequence[MorningReportItem]) -> dict[str, list[dict[str, Any]]]:
+    """Return every mandated section, deterministically ordered for immutable persistence."""
+    groups: dict[str, list[MorningReportItem]] = {section: [] for section in MORNING_SECTIONS}
+    for item in items:
+        if not isinstance(item, MorningReportItem):
+            raise MorningReportError("晨报只能收录标准项目")
+        groups[item.section].append(item)
+    return {
+        section: [item.to_store_item() for item in sorted(groups[section], key=lambda item: (item.display_rank, item.item_id))]
+        for section in MORNING_SECTIONS
+    }
+
+
 class MorningRepository(Protocol):
     def append_opportunity_update(
         self, *, lifecycle_event_id: str, opportunity_id: str, kind: str, reason: str | None,
@@ -143,6 +279,8 @@ def record_morning_update(
 
 
 __all__ = [
-    "MorningRepository", "MorningUpdate", "MorningUpdateError", "OBSERVATION_STATUSES", "REASON_STATUSES",
-    "SOURCE_STATUSES", "build_morning_update", "record_morning_update",
+    "MORNING_SECTIONS", "MorningReportError", "MorningReportItem", "MorningRepository", "MorningUpdate",
+    "MorningUpdateError", "OBSERVATION_STATUSES", "REASON_STATUSES", "SOURCE_STATUSES",
+    "build_morning_report_item", "build_morning_update", "group_morning_report_items", "morning_section",
+    "record_morning_update",
 ]

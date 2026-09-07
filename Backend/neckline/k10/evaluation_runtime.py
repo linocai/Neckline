@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Mapping
 
 from neckline.calendar.trading_calendar import CN_TZ, MARKET_CLOSE_TIME
+from neckline.data.realtime import DualQuote, get_quotes_dual
 
 from . import store
 from .config import validate_run_config
@@ -74,7 +75,11 @@ def evaluation_handler(context: TaskContext, *, clock: Callable[[], datetime] = 
     return TaskResult("completed", evaluation_state(result), {"companyWindowId": result.company_window_id, "revision": revision, "result": result.to_dict()})
 
 
-def market_day_fact_handler(context: TaskContext, *, clock: Callable[[], datetime] = _now) -> TaskResult:
+def market_day_fact_handler(
+    context: TaskContext, *, clock: Callable[[], datetime] = _now,
+    market_fact_fetcher: Callable[..., Mapping[str, Any]] | None = None,
+    quote_fetcher: Callable[[list[str]], Mapping[str, DualQuote]] = get_quotes_dual,
+) -> TaskResult:
     """Fetch and persist exactly one payload-frozen company/date market fact."""
     context.require_lease()
     company_code, trade_date = context.task.payload.get("companyCode"), context.task.payload.get("tradeDate")
@@ -88,7 +93,12 @@ def market_day_fact_handler(context: TaskContext, *, clock: Callable[[], datetim
         started = started.astimezone(CN_TZ)
         if target > started.date() or (target == started.date() and started.timetz().replace(tzinfo=None) < MARKET_CLOSE_TIME):
             return TaskResult("failed", "market_not_closed", error="目标交易日尚未收盘，拒绝采集收盘行情")
-        fact = fetch_market_day_fact(company_code=company_code, trade_date=trade_date)
+        # The production boundary explicitly supplies the dual-source loader.
+        # ``fetch_market_day_fact`` itself never infers that tests may use the
+        # network, so offline callers can inject every acquisition source.
+        collector = fetch_market_day_fact if market_fact_fetcher is None else market_fact_fetcher
+        fact = collector(company_code=company_code, trade_date=trade_date,
+                                   quote_fetcher=quote_fetcher)
         obtained = clock()
         if obtained.tzinfo is None:
             raise ValueError("行情完成时间必须带时区")

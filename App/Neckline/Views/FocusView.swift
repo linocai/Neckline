@@ -17,9 +17,7 @@ struct FocusView: View {
         }
     }
 
-    private var orderedWindows: [K10CompanyWindow] {
-        model.companyWindows.sorted { $0.createdAt > $1.createdAt }
-    }
+    private var orderedWindows: [K10CompanyWindow] { model.companyWindows }
 
     private var displayedWindows: [K10CompanyWindow] {
         scope == .current ? currentWindows : historicalWindows
@@ -281,7 +279,13 @@ struct FocusReadingPane: View {
             }
 
             V3SectionTitle(title: "正反阅读", icon: "arrow.left.arrow.right")
-            AnalysisPair(analyses: detail.analyses, model: model)
+            if let chain = model.analysisChains[window.companyWindowId] {
+                AnalysisChainReading(chain: chain, window: window, model: model)
+            } else {
+                AnalysisPair(analyses: detail.analyses, model: model)
+            }
+
+            SupplementaryAnalysisForm(window: window, model: model)
 
             if !window.opportunities.isEmpty {
                 V3SectionTitle(title: "更新与资料", icon: "doc.text.magnifyingglass")
@@ -314,7 +318,127 @@ struct FocusReadingPane: View {
                     .buttonStyle(V3SecondaryButtonStyle())
             }
         }
+        .task(id: window.companyWindowId) {
+            await model.loadAnalysisChain(for: window)
+            await model.loadSupplementarySources(for: window)
+        }
     }
+}
+
+private struct AnalysisChainReading: View {
+    let chain: K10AnalysisChain
+    let window: K10CompanyWindow
+    @Bindable var model: AppModel
+
+    var body: some View {
+        if chain.items.isEmpty {
+            AnalysisPair(analyses: [], model: model)
+        } else {
+            ForEach(chain.items.sorted { $0.revision < $1.revision }) { item in
+                VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+                    HStack {
+                        Text("分析第 \(item.revision) 版").font(NKFont.headline)
+                        Spacer()
+                        V3Pill(text: k10AnalysisKindText(item.kind))
+                    }
+                    Text("资料截止 \(k10DisplayTime(item.inputCutoffAt)) · \(triggerText(item))")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    if !item.sourceRefs.isEmpty {
+                        Text("本版冻结资料").font(NKFont.caption.weight(.medium)).foregroundStyle(NK.textSecondary)
+                        ForEach(item.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                    }
+                    if let job = item.job {
+                        Text("任务 \(k10StatusText(job.status)) · 第 \(job.attemptCount) 次\(job.error.map { " · \($0.message)" } ?? "")")
+                            .font(NKFont.caption).foregroundStyle(job.error == nil ? NK.textSecondary : NK.down)
+                        if ["failed", "not_configured"].contains(job.status) {
+                            Button("重试本版任务") { Task { await model.retryAnalysis(job: job, companyWindowID: window.companyWindowId) } }
+                                .buttonStyle(V3SecondaryButtonStyle())
+                        }
+                    }
+                    AnalysisPair(analyses: item.analyses, model: model)
+                }
+                .padding(NKSpace.cardPad)
+                .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
+                .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(NK.hairline, lineWidth: 0.5))
+            }
+        }
+    }
+
+    private func triggerText(_ item: K10AnalysisChainItem) -> String {
+        switch item.kind {
+        case "initial": return "初始分析"
+        case "user_question": return item.question.map { "追问：\($0)" } ?? "用户追问"
+        case "evidence_update": return item.question.map { "补充资料：\($0)" } ?? "补充资料"
+        default: return k10AnalysisKindText(item.kind)
+        }
+    }
+}
+
+private struct SupplementaryAnalysisForm: View {
+    let window: K10CompanyWindow
+    @Bindable var model: AppModel
+    @State private var kind = "user_question"
+    @State private var question = ""
+    @State private var selectedSourceKeys: Set<String> = []
+
+    var body: some View {
+        V3Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("补充分析 / 追问").font(NKFont.headline)
+                Text("新请求只追加分析版本，不改变原机会的固定 D1/D2、选择或观察窗口。离线快照不能写入。")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                Picker("请求类型", selection: $kind) {
+                    Text("追问").tag("user_question")
+                    Text("补充资料").tag("evidence_update")
+                }.pickerStyle(.segmented)
+                TextEditor(text: $question).frame(minHeight: 72)
+                    .padding(6).background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                    .accessibilityLabel(kind == "user_question" ? "追问内容" : "补充说明")
+                if kind == "evidence_update" {
+                    if availableSources.isEmpty {
+                        Text("没有可追加的已保存资料。可以改用“追问”提出问题；服务端不会接受未关联资料。")
+                            .font(NKFont.caption).foregroundStyle(NK.amber)
+                    } else {
+                        Text("选择本窗口已关联的资料版本；可点开资料查看原文。")
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        ForEach(availableSources) { source in
+                            HStack(alignment: .top, spacing: 8) {
+                                Button { toggle(source) } label: {
+                                    Image(systemName: selectedSourceKeys.contains(key(source)) ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(selectedSourceKeys.contains(key(source)) ? NK.accent : NK.textTertiary)
+                                }.buttonStyle(.plain)
+                                SourceReferenceLine(source: source, model: model)
+                            }
+                            .padding(7)
+                            .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                        }
+                    }
+                }
+                Button(model.analysisRequestInFlightWindowIDs.contains(window.companyWindowId) ? "正在提交" : "提交补充分析") {
+                    Task { await model.requestAnalysis(kind: kind, question: question, sourceRefs: sourceRefs, for: window) }
+                }
+                .buttonStyle(V3PrimaryButtonStyle())
+                .disabled(model.analysisRequestInFlightWindowIDs.contains(window.companyWindowId) || model.offline || (kind == "user_question" && question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || (kind == "evidence_update" && sourceRefs.isEmpty))
+                if model.offline { Text("离线只读：恢复连接后才能提交。") .font(NKFont.caption).foregroundStyle(NK.amber) }
+            }
+        }
+    }
+
+    private var sourceRefs: [K10AnalysisDocumentReference] { availableSources.filter { selectedSourceKeys.contains(key($0)) }.compactMap { guard let documentId = $0.documentId, let revision = $0.revision else { return nil }; return K10AnalysisDocumentReference(documentId: documentId, revision: revision) } }
+    private var availableSources: [K10SourceReference] {
+        let sampleSources = window.samples.flatMap { $0.evidence.map(\.sourceRef) }
+        let morningSources = model.morningReport?.items.filter { $0.companyWindowId == window.companyWindowId }.flatMap { $0.sourceRefs + $0.independentVerificationRefs } ?? []
+        let chainSources = model.analysisChains[window.companyWindowId]?.items.flatMap { $0.sourceRefs + $0.analyses.flatMap(\.sourceRefs) } ?? []
+        let lifecycleSources = window.opportunities.flatMap { model.opportunityDetails[$0.opportunityId]?.lifecycleEvents.flatMap(\.sourceRefs) ?? [] }
+        var seen = Set<String>()
+        return (sampleSources + morningSources + chainSources + lifecycleSources).filter { source in
+            guard source.documentId != nil, source.revision != nil else { return false }
+            return seen.insert(key(source)).inserted
+        }
+    }
+    private func key(_ source: K10SourceReference) -> String { "\(source.documentId ?? "")#\(source.revision.map(String.init) ?? "")" }
+    private func toggle(_ source: K10SourceReference) { let sourceKey = key(source); if selectedSourceKeys.contains(sourceKey) { selectedSourceKeys.remove(sourceKey) } else { selectedSourceKeys.insert(sourceKey) } }
+
 }
 
 private struct AnalysisPair: View {

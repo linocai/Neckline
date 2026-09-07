@@ -9,6 +9,7 @@ from neckline.k10.discovery import (
     CompanyMappingDraft,
     DiscoveryDocument,
     EvidenceRef,
+    EventComparison,
     EventDraft,
     SqliteDiscoveryWriter,
     Verification,
@@ -87,11 +88,19 @@ class _Model:
                                          relation_evidence=event.source_refs, inference={"step": number},
                                          uncertainty="fixture") for number in range(self.count))
 
-    def compare(self, *, event, verification, mapping, peers):
-        differences = {"role": "primary", "priorityReason": mapping.company_code, "gap": "已核对同事件关系", "rankChangeConditions": "新增公司披露", "twoDayReason": "新披露进入两日观察"}
-        if self.probability:
-            differences["probability"] = 0.9
-        return CandidateComparison(summary="具体比较", differences=differences, evidence_refs=event.source_refs)
+    def compare_event(self, *, event, verification, mappings):
+        candidates = {}
+        for rank, mapping in enumerate(mappings, start=1):
+            candidates[mapping.company_code] = CandidateComparison(
+                summary=f"{mapping.company_code} 的具体比较",
+                differences={"role": "primary" if rank == 1 else "alternative",
+                             "priorityReason": "涨停概率70%" if self.probability else mapping.company_code,
+                             "gap": "已核对同事件关系", "rankChangeConditions": "新增公司披露",
+                             "twoDayReason": "新披露进入两日观察"},
+                evidence_refs=event.source_refs, rank=rank,
+            )
+        return EventComparison(summary="事件共同事实已经核对", candidates=candidates,
+                               evidence_refs=event.source_refs)
 
     def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
         exact = next((old for old in previous if old.get("canonicalKey") == event.canonical_key), None)
@@ -167,6 +176,85 @@ def test_uncalibrated_probability_is_rejected():
                       verify=_verify, metadata=_Metadata(), cutoff_at=NOW)
 
 
+def test_event_comparison_is_single_complete_order_and_rejects_misaligned_roles():
+    class WholeEvent(_Model):
+        def __init__(self):
+            super().__init__(count=2)
+            self.compare_calls = 0
+
+        def compare_event(self, *, event, verification, mappings):
+            self.compare_calls += 1
+            return super().compare_event(event=event, verification=verification, mappings=mappings)
+
+    document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
+    model = WholeEvent()
+    run = run_discovery(documents=(document,), configuration=_configuration(), model=model, verify=_verify,
+                        metadata=_Metadata(), cutoff_at=NOW)
+    assert model.compare_calls == 1
+    assert [(item.mapping.company_code, item.comparison.rank, item.comparison.differences["role"])
+            for item in run.candidates] == [("300000.SZ", 1, "primary"), ("300001.SZ", 2, "alternative")]
+    assert run.events[0].facts["eventComparison"]["summary"] == "事件共同事实已经核对"
+
+    class Reversed(WholeEvent):
+        def compare_event(self, *, event, verification, mappings):
+            result = super().compare_event(event=event, verification=verification, mappings=mappings)
+            rows = dict(result.candidates)
+            second = mappings[1].company_code
+            rows[second] = CandidateComparison("相反的独立判断", {"role": "primary", "priorityReason": "更强",
+                "gap": "不应独立判断", "rankChangeConditions": "资料", "twoDayReason": "催化"}, event.source_refs, rank=1)
+            return EventComparison(result.summary, rows, result.evidence_refs)
+
+    with pytest.raises(ValueError, match="只能有一个主推"):
+        run_discovery(documents=(document,), configuration=_configuration(), model=Reversed(), verify=_verify,
+                      metadata=_Metadata(), cutoff_at=NOW)
+
+
+@pytest.mark.parametrize("text", ["不输出涨停概率，无法估计涨停概率。", "不使用机械预测分数，只说明资料缺口。"])
+def test_negative_probability_or_score_declaration_is_allowed(text):
+    class Negative(_Model):
+        def compare_event(self, *, event, verification, mappings):
+            result = super().compare_event(event=event, verification=verification, mappings=mappings)
+            only = mappings[0].company_code
+            comparison = result.candidates[only]
+            return EventComparison(text, {only: CandidateComparison(text, comparison.differences,
+                comparison.evidence_refs, comparison.rank)}, result.evidence_refs)
+
+    document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
+    assert run_discovery(documents=(document,), configuration=_configuration(), model=Negative(), verify=_verify,
+                         metadata=_Metadata(), cutoff_at=NOW).state == "completed"
+
+
+@pytest.mark.parametrize("field", ["summary", "reverse_summary", "differences", "classification", "numeric_key"])
+def test_nested_positive_prediction_is_rejected_from_every_discovery_string(field):
+    class Predicted(_Model):
+        def compare_event(self, *, event, verification, mappings):
+            result = super().compare_event(event=event, verification=verification, mappings=mappings)
+            only = mappings[0].company_code
+            comparison = result.candidates[only]
+            if field == "summary":
+                return EventComparison("涨停概率70%", result.candidates, result.evidence_refs)
+            if field == "reverse_summary":
+                return EventComparison("70%概率涨停", result.candidates, result.evidence_refs)
+            if field == "differences":
+                return EventComparison(result.summary, {only: CandidateComparison(comparison.summary,
+                    {**comparison.differences, "gap": "机械预测分数：80分"}, comparison.evidence_refs, comparison.rank)}, result.evidence_refs)
+            if field == "numeric_key":
+                return EventComparison(result.summary, {only: CandidateComparison(comparison.summary,
+                    {**comparison.differences, "priorityScore": "80"}, comparison.evidence_refs, comparison.rank)}, result.evidence_refs)
+            return result
+
+        def classify_opportunity(self, **kwargs):
+            result = super().classify_opportunity(**kwargs)
+            if field == "classification":
+                result["reason"] = "涨停概率为70%"
+            return result
+
+    document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
+    with pytest.raises(ValueError, match="未校准概率或机械预测分数"):
+        run_discovery(documents=(document,), configuration=_configuration(), model=Predicted(), verify=_verify,
+                      metadata=_Metadata(), cutoff_at=NOW)
+
+
 def test_same_company_multiple_catalysts_share_quota_card_and_window(tmp_path):
     class Multiple(_Model):
         def understand(self, *, document):
@@ -228,8 +316,8 @@ def test_new_stage_requires_changed_judgment_and_frozen_draft_preserves_classifi
 
 def test_incomplete_company_comparison_cannot_be_formally_recommended():
     class Missing(_Model):
-        def compare(self, *, event, verification, mapping, peers):
-            return CandidateComparison("仅公司名单", {}, event.source_refs)
+        def compare_event(self, *, event, verification, mappings):
+            return EventComparison("仅公司名单", {mappings[0].company_code: CandidateComparison("仅公司名单", {}, event.source_refs, 1)}, event.source_refs)
     document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
     with pytest.raises(ValueError, match="主推"):
         run_discovery(documents=(document,), configuration=_configuration(), model=Missing(),

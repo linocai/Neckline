@@ -28,6 +28,10 @@ from neckline.k10.schema import read_connection, require_schema
 
 from .k10_schemas import (
     AnalysisArtifactOut,
+    AnalysisChainOut,
+    AnalysisChainItemOut,
+    AnalysisRequestIn,
+    AnalysisRequestOut,
     AnalysisEventLineage,
     AnalysisInputLineage,
     ApiFailure,
@@ -40,10 +44,15 @@ from .k10_schemas import (
     ConfigurationScopeOut,
     EvaluationMetricsOut,
     Evidence,
+    HistoricalCaseOut,
+    HistoricalCoverageOut,
     JobOut,
     JobRetryIn,
     LifecycleEventOut,
     MarketDayOut,
+    MorningReportOut,
+    MorningReportItemOut,
+    MorningReportListOut,
     OpportunityDetail,
     OpportunityListOut,
     OpportunityOut,
@@ -251,15 +260,38 @@ def _evidence(value: Mapping[str, Any], documents: Mapping[tuple[str, int], Mapp
                     relation=value.get("relation"), uncertainty=value.get("uncertainty"))
 
 
-def _comparison(value: Any) -> CandidateComparison:
+def _comparison(value: Any, documents: Mapping[tuple[str, int], Mapping[str, Any]] | None = None) -> CandidateComparison:
     payload = value if isinstance(value, Mapping) else {}
     differences = payload.get("differences") if isinstance(payload.get("differences"), Mapping) else {}
     rank = payload.get("rank")
+    history = []
+    for case in payload.get("historicalCases", []):
+        if not isinstance(case, Mapping):
+            continue
+        observed_facts = case.get("observedFacts") if isinstance(case.get("observedFacts"), Mapping) else {}
+        history.append(HistoricalCaseOut(
+            caseId=str(case["caseId"]), outcome=str(case["outcome"]), summary=str(case["summary"]),
+            observedAt=case.get("observedAt"), eventTime=case.get("eventTime"),
+            companyCode=case.get("companyCode") or observed_facts.get("companyCode"), stage=case.get("stage") or observed_facts.get("stage"),
+            sourceRefs=[_hydrate_source_ref(ref, documents or {}) for ref in case.get("sourceRefs", []) if isinstance(ref, Mapping)],
+            marketFacts=[_source_ref(ref) for ref in case.get("marketFacts", []) if isinstance(ref, Mapping)],
+            outcomeFacts=observed_facts or None,
+        ))
+    raw_coverage = payload.get("historicalCoverage")
+    coverage = HistoricalCoverageOut(
+        state=str(raw_coverage["state"]),
+        requestedOutcomes=[str(item) for item in raw_coverage.get("requestedOutcomes", [])],
+        presentOutcomes=[str(item) for item in raw_coverage.get("presentOutcomes", [])],
+        missingOutcomes=[str(item) for item in raw_coverage.get("missingOutcomes", [])],
+        reason=raw_coverage.get("reason"),
+        sourceRefs=[_hydrate_source_ref(ref, documents or {}) for ref in raw_coverage.get("sourceRefs", []) if isinstance(ref, Mapping)],
+    ) if isinstance(raw_coverage, Mapping) else None
     return CandidateComparison(summary=payload.get("summary"), rationale=payload.get("rationale") or payload.get("reason"),
                                rank=rank if isinstance(rank, int) and not isinstance(rank, bool) else None,
                                priorityReason=differences.get("priorityReason"), gap=differences.get("gap"),
                                rankChangeConditions=differences.get("rankChangeConditions"),
-                               twoDayReason=differences.get("twoDayReason"))
+                               twoDayReason=differences.get("twoDayReason"),
+                               historicalCases=history, historicalCoverage=coverage)
 
 
 def _common_facts(value: Any) -> list[CommonFactOut]:
@@ -415,7 +447,7 @@ def _opportunity(value: Mapping[str, Any], windows: Mapping[str, Mapping[str, An
                           latePublication=value.get("latePublication"), d0TradeDate=str(value["d0TradeDate"]),
                           d1TradeDate=str(value["d1TradeDate"]), d2TradeDate=str(value["d2TradeDate"]),
                           sampleClass=str(value["sampleClass"]), overlapsWindowId=window.get("overlapsWindowId"),
-                          lifecycle=lifecycle, createdAt=str(value["createdAt"]))
+                          lifecycle=lifecycle, displayRank=window.get("displayRank"), createdAt=str(value["createdAt"]))
 
 
 def _sample(value: Mapping[str, Any], batch_id: str, company_name: str | None = None,
@@ -426,7 +458,7 @@ def _sample(value: Mapping[str, Any], batch_id: str, company_name: str | None = 
                                 companyCandidateId=str(value["candidateId"]), companyCode=str(value["companyCode"]),
                                 companyName=company_name, eventId=str(value["eventId"]), eventRevision=int(value["eventRevision"]),
                                 category=str(value["category"]), sourceMarker=str(value["sourceMarker"]),
-                                comparison=_comparison(value.get("comparison")),
+                                comparison=_comparison(value.get("comparison"), documents),
                                 evidence=[_evidence(item, documents) for item in evidence if isinstance(item, Mapping)] if isinstance(evidence, list) else [],
                                 rank=value.get("rank") if isinstance(value.get("rank"), int) else None,
                                 createdAt=str(value["createdAt"]))
@@ -438,6 +470,15 @@ def _all_samples(path: Path) -> list[PublicationSampleOut]:
         rows = [(sample, str(batch["batchId"]))
                 for batch in batches for sample in store.list_publication_samples(batch_id=str(batch["batchId"]), db_path=path)]
         refs = [ref for sample, _ in rows for ref in sample.get("evidenceRefs", []) if isinstance(ref, Mapping)]
+        for sample, _ in rows:
+            comparison = sample.get("comparison")
+            if not isinstance(comparison, Mapping):
+                continue
+            historical = [case for case in comparison.get("historicalCases", []) if isinstance(case, Mapping)]
+            coverage = comparison.get("historicalCoverage")
+            if isinstance(coverage, Mapping):
+                historical.append(coverage)
+            refs.extend(ref for item in historical for ref in item.get("sourceRefs", []) if isinstance(ref, Mapping))
         documents = _document_reference_map(conn, refs)
         return [_sample(sample, batch_id, _company_name(conn, str(sample["companyCode"])), documents)
                 for sample, batch_id in rows]
@@ -486,7 +527,7 @@ def _job_out(conn: Any, task_id: str | None) -> JobOut | None:
 
 
 def _analyses(conn: Any, observation_id: str) -> list[AnalysisArtifactOut]:
-    rows = conn.execute("SELECT analysis_id,revision,analysis_kind,input_cutoff_at,input_lineage_json,content_json,status FROM k10_analysis_revisions WHERE observation_id=? ORDER BY revision,analysis_kind", (observation_id,)).fetchall()
+    rows = conn.execute("SELECT analysis_id,revision,analysis_kind,input_cutoff_at,input_lineage_json,content_json,status FROM k10_analysis_revisions WHERE observation_id=? AND analysis_kind IN ('pro','con') AND rowid IN (SELECT MAX(rowid) FROM k10_analysis_revisions WHERE observation_id=? GROUP BY revision,analysis_kind) ORDER BY revision,CASE analysis_kind WHEN 'pro' THEN 0 ELSE 1 END", (observation_id, observation_id)).fetchall()
     references: list[Mapping[str, Any]] = []
     for row in rows:
         lineage, content = _json(row[4], {}), _json(row[5], {})
@@ -510,7 +551,9 @@ def _analyses(conn: Any, observation_id: str) -> list[AnalysisArtifactOut]:
                 documentVersions=[_hydrate_source_ref(item, documents) for item in raw_lineage.get("documentVersions", []) if isinstance(item, Mapping)],
                 inputCutoffAt=raw_lineage.get("inputCutoffAt") or str(row[3]),
                 marketContext=raw_lineage.get("marketContext") if isinstance(raw_lineage.get("marketContext"), Mapping) else None,
-                proAnalysis=raw_lineage.get("proAnalysis") if isinstance(raw_lineage.get("proAnalysis"), Mapping) else None),
+                proAnalysis=raw_lineage.get("proAnalysis") if isinstance(raw_lineage.get("proAnalysis"), Mapping) else None,
+                chain=raw_lineage.get("chain") if isinstance(raw_lineage.get("chain"), Mapping) else None,
+                historicalContext=raw_lineage.get("historicalContext") if isinstance(raw_lineage.get("historicalContext"), Mapping) else None),
             fullText=content.get("fullText") if isinstance(content, Mapping) else None,
             provider=content.get("provider") if isinstance(content, Mapping) else None,
             model=content.get("model") if isinstance(content, Mapping) else None,
@@ -560,7 +603,9 @@ def _market_day(value: Mapping[str, Any]) -> MarketDayOut | None:
                         low=value.get("low"), close=value.get("close"), preClose=value.get("preClose"),
                         limitUpPrice=value.get("limitUpPrice"),
                         sourceRefs=[_source_ref(item) for item in value.get("sourceRefs", []) if isinstance(item, Mapping)],
-                        obtainedAt=value.get("obtainedAt"))
+                        obtainedAt=value.get("obtainedAt"),
+                        fieldChecks=value.get("fieldChecks") if isinstance(value.get("fieldChecks"), list) else [],
+                        anomalyReason=value.get("anomalyReason") or value.get("anomaly"))
 
 
 def _evaluation_fact_refs(path: Path, company_code: str, refs: list[Mapping[str, Any]]) -> list[SourceReference]:
@@ -630,17 +675,17 @@ def _evaluation_records(path: Path) -> list[CompanyWindowEvaluationOut]:
 
 
 def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str, Mapping[str, Any]] | None = None,
-             touch_denominator: str = "eligible") -> EvaluationMetricsOut:
+             touch_denominator: str = "eligible", sample_class: str = "primary") -> EvaluationMetricsOut:
+    if sample_class not in {"primary", "overlap"}:
+        raise ValueError("成绩样本类型无效")
     now = datetime.now(timezone.utc)
     def complete_observation(item: CompanyWindowEvaluationOut) -> bool:
         return (item.d1 is not None and item.d2 is not None and
                 item.d1.availability == item.d2.availability == "available" and
                 all(isinstance(value, bool) for value in (item.d1.closeLimitUp, item.d1.touchedLimitUp,
                                                            item.d2.closeLimitUp, item.d2.touchedLimitUp)))
-    def eligible(item: CompanyWindowEvaluationOut) -> bool:
-        if item.state != "completed" or not item.primaryEligible:
-            return False
-        if not complete_observation(item):
+    def completed_observation(item: CompanyWindowEvaluationOut) -> bool:
+        if item.state != "completed" or not complete_observation(item):
             return False
         if windows is not None:
             close = windows.get(item.companyWindowId, {}).get("d2CloseAt")
@@ -650,22 +695,26 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
             except ValueError:
                 return False
         return True
-    eligible = [item for item in records if eligible(item)]
-    hits = [item for item in eligible if item.closeLimitHitAny is True]
+    observed = [item for item in records if completed_observation(item)]
+    eligible = [item for item in observed if item.sampleClass == "primary" and item.primaryEligible]
+    # Overlapping opportunities retain their own observed results, while their
+    # eligibility for the primary rate remains zero. These are distinct facts.
+    hit_records = eligible if sample_class == "primary" else [item for item in observed if item.sampleClass == "overlap"]
+    hits = [item for item in hit_records if item.closeLimitHitAny is True]
     def has_day(item: CompanyWindowEvaluationOut, state: str) -> bool:
         return any(day is not None and day.availability == state for day in (item.d1, item.d2))
-    touch_records = eligible if touch_denominator == "eligible" else [item for item in records if complete_observation(item)]
+    touch_records = eligible if touch_denominator == "eligible" else observed
     touch_count = sum(any(day is not None and day.touchedLimitUp is True for day in (item.d1, item.d2)) for item in touch_records)
     touch_base = len(touch_records)
     # Keep the independently useful known count: it may include pending or incomplete samples,
     # but it must never be the numerator of a rate whose denominator excludes them.
     known_touch_count = sum(any(day is not None and day.touchedLimitUp is True for day in (item.d1, item.d2)) for item in records)
     return EvaluationMetricsOut(sampleCount=len(records), eligibleCount=len(eligible), hitCount=len(hits),
-                                hitRate=len(hits) / len(eligible) if eligible else None,
+                                hitRate=len(hits) / len(eligible) if sample_class == "primary" and eligible else None,
                                 touchRate=touch_count / touch_base if touch_base else None,
                                 incompleteCount=sum(item.state == "incomplete" for item in records),
                                 pendingCount=sum(item.state in {"pending", "due"} for item in records),
-                                observedCompleteCount=sum(complete_observation(item) for item in records),
+                                observedCompleteCount=len(observed),
                                 knownHitCount=sum(item.closeLimitHitAny is True for item in records),
                                 touchCount=known_touch_count,
                                 suspendedCount=sum(has_day(item, "suspended") for item in records),
@@ -697,22 +746,24 @@ def _result_groups(records: list[CompanyWindowEvaluationOut], *, path: Path) -> 
                   if scan and isinstance(scan.get("configId"), str) and isinstance(scan.get("configRevision"), int) else None)
         policy = config.get("payload", {}).get("evaluationPolicy") if isinstance(config, Mapping) else None
         configs[str(window["companyWindowId"])] = policy.get("version") if isinstance(policy, Mapping) and isinstance(policy.get("version"), str) else None
-    cohort_rows: dict[tuple[str, str, str, str | None], list[CompanyWindowEvaluationOut]] = {}
+    cohort_rows: dict[tuple[str, str, str | None], list[CompanyWindowEvaluationOut]] = {}
     for record in records:
         window = windows.get(record.companyWindowId)
         if window is None:
             continue
-        key = (str(window["firstBatchId"]), str(window["d1TradeDate"]), str(window["d2TradeDate"]), configs.get(record.companyWindowId))
+        key = (str(window["d1TradeDate"]), str(window["d2TradeDate"]), configs.get(record.companyWindowId))
         cohort_rows.setdefault(key, []).append(record)
     cohorts = []
-    for (batch_id, d1, d2, version), items in sorted(cohort_rows.items()):
+    for (d1, d2, version), items in sorted(cohort_rows.items(), key=lambda entry: (entry[0][0], entry[0][1], entry[0][2] or "")):
         primary = [item for item in items if item.sampleClass == "primary"]
         overlap = [item for item in items if item.sampleClass == "overlap"]
-        cohorts.append(ResultsCohortOut(batchId=batch_id, d1TradeDate=d1, d2TradeDate=d2, evaluationVersion=version,
+        batch_ids = sorted({str(windows[item.companyWindowId]["firstBatchId"]) for item in items},
+                           key=lambda batch_id: (_instant(batches[batch_id]["availableAt"]), batch_id))
+        cohorts.append(ResultsCohortOut(batchId=batch_ids[0], batchIds=batch_ids, d1TradeDate=d1, d2TradeDate=d2, evaluationVersion=version,
             companySampleCount=len({item.companyWindowId for item in items}),
             catalystEventCount=len({opportunity["eventId"] for item in items for opportunity in by_window.get(item.companyWindowId, [])}),
             primary={group: _metrics([item for item in primary if _selection_group(item, group)], windows=windows)
-                     for group in ("all", "selected", "skipped", "unhandled")}, overlap=_metrics(overlap, windows=windows, touch_denominator="observed")))
+                     for group in ("all", "selected", "skipped", "unhandled")}, overlap=_metrics(overlap, windows=windows, touch_denominator="observed", sample_class="overlap")))
     event_rows: dict[str, list[CompanyWindowEvaluationOut]] = {}
     event_opportunities: dict[str, list[Mapping[str, Any]]] = {}
     record_by_window = {item.companyWindowId: item for item in records}
@@ -737,6 +788,56 @@ def _result_groups(records: list[CompanyWindowEvaluationOut], *, path: Path) -> 
             primary={group: _metrics([item for item in primary if _selection_group(item, group)], windows=windows)
                      for group in ("all", "selected", "skipped", "unhandled")}))
     return cohorts, event_groups
+
+
+def _morning_report(value: Mapping[str, Any], path: Path) -> MorningReportOut:
+    sections = ("major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review")
+    coverage = dict(value["coverage"])
+    items = []
+    windows = _windows(path)
+    with _reader(path) as conn:
+        for priority, section in enumerate(sections):
+            for row in value["groups"][section]:
+                content = row["content"]
+                refs = content.get("sourceRefs", [])
+                independent = content.get("independentVerificationRefs", [])
+                documents = _document_reference_map(conn, [*refs, *independent])
+                window = windows.get(row.get("companyWindowId"), {})
+                company_code = window.get("companyCode")
+                item_coverage = dict(content.get("coverage", {}))
+                items.append(MorningReportItemOut(
+                    itemId=row["itemId"], reportId=value["reportId"], scanId=value["scanId"],
+                    opportunityId=row.get("opportunityId"), companyWindowId=row.get("companyWindowId"),
+                    companyCode=company_code, companyName=_company_name(conn, company_code) if company_code else None,
+                    displayRank=content.get("displayRank"), selectionState=content.get("selectionState"),
+                    lifecycle=content.get("lifecycle"), section=section, priority=priority,
+                    summary=content["summary"], coverage=item_coverage,
+                    coverageStatus=str(item_coverage.get("status", item_coverage.get("coverageStatus", "unavailable"))),
+                    coverageGaps=list(item_coverage.get("gaps", item_coverage.get("coverageGaps", []))),
+                    sourceRefs=[_hydrate_source_ref(ref, documents) for ref in refs],
+                    independentVerificationRefs=[_hydrate_source_ref(ref, documents) for ref in independent],
+                    lifecycleEventId=content.get("lifecycleEventId"), deadlineAt=window.get("d2CloseAt"),
+                    createdAt=row.get("createdAt", value["createdAt"])))
+    return MorningReportOut(reportId=value["reportId"], scanId=value["scanId"], revision=value["revision"],
+        cutoffAt=value["cutoffAt"], createdAt=value["createdAt"], status=value["status"], coverage=coverage,
+        coverageStatus=str(coverage.get("status", coverage.get("coverageStatus", "unavailable"))),
+        coverageGaps=list(coverage.get("gaps", coverage.get("coverageGaps", []))), items=items)
+
+
+def _analysis_chain(path: Path, company_window_id: str) -> AnalysisChainOut:
+    chain = store.list_analysis_chain(company_window_id=company_window_id, db_path=path)
+    selection = _window_selection(path, company_window_id)
+    with _reader(path) as conn:
+        artifacts = _analyses(conn, selection["observationId"]) if selection and selection.get("observationId") else []
+        refs = [ref for item in chain["items"] for ref in item["sourceRefs"]]
+        documents = _document_reference_map(conn, refs)
+        items = [AnalysisChainItemOut(revision=item["revision"], inputCutoffAt=item["inputCutoffAt"],
+            requestId=item.get("requestId"), kind=item["kind"], question=item.get("question"),
+            parentRevision=item.get("parentRevision"),
+            sourceRefs=[_hydrate_source_ref(ref, documents) for ref in item["sourceRefs"]],
+            analyses=[artifact for artifact in artifacts if artifact.revision == item["revision"]],
+            job=_job_out(conn, item["job"]["taskId"]) if item.get("job") else None) for item in chain["items"]]
+    return AnalysisChainOut(companyWindowId=company_window_id, items=items)
 
 
 def create_router(db_path_provider: DbPathProvider, require_token_dependency: TokenDependency,
@@ -797,6 +898,20 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         if value is None:
             raise _not_found("K10 扫描不存在")
         return _scan(value, store.list_publication_batches(db_path=path))
+
+    @router.get("/morning-reports/latest", response_model=MorningReportOut)
+    def latest_morning_report() -> MorningReportOut:
+        path = db_path()
+        values = store.list_morning_reports(db_path=path)
+        if not values:
+            raise _not_found("晨报尚未生成")
+        return _morning_report(values[0], path)
+
+    @router.get("/morning-reports", response_model=MorningReportListOut)
+    def morning_reports(limit: int = Query(30, ge=1, le=100), cursor: str | None = None) -> MorningReportListOut:
+        path = db_path()
+        rows, next_cursor = _page(store.list_morning_reports(db_path=path), cursor, limit, lambda item: item["reportId"])
+        return MorningReportListOut(items=[_morning_report(item, path) for item in rows], page=PageMeta(nextCursor=next_cursor))
 
     @router.get("/publications", response_model=PublicationListOut)
     def list_publications(limit: int = Query(30, ge=1, le=100), cursor: str | None = None) -> PublicationListOut:
@@ -934,6 +1049,56 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                                   analysisJobId=selection["taskId"], lastActionAt=selection.get("lastActionAt"),
                                   postFreeze=bool(selection.get("postFreeze", False)), replayed=replayed)
 
+    @router.get("/company-windows/{company_window_id}/analysis-chain", response_model=AnalysisChainOut)
+    def analysis_chain(company_window_id: str) -> AnalysisChainOut:
+        path = db_path()
+        if company_window_id not in _windows(path):
+            raise _not_found("公司观察窗口不存在")
+        return _analysis_chain(path, company_window_id)
+
+    @router.post("/company-windows/{company_window_id}/analysis-requests", response_model=AnalysisRequestOut)
+    def request_analysis(company_window_id: str, command: AnalysisRequestIn) -> AnalysisRequestOut:
+        path = db_path()
+        window = _windows(path).get(company_window_id)
+        if window is None:
+            raise _not_found("公司观察窗口不存在")
+        selection = _window_selection(path, company_window_id)
+        if not selection or not selection.get("observationId"):
+            raise _conflict("请先留下该公司并完成初始分析")
+        previous = store.get_analysis_request_by_idempotency_key(idempotency_key=command.idempotencyKey, db_path=path)
+        # Freeze the explicitly inherited runtime binding, never accept model/budget settings
+        # from the client. Replays retain their original cutoff and task payload.
+        if previous:
+            cutoff, payload, budget, input_version = (previous["inputCutoffAt"], previous["taskPayload"],
+                                                      previous["taskBudget"], previous["taskInputVersion"])
+        else:
+            with _reader(path) as conn:
+                original = conn.execute("SELECT payload_json,budget_json,input_version FROM k10_tasks WHERE task_id=?", (selection["taskId"],)).fetchone()
+            if original is None:
+                raise _conflict("初始分析任务不可读取")
+            cutoff = _now()
+            payload, budget, input_version = _json(original[0], {}), _json(original[1], {}), str(original[2])
+            try:
+                market_context = collect_market_context(company_code=str(window["companyCode"]), cutoff_at=cutoff, parquet_dir=parquet_dir())
+            except MarketContextError:
+                market_context = {"status": "unavailable", "reason": "market_context_input_invalid", "asOf": cutoff, "sourceRefs": [], "recentDays": []}
+            payload = {**payload, "marketContext": market_context}
+        request_id = _stable_id("analysis-request", company_window_id, command.idempotencyKey)
+        try:
+            result = store.create_analysis_request(request_id=request_id,
+                task_id=_stable_id("analysis-task", company_window_id, command.idempotencyKey),
+                company_window_id=company_window_id, kind=command.kind, question=command.question,
+                source_refs=[ref.model_dump() for ref in command.sourceRefs], idempotency_key=command.idempotencyKey,
+                input_cutoff_at=cutoff, task_input_version=input_version, task_payload=payload, task_budget=budget,
+                created_at=_now(), db_path=path)
+        except store.K10Conflict as exc:
+            raise _conflict(str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"reason": "invalid_request", "message": str(exc)}) from exc
+        return AnalysisRequestOut(requestId=result["requestId"], companyWindowId=company_window_id,
+            observationId=result["observationId"], analysisJobId=result["taskId"], revision=result["globalRevision"],
+            parentRevision=result["parentRevision"], inputCutoffAt=result["inputCutoffAt"], replayed=result["replayed"])
+
     @router.get("/selections", response_model=SelectionListOut)
     def list_selections(state: str | None = Query(None, pattern="^(kept|skipped|unhandled)$"), limit: int = Query(30, ge=1, le=100), cursor: str | None = None) -> SelectionListOut:
         path = db_path(); values = [_selection_detail(path, str(window["companyWindowId"])) for window in store.list_company_windows(db_path=path)]
@@ -985,7 +1150,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                           reason=ApiFailure(reason="not_configured", message="两日行情采集或评价参数未配置") if configuration_missing else None,
                           asOf=max((item.updatedAt for item in records), default=None),
                           primary={group: _metrics([item for item in primary if _selection_group(item, group)], windows=windows) for group in ("all", "selected", "skipped", "unhandled")},
-                          overlap=_metrics(overlap, windows=windows, touch_denominator="observed"), records=records, cohorts=cohorts, eventGroups=event_groups)
+                          overlap=_metrics(overlap, windows=windows, touch_denominator="observed", sample_class="overlap"), records=records, cohorts=cohorts, eventGroups=event_groups)
 
     @router.get("/documents/{document_id}", response_model=SourceDocumentPageOut)
     def get_document(document_id: str, revision: int | None = Query(None, ge=1), offset: int = Query(0, ge=0), limit: int = Query(8000, ge=1, le=24000)) -> SourceDocumentPageOut:
@@ -1045,6 +1210,7 @@ def _company_window(value: Mapping[str, Any], company_name: str | None, opportun
     snapshot = SelectionSnapshotOut.model_validate(selection) if isinstance(selection, Mapping) else None
     window_id = str(value["companyWindowId"])
     return CompanyWindowOut(companyWindowId=window_id, companyCode=str(value["companyCode"]), companyName=company_name,
+                            displayRank=value.get("displayRank"), availableAt=value.get("availableAt"),
                             firstBatchId=str(value["firstBatchId"]), d0TradeDate=str(value["d0TradeDate"]), d1TradeDate=str(value["d1TradeDate"]),
                             d2TradeDate=str(value["d2TradeDate"]), d1SelectionAt=str(value["d1SelectionAt"]), d2CloseAt=str(value["d2CloseAt"]),
                             sampleClass=str(value["sampleClass"]), overlapsWindowId=value.get("overlapsWindowId"), selection=snapshot,

@@ -163,7 +163,8 @@ def test_publications_project_company_cards_and_multifield_wire_contract(tmp_pat
     assert compared["cand-1"].get("priorityReason") == "直接受益"
     assert compared["cand-2"] == {"summary": "比较", "rationale": None, "rank": 2,
                                      "priorityReason": "受益较弱", "gap": "订单兑现较慢",
-                                     "rankChangeConditions": "订单超预期", "twoDayReason": "催化尚可"}
+                                     "rankChangeConditions": "订单超预期", "twoDayReason": "催化尚可",
+                                     "historicalCases": [], "historicalCoverage": None}
     evidence = compared and detail["samples"][0]["evidence"][0]["sourceRef"]
     assert evidence["documentId"] == "doc-1" and evidence["revision"] == 1
     assert evidence["sourceKey"] == "fixture-news" and evidence["title"] == "合成公告"

@@ -16,7 +16,7 @@ struct V3Pill: View {
     private var display: String { k10StatusText(text) }
     private var tone: Color {
         if display.contains("撤回") || display.contains("失败") || display.contains("风险") { return NK.down }
-        if display.contains("待") || display.contains("缺") || display.contains("迟到") || display.contains("重叠") { return NK.amber }
+        if display.contains("待") || display.contains("缺") || display.contains("部分") || display.contains("迟到") || display.contains("重叠") { return NK.amber }
         if display.contains("完成") || display.contains("封板") { return NK.up }
         return NK.accent
     }

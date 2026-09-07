@@ -20,6 +20,62 @@ def validate_comparison(comparison: Mapping[str, Any]) -> None:
             raise ValueError(f"公司比较缺少 {key}")
 
 
+def validate_event_comparison(
+    *, summary: Any, comparisons: Mapping[str, Any], company_codes: Sequence[str],
+) -> None:
+    """Validate one coherent ordering for every company mapped to an event.
+
+    A per-company answer cannot establish that A outranks B when B is evaluated in
+    a separate call.  The comparison contract therefore carries all peers in one
+    model result and makes the editorial order inspectable before publication.
+    """
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("事件比较缺少共同事实说明")
+    expected = tuple(company_codes)
+    if len(expected) != len(set(expected)):
+        raise ValueError("同一事件的公司映射不得重复")
+    if not isinstance(comparisons, Mapping) or set(comparisons) != set(expected):
+        raise ValueError("事件比较必须恰好覆盖每家公司一次")
+
+    roles: dict[str, str] = {}
+    ranks: dict[str, int] = {}
+    for company_code in expected:
+        item = comparisons[company_code]
+        if not isinstance(item, Mapping):
+            raise ValueError("事件比较公司项无效")
+        if not isinstance(item.get("summary"), str) or not item["summary"].strip():
+            raise ValueError("事件比较缺少公司的具体理由")
+        differences = item.get("differences")
+        if not isinstance(differences, Mapping):
+            raise ValueError("事件比较缺少公司差异")
+        validate_comparison(differences)
+        rank = item.get("rank")
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+            raise ValueError("事件比较排序必须为正整数")
+        roles[company_code] = str(differences["role"])
+        ranks[company_code] = rank
+
+    primary = [code for code in expected if roles[code] == "primary"]
+    alternatives = [code for code in expected if roles[code] == "alternative"]
+    tied = [code for code in expected if roles[code] == "tied"]
+    if len(primary) > 1 or (alternatives and len(primary) != 1):
+        raise ValueError("同一事件只能有一个主推，备选必须有主推")
+    if primary and ranks[primary[0]] != 1:
+        raise ValueError("同一事件主推必须为第 1 名")
+    if tied and len({ranks[code] for code in tied}) != 1:
+        raise ValueError("差异不足的并列公司必须共享同一名次")
+    for rank in set(ranks.values()):
+        role_set = {roles[code] for code in expected if ranks[code] == rank}
+        if "tied" in role_set and len(role_set) != 1:
+            raise ValueError("并列名次不得与主推或备选混用")
+        if "tied" not in role_set and len(role_set) != 1:
+            raise ValueError("同一事件排序角色不一致")
+        if "tied" not in role_set and sum(ranks[code] == rank for code in expected) != 1:
+            raise ValueError("非并列名次只能对应一家公司")
+    if set(ranks.values()) != set(range(1, max(ranks.values()) + 1)):
+        raise ValueError("事件比较名次必须连续")
+
+
 def validate_classification(
     raw: Mapping[str, Any], *, canonical_key: str, stage_key: str,
     company_code: str, previous: Sequence[Mapping[str, Any]],

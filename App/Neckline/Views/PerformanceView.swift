@@ -108,6 +108,7 @@ private struct PerformanceFilterBar: View {
                         .padding(.vertical, 8)
                         .background(selection == item ? NK.accent : NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.control))
                         .overlay(RoundedRectangle(cornerRadius: NKRadius.control).stroke(selection == item ? NK.accent : NK.hairline, lineWidth: 0.5))
+                        .buttonStyle(.plain)
                 }
             }
         }
@@ -142,7 +143,7 @@ private struct PerformanceDashboard: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
                     MetricTile(title: "两日收盘封板", value: "\(primary.hitCount)", note: "仅完整主样本")
                     MetricTile(title: "两日触板", value: primary.touchRate.map { String(format: "%.1f%%", $0 * 100) } ?? "待核", note: "分母同可核主样本")
-                    MetricTile(title: "资料不完整", value: "\(primary.incompleteCount + primary.dataGapCount)", note: "缺数单列，不作未命中")
+                    MetricTile(title: "资料不完整", value: "\(primary.incompleteCount)", note: "包含缺数子集，不作未命中")
                     MetricTile(title: "未冻结", value: "\(primary.selectionPendingCount)", note: "尚未归入三组")
                 }
 
@@ -200,7 +201,7 @@ private struct CohortResults: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("D1 \(k10DisplayTime(cohort.d1TradeDate)) · D2 \(k10DisplayTime(cohort.d2TradeDate))")
                                     .font(NKFont.headline)
-                                Text("批次 \(cohort.batchId) · 公司 \(cohort.companySampleCount) · 事件 \(cohort.catalystEventCount)")
+                                Text("来源批次 \(cohort.sourceBatchText) · 公司 \(cohort.companySampleCount) · 事件 \(cohort.catalystEventCount)")
                                     .font(NKFont.caption)
                                     .foregroundStyle(NK.textSecondary)
                             }
@@ -212,7 +213,7 @@ private struct CohortResults: View {
                         CohortMetricRow(title: "明确略过", metric: cohort.primary["skipped"])
                         CohortMetricRow(title: "未处理", metric: cohort.primary["unhandled"])
                         Divider().overlay(NK.hairline)
-                        CohortMetricRow(title: "重叠观察", metric: cohort.overlap, showsRate: false)
+                        CohortMetricRow(title: "重叠观察", metric: cohort.overlap, showsRate: false, observedOnly: true)
                     }
                 }
             }
@@ -220,16 +221,26 @@ private struct CohortResults: View {
     }
 }
 
+private extension K10ResultsCohort {
+    var sourceBatchText: String {
+        let values = batchIds ?? []
+        return (values.isEmpty ? [batchId] : values).joined(separator: "、")
+    }
+}
+
 private struct CohortMetricRow: View {
     let title: String
     let metric: K10EvaluationMetrics?
     var showsRate = true
+    var observedOnly = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title).font(NKFont.callout).frame(width: 72, alignment: .leading)
             if let metric {
-                Text("样本 \(metric.sampleCount) · 可核 \(metric.eligibleCount) · 收盘封板 \(metric.hitCount)")
+                Text(observedOnly
+                     ? "样本 \(metric.sampleCount) · 可核 \(metric.observedCompleteCount) · 收盘封板 \(metric.hitCount)"
+                     : "样本 \(metric.sampleCount) · 可核 \(metric.eligibleCount) · 收盘封板 \(metric.hitCount)")
                     .font(NKFont.caption.monospacedDigit())
                     .foregroundStyle(NK.textSecondary)
                 Spacer(minLength: 0)
@@ -361,6 +372,19 @@ private struct MarketDayBlock: View {
                 } else {
                     Text(dayMessage(day.availability)).foregroundStyle(NK.amber)
                 }
+                if let reason = day.anomalyReason, !reason.isEmpty {
+                    Label("异常原因：\(k10AnomalyReasonText(reason))", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(NK.amber)
+                }
+                if let checks = day.fieldChecks, !checks.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("字段核验").font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.textSecondary)
+                        ForEach(checks) { check in
+                            Text("\(k10FieldNameText(check.field))：\(fieldCheckText(check))")
+                                .foregroundStyle(check.state == "verified" ? NK.textSecondary : NK.amber)
+                        }
+                    }
+                }
                 if !day.sourceRefs.isEmpty {
                     ForEach(day.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
                 }
@@ -382,6 +406,14 @@ private struct MarketDayBlock: View {
         case "data_gap": return "行情缺数，等待补齐"
         default: return "状态待核"
         }
+    }
+    private func fieldCheckText(_ check: K10MarketFieldCheck) -> String {
+        let sources = check.sourceValues.map { "\(k10MarketSourceText($0.source))=\(valueText($0.value))" }.joined(separator: "；")
+        return "\(k10StatusText(check.state)) · \(k10ReasonText(check.reason))\(sources.isEmpty ? "" : "（\(sources)）")"
+    }
+    private func valueText(_ value: K10Value?) -> String {
+        guard let value else { return "未记录" }
+        switch value { case .string(let item): return item; case .number(let item): return String(item); case .bool(let item): return item ? "是" : "否"; case .null: return "未记录"; case .object, .array: return "复合记录" }
     }
 }
 

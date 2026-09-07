@@ -11,12 +11,13 @@ from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .config import ConfigurationStatus, validate_run_config
 from .types import EventRevision
 from .universe import CompanyMetadataProvider, Eligibility, evaluate_company
-from .opportunity_discovery import NEW_KINDS, validate_classification, validate_comparison
+from .opportunity_discovery import NEW_KINDS, validate_classification, validate_event_comparison
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -98,6 +99,21 @@ class CandidateComparison:
     # not a score, probability, or a replacement for the explicit hard exclusions.
     rank: int | None = None
     market_context: Mapping[str, Any] | None = None
+    historical_cases: tuple[Mapping[str, Any], ...] = ()
+    historical_coverage: Mapping[str, Any] = field(default_factory=lambda: {
+        "state": "unavailable", "requestedOutcomes": ["success", "flat", "failure"],
+        "presentOutcomes": [], "missingOutcomes": ["success", "flat", "failure"],
+        "reason": "historical_context_not_configured", "sourceRefs": [],
+    })
+
+
+@dataclass(frozen=True)
+class EventComparison:
+    """One event-wide comparison, with every mapped company evaluated together."""
+
+    summary: str
+    candidates: Mapping[str, CandidateComparison]
+    evidence_refs: tuple[EvidenceRef, ...]
 
 
 class DiscoveryModel(Protocol):
@@ -111,10 +127,10 @@ class DiscoveryModel(Protocol):
     ) -> Sequence[CompanyMappingDraft]:
         ...
 
-    def compare(
-        self, *, event: EventDraft, verification: Verification, mapping: CompanyMappingDraft,
-        peers: Sequence[CompanyMappingDraft],
-    ) -> CandidateComparison:
+    def compare_event(
+        self, *, event: EventDraft, verification: Verification,
+        mappings: Sequence[CompanyMappingDraft],
+    ) -> EventComparison:
         ...
 
     def prioritize(self, *, candidates: Sequence["DiscoveryCandidate"]) -> Sequence[tuple[str, str]]:
@@ -175,10 +191,41 @@ def _validate_refs(refs: Sequence[EvidenceRef], available: set[EvidenceRef], *, 
         raise ValueError(f"{label} 引用了未输入的原始资料：{','.join(unknown)}")
 
 
-def _reject_probability(value: Mapping[str, Any]) -> None:
-    forbidden = [key for key in value if "probab" in key.lower() or "概率" in key]
-    if forbidden:
-        raise ValueError(f"K10 候选比较不得输出未校准概率：{','.join(forbidden)}")
+def _reject_uncalibrated_prediction(value: Any, *, path: str = "output") -> None:
+    """Reject affirmative limit-up probabilities and mechanical scores anywhere.
+
+    The product may explicitly say that it does *not* estimate a probability.  We
+    therefore reject a numeric prediction attached to probability/score language,
+    rather than blindly rejecting those terms themselves.
+    """
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if ("probab" in lowered or "概率" in key_text or "score" in lowered or "评分" in key_text or "分数" in key_text):
+                if isinstance(item, (int, float)) and not isinstance(item, bool):
+                    raise ValueError(f"K10 比较不得输出未校准概率或机械预测分数：{path}.{key_text}")
+                if isinstance(item, str) and re.fullmatch(r"\s*(?:\d+(?:\.\d+)?%?|0?\.\d+|\d+\s*分)\s*", item.replace("％", "%")):
+                    raise ValueError(f"K10 比较不得输出未校准概率或机械预测分数：{path}.{key_text}")
+            _reject_uncalibrated_prediction(item, path=f"{path}.{key_text}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_uncalibrated_prediction(item, path=f"{path}[{index}]")
+        return
+    if not isinstance(value, str):
+        return
+    text = value.replace("％", "%")
+    probability = r"(?:涨停|封板)\s*(?:概率|几率)"
+    score = r"(?:(?:机械|预测|模型|综合|优先)\s*)?(?:评分|分数|score)"
+    probability_numeric = r"(?:\d{1,3}(?:\.\d+)?\s*%?|0?\.\d+)"
+    score_numeric = r"(?:\d+(?:\.\d+)?\s*分?|0?\.\d+)"
+    if re.search(rf"{probability}\s*(?:为|是|约|达|有|[:：=])?\s*{probability_numeric}", text, re.IGNORECASE) or re.search(
+        rf"{probability_numeric}\s*(?:的)?\s*(?:概率|几率)\s*(?:涨停|封板)", text, re.IGNORECASE
+    ) or re.search(
+        rf"{score}\s*(?:为|是|约|达|有|[:：=])?\s*{score_numeric}", text, re.IGNORECASE
+    ):
+        raise ValueError(f"K10 比较不得输出未校准概率或机械预测分数：{path}")
 
 
 def run_discovery(
@@ -216,19 +263,47 @@ def run_discovery(
             verification = verify(event)
             available.update(document.evidence_ref for document in verification.documents)
             _validate_refs(verification.evidence_refs, available, label="重点核验")
-            events.append(event)  # stage / denial always survive as an event revision input.
-            verified_events.append(EventVerification(event, verification))
             if leaseguard is not None:
                 leaseguard()
             mappings = tuple(model.map_companies(event=event, verification=verification))
+            if not mappings:
+                events.append(event)  # stage / denial always survive as an event revision input.
+                verified_events.append(EventVerification(event, verification))
+                continue
+            if len({mapping.company_code for mapping in mappings}) != len(mappings):
+                raise ValueError("同一事件的公司映射不得重复")
+            comparer = getattr(model, "compare_event", None)
+            if not callable(comparer):
+                raise ValueError("发现模型缺少同事件整体公司比较")
+            if leaseguard is not None:
+                leaseguard()
+            event_comparison = comparer(event=event, verification=verification, mappings=mappings)
+            _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
+            event_candidates = event_comparison.candidates
+            validate_event_comparison(
+                summary=event_comparison.summary, comparisons={
+                    code: {"summary": item.summary, "differences": item.differences, "rank": item.rank}
+                    for code, item in event_candidates.items()
+                }, company_codes=tuple(mapping.company_code for mapping in mappings),
+            )
+            _reject_uncalibrated_prediction(event_comparison.summary, path="eventComparison.summary")
+            _reject_uncalibrated_prediction({
+                code: {"summary": item.summary, "differences": item.differences}
+                for code, item in event_candidates.items()
+            }, path="eventComparison.candidates")
+            event = replace(event, facts={**event.facts, "eventComparison": {
+                "summary": event_comparison.summary,
+                "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
+                                 for ref in event_comparison.evidence_refs],
+            }})
+            events.append(event)
+            verified_events.append(EventVerification(event, verification))
             for mapping in mappings:
                 _validate_refs(mapping.relation_evidence, available, label="公司映射")
                 if leaseguard is not None:
                     leaseguard()
-                comparison = model.compare(event=event, verification=verification, mapping=mapping, peers=mappings)
+                comparison = event_candidates[mapping.company_code]
                 _validate_refs(comparison.evidence_refs, available, label="候选比较")
-                _reject_probability(comparison.differences)
-                validate_comparison(comparison.differences)
                 status = evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at))
                 classifier = getattr(model, "classify_opportunity", None)
                 if not callable(classifier):
@@ -240,6 +315,7 @@ def run_discovery(
                     canonical_key=event.canonical_key, stage_key=event.stage_key,
                     company_code=mapping.company_code, previous=prior,
                 )
+                _reject_uncalibrated_prediction(decision, path="classification")
                 if decision["kind"] in NEW_KINDS and verification.state != "verified":
                     # A model cannot promote a source document into a formal opportunity by
                     # calling it ``initial``/``material_stage``/``independent`` while the
@@ -369,12 +445,16 @@ class SqliteDiscoveryWriter:
     def append_candidate(self, *, event: EventRevision, mapping_id: str, candidate: DiscoveryCandidate) -> None:
         from .store import create_candidate
         from .types import OpportunityPublicationInput
+        from .historical_cases import freeze_historical_context
 
         identity = _stable_id("candidate", self._scan_id, event.event_id, str(event.revision),
                               candidate.mapping.company_code)
+        historical_context = freeze_historical_context({"historicalCases": list(candidate.comparison.historical_cases),
+                                                        "historicalCoverage": candidate.comparison.historical_coverage})
         comparison = {"summary": candidate.comparison.summary, "differences": candidate.comparison.differences,
                       "evidenceRefs": self._refs(candidate.comparison.evidence_refs), "rank": candidate.comparison.rank,
-                      "classification": dict(candidate.opportunity)}
+                      "classification": dict(candidate.opportunity),
+                      **historical_context}
         if candidate.comparison.market_context is not None:
             comparison["marketContext"] = dict(candidate.comparison.market_context)
         create_candidate(
@@ -478,6 +558,9 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
         index = event_index.get(id(candidate.event))
         if index is None:
             raise ValueError("发现候选不属于本次冻结事件")
+        from .historical_cases import freeze_historical_context
+        historical_context = freeze_historical_context({"historicalCases": list(candidate.comparison.historical_cases),
+                                                        "historicalCoverage": candidate.comparison.historical_coverage})
         return {"eventIndex": index, "mapping": {"companyCode": candidate.mapping.company_code,
                 "affectedStage": candidate.mapping.affected_stage,
                 "relationEvidence": [_ref_payload(ref) for ref in candidate.mapping.relation_evidence],
@@ -485,10 +568,11 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
                 "comparison": {"summary": candidate.comparison.summary,
                 "differences": dict(candidate.comparison.differences),
                 "evidenceRefs": [_ref_payload(ref) for ref in candidate.comparison.evidence_refs],
-                "rank": candidate.comparison.rank, "marketContext": candidate.comparison.market_context},
+                "rank": candidate.comparison.rank, "marketContext": candidate.comparison.market_context,
+                **historical_context},
                 "opportunity": dict(candidate.opportunity),
                 "eligibility": {"state": candidate.eligibility.state, "reason": candidate.eligibility.reason}}
-    return {"version": 2, "state": run.state, "events": [event_payload(event) for event in run.events],
+    return {"version": 3, "state": run.state, "events": [event_payload(event) for event in run.events],
             "verifications": [verification_payload(event) for event in run.events],
             "candidates": [candidate_payload(item) for item in run.candidates],
             "deferred": [candidate_payload(item) for item in run.deferred],
@@ -500,7 +584,7 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
 
 def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str, Any]) -> DiscoveryRun:
     """Rebuild a frozen draft without model or source access, for idempotent publication."""
-    if frozen.get("version") != 2 or frozen.get("state") != "completed":
+    if frozen.get("version") != 3 or frozen.get("state") != "completed":
         raise ValueError("冻结发现结果版本或状态无效")
     config = validate_run_config(configuration, scope="discovery")
     if not config.ready:
@@ -545,6 +629,9 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
                 raise ValueError("冻结发现结果映射无效")
             if not isinstance(comparison.get("summary"), str) or not isinstance(comparison.get("differences"), Mapping):
                 raise ValueError("冻结发现结果比较无效")
+            from .historical_cases import freeze_historical_context
+            historical_context = freeze_historical_context({"historicalCases": comparison.get("historicalCases"),
+                                                            "historicalCoverage": comparison.get("historicalCoverage")})
             rank = comparison.get("rank")
             if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int) or rank < 1):
                 raise ValueError("冻结发现结果排序无效")
@@ -555,7 +642,8 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
                 CompanyMappingDraft(mapping["companyCode"], mapping["affectedStage"], _refs_from_payload(mapping.get("relationEvidence")),
                                     dict(mapping["inference"]), mapping["uncertainty"]),
                 CandidateComparison(comparison["summary"], dict(comparison["differences"]),
-                                    _refs_from_payload(comparison.get("evidenceRefs")), rank, comparison.get("marketContext")),
+                                    _refs_from_payload(comparison.get("evidenceRefs")), rank, comparison.get("marketContext"),
+                                    tuple(historical_context["historicalCases"]), historical_context["historicalCoverage"]),
                 Eligibility(eligibility["state"], eligibility["reason"]), dict(row["opportunity"])))
         return tuple(items)
     selected, deferred, pending, excluded = candidates("candidates"), candidates("deferred"), candidates("metadataPending"), candidates("excluded")
@@ -575,7 +663,7 @@ def load_documents_from_store(*, cutoff_at: str, db_path: Path) -> tuple[Discove
 
 
 __all__ = [
-    "CandidateComparison", "CompanyMappingDraft", "DiscoveryCandidate", "DiscoveryDocument", "DiscoveryModel",
+    "CandidateComparison", "CompanyMappingDraft", "DiscoveryCandidate", "DiscoveryDocument", "DiscoveryModel", "EventComparison",
     "DiscoveryRun", "DiscoveryWriter", "EvidenceRef", "EventDraft", "EventVerification", "SqliteDiscoveryWriter", "Verification",
     "VerificationFunction", "freeze_discovery_run", "thaw_discovery_run", "load_documents_from_store", "persist_discovery", "run_discovery",
 ]

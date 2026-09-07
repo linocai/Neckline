@@ -14,7 +14,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import polars as pl
 
-from neckline.calendar.trading_calendar import official_is_trading_day, prev_trading_day
+from neckline.calendar.trading_calendar import CN_TZ, official_is_trading_day, prev_trading_day
 from neckline.data.board import Board, classify
 from neckline.data.limit_derived import is_st_name
 from neckline.data.market_data import load_namechange, load_stock_basic
@@ -23,10 +23,11 @@ from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
 
 from . import store
 from .config import validate_run_config
-from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryModel,
+from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryModel, EventComparison,
                         EvidenceRef, EventDraft, SqliteDiscoveryWriter, Verification,
                         freeze_discovery_run, persist_discovery, run_discovery, thaw_discovery_run)
 from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
+from .historical_cases import apply_historical_assessments
 from .providers import resolve_deepseek_v4_pro
 from .tushare_news import TuShareMajorNewsAdapter
 from .universe import CHINEXT, CompanyMetadata, CompanyMetadataProvider
@@ -116,11 +117,13 @@ def _metadata_resolver_from_configuration(configuration: Mapping[str, Any]) -> P
 
 class DeepSeekDiscoveryModel(DiscoveryModel):
     """真实 DeepSeek V4 Pro 结构化调用；原始资料始终作为不可信数据传入。"""
-    def __init__(self, provider: LLMProvider, *, market_context_loader: Callable[[str], Mapping[str, Any]] | None = None) -> None:
+    def __init__(self, provider: LLMProvider, *, market_context_loader: Callable[[str], Mapping[str, Any]] | None = None,
+                 historical_context_loader: Callable[..., Mapping[str, Any]] | None = None) -> None:
         self.provider, self.usage_records, self._documents, self._verification_documents = provider, [], {}, {}
         self._previous_opportunities: Sequence[Mapping[str, Any]] = ()
         self._market_context_loader = market_context_loader
         self._market_snapshots: dict[str, Mapping[str, Any]] = {}
+        self._historical_context_loader = historical_context_loader
         self._scan_cutoff_at: str | None = None
 
     def set_previous_opportunities(self, previous: Sequence[Mapping[str, Any]]) -> None:
@@ -276,32 +279,71 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             out.append(CompanyMappingDraft(row["companyCode"],row["affectedStage"],refs,dict(row["inference"]),row["uncertainty"]))
         return tuple(out)
 
-    def compare(self, *, event: EventDraft, verification: Verification, mapping: CompanyMappingDraft, peers: Sequence[CompanyMappingDraft]) -> CandidateComparison:
-        for company in peers:
+    def compare_event(self, *, event: EventDraft, verification: Verification,
+                      mappings: Sequence[CompanyMappingDraft]) -> EventComparison:
+        for company in mappings:
             if company.company_code not in self._market_snapshots:
                 self._market_snapshots[company.company_code] = (
                     self._market_context_loader(company.company_code) if self._market_context_loader else
                     {"status": "unavailable", "reason": "market_context_not_configured"}
                 )
-        market_context = {company.company_code: self._market_snapshots[company.company_code] for company in peers}
+        market_context = {company.company_code: self._market_snapshots[company.company_code] for company in mappings}
         evidence, available, _ = self._event_evidence(event)
-        raw=self._json(operation=("完成K10-v1.4公司比较：主推/备选/差异不足并列，具体优先理由、差距、什么事实会改变排序及未来两个交易日的催化；"
-                                  "不输出分数或概率，sourceRefs 只能引用传入 evidence。"),
+        if self._historical_context_loader is None:
+            historical_context: Mapping[str, Any] = {"historicalCases": [], "historicalCoverage": {
+                "state": "unavailable", "requestedOutcomes": ["success", "flat", "failure"],
+                "presentOutcomes": [], "missingOutcomes": ["success", "flat", "failure"],
+                "reason": "historical_context_not_configured", "sourceRefs": [],
+            }}
+        else:
+            if self._scan_cutoff_at is None:
+                raise PipelineError("历史案例缺少扫描截止时间")
+            historical_context = self._historical_context_loader(
+                event=event, mappings=mappings, as_of=datetime.fromisoformat(self._scan_cutoff_at),
+            )
+        if not isinstance(historical_context.get("historicalCases"), list) or not isinstance(historical_context.get("historicalCoverage"), Mapping):
+            raise PipelineError("历史案例上下文无效")
+        raw=self._json(operation=("对同一事件的全部公司完成一次K10-v1.4整体比较：共同事实只在 summary 说明；"
+                                  "每家公司只能出现一次，给出主推/备选/差异不足并列、事件内 rank、具体优先理由、差距、"
+                                  "什么事实会改变排序及未来两个交易日催化。不得逐票独立判断，不输出分数或概率。"
+                                  "sourceRefs 只能引用传入 evidence。"),
                        payload={"event":{"canonicalKey":event.canonical_key,"stageKey":event.stage_key,
                                          "facts":event.facts},
                                 "verification":{"state":verification.state,"summary":verification.summary,
                                                 "sourceRefs":[_ref_payload(ref) for ref in verification.evidence_refs]},
-                                "evidence":evidence,"marketContext":market_context,"candidate":mapping.company_code,
+                                "evidence":evidence,"marketContext":market_context,
+                                "historicalCases": historical_context["historicalCases"],
+                                "historicalCoverage": historical_context["historicalCoverage"],
                                 "peers":[{"companyCode":p.company_code,"affectedStage":p.affected_stage,
                                           "inference":p.inference,"uncertainty":p.uncertainty,
-                                          "relationEvidence":[_ref_payload(ref) for ref in p.relation_evidence]} for p in peers],
-                                "output":{"summary":"string","differences":{"role":"primary|alternative|tied",
-                                          "priorityReason":"string","gap":"string","rankChangeConditions":"string",
-                                          "twoDayReason":"string"},"sourceRefs":[{"documentId":"string","revision":1}]}})
-        if not isinstance(raw.get("summary"),str) or not isinstance(raw.get("differences"),Mapping): raise PipelineError("比较输出不完整")
-        refs = _refs(raw.get("sourceRefs"))
-        self._require_frozen_refs(refs, available=available, label="候选比较")
-        return CandidateComparison(raw["summary"],dict(raw["differences"]),refs, market_context=market_context)
+                                          "relationEvidence":[_ref_payload(ref) for ref in p.relation_evidence]} for p in mappings],
+                                "output":{"summary":"string","sourceRefs":[{"documentId":"string","revision":1}],
+                                  "historicalAssessments":[{"caseId":"string","outcome":"success|flat|failure","summary":"string",
+                                      "sourceQuote":"逐字存在于该 case 的 sourceBasedDescription","sourceRefs":[{"documentId":"string","revision":1}]}],
+                                  "candidates":[{"companyCode":"string","summary":"string","role":"primary|alternative|tied","rank":1,
+                                    "priorityReason":"string","gap":"string","rankChangeConditions":"string","twoDayReason":"string",
+                                    "sourceRefs":[{"documentId":"string","revision":1}]}]}})
+        if not isinstance(raw.get("summary"),str) or not isinstance(raw.get("candidates"),list):
+            raise PipelineError("事件整体比较输出不完整")
+        try:
+            historical_context = apply_historical_assessments(
+                context=historical_context, assessments=raw.get("historicalAssessments", []),
+            )
+        except ValueError as exc:
+            raise PipelineError("历史案例分类输出无效") from exc
+        event_refs = _refs(raw.get("sourceRefs"))
+        self._require_frozen_refs(event_refs, available=available, label="事件比较")
+        candidates: dict[str, CandidateComparison] = {}
+        for item in raw["candidates"]:
+            if not isinstance(item, Mapping) or not isinstance(item.get("companyCode"), str) or not isinstance(item.get("summary"), str):
+                raise PipelineError("事件整体比较公司项无效")
+            differences = {key: item.get(key) for key in ("role", "priorityReason", "gap", "rankChangeConditions", "twoDayReason")}
+            refs = _refs(item.get("sourceRefs"))
+            self._require_frozen_refs(refs, available=available, label="候选比较")
+            candidates[item["companyCode"]] = CandidateComparison(item["summary"], differences, refs, item.get("rank"),
+                market_context=market_context, historical_cases=tuple(historical_context["historicalCases"]),
+                historical_coverage=dict(historical_context["historicalCoverage"]))
+        return EventComparison(raw["summary"], candidates, event_refs)
 
     def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
         return self._json(
@@ -515,22 +557,29 @@ def _publish_scan(*, run, scan_id: str, kind: str, db_path: Path, created_at: st
 
 
 def _morning_review_matches(*, run, existing: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Freeze evidence links for prior offered/observed candidates; no user action is changed."""
+    """Freeze only evidence relevant to prior formal candidates, with independent refs separate."""
     matches: list[dict[str, Any]] = []
     seen: set[tuple[str, str, tuple[tuple[str, int], ...]]] = set()
     discoveries = (*run.candidates, *run.deferred, *run.metadata_pending, *run.excluded, *run.updates)
     for item in discoveries:
         event_id = _event_id(item.event.canonical_key)
-        matching = [candidate for candidate in existing if candidate["companyCode"] == item.mapping.company_code or candidate["eventId"] == event_id]
+        matching = [candidate for candidate in existing
+                    if candidate["companyCode"] == item.mapping.company_code or candidate["eventId"] == event_id]
         if not matching:
             continue
-        refs = [{"documentId": ref.document_id, "revision": ref.revision} for ref in item.event.source_refs]
+        refs = [_ref_payload(ref) for ref in item.event.source_refs]
+        event_refs = {(ref.document_id, ref.revision) for ref in item.event.source_refs}
+        verification = getattr(item, "verification", None)
+        independent = [_ref_payload(ref) for ref in getattr(verification, "evidence_refs", ())
+                       if (ref.document_id, ref.revision) not in event_refs]
         for candidate in matching:
-            key = (candidate["candidateId"], event_id, tuple((ref["documentId"], ref["revision"]) for ref in refs))
+            key = (candidate["candidateId"], event_id,
+                   tuple((ref["documentId"], ref["revision"]) for ref in refs))
             if key not in seen:
                 seen.add(key)
                 matches.append({"candidateId": candidate["candidateId"], "eventId": event_id,
-                                "morningEvidenceRefs": refs})
+                                "morningEvidenceRefs": refs,
+                                "independentVerificationRefs": independent})
     return matches
 
 
@@ -544,11 +593,57 @@ def _morning_budget(configuration: Mapping[str, Any]) -> Mapping[str, Any] | Non
     return {"maxAttempts": policy["maxAttempts"], "costLimit": policy["costLimit"]}
 
 
+def _morning_item_id(*, scan_id: str, opportunity_id: str, cutoff_at: str, marker: str) -> str:
+    return "morning_item_" + sha256((scan_id + "\x1f" + opportunity_id + "\x1f" + cutoff_at + "\x1f" + marker).encode()).hexdigest()[:32]
+
+
+def _morning_refs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [{"documentId": item["documentId"], "revision": item["revision"]}
+            for item in value if isinstance(item, Mapping) and isinstance(item.get("documentId"), str)
+            and item["documentId"] and isinstance(item.get("revision"), int) and not isinstance(item["revision"], bool)]
+
+
+def _morning_fallback_item(*, scan_id: str, target: Mapping[str, Any], cutoff_at: str,
+                           source_status: str, summary: str, task_status: str,
+                           reason_status: str = "needs_review", material: bool = False,
+                           is_new: bool = False, independent_refs: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any] | None:
+    """Make an honest item when a child cannot produce one; never drop a formal target."""
+    from .morning import MorningReportError, build_morning_report_item
+
+    opportunity_id = target.get("opportunityId")
+    window_id = target.get("companyWindowId")
+    rank = target.get("displayRank")
+    selection = target.get("selectionState")
+    lifecycle = target.get("lifecycle", target.get("state"))
+    refs = _morning_refs(target.get("morningEvidenceRefs")) or _morning_refs(target.get("sourceRefs"))
+    if not all(isinstance(value, str) and value for value in (opportunity_id, window_id, selection, lifecycle)) or not isinstance(rank, int) or rank < 1:
+        return None
+    try:
+        item = build_morning_report_item(
+            item_id=_morning_item_id(scan_id=scan_id, opportunity_id=opportunity_id, cutoff_at=cutoff_at, marker=task_status + summary),
+            opportunity_id=opportunity_id, company_window_id=window_id, display_rank=rank,
+            selection_state=selection, lifecycle=lifecycle, source_status=source_status,
+            reason_status=reason_status, material=material, is_new=is_new, summary=summary,
+            coverage={"state": source_status, "taskStatus": task_status}, source_refs=refs,
+            independent_verification_refs=_morning_refs(list(independent_refs)), task_status=task_status,
+            content={"fallback": True},
+        ).to_store_item()
+    except MorningReportError:
+        return None
+    item["status"] = task_status
+    return item
+
+
 def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, Any]], configuration: Mapping[str, Any],
-                         config_id: str, config_revision: int, source_status: str, now: datetime) -> tuple[str, list[str]]:
+                         config_id: str, config_revision: int, source_status: str, now: datetime,
+                         report_items: list[dict[str, Any]] | None = None) -> tuple[str, list[str]]:
     """Persist and sequentially execute only this scan's frozen child reviews before its terminal state."""
     from .morning_runtime import morning_review_handler
 
+    if not matches:
+        return "completed", []
     budget = _morning_budget(configuration)
     if budget is None:
         return "not_configured", []
@@ -565,16 +660,20 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
         if scan is None:
             outcomes.append("failed")
             continue
-        refs = match["morningEvidenceRefs"]
+        refs = _morning_refs(match.get("morningEvidenceRefs"))
         identity = json.dumps({"candidateId": candidate["candidateId"], "eventId": match["eventId"], "cutoff": parent.input_cutoff_at, "refs": refs}, ensure_ascii=False, sort_keys=True)
         digest = sha256(identity.encode()).hexdigest()[:32]
         task_id = f"morning_review_{digest}"
         payload = {"candidateId": candidate["candidateId"], "observationId": observations.get(candidate["candidateId"]),
                    "originalCutoffAt": scan["cutoffAt"], "morningEvidenceRefs": refs,
-                   "sourceStatus": source_status, "configId": config_id, "configRevision": config_revision}
+                   "independentVerificationRefs": _morning_refs(match.get("independentVerificationRefs")),
+                   "companyWindowId": match.get("companyWindowId"), "displayRank": match.get("displayRank"),
+                   "selectionState": match.get("selectionState"), "lifecycle": match.get("lifecycle"),
+                   "isNew": bool(match.get("isNew")), "sourceStatus": source_status,
+                   "configId": config_id, "configRevision": config_revision}
         store.enqueue_task(task_id=task_id, kind="morning_review", idempotency_key=f"morning_review:{digest}",
                            input_version=f"{config_id}@{config_revision}", input_cutoff_at=parent.input_cutoff_at,
-                           payload=payload, budget=budget, created_at=_text(_now()), db_path=parent.db_path)
+                           payload=payload, budget=budget, created_at=_text(now), db_path=parent.db_path)
         task_ids.append(task_id)
         prior_task = store.get_task(task_id=task_id, db_path=parent.db_path)
         if prior_task is not None and prior_task.status in {"failed", "not_configured"}:
@@ -582,12 +681,180 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
             # child is safe: its idempotency key and evidence refs remain unchanged, and the
             # worker still enforces its frozen maxAttempts budget.
             store.retry_task(task_id=task_id, expected_attempt_count=prior_task.attempt_count,
-                             retried_at=_text(_now()), db_path=parent.db_path)
+                             retried_at=_text(now), db_path=parent.db_path)
         child = run_once(db_path=parent.db_path, worker_id=f"{parent.task.task_id}:morning", lease_for=timedelta(minutes=10),
                          handlers={"morning_review": morning_review_handler}, task_id=task_id, clock=_now)
         existing = child or store.get_task(task_id=task_id, db_path=parent.db_path)
-        outcomes.append("failed" if existing is None else existing.status)
+        status = "failed" if existing is None else existing.status
+        outcomes.append(status)
+        if report_items is not None:
+            execution = store.task_execution_input(task_id=task_id, db_path=parent.db_path) if existing is not None else None
+            checkpoint = execution.get("checkpoint") if isinstance(execution, Mapping) and isinstance(execution.get("checkpoint"), Mapping) else {}
+            item = checkpoint.get("reportItem") if isinstance(checkpoint, Mapping) else None
+            if status == "completed" and isinstance(item, Mapping):
+                report_items.append(dict(item))
+            else:
+                fallback = _morning_fallback_item(
+                    scan_id=parent.task.task_id, target=match, cutoff_at=parent.input_cutoff_at,
+                    source_status=source_status, task_status="not_configured" if status == "not_configured" else "failed",
+                    summary="晨间复核未完成，资料待核。",
+                    is_new=bool(match.get("isNew")), independent_refs=match.get("independentVerificationRefs", ()),
+                )
+                if fallback is not None:
+                    report_items.append(fallback)
     return ("completed" if all(value == "completed" for value in outcomes) else "partial"), task_ids
+
+
+def _terminal_lifecycle_refs(target: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Use true withdrawal/risk evidence, never an old positive comparison."""
+    events = target.get("lifecycle")
+    if not isinstance(events, list):
+        return []
+    for event in reversed(events):
+        if not isinstance(event, Mapping):
+            continue
+        kind = event.get("kind")
+        if isinstance(kind, str) and ("withdraw" in kind or "risk" in kind):
+            refs = _morning_refs(event.get("sourceRefs"))
+            if refs:
+                return refs
+    return []
+
+
+def _merge_morning_matches(matches: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Merge same-candidate deltas without leaking another candidate's sources."""
+    merged: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for match in matches:
+        candidate_id = match.get("candidateId")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            continue
+        bucket = merged.setdefault(candidate_id, {"morningEvidenceRefs": [], "independentVerificationRefs": []})
+        for field in ("morningEvidenceRefs", "independentVerificationRefs"):
+            known = {(ref["documentId"], ref["revision"]) for ref in bucket[field]}
+            for ref in _morning_refs(match.get(field)):
+                key = (ref["documentId"], ref["revision"])
+                if key not in known:
+                    bucket[field].append(ref)
+                    known.add(key)
+    return merged
+
+
+def _morning_target_items(*, scan_id: str, cutoff_at: datetime, db_path: Path,
+                          morning_refs: Sequence[Mapping[str, Any]],
+                          review_matches: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
+    """Project active targets and the one just-expired D2 target into this morning report."""
+    try:
+        prior_day = prev_trading_day(cutoff_at.astimezone(CN_TZ).date(), db_path=db_path)
+    except RuntimeError:
+        prior_day = None
+    today = cutoff_at.astimezone(CN_TZ).date()
+    matched = _merge_morning_matches(review_matches)
+    values: list[dict[str, Any]] = []
+    for target in store.list_morning_report_targets(as_of=cutoff_at, scan_id=scan_id, db_path=db_path):
+        try:
+            d1 = date.fromisoformat(str(target["d1TradeDate"]))
+            d2 = date.fromisoformat(str(target["d2TradeDate"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        in_window = d1 <= today <= d2
+        just_expired = prior_day is not None and d2 == prior_day
+        if not (in_window or just_expired):
+            continue
+        candidate_id = target.get("candidateId")
+        candidate = store.get_candidate(candidate_id=str(candidate_id), db_path=db_path) if candidate_id else None
+        event_id = candidate.get("eventId") if isinstance(candidate, Mapping) else None
+        delta = matched.get(candidate_id) if isinstance(candidate_id, str) else None
+        terminal_refs = _terminal_lifecycle_refs(target) if target.get("state") == "withdrawn" else []
+        source_refs = (_morning_refs(delta.get("morningEvidenceRefs")) if delta else []) or _morning_refs(target.get("sourceRefs"))
+        independent = (_morning_refs(delta.get("independentVerificationRefs")) if delta else []) or terminal_refs
+        values.append({**dict(target), "eventId": event_id, "displayRank": target.get("displayRank"),
+                       "lifecycle": target.get("state"), "isNew": bool(target.get("isNew")),
+                       "morningEvidenceRefs": source_refs, "independentVerificationRefs": independent,
+                       "reviewMatched": delta is not None, "justExpired": just_expired})
+    return values
+
+
+def _unrecordable_morning_item(*, scan_id: str, target: Mapping[str, Any], cutoff_at: str, summary: str) -> dict[str, Any]:
+    """Last-resort coverage record for an already-published target with corrupt old refs."""
+    opportunity_id = str(target.get("opportunityId") or "unknown")
+    return {"itemId": _morning_item_id(scan_id=scan_id, opportunity_id=opportunity_id, cutoff_at=cutoff_at, marker="corrupt"),
+            "opportunityId": target.get("opportunityId"), "companyWindowId": target.get("companyWindowId"),
+            "status": "failed", "content": {"displayRank": target.get("displayRank"),
+            "selectionState": target.get("selectionState"), "lifecycle": target.get("lifecycle", target.get("state")),
+            "section": "needs_review", "priority": "review", "summary": summary,
+            "coverage": {"state": "unavailable", "reason": "formal_target_reference_missing"},
+            "sourceRefs": _morning_refs(target.get("sourceRefs")), "independentVerificationRefs": []}}
+
+
+def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: datetime,
+                             configuration: Mapping[str, Any], config_id: str, config_revision: int,
+                             source_status: str, morning_refs: Sequence[Mapping[str, Any]], generated_at: datetime,
+                             review_matches: Sequence[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], list[str], str]:
+    """Append one immutable five-section report for every formal target in scope."""
+    targets = _morning_target_items(scan_id=scan_id, cutoff_at=cutoff_at, db_path=parent.db_path,
+                                    morning_refs=morning_refs, review_matches=review_matches)
+    report_items: list[dict[str, Any]] = []
+    runnable: list[dict[str, Any]] = []
+    for target in targets:
+        lifecycle = target.get("lifecycle")
+        if source_status != "complete":
+            item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
+                source_status=source_status, task_status="failed", reason_status="needs_review",
+                summary="晨间来源覆盖不完整，无法确认当前状态。", is_new=bool(target.get("isNew")))
+        elif lifecycle == "withdrawn":
+            item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
+                source_status="complete", task_status="completed", reason_status="invalidated",
+                summary="该正式机会已撤回，保留为重大反证。", is_new=False,
+                independent_refs=target.get("independentVerificationRefs", ()))
+        elif target.get("justExpired") or lifecycle == "expired":
+            item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
+                source_status="complete", task_status="completed", reason_status="current",
+                summary="固定 D1/D2 观察窗口已到期。", is_new=False)
+        elif not target.get("reviewMatched"):
+            item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
+                source_status="complete", task_status="completed", reason_status="current", material=False,
+                summary="本晨未发现与该正式机会绑定的新增资料，继续按固定窗口跟踪。",
+                is_new=bool(target.get("isNew")))
+        elif not _morning_refs(target.get("morningEvidenceRefs")):
+            item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
+                source_status="unavailable", task_status="failed", reason_status="needs_review",
+                summary="正式机会缺少可读取的冻结晨间资料。", is_new=bool(target.get("isNew")))
+        else:
+            runnable.append(target)
+            continue
+        report_items.append(item if item is not None else _unrecordable_morning_item(
+            scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at, summary="正式机会资料引用不可读取，待核。"))
+    review_state, task_ids = _run_morning_reviews(parent=parent, matches=runnable, configuration=configuration,
+        config_id=config_id, config_revision=config_revision, source_status=source_status, now=generated_at,
+        report_items=report_items)
+    known = {item.get("opportunityId") for item in report_items}
+    for target in targets:
+        if target.get("opportunityId") not in known:
+            report_items.append(_unrecordable_morning_item(scan_id=scan_id, target=target,
+                cutoff_at=parent.input_cutoff_at, summary="晨间复核没有返回可读取的报告项目，待核。"))
+    groups = {section: [] for section in ("major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review")}
+    for item in report_items:
+        content = item.get("content") if isinstance(item, Mapping) else None
+        section = content.get("section") if isinstance(content, Mapping) else None
+        groups[section if section in groups else "needs_review"].append(dict(item))
+    for section in groups:
+        groups[section].sort(key=lambda item: (item.get("content", {}).get("displayRank") if isinstance(item.get("content"), Mapping) and isinstance(item["content"].get("displayRank"), int) else 2**31, str(item.get("itemId"))))
+    needs_review = len(groups["needs_review"])
+    failed_items = sum(1 for item in report_items if item.get("status") != "completed")
+    coverage_status = "complete" if source_status == "complete" and review_state == "completed" and not needs_review and not failed_items else "partial"
+    gaps: list[str] = []
+    if source_status != "complete": gaps.append("morning_source_" + source_status)
+    if review_state != "completed": gaps.append("morning_review_" + review_state)
+    if needs_review: gaps.append("needs_review_items")
+    if failed_items: gaps.append("failed_report_items")
+    stamp = _text(generated_at)
+    report_id = "morning_report_" + sha256((scan_id + "\x1f" + stamp + "\x1f" + str(len(report_items))).encode()).hexdigest()[:32]
+    report = store.append_morning_report(report_id=report_id, scan_id=scan_id, cutoff_at=parent.input_cutoff_at,
+        generated_at=stamp, status="completed" if coverage_status == "complete" else "partial",
+        coverage={"coverageStatus": coverage_status, "sourceStatus": source_status, "targetCount": len(targets),
+                  "reviewState": review_state, "taskIds": task_ids, "needsReviewCount": needs_review,
+                  "failedItemCount": failed_items, "gaps": gaps}, groups=groups, created_at=stamp, db_path=parent.db_path)
+    return report, task_ids, review_state
 
 
 def _scan_window_from_coverage(coverage: Mapping[str, Any]) -> ScanWindow | None:
@@ -872,41 +1139,98 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         return TaskResult("not_configured", "configuration", checkpoint, "发现模型或策略配置未就绪")
     return TaskResult("completed", "partial_coverage" if ingestion.state == "partial" else "discovery_completed", checkpoint)
 
+def _append_unavailable_morning_report(*, context: TaskContext, cutoff: datetime, frozen: Mapping[str, Any],
+                                       reason: str, generated_at: datetime) -> TaskResult:
+    """Even a configuration/source failure gets a visible five-group morning report."""
+    scan_id = _scan_id(kind="morning", cutoff_at=cutoff, identity=context.task.task_id)
+    existing = store.get_scan(scan_id=scan_id, db_path=context.db_path)
+    if existing is None:
+        store.create_scan(scan_id=scan_id, window_kind="morning", cutoff_at=context.input_cutoff_at,
+            config_id=frozen.get("configId"), config_revision=frozen.get("revision"), status="running",
+            coverage={"pipelineState": "morning_unavailable", "reason": reason}, created_at=_text(generated_at),
+            completed_at=None, db_path=context.db_path)
+        store.finalize_scan(scan_id=scan_id, status="not_configured", coverage={"pipelineState": "morning_unavailable", "reason": reason},
+                            completed_at=_text(generated_at), db_path=context.db_path)
+    try:
+        report, child_ids, review_state = _assemble_morning_report(parent=context, scan_id=scan_id, cutoff_at=cutoff,
+            configuration=frozen["payload"], config_id=frozen["configId"], config_revision=frozen["revision"],
+            source_status="unavailable", morning_refs=(), generated_at=generated_at)
+    except (store.K10Conflict, ValueError) as exc:
+        return TaskResult("failed", "morning_report", {"scanId": scan_id}, str(exc))
+    return TaskResult("not_configured", "morning_report_unavailable", {"scanId": scan_id,
+        "morningReportId": report["reportId"], "morningReportRevision": report["revision"],
+        "morningReviewTaskIds": child_ids, "morningReviewState": review_state}, reason)
+
+
 def production_scan_handler(context: TaskContext, *, tushare_token: str | None, parquet_dir: Path, now=_now) -> TaskResult:
     payload=context.task.payload; kind=payload.get("windowKind")
     if kind not in {"evening","morning"}: return TaskResult("not_configured","configuration",error="扫描任务缺少 windowKind")
     frozen=store.read_run_config(config_id=payload.get("configId", ""),revision=payload.get("configRevision",0),db_path=context.db_path) if isinstance(payload.get("configId"),str) and isinstance(payload.get("configRevision"),int) else None
     if frozen is None: return TaskResult("not_configured","configuration",error="扫描任务缺少冻结配置")
-    resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path)
-    if resolution.provider is None or not tushare_token: return TaskResult("not_configured","configuration",error=resolution.error or "TuShare token 未配置")
-    bound=context.budget.get("maxSourceRequests")
-    if isinstance(bound,bool) or not isinstance(bound,int) or bound<1: return TaskResult("not_configured","configuration",error="来源分页上限未配置")
     try: cutoff=datetime.fromisoformat(context.input_cutoff_at)
     except ValueError: return TaskResult("failed","input",error="任务截止时间无效")
-    if cutoff.tzinfo is None or official_is_trading_day(cutoff.date(),db_path=context.db_path) is not True: return TaskResult("not_configured","calendar",error="交易日历缺覆盖或该日非交易日")
-    context.require_lease()
+    if cutoff.tzinfo is None: return TaskResult("failed","input",error="任务截止时间无效")
     started_at = now()
+    resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path)
+    if resolution.provider is None or not tushare_token:
+        if kind == "morning":
+            return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
+                reason=resolution.error or "TuShare token 未配置", generated_at=started_at)
+        return TaskResult("not_configured","configuration",error=resolution.error or "TuShare token 未配置")
+    bound=context.budget.get("maxSourceRequests")
+    if isinstance(bound,bool) or not isinstance(bound,int) or bound<1:
+        if kind == "morning":
+            return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
+                reason="来源分页上限未配置", generated_at=started_at)
+        return TaskResult("not_configured","configuration",error="来源分页上限未配置")
+    if official_is_trading_day(cutoff.date(),db_path=context.db_path) is not True:
+        if kind == "morning":
+            return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
+                reason="交易日历缺覆盖或该日非交易日", generated_at=started_at)
+        return TaskResult("not_configured","calendar",error="交易日历缺覆盖或该日非交易日")
+    context.require_lease()
     from .market_context import collect_market_context
+    from .historical_cases import make_historical_context_loader
     market_loader = lambda code: collect_market_context(company_code=code, cutoff_at=context.input_cutoff_at, parquet_dir=parquet_dir)
+    policy = frozen["payload"].get("taskPolicies", {}).get("discovery", {}) if isinstance(frozen["payload"].get("taskPolicies"), Mapping) else {}
+    try:
+        metadata_resolver = _metadata_resolver_from_configuration(frozen["payload"])
+    except PipelineError as exc:
+        if kind == "morning":
+            return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
+                reason=str(exc), generated_at=started_at)
+        return TaskResult("not_configured", "configuration", error=str(exc))
+    verifier = TavilyEvidenceGateway(db_path=context.db_path, request_limit=policy.get("maxVerificationRequests"),
+                                     metadata_resolver=metadata_resolver)
+    historical_loader = make_historical_context_loader(db_path=context.db_path, gateway=verifier, clock=now)
     result = execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,
-                        adapter=TuShareMajorNewsAdapter(token=tushare_token,request_bound=bound),model=DeepSeekDiscoveryModel(resolution.provider, market_context_loader=market_loader),metadata=SqliteCompanyMetadataProvider(db_path=context.db_path),created_at=started_at,
+                        adapter=TuShareMajorNewsAdapter(token=tushare_token,request_bound=bound),model=DeepSeekDiscoveryModel(resolution.provider, market_context_loader=market_loader, historical_context_loader=historical_loader.load),metadata=SqliteCompanyMetadataProvider(db_path=context.db_path),created_at=started_at,
                         config_id=frozen["configId"],config_revision=frozen["revision"],
                         scan_identity=context.task.task_id,
-                        bootstrap_cutoff=payload.get("sourceBootstrapCutoff"), leaseguard=context.require_lease)
-    if kind != "morning" or result.status != "completed":
+                        bootstrap_cutoff=payload.get("sourceBootstrapCutoff"), leaseguard=context.require_lease,
+                        verification_gateway=verifier)
+    if kind != "morning":
         return result
-    matches = result.checkpoint.get("morningReviewMatches")
-    if not isinstance(matches, list):
-        return TaskResult("failed", "morning_review_inputs", result.checkpoint, "晨间定点复核输入无效")
-    source_status = "complete" if result.checkpoint.get("ingestionState") == "completed" else "partial"
-    review_state, child_ids = _run_morning_reviews(parent=context, matches=matches, configuration=frozen["payload"],
-        config_id=frozen["configId"], config_revision=frozen["revision"], source_status=source_status, now=now())
-    checkpoint = {**result.checkpoint, "morningReviewTaskIds": child_ids, "morningReviewState": review_state}
-    if review_state == "completed":
-        return TaskResult("completed", "morning_reviews_completed", checkpoint)
-    if review_state == "not_configured":
-        return TaskResult("not_configured", "morning_reviews_configuration", checkpoint, "晨间定点复核参数未配置")
-    return TaskResult("failed", "morning_reviews_partial", checkpoint, "晨间定点复核存在未完成项")
+    scan_id = result.checkpoint.get("scanId") if isinstance(result.checkpoint, Mapping) else None
+    scan = store.get_scan(scan_id=scan_id, db_path=context.db_path) if isinstance(scan_id, str) else None
+    if scan is None:
+        return result
+    coverage = scan.get("coverage") if isinstance(scan.get("coverage"), Mapping) else {}
+    refs = _morning_refs(coverage.get("inputDocumentRefs"))
+    source_status = "complete" if result.status == "completed" and result.checkpoint.get("ingestionState") == "completed" else (
+        "partial" if result.status == "completed" else "unavailable")
+    review_matches = coverage.get("morningReviewMatches") if isinstance(coverage.get("morningReviewMatches"), list) else ()
+    try:
+        report, child_ids, review_state = _assemble_morning_report(parent=context, scan_id=scan_id, cutoff_at=cutoff,
+            configuration=frozen["payload"], config_id=frozen["configId"], config_revision=frozen["revision"],
+            source_status=source_status, morning_refs=refs, generated_at=now(), review_matches=review_matches)
+    except (store.K10Conflict, ValueError) as exc:
+        return TaskResult("failed", "morning_report", {**result.checkpoint, "scanId": scan_id}, str(exc))
+    checkpoint = {**result.checkpoint, "morningReportId": report["reportId"], "morningReportRevision": report["revision"],
+                  "morningReviewTaskIds": child_ids, "morningReviewState": review_state}
+    if result.status != "completed":
+        return TaskResult(result.status, result.stage, checkpoint, result.error)
+    return TaskResult("completed", "morning_report_completed" if review_state == "completed" and source_status == "complete" else "morning_report_partial", checkpoint)
 
 
 def production_handlers(*, tushare_token: str | None, parquet_dir: Path) -> dict[str,Any]:

@@ -43,7 +43,7 @@ def test_cutover_preserves_connections_removes_retired_domain_and_restores(legac
     backup = tmp_path / "immutable-backup.sqlite"
     original_tables = _tables(legacy)
     receipt = migration.migrate_to_v3(target=legacy, confirmed_target=legacy, backup=backup, writers_stopped=True)
-    assert schema_version(legacy) == 2
+    assert schema_version(legacy) == 3
     assert {"k10_tasks", "k10_observations", "k10_opportunities", "k10_company_windows", "k10_publication_batches"} <= _tables(legacy)
     assert "k10_plan_revisions" not in _tables(legacy)
     assert not {"reviews", "fact_packs", "k9_selection_batches", "k9_selection_candidates"} & _tables(legacy)

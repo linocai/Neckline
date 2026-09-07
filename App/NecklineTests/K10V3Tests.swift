@@ -119,6 +119,79 @@ final class K10V3Tests: XCTestCase {
         if case .ready = model.state {} else { XCTFail("synthetic model should load") }
     }
 
+    @MainActor func testSupplementaryRequestRefreshesAnAlreadyOpenAnalysisChain() async throws {
+        let service = ControlledK10Service(batchID: "analysis-refresh")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let window = try XCTUnwrap(model.companyWindows.first)
+        await model.loadAnalysisChain(for: window)
+        XCTAssertEqual(model.analysisChains[window.companyWindowId]?.items.first?.revision, 1)
+
+        await model.requestAnalysis(kind: "user_question", question: "新资料会改变判断吗？", sourceRefs: [], for: window)
+        XCTAssertEqual(model.analysisChains[window.companyWindowId]?.items.first?.revision, 2)
+        XCTAssertFalse(model.analysisRequestInFlightWindowIDs.contains(window.companyWindowId))
+    }
+
+    @MainActor func testRetryUsesTheFailedAnalysisChainJobWithoutCreatingAnotherRequest() async throws {
+        let service = ControlledK10Service(batchID: "analysis-retry")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let window = try XCTUnwrap(model.companyWindows.first)
+        let failed = K10Job(schemaVersion: "k10-api-v2", jobId: "supplementary-failed", kind: "analysis", status: "failed", stage: "debate", attemptCount: 2, inputVersion: "K10-v1.4", inputCutoffAt: "2026-09-07T09:00:00+08:00", createdAt: "2026-09-07T09:01:00+08:00", updatedAt: "2026-09-07T09:02:00+08:00", error: K10JobFailure(reason: "provider_failed", message: "合成失败"))
+        await model.retryAnalysis(job: failed, companyWindowID: window.companyWindowId)
+        let retryCount = await service.retryCallCount()
+        XCTAssertEqual(retryCount, 1)
+    }
+
+    @MainActor func testAnalysisChainLoadCannotCrossConnectionGeneration() async throws {
+        let gate = RefreshGate()
+        let old = ControlledK10Service(batchID: "analysis-old", analysisChainGate: gate)
+        let current = ControlledK10Service(batchID: "analysis-current")
+        let services = ServiceBox(old)
+        let model = AppModel(serviceFactory: { services.service }, cacheClearer: {})
+        await model.refresh()
+        let oldWindow = try XCTUnwrap(model.companyWindows.first)
+        let loading = Task { await model.loadAnalysisChain(for: oldWindow) }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        services.service = current
+        await model.refresh()
+        await gate.open()
+        await loading.value
+        XCTAssertTrue(model.analysisChains.isEmpty)
+    }
+
+    @MainActor func testCancelledAnalysisChainLoadDoesNotReportNetworkFailure() async throws {
+        let service = ControlledK10Service(batchID: "analysis-cancelled", analysisChainCancellation: true)
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let window = try XCTUnwrap(model.companyWindows.first)
+
+        await model.loadAnalysisChain(for: window)
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertFalse(model.offline)
+        XCTAssertNil(model.toast)
+        XCTAssertNil(model.analysisChains[window.companyWindowId])
+    }
+
+    @MainActor func testNewerAnalysisChainReloadWinsWithinOneConnection() async throws {
+        let gate = RefreshGate()
+        let service = ControlledK10Service(batchID: "analysis-overlap", analysisChainGate: gate, firstAnalysisChainRevision: 1, laterAnalysisChainRevision: 2)
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let window = try XCTUnwrap(model.companyWindows.first)
+
+        let firstLoad = Task { await model.loadAnalysisChain(for: window) }
+        await gate.waitUntilEntered()
+        await model.loadAnalysisChain(for: window)
+        await gate.open()
+        await firstLoad.value
+
+        XCTAssertEqual(model.analysisChains[window.companyWindowId]?.items.first?.revision, 2)
+        XCTAssertNil(model.toast)
+    }
+
     func testSourceReferenceIdentityKeepsDocumentRevisionsDistinct() {
         let first = K10SourceReference(documentId: "doc", factId: nil, companyCode: nil, tradeDate: nil, revision: 1, sourceKey: "test", title: nil, url: nil, excerpt: nil, publishedAt: "2026-09-06", publishedPrecision: "date", fetchedAt: nil)
         let second = K10SourceReference(documentId: "doc", factId: nil, companyCode: nil, tradeDate: nil, revision: 2, sourceKey: "test", title: nil, url: nil, excerpt: nil, publishedAt: "2026-09-06", publishedPrecision: "date", fetchedAt: nil)
@@ -126,6 +199,64 @@ final class K10V3Tests: XCTestCase {
         let marketFirst = K10SourceReference(documentId: nil, factId: "fact", companyCode: "300001.SZ", tradeDate: "2026-09-07", revision: 1, sourceKey: "market", title: nil, url: nil, excerpt: nil, publishedAt: nil, publishedPrecision: "unknown", fetchedAt: nil)
         let marketSecond = K10SourceReference(documentId: nil, factId: "fact", companyCode: "300001.SZ", tradeDate: "2026-09-08", revision: 2, sourceKey: "market", title: nil, url: nil, excerpt: nil, publishedAt: nil, publishedPrecision: "unknown", fetchedAt: nil)
         XCTAssertNotEqual(marketFirst.id, marketSecond.id)
+    }
+
+    func testV302RealProducerContractDecodesMorningLifecycleAnalysisHistoryAndMarket() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["NK_V302_API_URL"], let baseURL = URL(string: raw) else {
+            throw XCTSkip("set NK_V302_API_URL to run the Schema 3 producer-to-Swift contract test")
+        }
+        let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
+        let latestReport = try await client.latestMorningReport()
+        let report = try XCTUnwrap(latestReport)
+        XCTAssertFalse(report.items.isEmpty)
+        let allowedSections: Set<String> = ["major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review"]
+        XCTAssertTrue(report.items.allSatisfy { allowedSections.contains($0.section) })
+        XCTAssertTrue(report.items.contains { !$0.sourceRefs.isEmpty })
+
+        var details: [K10OpportunityDetail] = []
+        for opportunityID in Set(report.items.compactMap(\.opportunityId)) {
+            details.append(try await client.opportunity(id: opportunityID))
+        }
+        let lifecycleDetail = try XCTUnwrap(details.first(where: { $0.lifecycleEvents.contains { containsNestedValue($0.content) } }))
+        XCTAssertEqual(try JSONDecoder().decode(K10OpportunityDetail.self, from: JSONEncoder().encode(lifecycleDetail)), lifecycleDetail)
+
+        let windows = try await client.companyWindows()
+        let selections = try await client.selections()
+        let analyzedSelection = try XCTUnwrap(selections.first(where: { detail in
+            detail.state == "kept" && detail.analyses.contains { $0.role == "pro" && $0.fullText != nil }
+        }))
+        let windowID = try XCTUnwrap(windows.first(where: { $0.companyWindowId == analyzedSelection.companyWindowId })?.companyWindowId)
+        let chain = try await client.analysisChain(companyWindowID: windowID)
+        XCTAssertGreaterThanOrEqual(chain.items.count, 2)
+        for item in chain.items {
+            XCTAssertNotNil(item.analyses.first(where: { $0.role == "pro" })?.fullText, "分析第 \(item.revision) 版必须完整保留正方")
+            XCTAssertNotNil(item.analyses.first(where: { $0.role == "con" })?.fullText, "分析第 \(item.revision) 版必须完整保留反方")
+            XCTAssertEqual(item.job?.status, "completed", "分析第 \(item.revision) 版任务应已完成")
+            XCTAssertEqual(item.job?.attemptCount, 1, "分析第 \(item.revision) 版不应遗留重试次数")
+        }
+        let historical = try XCTUnwrap(details.flatMap(\.samples).first(where: { $0.comparison.historicalCoverage != nil })?.comparison.historicalCoverage)
+        XCTAssertFalse(historical.requestedOutcomes.isEmpty)
+
+        let results = try await client.results()
+        XCTAssertGreaterThan(results.overlap.observedCompleteCount, 0)
+        XCTAssertEqual(results.overlap.eligibleCount, 0)
+        let cohort = try XCTUnwrap(results.cohorts?.first)
+        let sourceBatches = try XCTUnwrap(cohort.batchIds)
+        XCTAssertFalse(sourceBatches.isEmpty)
+        XCTAssertTrue(sourceBatches.contains(cohort.batchId))
+        let day = try XCTUnwrap(results.records.flatMap { [$0.d1, $0.d2] }.compactMap { $0 }.first(where: { !($0.fieldChecks ?? []).isEmpty }))
+        XCTAssertFalse(day.fieldChecks?.isEmpty ?? true)
+    }
+
+    private func containsNestedValue(_ content: [String: K10Value]) -> Bool {
+        func nested(_ value: K10Value) -> Bool {
+            switch value {
+            case .array: return true
+            case .object(let object): return !object.isEmpty || object.values.contains(where: nested)
+            case .string, .number, .bool, .null: return false
+            }
+        }
+        return content.values.contains(where: nested)
     }
 
     func testMarketSnapshotCollectedAtDecodesWithoutInventingFetchedAt() throws {
@@ -166,6 +297,27 @@ final class K10V3Tests: XCTestCase {
             XCTAssertEqual(error, .notConfigured("两日评价参数未配置", ["evaluationPolicy", "marketCollection"]))
             XCTAssertEqual(error.localizedDescription, "两日评价参数未配置：evaluationPolicy、marketCollection")
         } catch { XCTFail("unexpected error: \(error)") }
+    }
+
+    func testCancelledTransportIsNotMappedToNetworkUnavailable() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CancelledRequestProtocol.self]
+        let client = K10APIClient(baseURL: URL(string: "https://cancelled.example")!, token: "synthetic", session: URLSession(configuration: configuration))
+
+        do {
+            _ = try await client.results()
+            XCTFail("cancelled transport must propagate cancellation")
+        } catch is CancellationError {
+            // A task being dismissed is not a connection outage.
+        } catch {
+            XCTFail("unexpected cancellation mapping: \(error)")
+        }
+    }
+
+    func testReasonTextKeepsRecordedNaturalLanguageAndMakesUnknownCodeAuditable() {
+        XCTAssertEqual(k10ReasonText("公开资料缺少可追溯平淡与失败分类"), "公开资料缺少可追溯平淡与失败分类")
+        XCTAssertEqual(k10ReasonText("unmapped_worker_reason"), "已记录原因：unmapped_worker_reason（请结合来源核对）")
+        XCTAssertEqual(k10ReasonText(nil), "未记录具体原因，查看来源核对")
     }
 
     @MainActor func testHealthyEmptyFirstRunIsReady() async {
@@ -225,6 +377,22 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(model.state, .ready)
         XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
         XCTAssertFalse(model.offline)
+    }
+
+    @MainActor func testSameConnectionNewRefreshWinsOverEarlierFailure() async {
+        let gate = RefreshGate()
+        let service = ControlledK10Service(batchID: "same-connection", publicationGate: gate, firstPublicationFailure: .networkUnavailable("旧刷新超时"))
+        let model = AppModel(serviceFactory: { service }, cacheClearer: {})
+
+        let firstRefresh = Task { await model.refresh() }
+        await gate.waitUntilEntered()
+        await model.refresh()
+        await gate.open()
+        await firstRefresh.value
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertFalse(model.offline)
+        XCTAssertEqual(model.publications.map(\.batchId), ["same-connection"])
     }
 
     @MainActor func testAdminSettingsCannotCrossConnectionGenerations() async {
@@ -503,6 +671,13 @@ private final class FailureEnvelopeProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class CancelledRequestProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "cancelled.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() { client?.urlProtocol(self, didFailWithError: URLError(.cancelled)) }
+    override func stopLoading() {}
+}
+
 private actor RefreshGate {
     private var opened = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -535,22 +710,36 @@ private actor ControlledK10Service: K10Servicing {
     private let healthGate: RefreshGate?
     private let publicationGate: RefreshGate?
     private let opportunityGate: RefreshGate?
+    private let analysisChainGate: RefreshGate?
     private let healthFailure: K10APIError?
+    private let firstPublicationFailure: K10APIError?
+    private let analysisChainCancellation: Bool
+    private let firstAnalysisChainRevision: Int?
+    private let laterAnalysisChainRevision: Int?
     private let fixture = K10SyntheticUIService()
+    private var analysisRevision = 1
+    private var retryCalls = 0
+    private var publicationCalls = 0
+    private var analysisChainCalls = 0
 
-    init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, healthFailure: K10APIError? = nil) {
+    init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
         self.batchID = batchID
         self.empty = empty
         self.healthGate = healthGate
         self.publicationGate = publicationGate
         self.opportunityGate = opportunityGate
+        self.analysisChainGate = analysisChainGate
         self.healthFailure = healthFailure
+        self.firstPublicationFailure = firstPublicationFailure
+        self.analysisChainCancellation = analysisChainCancellation
+        self.firstAnalysisChainRevision = firstAnalysisChainRevision
+        self.laterAnalysisChainRevision = laterAnalysisChainRevision
     }
 
     func health() async throws -> K10Health {
         if let healthGate { await healthGate.wait() }
         if let healthFailure { throw healthFailure }
-        return K10Health(status: "ok", version: "v3.0.1")
+        return K10Health(status: "ok", version: "3.0.2 Build 33")
     }
 
     func latestScan(window: String) async throws -> K10Scan {
@@ -559,7 +748,10 @@ private actor ControlledK10Service: K10Servicing {
     }
 
     func publications() async throws -> [K10Publication] {
-        if let publicationGate { await publicationGate.wait() }
+        publicationCalls += 1
+        let isFirstPublication = publicationCalls == 1
+        if isFirstPublication, let publicationGate { await publicationGate.wait() }
+        if isFirstPublication, let firstPublicationFailure { throw firstPublicationFailure }
         guard !empty else { return [] }
         return [K10Publication(schemaVersion: "k10-api-v2", batchId: batchID, scanId: "scan-\(batchID)", publicationKind: "evening", availableAt: "2026-09-07T21:00:00+08:00", createdAt: "2026-09-07T21:00:00+08:00", sampleCount: 1)]
     }
@@ -577,12 +769,28 @@ private actor ControlledK10Service: K10Servicing {
         if empty { return [] }
         return try await fixture.selections()
     }
+    func analysisChain(companyWindowID: String) async throws -> K10AnalysisChain {
+        analysisChainCalls += 1
+        let isFirstChain = analysisChainCalls == 1
+        let revision = isFirstChain ? (firstAnalysisChainRevision ?? analysisRevision) : (laterAnalysisChainRevision ?? analysisRevision)
+        if isFirstChain, let analysisChainGate { await analysisChainGate.wait() }
+        if analysisChainCancellation { throw CancellationError() }
+        return K10AnalysisChain(
+            schemaVersion: "k10-api-v2", companyWindowId: companyWindowID,
+            items: [K10AnalysisChainItem(revision: revision, inputCutoffAt: "2026-09-07T09:00:00+08:00", requestId: revision == 1 ? nil : "request-\(revision)", kind: revision == 1 ? "initial" : "user_question", question: revision == 1 ? nil : "后续追问", parentRevision: revision == 1 ? nil : revision - 1, sourceRefs: [], analyses: [], job: nil)]
+        )
+    }
+    func requestAnalysis(companyWindowID: String, request: K10AnalysisRequest) async throws -> K10AnalysisRequestResult {
+        analysisRevision += 1
+        return K10AnalysisRequestResult(schemaVersion: "k10-api-v2", requestId: "request-\(analysisRevision)", companyWindowId: companyWindowID, observationId: "observation-1", analysisJobId: "analysis-job-\(analysisRevision)", revision: analysisRevision, parentRevision: analysisRevision - 1, inputCutoffAt: "2026-09-07T09:00:00+08:00", replayed: false)
+    }
     func document(id: String, revision: Int?, offset: Int, limit: Int) async throws -> K10DocumentPage { try await fixture.document(id: id, revision: revision, offset: offset, limit: limit) }
     func job(id: String) async throws -> K10Job { try await fixture.job(id: id) }
-    func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job { try await fixture.retryJob(id: id, expectedAttemptCount: expectedAttemptCount) }
+    func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job { retryCalls += 1; return try await fixture.retryJob(id: id, expectedAttemptCount: expectedAttemptCount) }
     func results() async throws -> K10Results { try await fixture.results() }
     func configuration() async throws -> K10Configuration { try await fixture.configuration() }
     func usageSummary() async throws -> K10UsageSummary { try await fixture.usageSummary() }
+    func retryCallCount() -> Int { retryCalls }
 }
 
 private actor ControlledAdminService: K10AdminServicing {

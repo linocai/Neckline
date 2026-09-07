@@ -98,8 +98,23 @@ def test_con_failure_is_immutable_and_retry_only_calls_con(tmp_path, monkeypatch
     assert store.load_analysis_revision(observation_id="observation-1", input_cutoff_at=NOW, analysis_kind="pro", db_path=path)["content"]["fullText"] == "正方"
     with sqlite3.connect(path) as connection:
         rows = connection.execute("SELECT revision,status,content_json FROM k10_analysis_revisions WHERE analysis_kind='con' ORDER BY revision").fetchall()
-    assert [(revision, status) for revision, status, _ in rows] == [(1, "failed"), (2, "completed")]
+    assert [(revision, status) for revision, status, _ in rows] == [(1, "failed"), (1, "completed")]
     assert "secret upstream body" not in rows[0][2]
+
+
+def test_initial_pro_failure_retries_same_revision_and_keeps_failed_attempt(tmp_path, monkeypatch):
+    path = tmp_path / "k10.db"; task = _seed(path)
+    first = FakeProvider([LLMResult(ok=False, provider="deepseek", model="deepseek-v4-pro")])
+    monkeypatch.setattr(runtime, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", first, "deepseek", None))
+    assert runtime.analysis_handler(_context(task, path)).stage == "pro_failed"
+    second = FakeProvider([_ok("正方重试"), _ok("反方")])
+    monkeypatch.setattr(runtime, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", second, "deepseek", None))
+    assert runtime.analysis_handler(_context(task, path)).status == "completed"
+    with sqlite3.connect(path) as connection:
+        pro_rows = connection.execute("SELECT revision,status FROM k10_analysis_revisions WHERE analysis_kind='pro' ORDER BY rowid").fetchall()
+        con_rows = connection.execute("SELECT revision,status FROM k10_analysis_revisions WHERE analysis_kind='con' ORDER BY rowid").fetchall()
+    assert pro_rows == [(1, "failed"), (1, "completed")]
+    assert con_rows == [(1, "completed")]
 
 
 def test_retry_uses_pro_frozen_missing_market_context_not_late_payload(tmp_path, monkeypatch):
