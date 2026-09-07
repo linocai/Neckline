@@ -845,7 +845,7 @@ def production_handlers(*, tushare_token: str | None, parquet_dir: Path) -> dict
 
     return {"evening_scan":lambda context:production_scan_handler(context,tushare_token=tushare_token,parquet_dir=parquet_dir),
             "morning_scan":lambda context:production_scan_handler(context,tushare_token=tushare_token,parquet_dir=parquet_dir),
-            "analysis": production_analysis_handler(parquet_dir=parquet_dir),
+            "analysis": production_analysis_handler(),
             "morning_review": morning_review_handler}
 
 __all__=["DeepSeekDiscoveryModel","PipelineError","SqliteCompanyMetadataProvider","execute_scan","production_handlers","production_scan_handler"]

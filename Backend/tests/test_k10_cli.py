@@ -9,6 +9,7 @@ import pytest
 
 from neckline.k10 import store
 from neckline.k10.cli import configure, enqueue_scan, main
+from neckline.k10.notifications import initialize_notifications_schema
 from neckline.k10.pipeline import execute_scan
 from neckline.k10.schema import initialize_schema
 from neckline.k10.worker import run_once
@@ -97,6 +98,20 @@ def test_cli_enqueue_missing_calendar_still_fails(tmp_path):
     with pytest.raises(RuntimeError, match="交易日历缺覆盖"):
         main(["enqueue", "--db", str(path), "--kind", "evening", "--trading-day", "2026-09-11",
               "--config-id", "fixture", "--config-revision", str(revision)])
+
+
+def test_cli_worker_once_with_empty_queue_constructs_production_handlers_without_network(tmp_path, monkeypatch):
+    path = tmp_path / "empty-worker.sqlite"
+    initialize_schema(path)
+    initialize_notifications_schema(path)
+    monkeypatch.setenv("TUSHARE_TOKEN", "unused-for-empty-queue")
+
+    assert main([
+        "worker", "--db", str(path), "--parquet-dir", str(tmp_path / "parquet"),
+        "--worker-id", "empty-worker", "--tushare-token-env", "TUSHARE_TOKEN", "--once",
+    ]) == 0
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM k10_tasks").fetchone() == (0,)
 
 
 def test_cli_enqueue_then_worker_handler_reaches_source_event_and_candidate(tmp_path, capsys):
