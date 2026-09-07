@@ -1,8 +1,8 @@
 # Neckline
 
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-07 已发布
-**3.0.0 / 双端 Build 30 / K10-v1.4**，后端发布集合为 `v3.0.0-b30-hf1`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.0-b30-hf1)；Mac 已换装，iOS development IPA 由用户自行安装。
+**3.0.0 / 双端 Build 31 / K10-v1.4**，后端发布集合为 `v3.0.0-b31`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.0-b31-hf1)；Mac 已换装，iOS development IPA 由用户自行安装。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -53,6 +53,7 @@ Tavily 使用 general 查询，并只凭来源字段或原文明确发布时间�
 
 API 使用 `/api/v1/k10/`，通用连接/推送设置仍在 `/api/v1/settings`，设备注册为 `/api/v1/devices`。
 API 启动只验证鉴权和既有 schema；GET 不迁移、不启动模型。重任务由独立 K10 worker 执行，timer 只入队。
+设置页与 timer 共用显式配置 ID/修订：尚无扫描时也可显示“已配置”，缺失/错误绑定仍报未配置；不从历史扫描或任意最新配置猜选。
 worker 自动冻结 D1 选择、采集共享的公司日行情并生成结果修订。行情缺口按运行包明确的间隔和次数有界补采，
 常规补数窗口为收盘后 120 分钟、间隔 300 秒；晚启动仍可回填历史固定日期，缺数不会延长 D1/D2。
 后端发布路径沿用 `/opt/neckline`（同步 Backend 内容），详细环境项见 [配置样例](Backend/.env.example)。
@@ -85,10 +86,19 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 `/etc/neckline/k10.env` 显式绑定 `k10-v1.4-production` 修订 1。连接、模型密钥及设备保留，NPM/UFW 未改。
 K9 的 daily/evening/recovery/facts/report/strategy 单元、旧表、运行模块与活动资料均已退出；无双写或兼容页面。
 
-当前后端源码 `0f2c0b25da1838b4bcfa249c18a79711e96d49eb`，双端源码 `8dc4c60a7db678bcc1d0bb5e3c5f8465aba0e588`。
-`v3.0.0-b30-hf1` 修复后台 worker 工厂接线，初始 `v3.0.0-b30` 标签未移动。537 项后端测试、Swift 三项构建、
-双端签名及迁移/恢复演练通过；用户跳过真机与真实 Mac 窗口交互验收。完整晚扫与真实通知仍需实际运行观察。
+当前后端源码 `b3aff27686724c0783a14ec8e960cc3c7275503e`，最终双端源码 `4788a7954a9ab7164b3c333fb11b6fb88bf13621`。
+当前标签 `v3.0.0-b31-hf1`，先前标签保持原位。545 项后端测试、修改版本行后的三项 Swift 构建与双端签名通过；
+正式 Mac 设置窗口已核验 Build 31 和三个“已配置”。iOS 真机验收仍按用户指令跳过，完整晚扫与真实通知需实际运行观察。
 
+本次快修没有数据库迁移或策略配置修改。回滚点 `/opt/neckline/data/backups/v3.0.0-b31-predeploy-20260907`
+包含前版代码、API unit、共享配置绑定、数据库副本与 `receipt.json`；前后数据库 SHA256 均为
+`37f28d61c72fa518b3959a548c88165603894d29c3ee7754ef9ce0690624c37e`。
+若撤回本次快修，先核验目标、备份当前现场并停止 API/worker，按该回执恢复前版代码、前版 wheel 和 API unit，
+保留数据库与 timer，重载并启动后核验 health/鉴权。Mac 同步恢复
+`/Users/linotsai/Lino/app_backups/Neckline-v3.0.0-build30-pre-build31-20260907.app`。
+当前后端包、wheel 和部署 manifest 位于 `/opt/neckline/releases/v3.0.0-b31/`。
+
+以下是首次整体退回 K9 的独立恢复路径，不用于撤回本次配置显示修复。
 已核验的回滚目录为 `/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907`。
 其中 `runtime.tar.gz` 含旧源码、依赖和配置；`units/` 与 `unit-states.json` 记录旧服务；
 `retired-data.tar.gz` 保存已从活动目录移除的 K9 资料；`neckline-k9.db` 为迁移前库，
@@ -103,5 +113,4 @@ SHA256 为 `9cc808637336eb6fd52d109aca8a1be4f7e56badae93d0c974f3de96665e141b`。
 旧活动资料与原单元状态，清除新运行文件后重载服务。不能仅恢复数据库却继续启动 V3。
 重新核验旧版 health、完整性、外键、鉴权和定时器；Mac 同步恢复
 `/Users/linotsai/Lino/app_backups/Neckline-v2.7.0-build19-pre-v3-20260907.app`。
-当前后端包、wheel 与部署 manifest 已保存至 `/opt/neckline/releases/v3.0.0-b30-hf1/`；
-含凭据的临时迁移演练副本已清除，正式回滚备份保留。已有备份与不可变标签不能覆盖。
+首次迁移演练的含凭据临时副本已清除，正式回滚备份保留。已有备份与不可变标签不能覆盖。

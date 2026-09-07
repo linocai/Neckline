@@ -6,16 +6,13 @@ Neckline 不读取或导入 `whynotme`。本文件是唯一施工控制面。
 
 ## 当前目标与事实
 
-- **Build 31 快修进行中**：用户要求修复首扫前配置误报，系统版号保持 3.0.0、双端 Build 升到 31，并沿用本次一条龙发布授权。设置接口改读与调度共享的显式 `K10_CONFIG_ID` / `K10_CONFIG_REVISION` 绑定，绝不从扫描或任意最新配置猜测；缺失/非法绑定或缺失修订仍如实报未配置。历史扫描、机会的冻结配置读取不变，GET 不写库、不入队、不调模型。
-- 现场核验补充：后端 Build 31 已上线且旧 Mac 刷新后三项配置均已正确显示；数据库备份前后 SHA 相同。换装时发现设置页版本文字写死为 Build 30，现改为读取 Bundle 的真实版号和 Build，重跑三项 Swift 构建与签名。保持双端 3.0.0/31；已推 `v3.0.0-b31` 不移动，最终客户端修复使用新不可变标签 `v3.0.0-b31-hf1`，后端代码不需再部署。
-- 快修发布门禁已通过：后端 **545 passed**（21 条既有 Polars 警告），双端三项构建通过；日志 `/tmp/neckline-v300-b31-release/`。当前代码已冻结，正在签名、备份与发布；尚未切换生产。
-- 本次施工范围：后端配置环境接线、只读配置 API 和回归；双端仅发布元数据与资源标识增至 Build 31。API unit 读取既有 `/etc/neckline/k10.env`，数据库 schema/配置内容与今晚 21:00 定时器不变。增加无扫描已配置、多配置显式选择、旧扫描不覆盖当前绑定、绑定缺失/非法/目标不存在与读接口零写入验收；按生产备份、签名产物、不可变 `v3.0.0-b31`、健康检查、Mac 换装、iOS 交付完成快修发布。
-- **2026-09-07 一条龙发布已完成**：生产运行 K10-v1.4 / schema 2，后端 `v3.0.0-b30-hf1`（`0f2c0b25da1838b4bcfa249c18a79711e96d49eb`）；客户端为 3.0.0 / Build 30（`8dc4c60a7db678bcc1d0bb5e3c5f8465aba0e588`）。main 与两个不可变标签已推送，初始 `v3.0.0-b30` 标签保持原位。
-- **首轮正式晚扫：北京时间 2026-09-07 21:00；首轮晨扫：2026-09-08 09:00。** 首次补取起点显式设为 2026-09-04 21:00，成功来源水位建立后优先用真实水位。部署未手工入队、未提前生成推荐；行情更新为 18:30，重试 19:30 / 20:30。
-- **K9 已从活动生产退役**：九个旧单元停止并删除、33 个旧表退出、旧源码与安装包模块退出，七个 K9 活动资料目录清除。DeepSeek/Tavily、设备与通用市场资料保留；旧资料仅在已核验回滚备份中保留，不对 V3 展示或继续运行。
-- **双端交付完成**：Mac 已备份后换装并启动 `/Applications/Neckline.app`，只运行一个实例；iOS development IPA 已交付 Downloads，由用户自行安装。用户明确跳过真机及真实 Mac 窗口交互验收，不能把跳过记成通过。
-- **首发检查发现的 worker 工厂接线问题已修复并部署 hf1**，真实空队列启动回归已覆盖；最终 API、worker 均 active/running、重启数 0，修复启动后的 warning 日志 0。双端源码未因该 Python 修复变化。
-- 发布证据目录 `/tmp/neckline-v300-b30-release`；当前发布下载见 [GitHub Release](https://github.com/linocai/Neckline/releases/tag/v3.0.0-b30-hf1)。当前备份、哈希与后续观察见本文件末节；无待拍板策略项。
+- **2026-09-07 Build 31 快修已发布**：版号保持 3.0.0，双端 Build 31 / K10-v1.4。后端 `v3.0.0-b31` 来自 `b3aff27686724c0783a14ec8e960cc3c7275503e`，最终客户端来自 `4788a7954a9ab7164b3c333fb11b6fb88bf13621`，对应不可变标签 `v3.0.0-b31-hf1`；main 已推送，先前标签保留原位。
+- **首扫前配置误报已修复**：API 与 timer 共享 `/etc/neckline/k10.env` 的显式 `K10_CONFIG_ID` / `K10_CONFIG_REVISION`，只读对应修订，不再从扫描或任意最新配置反推。缺失/非法绑定或不存在的修订仍如实未配置；历史对象冻结配置不变，GET 不写库、不入队、不调用模型。
+- **已在正式 Mac 窗口核验**：`/Applications/Neckline.app` 显示 `Neckline 3.0.0 Build 31 · K10-v1.4`，候选发布、正反分析、两日评价均显示“已配置”；无扫描仍显示“尚无回执”。版本行改从 Bundle 读取，避免下一次增 Build 继续显示旧文字。Mac 单实例运行；最终 iOS development IPA 已交付 Downloads，待用户自行安装。
+- **首轮正式晚扫仍为北京时间 2026-09-07 21:00；首轮晨扫为 2026-09-08 09:00。** 配置仍是 `k10-v1.4-production` 修订 1，首轮补取起点 2026-09-04 21:00，建立成功水位后优先用真实水位。行情 18:30，重试 19:30 / 20:30。快修未改 timer、策略配置、schema 或数据库内容；扫描/任务/发布数均为 0。
+- **K9 已从活动生产退役**：九个旧单元停止并删除、33 个旧表退出、旧源码与安装模块退出，七个 K9 活动资料目录清除。DeepSeek/Tavily、设备和通用市场资料保留；旧资料仅在已核验回滚备份中保留，不展示或继续运行。
+- **验证与备份**：后端 545 passed，修改版本行后的 Swift 三项构建及双端签名归档通过；实际配置/版本页面已核验。生产 API、worker 均 active/running、重启数 0。本次前后 DB 备份 SHA 完全相同，B31 回滚目录 `/opt/neckline/data/backups/v3.0.0-b31-predeploy-20260907`；首次 K9 切换备份另行保留。
+- 发布证据目录 `/tmp/neckline-v300-b31-release`；[当前下载安装包](https://github.com/linocai/Neckline/releases/tag/v3.0.0-b31-hf1)。真实 iOS 设备验收仍按用户指令跳过，不能记成通过；没有待拍板策略项。
 - 原 K10-v1.3 本地实现已经完成隔离验证，但其持有/退出、价格计划、确认计划和未定评价口径与
   K10-v1.4 冲突，不能作为 V1.4 的功能完成或验证证据。无真实 V3 发布数据可迁移为新的前向样本。
 - 既定股票池为创业板、无股价上限；排除 ST／*ST 及申万 2021 二级行业白酒Ⅱ (`801125.SI`) 的全部成员；
@@ -178,14 +175,15 @@ Evaluator 不得重新判断催化/用户选择，App 不得推导样本归属�
 
 ## 当前验证基线与下一步
 
-- **后端 537 passed**，21 条既有 Polars sortedness 警告。日志 `/tmp/neckline-v300-b30-release/backend-tests-hf1.log`。包含 K10-v1.4 全量正式样本、三组冻结、晚晨/迟到、公司合卡、跨日延续、撤回、D2 到期、共享行情、重叠排除与缺数修订，以及真实 worker 空队列启动。
-- **Swift 三项构建与签名归档通过**：最终 macOS build、generic iOS Simulator build、generic iOS build-for-testing 日志在发布证据目录。XCTest 13 项中 12 通过、1 项外部 smoke 按条件跳过，0 失败（`/tmp/neckline-v3-qa/xctest.log`）。双端 3.0.0/30、正式 bundle ID、无临时凭据/合成启动参数，Apple Development 签名严格验证通过；Mac 通用架构、签名指定要求与旧版一致，未公证，沿用既有安装方式。
-- **实际页面证据**：iOS 机会、关注、表现、设置和真实正反阅读截图，以及 macOS 自身视图离屏渲染保存在 `/tmp/neckline-v3-qa/`。真实 Mac 窗口点击/滚动与真机验收按用户发布指令跳过，离屏图不充作通过证据。
+- **后端 545 passed**，21 条既有 Polars sortedness 警告。日志 `/tmp/neckline-v300-b31-release/backend-tests.log`。包含 K10-v1.4 全量正式样本、三组冻结、晚晨/迟到、公司合卡、跨日延续、撤回、D2 到期、共享行情、重叠排除与缺数修订，以及真实 worker 空队列启动、无扫描时配置就绪、精确绑定旧修订、不存在/非法绑定和配置 GET 零写入。
+- **Swift 三项构建与签名归档通过**：最终 macOS build、generic iOS Simulator build、generic iOS build-for-testing 日志在发布证据目录。首版 XCTest 13 项中 12 通过、1 项外部 smoke 按条件跳过，0 失败（`/tmp/neckline-v3-qa/xctest.log`）。本次修改版本行后的三项构建日志为 `hf1-{macos-build,ios-simulator-build,ios-build-for-testing}.log`。双端 3.0.0/31、正式 bundle ID、无临时凭据/合成启动参数，Apple Development 签名严格验证通过；Mac 通用架构、签名指定要求与旧版一致，未公证，沿用既有安装方式。
+- **实际页面证据**：iOS 机会、关注、表现、设置和真实正反阅读截图，以及 macOS 自身视图离屏渲染保存在 `/tmp/neckline-v3-qa/`。首版真实 Mac 窗口/真机全面验收按用户指令跳过；本次已在正式 Mac 设置窗口点击并核对三项配置与真实 Build 31，未扩大为全页面交互验收。
 - **真实服务小样本联调通过**：TuShare 两篇 9 月 4 日通讯经 DeepSeek V4 Pro、Tavily、公司比较、发布和所选公司正反链。广生堂形成一个隔离窗口；欣旺达核验晚于截止，保留待核、不建样本。最终正反均含 TuShare 原文、Tavily 摘录和 11 项行情引用，反方包含冻结正方全文。28 个已完成 DeepSeek 请求共 272,465 tokens，另 1 个中止请求用量未知；Tavily 共 7 credits，不含之前最小连通测试。货币费用和剩余额度未核实。
 - **隔离联调证据**：本机 `/tmp/neckline-v14-live.qOD3jC`，远端 `/tmp/neckline-v14-live.RfnTt7`；无密钥 App 快照 SHA256 `4734442a9b2934fc3a4005b2b32b6035445d552c0a8742f6c6ad37f9990fc41a`。这不是正式推荐、前向成绩或全市场覆盖证明。行情原始取得时间与本次整理时间分开，Tavily 始终标为搜索摘录。
-- **生产迁移/恢复演练通过**：在停写前的独立副本上验证迁移、公共数据保留和按原哈希恢复，然后对已确认生产目标停写迁移；schema 2、完整性和外键检查通过。生产 154 个部署文件与最终 manifest 逐项一致，wheel 的 70 个包文件及 RECORD 校验通过。
-- **最终线上检查通过**：本机与公网 health 为 `v3.0.0 / v3.0.0-b30-hf1`；K10 读取正常，未鉴权 401，K9 旧接口 404。首扫前最新扫描 404 是尚无扫描，任务/扫描/发布/公司窗口均为 0，配置修订为 1；现有一组模型配置和两台设备保留。运行包四个 scope 均就绪，DeepSeek/Tavily 已接线，未因此再次调用模型。
-- **回滚备份**：生产 `/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907` 包含旧运行环境、密钥配置、单元状态、K9 活动资料和迁移前库。迁移前 DB SHA256 `9cc808637336eb6fd52d109aca8a1be4f7e56badae93d0c974f3de96665e141b`，迁移后备份 SHA256 `37f28d61c72fa518b3959a548c88165603894d29c3ee7754ef9ce0690624c37e`；完整性/外键通过。备份内回执保留完整包哈希，恢复顺序见 README。Mac 旧版备份为 `/Users/linotsai/Lino/app_backups/Neckline-v2.7.0-build19-pre-v3-20260907.app`。
-- **交付产物**：`~/Downloads/Neckline-v3.0.0-b30-macOS.zip`（SHA256 `50a32f25a7b5f0cbed7fad80e450ab94c65b577995e0580e415caaff96f129cf`）及 `Neckline-v3.0.0-b30-iOS-development.ipa`（`b743a13fb6f0a9a1a23ab30780ddf717cc59627e4f0db3c71f1c23bac8e25555`）。后端发布包 SHA256 `f7f681c90fd272de5c353308c83e37f004bc03de9accb1949fa3f1057c5099df`，wheel SHA256 `af67b37d265fa0f6dd976bec652dea377ca522bd7e6e773ba49eee21cf42df48`。GitHub Release 提供三种产物及 SHA256SUMS；密钥/数据库/私有回执不上传。生产后端包与 wheel 存于 `/opt/neckline/releases/v3.0.0-b30-hf1/`；临时迁移副本和多余构建解包已清理，正式备份与签名归档保留。
+- **首版生产迁移/恢复演练通过**：在停写前的独立副本上验证迁移、公共数据保留和按原哈希恢复，然后对已确认生产目标停写迁移；schema 2、完整性和外键检查通过。生产 154 个部署文件与最终 manifest 逐项一致，wheel 的 70 个包文件及 RECORD 校验通过。
+- **最终线上检查通过**：本机与公网 health 为 `v3.0.0 / v3.0.0-b31`；K10 配置接口精确返回 `k10-v1.4-production@1` 且三项均 configured，未鉴权 401；K9 旧接口已在首次切换核验为 404。首扫前最新扫描 404 是尚无扫描，任务/扫描/发布/公司窗口均为 0，配置修订为 1；现有一组模型配置和两台设备保留。运行包四个 scope 均就绪，DeepSeek/Tavily 已接线，未因此再次调用模型。
+- **本次回滚备份**：`/opt/neckline/data/backups/v3.0.0-b31-predeploy-20260907` 保存前版运行代码/API unit/共享绑定和数据库副本；`receipt.json` 保存包哈希、检查结果和依赖 wheel 路径。`neckline-pre.db` / `neckline-post.db` 的 SHA256 都是 `37f28d61c72fa518b3959a548c88165603894d29c3ee7754ef9ce0690624c37e`，完整性/外键通过，快修未迁移或修改数据库。Mac Build 30 备份为 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.0-build30-pre-build31-20260907.app`。
+- **首次 K9 退役备份仍保留**：`/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907` 内的 K9 原库 SHA256 为 `9cc808637336eb6fd52d109aca8a1be4f7e56badae93d0c974f3de96665e141b`，另含旧运行环境、单元状态、配置与 K9 活动资料。只有整体退回 K9 才使用该恢复路径，不能拿它代替本次 Build 31 的小范围回滚。
+- **最终交付产物**：`~/Downloads/Neckline-v3.0.0-b31-macOS.zip` SHA256 `cc7dbcfbb34c3896c7d833e6a59e30b8892e0628ddf3a0ea04897424b30abe17`；`Neckline-v3.0.0-b31-iOS-development.ipa` SHA256 `258340dbfc56ece87b3eaeb17066357ca055268c633c00be79d1172d4b75f940`。后端包 SHA256 `edeab766ee7da0417d3a0402d7fe31428e2027b75da797f33833e86c3069887b`，wheel SHA256 `d88b94d71a69e77ca00cd76d16fd13d819f321c850a4859a707b80616365fa6d`；服务器 `/opt/neckline/releases/v3.0.0-b31/` 保存后端包和 manifest。最终 GitHub Release 提供三种产物及 SHA256SUMS；密钥/数据库/私有回执不上传。初次版本文字错误的 B31 交付副本已删除并重签，不移动旧标签。
 - **测试多开已收敛**：旧 QA 进程、六个旧 synthetic 包和重复构建已清理；本轮先前清理本机约 2.6 GB、远端约 438 MB 旧文件。QA 只保留两个固定复用目录，每平台至多一个隔离实例；收尾 QA 运行数 0、临时 API 已停，正式 Mac 运行数 1。
 - **下一项是实际运行观察**：2026-09-07 21:00 后先看 K10 晚扫、来源覆盖/时效、任务耗时和失败，再看真实通知与次晨更新；固定 D1/D2 到期后才有首批成绩。全规模覆盖、APNs 实际送达与策略有效性尚无完成证据；不得把本次部署成功写成这些验证已通过。来源权限缺口继续如实显示，无需以交易计划或持有退出作为前置条件。

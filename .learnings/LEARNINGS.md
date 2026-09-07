@@ -375,7 +375,7 @@ Every macOS package replacement must verify all of: the installed bundle version
 
 **Logged**: 2026-09-07T10:59:28+08:00
 **Priority**: high
-**Status**: in_progress
+**Status**: resolved
 **Area**: config
 
 ### Summary
@@ -389,8 +389,13 @@ Keep runtime readiness independent from job history. Test a configured installat
 
 ### Metadata
 - Source: user_feedback
-- Related Files: Backend/neckline/api/k10.py, Backend/neckline/config/__init__.py, Backend/deploy/neckline.service
+- Related Files: Backend/neckline/api/k10.py, Backend/neckline/config/__init__.py, Backend/deploy/neckline.service, App/Neckline/Views/SettingsView.swift
 - Tags: release, first-run, configuration, visible-state, read-only
 - See Also: LRN-20260824-003
+
+### Resolution
+- **Resolved**: 2026-09-07T11:17:45+08:00
+- **Commit/PR**: b3aff27, 4788a79
+- **Notes**: Explicit runtime config binding, missing/invalid/revision tests and read-only hash checks pass. Production returns all three scopes configured with zero scans; actual Mac settings confirms those states and the installed Build 31. The same check found a hardcoded version label, now read from Bundle metadata.
 
 ---
