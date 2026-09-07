@@ -1,21 +1,15 @@
-# Neckline V3 · 3.0.2 / Build 33（发布进行中）· K10-v1.4
+# Neckline V3 · 3.0.2 / Build 33（已发布）· K10-v1.4
 
 本文件是 Neckline 唯一施工控制面。策略裁定以 [`whynotme/K10.md`](../whynotme/K10.md)
 为准；生产代码不得读取、导入或以模型记忆替代 `whynotme`。
 
 ## 当前目标、事实与边界
 
-- **目标**：十一项一致性修复与复审边界已完成验收。用户已于 2026-09-07 明确授权“走发布一条龙”：
-  完成 3.0.2 / 双端 Build 33 的提交推送、不可变标签、双端签名、后端备份迁移部署、Mac 换装与 IPA 交付。
-  K10-v1.4、股票池、固定 D1/D2 与现有定时安排保持既定裁定；iOS 最终安装仍由用户执行。
-- **发布基线**：生产仍是 commit `47339492573892515f1b2b578459aad082cf1afd`、不可变标签
-  `v3.0.1-b32`、3.0.1 / Build 32。`44e9bdf` 只记录发布/恢复事实。Root 已独占将本地版本入口升为
-  3.0.2 / Build 33；这是本轮有效改动，不得撤销。
-- **复现事实**：`/tmp/neckline-k10-conformance-20260907` 的真实 API JSON 含晨间 lifecycle
-  `content` 对象/数组，现有 Swift 解码失败。`/tmp/k10_lifecycle_reactivation_repro.out` 证明
-  `withdrawal → evidence_update` 被末事件投影为 active，随后 API 可 `keep` 并新建分析。
-  `/tmp/k10_review_compare_guard_repro.py` 证明正文“涨停概率70%”与两个 primary 都能通过。它们仅是
-  复现材料；Build 33 必须以仓库内回归测试取代它们。
+- **目标完成**：十一项一致性修复与复审边界已验收，2026-09-07 按用户“一条龙”授权完成提交推送、
+  不可变标签、双端签名、Schema 3 备份迁移部署、Mac 换装与发布包交付。iOS 最终安装仍由用户执行。
+- **当前生产**：commit `47c9fd0d2a04c2d924b94fc8d51d53f93bd73d60`，不可变标签 `v3.0.2-b33`，
+  3.0.2 / 双端 Build 33 / Schema 3。上一生产基线为 `47339492573892515f1b2b578459aad082cf1afd`
+  与 `v3.0.1-b32`；旧标签保留原位，后续文档提交不移动本次标签。
 - **既定运行配置**：只限创业板，排除 ST／*ST 与申万 2021 白酒Ⅱ `801125.SI`，无股价/金额上限；
   全模型路由 DeepSeek V4 Pro；TuShare 长篇通讯发现，Tavily 只用于已冻结事件的定向核验和历史同类
   资料检索，绝不回流为全市场发现。TuShare 快讯/全量公告未授权，覆盖缺口必须显示。
@@ -134,27 +128,9 @@ parentRevision, kind=user_question|evidence_update, question, sourceRefs, idempo
   机会、窗口、选择、行情、生命周期或分析修订。`initialize_schema()` 仍只属于 API 启动、显式写命令或
   受控迁移；GET/read helper 零 DDL。
 - 分析失败重试沿用同一全局版本：Schema 3 同步移除分析表的 `(observation, revision, role)` 唯一限制，保留工件 ID 唯一及全部失败尝试；公开每版每方显示最新尝试。迁移须核验原行哈希、数量和外键，禁止用反方另增版本绕过配对。
-- 本轮只演练临时 DB 迁移。未来生产前必须确认目标路径/schema/完整性/WAL，建立并核验升级前备份哈希，
-  再前滚和做配置/数据不变量检查。回滚恢复当次升级前备份和对应运行包，绝不用 Build 32 首扫前空库覆盖
-  后续业务数据。`v3.0.1-b32` 仅作不可变代码恢复锚点。
-
-## 并行责任与接缝
-
-所有 Builder 共享工作树，保留他人改动。Root 独占
-`Backend/neckline/api/k10.py`、`Backend/neckline/api/k10_schemas.py`（pipeline 模型类由 B 独占、其余工厂和调度现由 D 接手）、
-版本入口与最终集成。
-
-| Owner | 独占范围 | 交付 |
-|---|---|---|
-| **A · Store/Schema** | `Backend/neckline/k10/schema.py`、`store.py`、迁移/store tests | Schema 3；终态 lifecycle projection；晨报 target/report 读写；analysis request 原子入队与完整 chain 读取。只给 Root/C 稳定 Python 接口。 |
-| **B · Discovery/Historical** | `k10/discovery.py`、`opportunity_discovery.py`、新 `historical_cases.py`、`pipeline.py` 内 `DeepSeekDiscoveryModel` 类、discovery/historical/pipeline tests | EventComparison、真实 DeepSeek 事件整体比较、语义概率守卫、冻结历史 cases gateway/coverage；Root 仅传显式 loader 和编排；不改 store 或 pipeline 的工厂/调度。 |
-| **C · Morning/Analysis** | `k10/morning.py`、`morning_runtime.py`、`analysis.py`、`runtime.py`、`prompts.py` 与测试 | 五段晨报/独立 refs 校验；追加分析 lineage、正反链与 retry。调用 A 接口，不改 API/pipeline。 |
-| **D · Market/Evaluation** | `k10/market_observation.py`、`evaluation.py`、`evaluation_runtime.py` 与测试 | 双源时点核验、字段审计/回退/冲突、主/overlap 统计分离。通过现有 metadata/source refs 接口写入，不改 store/API。 |
-| **E · Swift** | `App/Neckline/` 所有 Swift、`K10V3Tests.swift` | 递归 K10Value、后端排序直通、无重复缺数计数、晨报/历史/行情/分析链展示。Root 保留 `project.yml`/`.pbxproj`。 |
-| **Root · API/Orchestrator** | 上述中心文件、版本、集成验收入口 | 将 A–D 契约投影到 endpoint/DTO，编排 EventComparison、晨报 targets/落库与 children；不在中心文件复写 Builder 逻辑。 |
-
-**接缝顺序**：A 先冻结 Schema 3 和函数签名；B/C/D/E 可并行。Root 在 A/B/C/D 接口就绪后整合 API/pipeline。
-任何 Store 接口变更由 Root 协调，Builder 不在中心文件做临时绕过。
+- 生产迁移前必须确认目标路径/schema/完整性/WAL，建立并核验升级前备份哈希，用当时真实数据副本演练，
+  再前滚并核对配置/数据不变量。本次已完成。回滚只能使用当次升级前备份和对应运行包；有后续业务写入时
+  先制定数据保留方案，绝不用首扫前快照直接覆盖。`v3.0.1-b32` 仅作不可变代码恢复锚点。
 
 ## 验收门槛
 
@@ -173,7 +149,7 @@ parentRevision, kind=user_question|evidence_update, question, sourceRefs, idempo
    补充分析改写。
 8. 双源一致、字段冲突、历史单源回退、无法证明 quote 日期四种行情情形均带原因/refs；冲突不派生。
 
-还必须新增一次跨端合成验收，落实 `.learnings/LEARNINGS.md` `LRN-20260831-006`：生产 handler（确定性
+跨端合成验收必须覆盖：生产 handler（确定性
 provider/transport）→ 临时 Schema 3 DB → 实际 FastAPI router/JSON → 当前 Swift `K10Models` decoder →
 真实填充的机会、晨报、关注/分析、表现页面。一个链中必须看见晨报排序、撤回后普通更新、overlap 命中、
 缺数、分析第 2 版、历史证据/缺口和行情冲突原因。手写 Swift JSON、HTTP 200、APNs 或空页面均不构成交付。
@@ -197,19 +173,19 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -desti
 
 ## 用户网页操作清单
 
-无。本轮只用已配置的运行契约做离线注入验证，不需要用户网页授权、提交、付款或发布。
+无。本次发布不需要用户网页授权或付款；仅保留约定由用户完成的 iOS 安装。
 
 ## 状态、恢复与下一步
-
-3.0.1 / Build 32 的发布日志已压缩为本文件开头的发布基线；详细操作入口以 README 和不可变
-`v3.0.1-b32` 为准。本轮完成施工后才评估发布，测试、schema 演练或 Build 33 编译均不等于生产切换。
 
 - **待用户决定事项**：无。
 - **修复完成**：原审查十一项全部落地；发布原子校验、旧分析状态、晚晨归组、历史 as-of/引用一致性、同版本分析重试等复审边界同步闭环。原生 QA 补出的取消误报、同连接刷新/分析链竞态及原因原文丢失也已修复。Store/API、策略历史和最后 Swift 边界独立复验均无剩余可报告 P1/P2。
 - **自动验证**：最终 Backend **616 passed**（21 条既有 Polars 警告）；macOS build、iOS Simulator build、iOS Simulator build-for-testing 全通过，额外 macOS build-for-testing 通过。双端 XCTest 各执行 31 项：**30 passed / 1 skipped / 0 failures**；跳过的是旧的独立外部 smoke，新 Schema 3 实际 API 跨端验收在两端均已执行并通过。`git diff --check` 通过。
 - **实际页面验收**：双端真实空态和填充态、五段晨报、两版完整正反分析/任务完成状态/来源原文、历史案例及缺口、行情冲突及单源原因、主/重叠命中与缺数均已查看；保持白卡蓝色视觉方向。fixture 走生产 worker claim/finish、真实 handler/store/API，只替换离线 provider/transport，未调用真实模型、搜索或行情服务。
 - **验收材料**：临时库 `/tmp/neckline-v302-validation/populated-r2.sqlite`；最终日志为同目录 `backend-full.log`、`macos-final-*.log`、`ios-final-*.log`，双端 `*-final-tests.xcresult`。固定 QA 目录仍是 `/tmp/neckline-v3-qa/macos` 与 `/tmp/neckline-v3-qa/ios`；仅复用 `.qa.livev14`，模拟器 ID `211DD03C-812D-4A42-97EF-F693D7DF924C`。
-- **发布边界**：源码与本地 QA 为 3.0.2 / Build 33，尚未提交、推送、打 tag、部署、签名交付或替换正式 App。生产仍是 3.0.1 / Build 32；Schema 3 仅演练于临时库。后续获发布指令后，首先核验实际生产差量和当时业务数据库，按受控备份迁移规则发布。
-- **清理完成**：临时 API 的 8769 端口已关闭；Mac QA 已退出，模拟器 QA bundle 已卸载；默认 DerivedData 中额外生成的 Mac 测试 App 与过期 iOS 测试 App 已删除，固定两端构建目录保留复用。进程核验只剩 `/Applications/Neckline.app` 的正式 3.0.1 / Build 32。
-- **当前发布**：已确认目标 `deploy@114.66.2.205:/opt/neckline`、主机 `ser657204219523`，API/worker 正常；四个既有 timer 尚未触发。Root 负责目标、完整差量、备份/迁移/部署与版本记录；客户端任务仅归档/导出/验签，不另起测试 App；Store 任务只读核对升级不变量。
-- **下一步**：读取线上 manifest、schema 与数据不变量，核对当前差量后冻结提交；在双端归档同时准备 Schema 3 升级及当次回滚，部署后核验配置 scope、计划首跑时刻与正式客户端版本。
+- **发布完成**：main 和 `v3.0.2-b33` 已推送，[GitHub Release](https://github.com/linocai/Neckline/releases/tag/v3.0.2-b33) 已发布为最新版本；六个资产上传完整且 SHA256 与本地一致。后端源码 manifest、已安装 wheel 3.0.2、双端正式归档与 tag 对应，签名严格验证通过。
+- **生产核验**：已确认服务器 `ser657204219523 / 114.66.2.205`、`/opt/neckline/data/neckline.db`。本机/公网 health 为 `v3.0.2 / v3.0.2-b33`，API/worker active、重启计数 0、启动后 warning 日志 0；鉴权返回 401，三个配置范围已配置。Schema 3 完整性/外键/新约束及索引通过，所有既有表的列、行数和逐行哈希保留。
+- **客户端交付**：Mac `/Applications/Neckline.app` 已换装并启动，唯一实例的实际路径及 Dock 目标一致；原生设置页确认 3.0.2 Build 33、Prod 连接与三个已配置范围。iOS 包为 `/Users/linotsai/Downloads/Neckline-v3.0.2-b33-iOS-development.ipa`，按约定由用户安装。
+- **恢复锚点**：成功发布备份 `/opt/neckline/data/backups/v3.0.2-b33-predeploy-20260907-r2`，含本次前后 DB、B32 runtime 与 receipt；哈希及恢复步骤见 README。Mac 备份 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.1-build32-pre-v302-20260907.app`。首次尝试的同名前缀无 `-r2` 备份仍保持不可变。
+- **已解决的发布异常**：首次探针误要求分页 DTO 带 `schemaVersion`，触发回滚；恢复同步继承 staging 的 0700 导致服务暂时无法进入运行目录。已按核验过的 tar 恢复 `root:root / 0755` 并完整确认 B32/Schema 2 基线后再试。修正版逐接口校验真实 DTO、同步始终保留生产目录元数据；第二次发布成功，首轮恢复现场保留。产品源码及 tag 未因部署脚本修正而改变。
+- **清理**：临时 API 8769 已关闭；Mac QA 已退出，模拟器 QA bundle 已卸载，额外/过期测试 App 已删除，固定两端构建目录留作复用。生产只运行正式 Build 33。部署临时副本清理结果与最终回执保存在成功备份目录。
+- **后续观察**：发布未提前入队，既定首轮晚扫 **2026-09-07 21:00 CST**、首轮晨扫 **2026-09-08 09:00 CST**。真实整晚覆盖、耗时及推送仍待首轮运行验证，不以离线测试代替；没有剩余施工或发布阻塞。
