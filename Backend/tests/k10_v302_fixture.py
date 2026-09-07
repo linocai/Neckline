@@ -54,9 +54,10 @@ def _config() -> dict[str, Any]:
     return {
         "configVersion": "k10-v1.4", "universe": "chinext", "excludeBaijiu": True,
         "hardExclusions": {"approved": True, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]},
-        "sourceAdapters": ["fixture"], "modelRoutes": {"discovery": "deepseek-v4-pro", "analysis": "deepseek-v4-pro", "morning": "deepseek-v4-pro"},
-        "taskPolicies": {"analysis": {"maxAttempts": 2, "modelMaxAttempts": 2, "timeoutSeconds": 30, "costLimit": None}, "morning": {"maxAttempts": 2, "modelMaxAttempts": 2, "timeoutSeconds": 30, "costLimit": None}},
+        "sourceAdapters": [{"key": "fixture", "lateArrivalReplaySeconds": 86400}], "modelRoutes": {"discovery": "deepseek-v4-pro", "analysis": "deepseek-v4-pro", "morning": "deepseek-v4-pro"},
+        "taskPolicies": {"analysis": {"maxAttempts": 2, "modelMaxAttempts": 2, "timeoutSeconds": 30, "costLimit": None}, "morning": {"maxAttempts": 2, "modelMaxAttempts": 2, "timeoutSeconds": 30, "costLimit": None}, "evaluation": {"maxAttempts": 2, "costLimit": None}},
         "evaluationPolicy": {"version": "k10-evaluation-v1.4", "selectionFreeze": "d1_open_0930", "window": "d1_d2", "primaryMetric": "close_limit_up_any_d1_d2"},
+        "marketCollection": {"retryIntervalSeconds": 300, "retryUntilMinutesAfterClose": 120},
     }
 
 
@@ -173,7 +174,7 @@ def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict
     """Run C's production handler once per unique opportunity and retain its report items."""
     outcomes = [
         (True, "invalidated", "needs_review", "complete", "晨间独立核验推翻核心理由"),
-        (True, "needs_review", "needs_review", "complete", "新增资料改变了原有论据强度"),
+        (True, "current", "current", "complete", "新增资料改变了原有论据强度"),
         (False, "current", "current", "complete", "冻结资料与原判断一致"),
         (False, "needs_review", "needs_review", "partial", "资料范围不足，等待人工复核"),
         (False, "current", "current", "complete", "新增正式候选已完成初步核验"),
@@ -183,7 +184,12 @@ def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict
         candidate_id = target["candidateId"]
         morning_refs = _append_morning_document(path, document_id=f"doc-morning-{index}", source_key=f"fixture_morning_{index}", text=f"{target['companyCode']} 的晨间事实核验：{summary}")
         independent_refs = _append_morning_document(path, document_id=f"doc-independent-{index}", source_key=f"fixture_independent_{index}", text=f"{target['companyCode']} 的独立来源复核：{summary}")
-        contrary = ([{"documentId": morning_refs[0]["documentId"], "revision": 1, "claim": summary}] if material else [])
+        contrary = (
+            [{"documentId": independent_refs[0]["documentId"], "revision": 1, "claim": summary}]
+            if reason_status == "invalidated" else
+            ([{"documentId": morning_refs[0]["documentId"], "revision": 1, "claim": summary}]
+             if material and reason_status == "needs_review" else [])
+        )
         response = json.dumps({"material": material, "reasonStatus": reason_status, "observationStatus": observation_status,
                                "summary": summary, "materialContraryEvidence": contrary}, ensure_ascii=False)
         payload = {"candidateId": candidate_id, "observationId": None, "originalCutoffAt": target["availableAt"],

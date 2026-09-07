@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 
 struct ScanCoverageSummary: View {
+    @Bindable var model: AppModel
     let scans: [K10Scan]
 
     var body: some View {
@@ -27,12 +28,45 @@ struct ScanCoverageSummary: View {
                                         Text(k10SourceText(source.sourceKey)).font(NKFont.callout.weight(.semibold))
                                         if let scope = source.scope { Text(scope).font(NKFont.caption).foregroundStyle(NK.textSecondary) }
                                         if let watermark = source.successWatermark { Text("成功水位 \(k10DisplayTime(watermark))").font(NKFont.caption).foregroundStyle(NK.textSecondary) }
+                                        Text(source.timeCoverage.map { "发布时间核验：\(k10StatusText($0))" } ?? "发布时间核验：未记录")
+                                            .font(NKFont.caption)
+                                            .foregroundStyle(source.timeCoverage == "complete" ? NK.textSecondary : NK.amber)
+                                        if let count = source.unknownPublicationTimeCount {
+                                            Text("发布时间待核 \(count) 篇")
+                                                .font(NKFont.caption.monospacedDigit())
+                                                .foregroundStyle(count > 0 ? NK.amber : NK.textSecondary)
+                                        }
+                                        if let refs = source.uncertainTimeDocumentRefs, !refs.isEmpty {
+                                            DisclosureGroup("查看时间待核资料") {
+                                                ForEach(refs) { SourceReferenceLine(source: $0, model: model) }
+                                            }
+                                            .font(NKFont.caption)
+                                        }
                                         if !source.displayGaps.isEmpty {
                                             Text(source.displayGaps.joined(separator: "、")).font(NKFont.caption).foregroundStyle(NK.amber)
                                         }
                                     }
                                     .padding(9)
                                     .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                                }
+                                if let replay = scan.sourceReplay {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("晚到资料回补").font(NKFont.callout.weight(.semibold))
+                                        if let start = replay.replayStartAt, let end = replay.cutoffAt {
+                                            Text("回补范围：\(k10DisplayTime(start)) — \(k10DisplayTime(end))")
+                                        }
+                                        if let start = replay.effectiveStartAt, let end = replay.cutoffAt {
+                                            Text("实际查询：\(k10DisplayTime(start)) — \(k10DisplayTime(end))")
+                                        }
+                                        if let start = replay.nominalStartAt {
+                                            Text("本轮增量起点：\(k10DisplayTime(start))")
+                                        }
+                                        if let state = replay.requestState { Text("采集状态：\(k10StatusText(state))") }
+                                    }
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                } else {
+                                    Text("晚到资料回补范围未记录")
+                                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                 }
                                 if !scan.coverageGaps.isEmpty {
                                     Label(scan.coverageGaps.joined(separator: "、"), systemImage: "exclamationmark.triangle.fill")
@@ -95,7 +129,7 @@ struct SettingsView: View {
                         }
                         SettingsDivider()
                         NavigationLink {
-                            SettingsCoverageScreen(scans: model.scanSummaries)
+                            SettingsCoverageScreen(model: model, scans: model.scanSummaries)
                         } label: {
                             SettingsRowContent(icon: "checklist", title: "来源覆盖与缺口", detail: coverageDetail, badge: nil)
                         }
@@ -185,6 +219,7 @@ struct SettingsView: View {
 }
 
 private struct SettingsCoverageScreen: View {
+    @Bindable var model: AppModel
     let scans: [K10Scan]
 
     var body: some View {
@@ -194,7 +229,7 @@ private struct SettingsCoverageScreen: View {
                 if scans.isEmpty {
                     V3EmptyState(icon: "doc.text.magnifyingglass", title: "尚无扫描回执", message: "扫描执行后会在这里显示来源范围与缺口。")
                 } else {
-                    ScanCoverageSummary(scans: scans)
+                    ScanCoverageSummary(model: model, scans: scans)
                 }
             }
             .padding(NKSpace.pagePad)

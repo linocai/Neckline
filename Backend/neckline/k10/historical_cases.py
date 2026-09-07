@@ -303,7 +303,17 @@ class HistoricalCaseLoader:
         cases = sorted([*local, *external], key=lambda item: (str(item["observedAt"]), str(item["caseId"])))
         present = sorted({str(item["outcome"]) for item in cases if item["outcome"] in requested})
         missing = [outcome for outcome in requested if outcome not in present]
-        refs = [ref for item in cases for ref in item["sourceRefs"]]
+        # Coverage describes the evidence set as a whole. Several comparable companies may
+        # legitimately point at the same event document. Keep every case's own refs, but
+        # dedupe the aggregate coverage list in first-seen order.
+        refs: list[dict[str, Any]] = []
+        seen_refs: set[tuple[str, int]] = set()
+        for item in cases:
+            for ref in item["sourceRefs"]:
+                key = (str(ref["documentId"]), int(ref["revision"]))
+                if key not in seen_refs:
+                    seen_refs.add(key)
+                    refs.append(dict(ref))
         status = "complete" if cases and not missing else ("partial" if cases else "unavailable")
         reason = "all_requested_outcomes_covered" if status == "complete" else (
             "historical_cases_found_but_requested_outcomes_missing" if cases else str(coverage.get("reason", "no_historical_cases"))
@@ -325,10 +335,14 @@ def freeze_historical_context(context: Mapping[str, Any]) -> dict[str, Any]:
     if set(coverage) != {"state", "requestedOutcomes", "presentOutcomes", "missingOutcomes", "reason", "sourceRefs"} or coverage.get("state") not in {"complete", "partial", "unavailable"}:
         raise ValueError("历史案例覆盖面无效")
     refs: list[dict[str, Any]] = []
+    seen_refs: set[tuple[str, int]] = set()
     for item in coverage["sourceRefs"]:
         if not isinstance(item, Mapping) or not isinstance(item.get("documentId"), str) or not isinstance(item.get("revision"), int):
             raise ValueError("历史案例包含不可追溯资料")
-        refs.append({"documentId": item["documentId"], "revision": item["revision"]})
+        key = (item["documentId"], item["revision"])
+        if key not in seen_refs:
+            seen_refs.add(key)
+            refs.append({"documentId": item["documentId"], "revision": item["revision"]})
     case_ids: set[str] = set()
     for case in context["historicalCases"]:
         if not isinstance(case, Mapping) or not isinstance(case.get("caseId"), str) or case["caseId"] in case_ids:

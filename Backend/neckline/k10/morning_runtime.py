@@ -122,12 +122,18 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
         return TaskResult("failed", "model", error="晨间反证必须引用冻结资料且有明确主张")
     if raw.get("reasonStatus") == "invalidated" and source_status != "complete":
         return TaskResult("failed", "model", error="资料未完整时不能将反证判定为已核撤回")
+    if raw.get("reasonStatus") == "invalidated":
+        independent_keys = {(item["documentId"], item["revision"]) for item in independent_refs}
+        contrary_keys = {(item["documentId"], item["revision"]) for item in contrary}
+        if not contrary_keys.intersection(independent_keys):
+            return TaskResult("failed", "model", error="已核撤回至少一条反证必须直接引用独立核验资料")
     if not raw["material"] and source_status != "complete" and raw.get("reasonStatus") == "current":
         return TaskResult("failed", "model", error="资料未完整时不能声称当前无变化")
     try:
         update=build_morning_update(cutoff_at=context.input_cutoff_at,candidate_id=candidate_id,observation_id=observation_id,
             reason_status=raw.get("reasonStatus"),source_status=source_status,observation_status=raw.get("observationStatus"),
-            material_contrary_evidence=contrary,source_refs=[{**item,"fetchedAt":next(doc["fetchedAt"] for doc in docs if doc["documentId"]==item["documentId"] and doc["revision"]==item["revision"])} for item in refs],summary=raw["summary"])
+            material_contrary_evidence=contrary,source_refs=[{**item,"fetchedAt":next(doc["fetchedAt"] for doc in docs if doc["documentId"]==item["documentId"] and doc["revision"]==item["revision"])} for item in refs],
+            independent_verification_refs=independent_refs, summary=raw["summary"])
     except (MorningUpdateError,KeyError,StopIteration): return TaskResult("failed","model",error="晨间状态或资料引用无效")
     update_id="morning_"+sha256((context.task.task_id+"\x1f"+candidate_id+"\x1f"+context.input_cutoff_at).encode()).hexdigest()[:32]
     lifecycle_event_id: str | None = None

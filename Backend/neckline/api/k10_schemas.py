@@ -74,6 +74,16 @@ class HistoricalCoverageOut(K10Model):
     sourceRefs: list[SourceReference] = Field(default_factory=list)
 
 
+class OpportunityClassificationOut(K10Model):
+    """Why a formal opportunity was created, as frozen with its comparison."""
+    kind: Literal["initial", "independent", "material_stage"]
+    reason: str = Field(min_length=1)
+    newFacts: str = Field(min_length=1)
+    changedJudgment: str | None = None
+    twoDayReason: str = Field(min_length=1)
+    relatedOpportunityId: str | None = None
+
+
 class CandidateComparison(K10Model):
     summary: str | None = None
     rationale: str | None = None
@@ -82,8 +92,14 @@ class CandidateComparison(K10Model):
     gap: str | None = None
     rankChangeConditions: str | None = None
     twoDayReason: str | None = None
+    classification: OpportunityClassificationOut | None = None
     historicalCases: list[HistoricalCaseOut] = Field(default_factory=list)
     historicalCoverage: HistoricalCoverageOut | None = None
+    # `rank` is the frozen cross-event publication order.  Event-level rank is
+    # deliberately separate so a reader never has to reverse-engineer it from
+    # a later global ordering pass.
+    eventRank: int | None = None
+    rankNamespace: str | None = None
 
 
 class CommonFactOut(K10Model):
@@ -91,6 +107,35 @@ class CommonFactOut(K10Model):
     key: str
     text: str
     rawDetail: dict[str, object] | None = None
+
+
+class SourceReplayOut(K10Model):
+    sourceKey: str | None = None
+    nominalStartAt: str | None = None
+    effectiveStartAt: str | None = None
+    replayStartAt: str | None = None
+    cutoffAt: str | None = None
+    replaySeconds: int | None = Field(default=None, ge=1)
+    requestState: str | None = None
+
+
+class SourceCoverageOut(K10Model):
+    """A typed projection of a frozen source outcome.
+
+    The producer may add operational diagnostics over time, so retain those
+    additive fields while making time certainty and uncertain documents part
+    of the public contract.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    sourceKey: str | None = None
+    state: str | None = None
+    complete: bool | None = None
+    timeCoverage: Literal["complete", "partial"] | None = None
+    # Older scans did not record this measurement.  Null keeps that absence
+    # distinct from a measured zero.
+    unknownPublicationTimeCount: int | None = Field(default=None, ge=0)
+    uncertainTimeDocumentRefs: list[SourceReference] = Field(default_factory=list)
 
 
 class ScanOut(K10Model):
@@ -101,7 +146,8 @@ class ScanOut(K10Model):
     status: Literal["queued", "running", "completed", "partial", "failed", "not_configured"]
     coverageStatus: str
     coverageGaps: list[str] = Field(default_factory=list)
-    sourceCoverage: list[dict[str, object]] = Field(default_factory=list)
+    sourceCoverage: list[SourceCoverageOut] = Field(default_factory=list)
+    sourceReplay: SourceReplayOut | None = None
     publicationStatus: Literal["published", "not_published"]
     publicationBatchId: str | None = None
     availableAt: str | None = None
@@ -131,6 +177,7 @@ class LifecycleEventOut(K10Model):
     kind: Literal["published", "evidence_update", "risk", "withdrawal", "expired"]
     reason: str | None = None
     sourceRefs: list[SourceReference] = Field(default_factory=list)
+    independentVerificationRefs: list[SourceReference] = Field(default_factory=list)
     content: dict[str, object] = Field(default_factory=dict)
     occurredAt: str
     createdAt: str
@@ -370,7 +417,10 @@ class CompanyWindowEvaluationOut(K10Model):
     companyCode: str
     sampleClass: Literal["primary", "overlap"]
     selection: SelectionSnapshotOut | None = None
-    state: Literal["pending", "due", "completed", "incomplete"]
+    state: Literal["pending", "due", "completed", "incomplete", "not_configured"]
+    evaluationConfigurationState: Literal["configured", "not_configured"] = "configured"
+    evaluationConfigurationMissing: list[str] = Field(default_factory=list)
+    evaluationConfigurationErrors: list[str] = Field(default_factory=list)
     revision: int
     updatedAt: str
     d1: MarketDayOut | None = None
@@ -404,6 +454,7 @@ class EvaluationMetricsOut(K10Model):
     dataGapCount: int = Field(default=0, ge=0)
     anomalyCount: int = Field(default=0, ge=0)
     selectionPendingCount: int = Field(default=0, ge=0)
+    notConfiguredCount: int = Field(default=0, ge=0)
 
 
 class ResultsCohortOut(K10Model):
@@ -426,12 +477,16 @@ class ResultsEventGroupOut(K10Model):
     companySampleCount: int = Field(ge=0)
     catalystCount: int = Field(ge=0)
     primary: dict[str, EvaluationMetricsOut] = Field(default_factory=dict)
+    overlap: EvaluationMetricsOut = Field(default_factory=EvaluationMetricsOut)
 
 
 class ResultsOut(K10Model):
     schemaVersion: str = SCHEMA_VERSION
     state: Literal["available", "not_configured"]
     reason: ApiFailure | None = None
+    configurationState: Literal["configured", "not_configured"] = "configured"
+    configurationMissing: list[str] = Field(default_factory=list)
+    configurationErrors: list[str] = Field(default_factory=list)
     asOf: str | None = None
     primary: dict[str, EvaluationMetricsOut] = Field(default_factory=dict)
     overlap: EvaluationMetricsOut = Field(default_factory=EvaluationMetricsOut)

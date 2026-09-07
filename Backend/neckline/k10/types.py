@@ -62,6 +62,8 @@ class OpportunityPublicationInput:
     evidence_refs: tuple[Mapping[str, Any], ...]
     source_marker: str
     related_opportunity_id: Optional[str] = None
+    # Cross-event list position. comparison.rank remains the event-local rank and can tie.
+    display_rank: Optional[int] = None
 
 
 @dataclass(frozen=True)

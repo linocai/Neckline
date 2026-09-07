@@ -53,6 +53,16 @@ def test_model_tasks_require_explicit_timeout_and_model_retry_policy():
     assert not validate_run_config(payload,scope="analysis").ready
 
 
+def test_legacy_source_shape_remains_readable_for_non_ingestion_scopes_only():
+    payload = _base()
+    payload["sourceAdapters"] = ["legacy-b33-source"]
+    assert validate_run_config(payload, scope="analysis").ready
+    assert validate_run_config(payload, scope="evaluation").ready
+    assert not validate_run_config(payload, scope="candidate").ready
+    assert not validate_run_config(payload, scope="discovery").ready
+    assert not validate_run_config(payload, scope="morning").ready
+
+
 def test_environment_config_binding_is_explicit_and_rejects_illegal_revision(monkeypatch):
     monkeypatch.setenv("K10_CONFIG_ID", "k10-production")
     monkeypatch.setenv("K10_CONFIG_REVISION", "2")

@@ -47,6 +47,7 @@ from .k10_schemas import (
     HistoricalCaseOut,
     HistoricalCoverageOut,
     JobOut,
+    OpportunityClassificationOut,
     JobRetryIn,
     LifecycleEventOut,
     MarketDayOut,
@@ -65,6 +66,7 @@ from .k10_schemas import (
     ResultsEventGroupOut,
     SCHEMA_VERSION,
     ScanOut,
+    SourceCoverageOut,
     SelectionActionIn,
     SelectionActionOut,
     SelectionDetailOut,
@@ -72,6 +74,7 @@ from .k10_schemas import (
     SelectionSnapshotOut,
     SourceDocumentPageOut,
     SourceReference,
+    SourceReplayOut,
 )
 
 
@@ -286,11 +289,40 @@ def _comparison(value: Any, documents: Mapping[tuple[str, int], Mapping[str, Any
         reason=raw_coverage.get("reason"),
         sourceRefs=[_hydrate_source_ref(ref, documents or {}) for ref in raw_coverage.get("sourceRefs", []) if isinstance(ref, Mapping)],
     ) if isinstance(raw_coverage, Mapping) else None
+    raw_classification = payload.get("classification")
+    classification = None
+    if isinstance(raw_classification, Mapping):
+        kind = raw_classification.get("kind")
+        required_text = ("reason", "newFacts", "twoDayReason")
+        if (kind in {"initial", "independent", "material_stage"} and
+            all(isinstance(raw_classification.get(field), str) and raw_classification[field].strip()
+                for field in required_text)):
+            changed_judgment = raw_classification.get("changedJudgment")
+            related_opportunity_id = raw_classification.get("relatedOpportunityId")
+            material_complete = (kind != "material_stage" or
+                                 (isinstance(changed_judgment, str) and changed_judgment.strip() and
+                                  isinstance(related_opportunity_id, str) and related_opportunity_id.strip()))
+            if (material_complete and
+                (changed_judgment is None or isinstance(changed_judgment, str)) and
+                (related_opportunity_id is None or isinstance(related_opportunity_id, str))):
+                classification = OpportunityClassificationOut(
+                    kind=kind,
+                    reason=raw_classification["reason"].strip(),
+                    newFacts=raw_classification["newFacts"].strip(),
+                    changedJudgment=changed_judgment.strip() if isinstance(changed_judgment, str) else None,
+                    twoDayReason=raw_classification["twoDayReason"].strip(),
+                    relatedOpportunityId=related_opportunity_id.strip() if isinstance(related_opportunity_id, str) else None,
+                )
     return CandidateComparison(summary=payload.get("summary"), rationale=payload.get("rationale") or payload.get("reason"),
                                rank=rank if isinstance(rank, int) and not isinstance(rank, bool) else None,
+                               eventRank=(payload.get("eventRank") if isinstance(payload.get("eventRank"), int)
+                                          and not isinstance(payload.get("eventRank"), bool) else None),
+                               rankNamespace=(payload.get("rankNamespace") if isinstance(payload.get("rankNamespace"), str)
+                                              and payload.get("rankNamespace").strip() else None),
                                priorityReason=differences.get("priorityReason"), gap=differences.get("gap"),
                                rankChangeConditions=differences.get("rankChangeConditions"),
                                twoDayReason=differences.get("twoDayReason"),
+                               classification=classification,
                                historicalCases=history, historicalCoverage=coverage)
 
 
@@ -586,10 +618,25 @@ def _selection_detail(path: Path, company_window_id: str) -> SelectionDetailOut:
 
 def _lifecycle_events(path: Path, opportunity_id: str) -> list[LifecycleEventOut]:
     rows = store.list_opportunity_lifecycle_events(opportunity_id=opportunity_id, db_path=path)
+    def independent_refs(row: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        content = row.get("content")
+        if not isinstance(content, Mapping):
+            return []
+        explicit = content.get("independentVerificationRefs")
+        if isinstance(explicit, list):
+            return [item for item in explicit if isinstance(item, Mapping)]
+        # Build 33 records stored individual contrary claims but no dedicated
+        # reference list.  Preserve those references as a read-only fallback;
+        # new records always use the explicit field.
+        contrary = content.get("materialContraryEvidence")
+        return [item for item in contrary if isinstance(item, Mapping)] if isinstance(contrary, list) else []
     with _reader(path) as conn:
-        documents = _document_reference_map(conn, [item for row in rows for item in row.get("sourceRefs", []) if isinstance(item, Mapping)])
+        documents = _document_reference_map(conn, [item for row in rows for item in [
+            *row.get("sourceRefs", []), *independent_refs(row)
+        ] if isinstance(item, Mapping)])
     return [LifecycleEventOut(lifecycleEventId=str(row["lifecycleEventId"]), kind=str(row["kind"]), reason=row.get("reason"),
                               sourceRefs=[_hydrate_source_ref(item, documents) for item in row.get("sourceRefs", []) if isinstance(item, Mapping)],
+                              independentVerificationRefs=[_hydrate_source_ref(item, documents) for item in independent_refs(row)],
                               content=row["content"] if isinstance(row.get("content"), Mapping) else {},
                               occurredAt=str(row["occurredAt"]), createdAt=str(row["createdAt"])) for row in rows]
 
@@ -623,15 +670,61 @@ def _evaluation_fact_refs(path: Path, company_code: str, refs: list[Mapping[str,
     return values
 
 
-def _evaluation_records(path: Path) -> list[CompanyWindowEvaluationOut]:
+def _evaluation_configuration_by_window(
+    path: Path, windows: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, object]]:
+    """Read the evaluation contract frozen with every published window.
+
+    This intentionally does not consult the currently active binding: D1/D2
+    results are evidence for the configuration that published the window, not
+    a score recalculated under today's settings.
+    """
+    batches = {str(item["batchId"]): item for item in store.list_publication_batches(db_path=path)}
+    values: dict[str, dict[str, object]] = {}
+    for window_id, window in windows.items():
+        batch = batches.get(str(window.get("firstBatchId")))
+        scan = store.get_scan(scan_id=str(batch["scanId"]), db_path=path) if batch else None
+        config = (store.read_run_config(config_id=str(scan["configId"]), revision=int(scan["configRevision"]), db_path=path)
+                  if scan and isinstance(scan.get("configId"), str) and isinstance(scan.get("configRevision"), int) else None)
+        payload = config.get("payload") if isinstance(config, Mapping) else None
+        status = validate_run_config(payload, scope="evaluation")
+        policy = payload.get("evaluationPolicy") if isinstance(payload, Mapping) else None
+        values[window_id] = {
+            "state": status.state,
+            "missing": list(status.missing),
+            "errors": list(status.errors),
+            "version": policy.get("version") if status.ready and isinstance(policy, Mapping) and isinstance(policy.get("version"), str) else None,
+        }
+    return values
+
+
+def _evaluation_records(
+    path: Path, *, configurations: Mapping[str, Mapping[str, object]] | None = None,
+) -> list[CompanyWindowEvaluationOut]:
     rows = store.list_company_window_evaluations(db_path=path)
     windows = _windows(path)
+    configurations = configurations or _evaluation_configuration_by_window(path, windows)
     latest_rows = {str(row["companyWindowId"]): dict(row) for row in rows}
     # Results are a read model over every published company window.  A delayed
     # writer cannot erase a live sample: pending rows and absent rows are
     # recomputed from immutable windows plus the latest persisted day facts.
     for window_id, window in windows.items():
         row = latest_rows.get(window_id)
+        configuration = configurations.get(window_id, {})
+        if configuration.get("state") != "configured":
+            # No default evaluation policy exists.  Keep this formally
+            # published company visible, but never expose either a newly
+            # synthesized score or a stale persisted score whose frozen
+            # evaluation contract cannot be verified.  This is projection
+            # only: the immutable stored row remains untouched for recovery.
+            latest_rows[window_id] = {
+                "companyWindowId": window_id, "revision": int(row["revision"]) if row else 0,
+                "state": "not_configured", "factRefs": [],
+                "result": {"companyCode": window.get("companyCode"), "sampleClass": window.get("sampleClass"),
+                           "gaps": ["evaluation_configuration_not_configured"]},
+                "evaluatedAt": _now(), "createdAt": row.get("createdAt") if row else _now(),
+            }
+            continue
         if row is not None and row.get("state") not in {"pending", "due"}:
             continue
         try:
@@ -653,12 +746,17 @@ def _evaluation_records(path: Path) -> list[CompanyWindowEvaluationOut]:
     for row in rows:
         result = row["result"] if isinstance(row.get("result"), Mapping) else {}
         window = windows.get(str(row["companyWindowId"]), {})
+        configuration = configurations.get(str(row["companyWindowId"]), {})
         frozen = _window_selection(path, str(row["companyWindowId"]))
         selection = None if frozen is None or frozen["snapshotState"] is None else SelectionSnapshotOut(
             state={"kept": "selected", "skipped": "skipped", "unhandled": "unhandled"}[frozen["snapshotState"]],
             actionIds=[str(item) for item in frozen["snapshotActionIds"]], frozenAt=str(frozen["frozenAt"]))
         records.append(CompanyWindowEvaluationOut(companyWindowId=str(row["companyWindowId"]), opportunityIds=opportunity_ids[str(row["companyWindowId"])], companyCode=str(window.get("companyCode") or result.get("companyCode") or ""),
-            sampleClass=str(window.get("sampleClass") or result.get("sampleClass") or "primary"), selection=selection, state=str(row["state"]), revision=int(row["revision"]), updatedAt=str(row["evaluatedAt"]),
+            sampleClass=str(window.get("sampleClass") or result.get("sampleClass") or "primary"), selection=selection, state=str(row["state"]),
+            evaluationConfigurationState=str(configuration.get("state", "not_configured")),
+            evaluationConfigurationMissing=[str(item) for item in configuration.get("missing", [])],
+            evaluationConfigurationErrors=[str(item) for item in configuration.get("errors", [])],
+            revision=int(row["revision"]), updatedAt=str(row["evaluatedAt"]),
             d1=_market_day(result["d1"]) if isinstance(result.get("d1"), Mapping) else None,
             d2=_market_day(result["d2"]) if isinstance(result.get("d2"), Mapping) else None,
             primaryEligible=bool(result.get("primaryEligible", False)), closeLimitHitAny=result.get("closeLimitHitAny"),
@@ -680,7 +778,7 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
         raise ValueError("成绩样本类型无效")
     now = datetime.now(timezone.utc)
     def complete_observation(item: CompanyWindowEvaluationOut) -> bool:
-        return (item.d1 is not None and item.d2 is not None and
+        return (item.evaluationConfigurationState == "configured" and item.d1 is not None and item.d2 is not None and
                 item.d1.availability == item.d2.availability == "available" and
                 all(isinstance(value, bool) for value in (item.d1.closeLimitUp, item.d1.touchedLimitUp,
                                                            item.d2.closeLimitUp, item.d2.touchedLimitUp)))
@@ -703,6 +801,8 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
     hits = [item for item in hit_records if item.closeLimitHitAny is True]
     def has_day(item: CompanyWindowEvaluationOut, state: str) -> bool:
         return any(day is not None and day.availability == state for day in (item.d1, item.d2))
+    def has_limit_gap(item: CompanyWindowEvaluationOut) -> bool:
+        return any(gap == "limit_data_unavailable" for gap in item.gaps)
     touch_records = eligible if touch_denominator == "eligible" else observed
     touch_count = sum(any(day is not None and day.touchedLimitUp is True for day in (item.d1, item.d2)) for item in touch_records)
     touch_base = len(touch_records)
@@ -718,9 +818,13 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
                                 knownHitCount=sum(item.closeLimitHitAny is True for item in records),
                                 touchCount=known_touch_count,
                                 suspendedCount=sum(has_day(item, "suspended") for item in records),
-                                dataGapCount=sum(has_day(item, "data_gap") for item in records),
+                                # A pending D1/D2 window may already expose a per-record gap, but
+                                # it is not a completed-window data gap.  Keep this metric a true
+                                # subset of incompleteCount so callers never add the two together.
+                                dataGapCount=sum(item.state == "incomplete" and (has_day(item, "data_gap") or has_limit_gap(item)) for item in records),
                                 anomalyCount=sum(has_day(item, "anomaly") for item in records),
-                                selectionPendingCount=sum(item.selection is None for item in records))
+                                selectionPendingCount=sum(item.selection is None for item in records),
+                                notConfiguredCount=sum(item.evaluationConfigurationState == "not_configured" for item in records))
 
 
 def _selection_group(item: CompanyWindowEvaluationOut, group: str) -> bool:
@@ -731,27 +835,23 @@ def _selection_group(item: CompanyWindowEvaluationOut, group: str) -> bool:
     return {"selected": "selected", "skipped": "skipped", "unhandled": "unhandled"}[group] == item.selection.state
 
 
-def _result_groups(records: list[CompanyWindowEvaluationOut], *, path: Path) -> tuple[list[ResultsCohortOut], list[ResultsEventGroupOut]]:
+def _result_groups(
+    records: list[CompanyWindowEvaluationOut], *, path: Path,
+    configurations: Mapping[str, Mapping[str, object]],
+) -> tuple[list[ResultsCohortOut], list[ResultsEventGroupOut]]:
     windows = _windows(path)
     opportunities = store.list_opportunities(db_path=path)
     by_window: dict[str, list[Mapping[str, Any]]] = {}
     for opportunity in opportunities:
         by_window.setdefault(str(opportunity["companyWindowId"]), []).append(opportunity)
     batches = {str(item["batchId"]): item for item in store.list_publication_batches(db_path=path)}
-    configs: dict[str, str | None] = {}
-    for window in windows.values():
-        batch = batches.get(str(window["firstBatchId"]))
-        scan = store.get_scan(scan_id=str(batch["scanId"]), db_path=path) if batch else None
-        config = (store.read_run_config(config_id=str(scan["configId"]), revision=int(scan["configRevision"]), db_path=path)
-                  if scan and isinstance(scan.get("configId"), str) and isinstance(scan.get("configRevision"), int) else None)
-        policy = config.get("payload", {}).get("evaluationPolicy") if isinstance(config, Mapping) else None
-        configs[str(window["companyWindowId"])] = policy.get("version") if isinstance(policy, Mapping) and isinstance(policy.get("version"), str) else None
     cohort_rows: dict[tuple[str, str, str | None], list[CompanyWindowEvaluationOut]] = {}
     for record in records:
         window = windows.get(record.companyWindowId)
         if window is None:
             continue
-        key = (str(window["d1TradeDate"]), str(window["d2TradeDate"]), configs.get(record.companyWindowId))
+        key = (str(window["d1TradeDate"]), str(window["d2TradeDate"]),
+               configurations.get(record.companyWindowId, {}).get("version"))
         cohort_rows.setdefault(key, []).append(record)
     cohorts = []
     for (d1, d2, version), items in sorted(cohort_rows.items(), key=lambda entry: (entry[0][0], entry[0][1], entry[0][2] or "")):
@@ -779,6 +879,7 @@ def _result_groups(records: list[CompanyWindowEvaluationOut], *, path: Path) -> 
     for event_id, raw_items in sorted(event_rows.items()):
         items = list({item.companyWindowId: item for item in raw_items}.values())
         primary = [item for item in items if item.sampleClass == "primary"]
+        overlap = [item for item in items if item.sampleClass == "overlap"]
         with _reader(path) as conn:
             event_row = conn.execute("SELECT headline FROM k10_event_revisions WHERE event_id=? ORDER BY revision DESC LIMIT 1", (event_id,)).fetchone()
         event_groups.append(ResultsEventGroupOut(eventId=event_id, headline=str(event_row[0]) if event_row else None,
@@ -786,7 +887,8 @@ def _result_groups(records: list[CompanyWindowEvaluationOut], *, path: Path) -> 
             opportunityIds=sorted({str(item["opportunityId"]) for item in event_opportunities[event_id]}),
             companySampleCount=len(items), catalystCount=len(event_opportunities[event_id]),
             primary={group: _metrics([item for item in primary if _selection_group(item, group)], windows=windows)
-                     for group in ("all", "selected", "skipped", "unhandled")}))
+                     for group in ("all", "selected", "skipped", "unhandled")},
+            overlap=_metrics(overlap, windows=windows, touch_denominator="observed", sample_class="overlap")))
     return cohorts, event_groups
 
 
@@ -812,7 +914,7 @@ def _morning_report(value: Mapping[str, Any], path: Path) -> MorningReportOut:
                     displayRank=content.get("displayRank"), selectionState=content.get("selectionState"),
                     lifecycle=content.get("lifecycle"), section=section, priority=priority,
                     summary=content["summary"], coverage=item_coverage,
-                    coverageStatus=str(item_coverage.get("status", item_coverage.get("coverageStatus", "unavailable"))),
+                    coverageStatus=str(item_coverage.get("status", item_coverage.get("state", item_coverage.get("coverageStatus", "unavailable")))),
                     coverageGaps=list(item_coverage.get("gaps", item_coverage.get("coverageGaps", []))),
                     sourceRefs=[_hydrate_source_ref(ref, documents) for ref in refs],
                     independentVerificationRefs=[_hydrate_source_ref(ref, documents) for ref in independent],
@@ -820,7 +922,7 @@ def _morning_report(value: Mapping[str, Any], path: Path) -> MorningReportOut:
                     createdAt=row.get("createdAt", value["createdAt"])))
     return MorningReportOut(reportId=value["reportId"], scanId=value["scanId"], revision=value["revision"],
         cutoffAt=value["cutoffAt"], createdAt=value["createdAt"], status=value["status"], coverage=coverage,
-        coverageStatus=str(coverage.get("status", coverage.get("coverageStatus", "unavailable"))),
+        coverageStatus=str(coverage.get("status", coverage.get("state", coverage.get("coverageStatus", "unavailable")))),
         coverageGaps=list(coverage.get("gaps", coverage.get("coverageGaps", []))), items=items)
 
 
@@ -889,7 +991,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         scans = store.list_scans(window_kind=window, db_path=path)
         if not scans:
             raise _not_found("没有该窗口 K10 扫描")
-        return _scan(scans[0], store.list_publication_batches(db_path=path))
+        return _scan(scans[0], store.list_publication_batches(db_path=path), path=path)
 
     @router.get("/scans/{scan_id}", response_model=ScanOut)
     def get_scan(scan_id: str) -> ScanOut:
@@ -897,7 +999,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         value = store.get_scan(scan_id=scan_id, db_path=path)
         if value is None:
             raise _not_found("K10 扫描不存在")
-        return _scan(value, store.list_publication_batches(db_path=path))
+        return _scan(value, store.list_publication_batches(db_path=path), path=path)
 
     @router.get("/morning-reports/latest", response_model=MorningReportOut)
     def latest_morning_report() -> MorningReportOut:
@@ -1136,18 +1238,19 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
 
     @router.get("/results", response_model=ResultsOut)
     def results() -> ResultsOut:
-        path = db_path(); records = _evaluation_records(path); primary = [item for item in records if item.sampleClass == "primary"]; overlap = [item for item in records if item.sampleClass == "overlap"]
-        windows = _windows(path); cohorts, event_groups = _result_groups(records, path=path)
-        configuration_missing = False
-        for window in windows.values():
-            batch = store.get_publication_batch(batch_id=str(window["firstBatchId"]), db_path=path)
-            scan = store.get_scan(scan_id=str(batch["scanId"]), db_path=path) if batch else None
-            config = (store.read_run_config(config_id=str(scan["configId"]), revision=int(scan["configRevision"]), db_path=path)
-                      if scan and isinstance(scan.get("configId"), str) and isinstance(scan.get("configRevision"), int) else None)
-            if not validate_run_config(config.get("payload") if isinstance(config, Mapping) else None, scope="evaluation").ready:
-                configuration_missing = True
-        return ResultsOut(state="not_configured" if configuration_missing and not records else "available",
-                          reason=ApiFailure(reason="not_configured", message="两日行情采集或评价参数未配置") if configuration_missing else None,
+        path = db_path(); windows = _windows(path)
+        configurations = _evaluation_configuration_by_window(path, windows)
+        records = _evaluation_records(path, configurations=configurations)
+        primary = [item for item in records if item.sampleClass == "primary"]
+        overlap = [item for item in records if item.sampleClass == "overlap"]
+        cohorts, event_groups = _result_groups(records, path=path, configurations=configurations)
+        configuration_missing = [item for item in configurations.values() if item.get("state") != "configured"]
+        missing = sorted({str(name) for item in configuration_missing for name in item.get("missing", [])})
+        errors = sorted({str(message) for item in configuration_missing for message in item.get("errors", [])})
+        return ResultsOut(state="not_configured" if configuration_missing else "available",
+                          reason=ApiFailure(reason="not_configured", message="部分窗口的两日行情采集或评价参数未配置", missing=missing) if configuration_missing else None,
+                          configurationState="not_configured" if configuration_missing else "configured",
+                          configurationMissing=missing, configurationErrors=errors,
                           asOf=max((item.updatedAt for item in records), default=None),
                           primary={group: _metrics([item for item in primary if _selection_group(item, group)], windows=windows) for group in ("all", "selected", "skipped", "unhandled")},
                           overlap=_metrics(overlap, windows=windows, touch_denominator="observed", sample_class="overlap"), records=records, cohorts=cohorts, eventGroups=event_groups)
@@ -1190,14 +1293,55 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     return router
 
 
-def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]]) -> ScanOut:
+def _source_coverage_outcomes(value: object, *, path: Path) -> list[SourceCoverageOut]:
+    if not isinstance(value, list):
+        return []
+    raw_outcomes = [dict(item) for item in value if isinstance(item, Mapping)]
+    refs = [ref for item in raw_outcomes for ref in item.get("uncertainTimeDocumentRefs", []) if isinstance(ref, Mapping)]
+    with _reader(path) as conn:
+        documents = _document_reference_map(conn, refs)
+    outcomes: list[SourceCoverageOut] = []
+    for item in raw_outcomes:
+        raw_refs = item.get("uncertainTimeDocumentRefs", [])
+        item["uncertainTimeDocumentRefs"] = [
+            _hydrate_source_ref(ref, documents) for ref in raw_refs if isinstance(ref, Mapping)
+        ]
+        outcomes.append(SourceCoverageOut.model_validate(item))
+    return outcomes
+
+
+def _source_replay(value: object) -> SourceReplayOut | None:
+    if not isinstance(value, Mapping):
+        return None
+    return SourceReplayOut(
+        sourceKey=value.get("sourceKey") if isinstance(value.get("sourceKey"), str) else None,
+        nominalStartAt=value.get("nominalStartAt") if isinstance(value.get("nominalStartAt"), str) else None,
+        effectiveStartAt=value.get("effectiveStartAt") if isinstance(value.get("effectiveStartAt"), str) else None,
+        replayStartAt=value.get("replayStartAt") if isinstance(value.get("replayStartAt"), str) else None,
+        cutoffAt=value.get("cutoffAt") if isinstance(value.get("cutoffAt"), str) else None,
+        replaySeconds=value.get("replaySeconds") if isinstance(value.get("replaySeconds"), int) and not isinstance(value.get("replaySeconds"), bool) else None,
+        requestState=value.get("requestState") if isinstance(value.get("requestState"), str) else None,
+    )
+
+
+def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, path: Path) -> ScanOut:
     coverage = value.get("coverage") if isinstance(value.get("coverage"), Mapping) else {}
     outcomes = coverage.get("sourceOutcomes", []) if isinstance(coverage, Mapping) else []
     gaps = coverage.get("gaps", []) if isinstance(coverage, Mapping) else []
+    coverage_status = str(coverage.get("status", coverage.get("state", value["status"])))
+    time_partial = isinstance(outcomes, list) and any(
+        isinstance(item, Mapping) and item.get("timeCoverage") == "partial" for item in outcomes
+    )
+    # Completed transport coverage with publication times still unresolved is
+    # useful but not complete reader coverage.  Never downgrade an actual
+    # failed/running state into a softer status.
+    if coverage_status in {"completed", "complete"} and time_partial:
+        coverage_status = "partial"
     publication = next((item for item in publications if item["scanId"] == value["scanId"]), None)
     return ScanOut(scanId=str(value["scanId"]), window=str(value["windowKind"]), cutoffAt=str(value["cutoffAt"]), status=str(value["status"]),
-                   coverageStatus=str(coverage.get("status", value["status"])), coverageGaps=[str(item) for item in gaps],
-                   sourceCoverage=[dict(item) for item in outcomes if isinstance(item, Mapping)],
+                   coverageStatus=coverage_status, coverageGaps=[str(item) for item in gaps],
+                   sourceCoverage=_source_coverage_outcomes(outcomes, path=path),
+                   sourceReplay=_source_replay(coverage.get("sourceReplay")),
                    publicationStatus="published" if publication else "not_published",
                    publicationBatchId=publication["batchId"] if publication else None,
                    availableAt=publication["availableAt"] if publication else None, configId=value.get("configId"),

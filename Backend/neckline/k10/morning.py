@@ -101,6 +101,8 @@ def morning_section(*, lifecycle: str, reason_status: str, source_status: str,
         return "needs_review"
     if lifecycle == "withdrawn" or reason_status == "invalidated":
         return "major_contrary"
+    if reason_status in {"needs_review", "unavailable"}:
+        return "needs_review"
     if material:
         return "thesis_changed"
     if is_new:
@@ -128,11 +130,11 @@ def build_morning_report_item(
     independent = _versioned_refs(independent_verification_refs, field="independentVerificationRefs", required=False)
     section = morning_section(lifecycle=lifecycle, reason_status=reason_status, source_status=source_status,
                               material=material, is_new=is_new, task_status=task_status)
-    # A fresh material/withdrawal conclusion needs an independent frozen source.  A window
-    # that was already withdrawn and a complete, unchanged continuation may reuse their
-    # existing frozen evidence; forcing a new source would turn genuine no-change into a gap.
-    if material and lifecycle != "withdrawn" and not independent:
-        raise MorningReportError("新增重大判断必须带独立核验资料版本")
+    # An invalidated conclusion needs independent frozen support.  A material item still marked
+    # ``needs_review`` is an honest risk alert, not an already verified withdrawal, so it must
+    # remain visible even before independent confirmation arrives.
+    if reason_status == "invalidated" and lifecycle != "withdrawn" and not independent:
+        raise MorningReportError("已核撤回必须带独立核验资料版本")
     priority = "high" if section == "major_contrary" else ("review" if section == "needs_review" else "normal")
     return MorningReportItem(
         item_id=item_id, opportunity_id=opportunity_id, company_window_id=company_window_id,
@@ -174,6 +176,7 @@ class MorningUpdate:
     observation_status: str
     material_contrary_evidence: tuple[Mapping[str, Any], ...]
     source_refs: tuple[Mapping[str, Any], ...]
+    independent_verification_refs: tuple[Mapping[str, Any], ...]
     summary: str
     requires_review: bool
 
@@ -192,6 +195,7 @@ class MorningUpdate:
             "observationStatus": self.observation_status,
             "materialContraryEvidence": [dict(item) for item in self.material_contrary_evidence],
             "sourceRefs": [dict(item) for item in self.source_refs],
+            "independentVerificationRefs": [dict(item) for item in self.independent_verification_refs],
             "summary": self.summary,
             "requiresReview": self.requires_review,
             "automaticDebateStarted": False,
@@ -202,10 +206,11 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _refs(value: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
-    if not value:
+def _refs(value: Sequence[Mapping[str, Any]], *, required: bool = True) -> tuple[Mapping[str, Any], ...]:
+    if required and not value:
         raise MorningUpdateError("晨间变化必须带 sourceRefs，资料缺失也要有范围/失败引用")
     refs: list[Mapping[str, Any]] = []
+    seen: set[tuple[str, int] | tuple[str, str]] = set()
     for ref in value:
         if not isinstance(ref, Mapping):
             raise MorningUpdateError("sourceRefs 每项必须是对象")
@@ -218,6 +223,14 @@ def _refs(value: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
         )
         if not (has_document_version or has_url_time):
             raise MorningUpdateError("sourceRefs 必须含 documentId+revision，或 URL 加发布时间/取得时间")
+        key: tuple[str, int] | tuple[str, str]
+        if has_document_version:
+            key = (document, revision)
+        else:
+            key = ("url", str(url))
+        if key in seen:
+            continue
+        seen.add(key)
         refs.append(dict(ref))
     return tuple(refs)
 
@@ -227,6 +240,7 @@ def build_morning_update(
     reason_status: str, source_status: str, observation_status: str,
     material_contrary_evidence: Sequence[Mapping[str, Any]], source_refs: Sequence[Mapping[str, Any]],
     summary: str,
+    independent_verification_refs: Sequence[Mapping[str, Any]] = (),
 ) -> MorningUpdate:
     """Create one immutable morning record for either an observed or unselected candidate."""
     if not isinstance(cutoff_at, str) or not cutoff_at.strip():
@@ -253,10 +267,16 @@ def build_morning_update(
     if reason_status == "invalidated" and not contrary:
         raise MorningUpdateError("理由失效必须列出已核重大反证")
     requires_review = bool(contrary) or reason_status in {"needs_review", "invalidated"} or source_status != "complete" or observation_status != "current"
+    # The lifecycle ledger must retain both the ordinary morning material and the independent
+    # material supporting a later withdrawal.  The first is still useful context, but only the
+    # explicitly named second set may be carried forward as independent verification.
+    independent = _refs(independent_verification_refs, required=False)
+    all_refs = _refs([*source_refs, *independent], required=True)
     return MorningUpdate(
         cutoff_at=cutoff_at.strip(), candidate_id=candidate_id, observation_id=observation_id,
         reason_status=reason_status, source_status=source_status, observation_status=observation_status,
-        material_contrary_evidence=contrary, source_refs=_refs(source_refs),
+        material_contrary_evidence=contrary, source_refs=all_refs,
+        independent_verification_refs=independent,
         summary=summary.strip(), requires_review=requires_review,
     )
 

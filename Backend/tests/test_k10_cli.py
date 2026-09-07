@@ -37,7 +37,7 @@ def test_configure_appends_validated_immutable_pack(tmp_path):
     payload = {
         "configVersion": "k10-v1.4", "universe": "chinext", "excludeBaijiu": True,
         "hardExclusions": {"approved": True, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]},
-        "sourceAdapters": ["fixture"],
+        "sourceAdapters": [{"key": "fixture", "lateArrivalReplaySeconds": 86400}],
         "modelRoutes": {"discovery": "deepseek-v4-pro", "analysis": "deepseek-v4-pro", "morning": "deepseek-v4-pro"},
         "taskPolicies": {"discovery": {"maxAttempts": 1, "modelMaxAttempts": 1, "timeoutSeconds": 30, "costLimit": 0, "maxSourceRequests": 1, "maxVerificationRequests": 1}},
     }

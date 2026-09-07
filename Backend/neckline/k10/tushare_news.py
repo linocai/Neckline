@@ -10,7 +10,7 @@ silently disappear.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Callable, Mapping, Sequence
 
@@ -41,15 +41,23 @@ def _request_time(value: datetime) -> str:
     return value.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _parse_pub_time(value: object) -> datetime | None:
+def _parse_pub_time(value: object) -> tuple[datetime | None, str]:
     if not isinstance(value, str) or not value.strip():
-        return None
+        return None, "unknown"
     text = value.strip()
+    if len(text) == 10:
+        try:
+            day = date.fromisoformat(text)
+        except ValueError:
+            return None, "unknown"
+        # A date is retained as a stable ordering placeholder, never promoted to a
+        # midnight publication claim or included in a precise scan window.
+        return datetime.combine(day, time.min, tzinfo=SHANGHAI), "date"
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return None
-    return parsed.replace(tzinfo=SHANGHAI) if parsed.tzinfo is None else parsed.astimezone(SHANGHAI)
+        return None, "unknown"
+    return (parsed.replace(tzinfo=SHANGHAI) if parsed.tzinfo is None else parsed.astimezone(SHANGHAI)), "exact"
 
 
 def _stable_external_id(*, source: str, raw_pub_time: str, title: str) -> str:
@@ -120,9 +128,6 @@ class TuShareMajorNewsAdapter:
         if start == cutoff and not (window.start_inclusive and window.cutoff_inclusive):
             return self._complete((), 0, cutoff)
 
-        fetched_at = self._clock()
-        if fetched_at.tzinfo is None:
-            raise ValueError("TuShare major_news clock 必须返回带时区时间")
         pending: list[tuple[datetime, datetime]] = [(start, cutoff)]
         documents: list[SourceDocumentInput] = []
         errors: list[str] = []
@@ -141,6 +146,9 @@ class TuShareMajorNewsAdapter:
                 errors.append(exc.code)
                 break
             requests_made += 1
+            fetched_at = self._clock()
+            if fetched_at.tzinfo is None:
+                raise ValueError("TuShare major_news clock 必须返回带时区时间")
             converted, unknown, invalid = self._documents_from_items(items, fetched_at=fetched_at, request=request)
             documents.extend(converted)
             unknown_publication_time_count += unknown
@@ -227,18 +235,18 @@ class TuShareMajorNewsAdapter:
                 invalid = True
                 continue
             raw_pub_time = record["pub_time"]
-            published_at = _parse_pub_time(raw_pub_time)
-            if published_at is not None and not request.window.contains(published_at):
+            published_at, precision = _parse_pub_time(raw_pub_time)
+            if precision == "exact" and published_at is not None and not request.window.contains(published_at):
                 # The API interval is inclusive, whereas K10 windows may have an open boundary.
                 continue
-            if published_at is None:
+            if precision != "exact":
                 unknown_count += 1
             source = record["src"]
             title = record["title"]
             documents.append(SourceDocumentInput(
                 external_id=_stable_external_id(source=source, raw_pub_time=raw_pub_time, title=title),
                 canonical_url=None, original_text=record["content"], excerpt=None,
-                published_at=published_at, published_precision="exact" if published_at is not None else "unknown",
+                published_at=published_at, published_precision=precision,
                 fetched_at=fetched_at, fetch_version=FETCH_VERSION,
                 metadata={
                     "provider": "tushare", "source": source or None, "title": title,

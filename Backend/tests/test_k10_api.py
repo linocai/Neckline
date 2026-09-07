@@ -42,6 +42,7 @@ def _seed(path: Path) -> str:
         "hardExclusions": {"approved": True, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]},
         "sourceAdapters": ["fixture"], "modelRoutes": {"analysis": "deepseek-v4-pro"},
         "taskPolicies": {"analysis": {"maxAttempts": 1, "costLimit": 0}},
+        "marketCollection": {"retryIntervalSeconds": 300, "retryUntilMinutesAfterClose": 120},
         "evaluationPolicy": {"version": "k10-evaluation-v1.4", "selectionFreeze": "d1_open_0930", "window": "d1_d2", "primaryMetric": "close_limit_up_any_d1_d2"},
     }
     revision = store.append_run_config(config_id="cfg", payload=config, created_at=NOW, db_path=path)
@@ -164,6 +165,10 @@ def test_publications_project_company_cards_and_multifield_wire_contract(tmp_pat
     assert compared["cand-2"] == {"summary": "比较", "rationale": None, "rank": 2,
                                      "priorityReason": "受益较弱", "gap": "订单兑现较慢",
                                      "rankChangeConditions": "订单超预期", "twoDayReason": "催化尚可",
+                                     "eventRank": None, "rankNamespace": None,
+                                     "classification": {"kind": "initial", "reason": "首发", "newFacts": "新增披露",
+                                                        "changedJudgment": None, "twoDayReason": "两日可核",
+                                                        "relatedOpportunityId": None},
                                      "historicalCases": [], "historicalCoverage": None}
     evidence = compared and detail["samples"][0]["evidence"][0]["sourceRef"]
     assert evidence["documentId"] == "doc-1" and evidence["revision"] == 1

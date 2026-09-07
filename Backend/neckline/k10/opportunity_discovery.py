@@ -12,6 +12,17 @@ NEW_KINDS = frozenset({"initial", "material_stage", "independent"})
 UPDATE_KINDS = frozenset({"continuation", "needs_review", "invalidated"})
 
 
+def normalize_catalyst_stage(stage_key: str) -> str:
+    """Return the stable identity used for a catalyst stage.
+
+    A stage label is model output, so whitespace or letter case cannot be allowed to
+    create another D1/D2 window for the same stage.
+    """
+    if not isinstance(stage_key, str) or not (normalized := stage_key.strip().casefold()):
+        raise ValueError("机会阶段不能为空")
+    return normalized
+
+
 def validate_comparison(comparison: Mapping[str, Any]) -> None:
     if comparison.get("role") not in {"primary", "alternative", "tied"}:
         raise ValueError("公司比较必须明确主推、备选或并列")
@@ -107,12 +118,27 @@ def validate_classification(
         raise ValueError("新阶段未说明实质改变的关键判断")
     # The source event's identity is separate from its append-only evidence revision.
     # A substantive stage has a stable key; repeating it can never restart a window.
-    semantic_key = f"{canonical_key}\x1f{company_code}\x1f{stage_key}" if kind == "material_stage" else f"{canonical_key}\x1f{company_code}"
+    normalized_stage = normalize_catalyst_stage(stage_key)
+    semantic_key = (f"{canonical_key}\x1f{company_code}\x1f{normalized_stage}"
+                    if kind == "material_stage" else f"{canonical_key}\x1f{company_code}")
     exact = next((old for old in previous if old.get("opportunityKey") == semantic_key), None)
     same_event = [old for old in previous if old.get("companyCode") == company_code
                   and old.get("canonicalKey") == canonical_key]
+    same_stage = [old for old in same_event
+                  if isinstance(old.get("catalystStage"), str)
+                  and old["catalystStage"].strip()
+                  and normalize_catalyst_stage(old["catalystStage"]) == normalized_stage]
     if kind == "initial" and same_event and exact is None:
         raise ValueError("已有事件不能再次分类为首次机会")
+    if kind == "material_stage" and same_stage:
+        # The old initial opportunity deliberately has a shorter key, so comparing
+        # only semantic_key would let its own stage reopen as a new material stage.
+        # The model already supplied the intended predecessor; do not choose one
+        # arbitrarily when the historical identity is ambiguous.
+        if related not in same_stage:
+            raise ValueError("同一催化阶段不得关联为新的实质阶段")
+        result.update(kind="continuation", relatedOpportunityId=related["opportunityId"],
+                      reason="相同催化阶段已推荐；本次证据追加到原机会。" + result["reason"])
     if kind in NEW_KINDS and exact is not None:
         result.update(kind="continuation", relatedOpportunityId=exact["opportunityId"],
                       reason="相同催化/阶段已推荐；本次证据追加到原机会。" + result["reason"])

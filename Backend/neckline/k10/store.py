@@ -28,6 +28,22 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
+def _utc_instant(value: str | datetime) -> str:
+    """Validate a stored ISO timestamp and return its canonical instant.
+
+    Scan ingestion deliberately persists timestamps in UTC, while the scheduler keeps its
+    human-facing Shanghai cutoff.  A report belongs to the scan's instant, not one spelling
+    of that instant.
+    """
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise K10Conflict("晨报截止时间无效") from exc
+    if parsed.tzinfo is None:
+        raise K10Conflict("晨报截止时间必须带时区")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def _require_write_schema(conn) -> None:
     require_schema(conn)
 
@@ -76,13 +92,25 @@ def append_document_version(
     *, document_id: str, source_key: str, external_id: str, canonical_url: Optional[str],
     content_sha256: str, published_at: Optional[str], published_precision: str, fetched_at: str,
     original_text: Optional[str], excerpt: Optional[str], fetch_version: str,
-    metadata: Mapping[str, Any], created_at: str, db_path: Path,
-) -> DocumentVersion:
+    metadata: Mapping[str, Any], created_at: str, db_path: Path, scan_id: str | None = None,
+    leaseguard: Callable[[], None] | None = None, return_append_result: bool = False,
+) -> DocumentVersion | tuple[DocumentVersion, bool]:
     """追加原始资料版本，以内容哈希幂等；同源 ID 绝不可改绑到另一 document ID。"""
     if published_precision not in {"exact", "date", "unknown"}:
         raise ValueError("published_precision 必须是 exact、date 或 unknown")
+    if leaseguard is not None:
+        leaseguard()
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
+        scan_coverage: dict[str, Any] | None = None
+        if scan_id is not None:
+            scan = conn.execute("SELECT status,coverage_json FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone()
+            if scan is None or scan[0] != "running":
+                raise K10Conflict("来源资料只能写入当前 running 扫描")
+            raw_coverage = json.loads(scan[1])
+            if not isinstance(raw_coverage, Mapping):
+                raise K10Conflict("当前扫描 coverage 无效")
+            scan_coverage = dict(raw_coverage)
         identity = conn.execute(
             "SELECT document_id FROM k10_source_documents WHERE source_key=? AND external_id=?",
             (source_key, external_id),
@@ -104,19 +132,37 @@ def append_document_version(
             (document_id, content_sha256),
         ).fetchone()
         if old is not None:
-            return DocumentVersion(document_id, int(old[0]), content_sha256)
-        revision = int(conn.execute(
-            "SELECT COALESCE(MAX(revision),0) FROM k10_source_document_versions WHERE document_id=?",
-            (document_id,),
-        ).fetchone()[0]) + 1
-        conn.execute(
-            "INSERT INTO k10_source_document_versions(document_id,revision,content_sha256,published_at,"
-            "published_precision,fetched_at,original_text,excerpt,fetch_version,metadata_json,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (document_id, revision, content_sha256, published_at, published_precision, fetched_at,
-             original_text, excerpt, fetch_version, _json(metadata), created_at),
-        )
-    return DocumentVersion(document_id, revision, content_sha256)
+            version = DocumentVersion(document_id, int(old[0]), content_sha256)
+            created = False
+        else:
+            revision = int(conn.execute(
+                "SELECT COALESCE(MAX(revision),0) FROM k10_source_document_versions WHERE document_id=?",
+                (document_id,),
+            ).fetchone()[0]) + 1
+            conn.execute(
+                "INSERT INTO k10_source_document_versions(document_id,revision,content_sha256,published_at,"
+                "published_precision,fetched_at,original_text,excerpt,fetch_version,metadata_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (document_id, revision, content_sha256, published_at, published_precision, fetched_at,
+                 original_text, excerpt, fetch_version, _json(metadata), created_at),
+            )
+            version = DocumentVersion(document_id, revision, content_sha256)
+            created = True
+        if scan_id is not None and scan_coverage is not None:
+            accepted = scan_coverage.get("sourceAcceptedDocumentRefs")
+            entries = list(accepted) if isinstance(accepted, list) else []
+            key = (version.document_id, version.revision)
+            if not any(isinstance(item, Mapping) and (item.get("documentId"), item.get("revision")) == key for item in entries):
+                # Re-check immediately before the scan checkpoint.  If ownership changed
+                # during this write transaction, the exception rolls back the document insert
+                # as well, so a former worker cannot leave an unowned half-write behind.
+                if leaseguard is not None:
+                    leaseguard()
+                entries.append({"documentId": version.document_id, "revision": version.revision, "isNew": created})
+                scan_coverage["sourceAcceptedDocumentRefs"] = entries
+                conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=? AND status='running'",
+                             (_json(scan_coverage), scan_id))
+    return (version, created) if return_append_result else version
 
 
 def append_event_revision(
@@ -843,16 +889,28 @@ def append_morning_report(
         raise ValueError("同一晨报的正式机会只能出现一次")
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
-        scan = conn.execute("SELECT window_kind,cutoff_at FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone()
-        if scan is None or scan[0] != "morning" or scan[1] != cutoff_at:
+        scan = conn.execute("SELECT window_kind,cutoff_at,status FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone()
+        if scan is None or scan[0] != "morning":
             raise K10Conflict("晨报必须绑定同一截止时间的晨间扫描")
+        if scan[2] == "running":
+            raise K10Conflict("晨报只能绑定已终态的晨间扫描")
+        if _utc_instant(str(scan[1])) != _utc_instant(cutoff_at):
+            raise K10Conflict("晨报必须绑定同一截止时间的晨间扫描")
+        # The scan is the immutable authority.  New reports use its canonical persisted
+        # timestamp, even when a legacy scheduler task still carries an equivalent +08:00
+        # spelling.
+        canonical_cutoff_at = _utc_instant(str(scan[1]))
         existing = conn.execute(
             "SELECT scan_id,revision,cutoff_at,generated_at,status,coverage_json,created_at FROM k10_morning_reports WHERE report_id=?",
             (report_id,),
         ).fetchone()
-        expected = (scan_id, cutoff_at, generated_at, status, _json(coverage), created_at)
         if existing is not None:
-            if (existing[0], existing[2], existing[3], existing[4], existing[5], existing[6]) != expected:
+            if (
+                existing[0] != scan_id
+                or _utc_instant(str(existing[2])) != _utc_instant(canonical_cutoff_at)
+                or (existing[3], existing[4], existing[5], existing[6])
+                != (generated_at, status, _json(coverage), created_at)
+            ):
                 raise K10Conflict("晨报 ID 已存在但内容不同")
             stored_items = conn.execute(
                 "SELECT group_key,item_id,position,opportunity_id,company_window_id,status,content_json "
@@ -878,7 +936,7 @@ def append_morning_report(
                     raise K10Conflict("晨报项目公司窗口不存在")
         conn.execute(
             "INSERT INTO k10_morning_reports(report_id,scan_id,revision,cutoff_at,generated_at,status,coverage_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (report_id, scan_id, revision, cutoff_at, generated_at, status, _json(coverage), created_at),
+            (report_id, scan_id, revision, canonical_cutoff_at, generated_at, status, _json(coverage), created_at),
         )
         for group, values in normalized.items():
             for item in values:
@@ -887,7 +945,7 @@ def append_morning_report(
                     (report_id, item["itemId"], group, item["position"], item["opportunityId"], item["companyWindowId"],
                      item["status"], _json(item["content"]), created_at),
                 )
-    return {"reportId": report_id, "scanId": scan_id, "revision": revision, "cutoffAt": cutoff_at, "generatedAt": generated_at,
+    return {"reportId": report_id, "scanId": scan_id, "revision": revision, "cutoffAt": canonical_cutoff_at, "generatedAt": generated_at,
             "status": status, "coverage": dict(coverage), "groups": payload, "createdAt": created_at}
 
 
@@ -1592,12 +1650,17 @@ def _stable_id(prefix: str, *parts: str) -> str:
 
 
 def _publication_input_payload(value) -> dict[str, Any]:
-    return {"candidateId": value.candidate_id, "companyCode": value.company_code,
+    payload = {"candidateId": value.candidate_id, "companyCode": value.company_code,
             "eventId": value.event_id, "eventRevision": value.event_revision,
             "opportunityKey": value.opportunity_key, "catalystStage": value.catalyst_stage,
             "category": value.category, "comparison": dict(value.comparison),
             "evidenceRefs": [dict(item) for item in value.evidence_refs],
             "sourceMarker": value.source_marker, "relatedOpportunityId": value.related_opportunity_id}
+    # Omit the additive field when absent so historical batch retries retain their
+    # existing immutable input hash.
+    if value.display_rank is not None:
+        payload["displayRank"] = value.display_rank
+    return payload
 
 
 _HISTORICAL_OUTCOMES = {"success", "flat", "failure", "unclassified"}
@@ -1684,7 +1747,9 @@ def _validate_event_comparison_inputs(values: Sequence["OpportunityPublicationIn
             raise ValueError("同一事件修订至多一个 primary")
         by_rank: dict[int, list["OpportunityPublicationInput"]] = {}
         for item in peers:
-            rank = item.comparison.get("rank") if isinstance(item.comparison, Mapping) else None
+            comparison = item.comparison if isinstance(item.comparison, Mapping) else {}
+            rank = (comparison.get("eventRank") if comparison.get("rankNamespace") == "event"
+                    else comparison.get("rank"))
             if rank is None:
                 continue
             if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
@@ -1748,7 +1813,7 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                 raise ValueError("source_marker 必须与首发批次一致")
             comparison = item.comparison
             required_comparison = {"summary", "differences", "evidenceRefs", "rank", "classification"}
-            allowed_comparison = required_comparison | {"marketContext", "historicalCases", "historicalCoverage"}
+            allowed_comparison = required_comparison | {"marketContext", "historicalCases", "historicalCoverage", "rankNamespace", "eventRank"}
             if not isinstance(comparison, Mapping) or not required_comparison <= set(comparison) or not set(comparison) <= allowed_comparison:
                 raise ValueError("正式推荐缺少完整比较快照")
             differences = comparison["differences"]
@@ -1766,6 +1831,9 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                 (classification.get("kind") == "material_stage" and (not item.related_opportunity_id or not isinstance(classification.get("changedJudgment"), str) or not classification["changedJudgment"].strip())) or
                 (classification.get("kind") != "material_stage" and classification.get("changedJudgment") is not None and not isinstance(classification.get("changedJudgment"), str)) or
                 ("marketContext" in comparison and not isinstance(comparison["marketContext"], Mapping)) or
+                (("rankNamespace" in comparison or "eventRank" in comparison) and
+                 (comparison.get("rankNamespace") != "event" or comparison.get("eventRank") != comparison.get("rank"))) or
+                (item.display_rank is not None and (isinstance(item.display_rank, bool) or not isinstance(item.display_rank, int) or item.display_rank < 1)) or
                 _json(comparison["evidenceRefs"]) != _json(item.evidence_refs)):
                 raise ValueError("正式推荐比较、分类或精确证据引用不一致")
             _validate_historical_context(conn, comparison)
@@ -1809,7 +1877,7 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                          (opportunity_id, item.opportunity_key, item.company_code, item.event_id, item.event_revision,
                           item.catalyst_stage, item.related_opportunity_id, batch_id, window_id, available_at))
             sample_id = _stable_id("sample", batch_id, item.candidate_id)
-            rank = item.comparison.get("rank") if isinstance(item.comparison, Mapping) else None
+            rank = item.display_rank if item.display_rank is not None else item.comparison.get("rank")
             conn.execute("INSERT INTO k10_publication_samples(sample_id,batch_id,candidate_id,opportunity_id,company_window_id,event_id,event_revision,company_code,category,source_marker,comparison_json,evidence_refs_json,rank,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (sample_id, batch_id, item.candidate_id, opportunity_id, window_id, item.event_id, item.event_revision,
                           item.company_code, item.category, item.source_marker, _json(item.comparison), _json(item.evidence_refs), rank, available_at))

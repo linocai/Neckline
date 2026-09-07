@@ -123,6 +123,6 @@ def test_morning_report_sections_are_complete_ranked_and_partial_never_claims_no
     expired = build_morning_report_item(item_id="item-0", display_rank=1, source_status="complete",
         reason_status="current", material=False, is_new=False, lifecycle="expired", **{key: value for key, value in common.items() if key != "lifecycle"})
     assert expired.section == "continuing_or_expiring"
-    with pytest.raises(MorningReportError, match="独立核验"):
-        build_morning_report_item(item_id="item-3", display_rank=3, source_status="complete", reason_status="needs_review",
-            material=True, is_new=False, independent_verification_refs=[], **{key: value for key, value in common.items() if key != "independent_verification_refs"})
+    pending_contrary = build_morning_report_item(item_id="item-3", display_rank=3, source_status="complete", reason_status="needs_review",
+        material=True, is_new=False, independent_verification_refs=[], **{key: value for key, value in common.items() if key != "independent_verification_refs"})
+    assert pending_contrary.section == "needs_review"

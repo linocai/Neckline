@@ -20,7 +20,7 @@ _SCOPES = {
     "candidate": ("configVersion", "hardExclusions", "sourceAdapters"),
     "discovery": ("configVersion", "hardExclusions", "sourceAdapters", "modelRoutes", "taskPolicies"),
     "analysis": ("configVersion", "modelRoutes", "taskPolicies"),
-    "morning": ("configVersion", "modelRoutes", "taskPolicies"),
+    "morning": ("configVersion", "sourceAdapters", "modelRoutes", "taskPolicies"),
     "evaluation": ("configVersion", "evaluationPolicy", "marketCollection", "taskPolicies"),
 }
 _K10_MODEL_TASKS = ("discovery", "analysis", "morning")
@@ -47,7 +47,25 @@ def validate_run_config(payload: Mapping[str, Any] | None, *, scope: str) -> Con
     if not isinstance(hard, Mapping) or set(hard) != set(expected_hard) or any(hard.get(k) != v for k, v in expected_hard.items()):
         errors.append("hardExclusions 必须精确为已批准的创业板、无价限、ST 与 801125.SI 白酒排除规则")
     adapters = payload.get("sourceAdapters")
-    if adapters is not None and not isinstance(adapters, list): errors.append("sourceAdapters 必须是列表")
+    if scope in {"candidate", "discovery", "morning"}:
+        if not isinstance(adapters, list):
+            errors.append("sourceAdapters 必须是列表")
+        else:
+            keys: list[str] = []
+            for adapter in adapters:
+                if not isinstance(adapter, Mapping) or set(adapter) != {"key", "lateArrivalReplaySeconds"}:
+                    errors.append("sourceAdapters 每项必须精确包含 key 与 lateArrivalReplaySeconds")
+                    continue
+                key = adapter.get("key")
+                replay = adapter.get("lateArrivalReplaySeconds")
+                if not isinstance(key, str) or not key.strip():
+                    errors.append("sourceAdapters.key 必须是非空来源键")
+                else:
+                    keys.append(key)
+                if isinstance(replay, bool) or not isinstance(replay, int) or replay < 1:
+                    errors.append("sourceAdapters.lateArrivalReplaySeconds 必须是正整数")
+            if len(keys) != len(set(keys)):
+                errors.append("sourceAdapters.key 不能重复")
     routes = payload.get("modelRoutes")
     if routes is not None and not isinstance(routes, Mapping): errors.append("modelRoutes 必须是对象")
     if isinstance(routes, Mapping):

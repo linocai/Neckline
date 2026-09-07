@@ -1,160 +1,160 @@
-# Neckline V3 · 3.0.2 / Build 33（已发布）· K10-v1.4
+# Neckline V3 · 3.0.4 / 双端 Build 35（发布准备）· K10-v1.4
 
 本文件是 Neckline 唯一施工控制面。策略裁定以 [`whynotme/K10.md`](../whynotme/K10.md)
 为准；生产代码不得读取、导入或以模型记忆替代 `whynotme`。
 
 ## 当前目标、事实与边界
 
-- **目标完成**：十一项一致性修复与复审边界已验收，2026-09-07 按用户“一条龙”授权完成提交推送、
-  不可变标签、双端签名、Schema 3 备份迁移部署、Mac 换装与发布包交付。iOS 最终安装仍由用户执行。
-- **当前生产**：commit `47c9fd0d2a04c2d924b94fc8d51d53f93bd73d60`，不可变标签 `v3.0.2-b33`，
-  3.0.2 / 双端 Build 33 / Schema 3。上一生产基线为 `47339492573892515f1b2b578459aad082cf1afd`
-  与 `v3.0.1-b32`；旧标签保留原位，后续文档提交不移动本次标签。
+- **当前目标**：在已有未提交的 3.0.3 / Build 34 工程增量上，完成独立复核确认的 11 项
+  K10-v1.4 一致性缺陷，目标为 **3.0.4 / 双端 Build 35**。用户已追加授权：完成施工后直接一条龙发布，包含提交 main、推送、不可变标签、签名包、生产备份/部署和本机换装；iOS 交付安装包。
+- **当前生产恢复锚点**：commit `47c9fd0d2a04c2d924b94fc8d51d53f93bd73d60`、不可变标签
+  `v3.0.2-b33`、Neckline 3.0.2 / 双端 Build 33 / Schema 3，服务器发布集合仍为
+  `v3.0.2-b33`。保留所有既有标签；不得回滚或丢弃当前工作区的 Build 34 增量。
+- **历史验收的正确解释**：Build 34 的 655 项 Backend 回归、双端构建及原生 QA 是先前工程事实，
+  不能作为本轮 11 项情景已修复的证据。3.0.4 必须为每个确认复现补上持久化、API 与客户端边界的真实验收。
 - **既定运行配置**：只限创业板，排除 ST／*ST 与申万 2021 白酒Ⅱ `801125.SI`，无股价/金额上限；
-  全模型路由 DeepSeek V4 Pro；TuShare 长篇通讯发现，Tavily 只用于已冻结事件的定向核验和历史同类
+  全模型路由 DeepSeek V4 Pro；TuShare 长篇通讯用于发现，Tavily 只用于已冻结事件的定向核验和历史同类
   资料检索，绝不回流为全市场发现。TuShare 快讯/全量公告未授权，覆盖缺口必须显示。
-- **不在本轮的能力**：K9/K8、交易计划、买卖价、持有/退出、收益结算、回测与策略校准。不得添加兼容
-  表/路由/UI、默认阈值或 `whynotme` 依赖。
+- **不在本轮的能力**：K9/K8、交易计划、买卖价、持有/退出、仓位、收益结算、回测与策略校准。不得添加
+  兼容表/路由/UI、默认策略数值或 `whynotme` 运行时依赖。
 
-## 不变的产品规则
+## K10-v1.4 的冻结产品契约
 
-- K10 是纯选股器。每个正式发布的公司窗口固定追踪 D1/D2；选择冻结为留下、明确略过、未处理。
-  撤回、取消关注、资料补充、晨报和分析改版不删除样本、不改冻结组、不延长窗口。
-- 事件的公司比较在发布前完成。晚间最多 30 个不同公司；同公司同批多催化共用卡、rank、选择和成绩。
-  与该公司已发布窗口相交的新机会固定为 overlap，完整展示但永不计入主命中率。
-- 主成绩是到 D2 收盘、D1/D2 涨停状态完整可核的主样本中“两日内至少一次收盘封板”的比例。停牌、
-  缺数、异常、未到期、不可比和 overlap 单列；行情事实按 `companyCode + tradeDate` 追加保存。
-- 正反分析只属于曾被用户留下的公司窗口。后续分析可追加到已有观察链，不能新建窗口、重置 D1/D2 或
-  重领成绩。生命周期、选择、rank、统计和主/重叠归属均以服务端投影为准。
+- K10 是纯选股器。每个正式发布公司窗口固定追踪 D1/D2；系统推荐的所有公司均是样本，开盘前冻结为
+  留下、明确略过、未处理。用户后续操作、资料补充、晨报、分析改版、撤回和取消关注均不删除样本、不改
+  冻结组、不延长窗口。
+- 发布前先完成事件内公司比较：共同事实只讲一次，明确主推、备选或并列、优先理由、差距与改变排序的事实；
+  晚间最多 30 个不同公司，同公司同批多催化共用卡、选择、成绩和冻结的全局展示顺序。跨日续旧不重开机会；
+  同公司窗口相交的新机会为 overlap，完整展示但永不计入主命中率。
+- 晨报覆盖仍在固定窗口内的所有正式机会以及新到期提示，包含留下、略过、未处理、同窗口多催化和撤回项；
+  固定为重大反证、论点变化、继续/到期、新机会、待核五段。资料不全只能待核；撤回仍可读且原成绩继续至 D2。
+- 正反分析只属于曾被用户留下的公司窗口；同一请求生成同一版本的正反全文。新的问题或合法新增证据才递增
+  分析版次，不能新建窗口、重置 D1/D2 或领取成绩。
+- 主指标是 D1/D2 内至少一次**收盘封板**。分母只含 D2 到期且两日涨停状态完整可核的主样本；未到期、停牌、
+  缺数、异常和 overlap 单列。价格变化是观察指标，不是假定成交收益；行情事实按公司代码＋交易日唯一保存。
 
-## 3.0.2 冻结契约
+## 3.0.4 修复合同与施工包
 
-### 1. 生命周期与选择
+### A · 采集恢复、晨报持久化与模型输出入口（owner：A）
 
-`k10_opportunity_lifecycle_events` 仍是追加账本，状态按完整历史折叠，不能再取末事件：
+**A1 · 入库至输入冻结的失租恢复（P1）。** 文档版本与本 scan 的 `sourceAcceptedDocumentRefs`
+在同一 SQLite 事务保存，记录真实 INSERT 的 `isNew`；相同 scan 的重放不能把已有 true 改成 false。
+未冻结输入时只处理本 scan 尚未消费的新版本，重放范围内更早 scan 已消费的旧版本不得再次理解。
+文档提交后、输入快照冻结前中断时，接手 worker 从原子记录恢复同一集合、冻结并处理一次；写入前仍验租。
+覆盖 old＋fresh 混合来源、提交后硬中断、恢复时重复返回和已冻结输入重试；沿用 Schema 3 coverage metadata。
 
-- `withdrawal`、`expired` 是单调终态；后续 `evidence_update` 只能补资料，不能复活；`risk` 也不能
-  覆盖终态。
-- active/risk 期间，只有 coverage 完整且显式 `reasonStatus=current` 的核验结果能清除既有 risk；
-  continuation/普通 evidence update 不得暗中清风险。
-- 选择端调用同一投影。终态窗口的新 `keep` 返回 409，零新 observation、analysis task 或 outbox；
-  既有选择、窗口、证据、报告和成绩继续可读。
+**A2 · 晨报 item 的 coverage 单一语义（P2）。** `_morning_fallback_item`、模型晨报项与 API 投影统一使用
+`coverage.status`／`coverage.gaps`（允许读旧 `state`）；完整 fallback 在客户端必须为“已核”，不完整才为待核。
+这只修正 DTO 语义，不改变五段、窗口或晨报排序。
 
-### 2. 晨报：全量、五段、可读
+**A3 · 撤回的独立反证引用全链保留（P2）。** 对 material contrary，生命周期事件的 `sourceRefs` 必须是稳定去重的
+晨间资料与独立核验资料并集；`content.materialContraryEvidence` 与可阅读的 refs 一一可追溯。后续
+`_morning_target_items`、下一份晨报及 opportunity API 必须保留真实独立 refs，不能把普通晨间资料冒充独立核验。
 
-Schema 3 新增不可变 `k10_morning_reports`（每个晨间 scan 一份）与
-`k10_morning_report_items`（每个正式 opportunity 一项）。item 保存至少
-`reportId, scanId, companyWindowId, opportunityId, displayRank, selectionState, lifecycle, section,
-priority, summary, coverage, sourceRefs, independentVerificationRefs, lifecycleEventId, createdAt`。
+**A4 · 原始事件比较重复公司拒绝（P2，串行接入 B 的 helper）。** DeepSeek `compare_event` 在将数组压成
+`dict[companyCode]` 前，必须拒绝重复公司行，报出结构错误并阻断发布；不得静默让后一行覆盖前一行。A 负责
+`pipeline.py` 的 provider 边界调用，B 提供无副作用的校验接口和断言语义。
 
-- target 是截止时仍在固定 D1/D2 窗口的**全部正式发布机会**，以及上次晨报后新到期、需提示一次的机会：包含 kept/skipped/unhandled、同窗口多
-  催化和已撤回项；不得按是否留下筛选。撤回项仍作为重大反证可读，不能重开分析。
-- 每项恰好属于以下五段，按段号、`displayRank`、稳定 ID 排序：`major_contrary`（重大反证/撤回）→
-  `thesis_changed`（论点改变）→ `continuing_or_expiring`（完整覆盖下无实质变化、继续观察或 D2 到期）→
-  `new`（本晨正式新发布）→ `needs_review`（资料不全、独立核验不足或任务失败）。无变化不另设第六段；
-  coverage 非 `complete` 时禁止写“无变化”，只能进 `needs_review` 并说明缺口。
-- handler 输入必须有原候选、冻结晨间 docs、独立核验 refs 及其真实 document versions。模型结论只能
-  引用这套资料；新增重大反证结论须有对应独立 refs。完整扫描无新匹配可复用原证据并注明覆盖范围，不能伪称新增核验；自然到期归续旧/到期。完整但无材料变化也必须落
-  `continuing_or_expiring` report item，不能只返回 `reused`。
-- API 固定为 `GET /api/v1/k10/morning-reports/latest` 和可分页
-  `GET /api/v1/k10/morning-reports`。`MorningReportOut={reportId,scanId,cutoffAt,coverage,items}`，item
-  使用上述字段。空报告也须返回明确 coverage 和空 items，不能伪装为无变化。
+**A 的文件所有权**：`Backend/neckline/k10/pipeline.py`、`ingestion.py`、`morning_runtime.py`、`morning.py`、`store.append_document_version` 与
+`Backend/tests/test_k10_v304_sources.py`、`test_k10_v304_morning.py`。除 A 外，其他包不得直接修改
+`pipeline.py`；B 对 A 仅交付 helper 契约/测试结论。
 
-### 3. rank、事件级比较、历史同类证据与概率守卫
+### B · 事件比较与历史证据（owner：B）
 
-- `k10_publication_samples.rank` 是发布时冻结的全局公司顺序。读投影为
-  `CompanyWindowOut.displayRank`（首发 batch 最小 sample rank）；机会、窗口、样本、结果和晨报按
-  `availableAt DESC, displayRank ASC, stableId ASC`，同批只按冻结 rank。Swift 不得以创建时间、风险或
-  本地状态重排；风险优先仅属于晨报 section。
-- 用一次 `EventComparison` 替换逐公司 `compare`：输入同一事件的完整 peer 集和冻结证据，输出每个公司
-  一次的 `role, rank, priorityReason, gap, rankChangeConditions, twoDayReason, sourceRefs`。校验 rank
-  全序；同 rank 只允许明确 `tied`；同事件至多一个 `primary`；拒绝漏公司、重复、双主推和 A>B/B>A 循环。
-  跨事件 `prioritize` 只排序已完成的公司结论，不替代事件内比较。
-- 每个正式比较追加 `historicalCases` 与 `historicalCoverage`。case 固定为
-  `caseId, outcome=success|flat|failure|unclassified, summary, observedAt, sourceRefs, marketFacts`；只有来源明确支持才能分类成功/失败/平淡，未分类真实事实照常保留；coverage 固定为
-  `state=complete|partial|unavailable, requestedOutcomes, presentOutcomes, missingOutcomes, reason, sourceRefs`。
-  新 `historical_cases.py` 使用配置好的 Tavily 定向检索真实公开历史资料，存为版本化
-  `tavily_verification` document，再冻结 refs。它只服务已冻结候选/事件，discovery source boundary
-  继续排除它。缺失败/平淡资料或检索失败须显式 partial/unavailable；不得用十日行情、模型记忆或
-  `whynotme` 资料充数。
-- 概率守卫递归检查对象、数组和字符串，拒绝**正向、未经校准的价格/涨停概率预测**，包括
-  “涨停概率70%”“70%概率涨停”与等义表达。允许明确否定/缺口声明，如“不能估计涨停概率”“不输出概率”。
-  测试必须锁住正向与否定语境，不能只检查键名或关键词。
+**B1 · 历史 coverage 引用稳定去重（P1）。** 多个历史公司案例共享一份文档时，保留每个 case 的完整
+`sourceRefs`，但 `historicalCoverage.sourceRefs` 按 `(documentId, revision)` 首次出现顺序去重。后续发布校验
+不得因合法共享证据拒绝整批候选。
 
-### 4. 追加分析和版本阅读链
+**B2 · 事件内 rank 与全局 display rank 分离（P2）。** `CandidateComparison.rank` 保存模型验证后的事件内
+rank（并列必须明确 `tied`）；跨事件排序仅在发布样本/公司窗口写冻结 `displayRank`。不得将全局名次回写到
+事件比较，不能拆散明确并列，也不改变跨事件 30 家顺序。新写入 comparison 标明 `rankNamespace=event`
+与 `eventRank`；旧无标记的记录不推断事件内名次。新增可选 display rank 不得改变旧发布输入的重放哈希。旧未发布冻结草稿缺少事件排序时明确失败，保留原输入；不得猜测排序或静默重新调用模型。
 
-Schema 3 新增 `k10_analysis_requests`：`requestId, companyWindowId, observationId, targetRevision,
-parentRevision, kind=user_question|evidence_update, question, sourceRefs, idempotencyKey, taskId, createdAt`。
-初始分析仍是第 1 版；既有 V2 analysis revisions 不伪造 request，读取时投影 `initial`。
+**B3 · 概率守卫覆盖全部模型派生文本（P2）。** 递归拒绝正向、未经校准的涨停/封板概率预测，包括
+“涨停概率可能达到 70%”及倒装同义式；事件摘要、候选比较、历史 assessment、classification 等所有模型输出
+路径均必须进入守卫。明确否定或缺口说明（如“不能估计涨停概率”“不输出概率”）继续合法，不能用关键词
+黑名单误伤。
 
-- `POST /api/v1/k10/company-windows/{id}/analysis-requests` body 固定为
-  `{kind:"user_question"|"evidence_update",question?,sourceRefs:[{documentId,revision}],idempotencyKey}`。
-  user question 必有非空问题；evidence update 必有至少一个已经保存、可追溯且与窗口关联的 document ref。
-  只允许绑定已有 observation；撤回/取消关注后可补充历史阅读，但不新建观察或改选择/窗口。
-- 同一 request 生成同 revision 的 pro/con。`inputLineage.chain` 固定含
-  `requestId,kind,parentRevision,question,addedEvidenceRefs`；正方读完整上一版和本次冻结资料，反方读本版
-  完整正方。retry 只重跑原 request/revision；只有新的合法请求递增 revision。
-- `GET /api/v1/k10/company-windows/{id}/analysis-chain` 返回
-  `{companyWindowId,items:[{revision,inputCutoffAt,requestId?,kind,question?,parentRevision?,sourceRefs,
-  analyses:[AnalysisOut],job?}]}`，按 revision 升序。UI 显示“分析第 N 版”与每版正反全文、触发原因和 refs，
-  不显示裸 `vN`。
+**B4 · 比较数组的纯校验契约（供 A 接入）。** 对原始 `candidates` 列表在 map 前验证：每项公司代码唯一、
+集合与输入 peer 完全相等、至多一个 primary、rank 全序且并列角色一致。helper 不访问数据库、不改写数据；
+`run_discovery` 仍验证所有非 DeepSeek 实现返回的 `EventComparison`。
 
-### 5. 行情、字段核验与统计
+**B 的文件所有权**：`Backend/neckline/k10/discovery.py`、`historical_cases.py`、`opportunity_discovery.py`、`types.py`、
+`store.py` 的 publication 输入序列化/校验/发布函数，与
+`Backend/tests/test_k10_v304_discovery.py`。不改 `pipeline.py`。
 
-- 成绩 cohort 按 D1/D2/评价版本合并晚间与开盘前晨间新增，公开 `batchIds` 保存全部来源；
-  `batchId` 仅是首批代表标识，不能作为 cohort 分组键。
-- TuShare 继续保存原始日行情、涨停价、复权与停牌。复用 `data.realtime.get_quotes_dual`（新浪+腾讯）只在
-  目标交易日收市后，且两源 quote 的代码、可解析上海时区交易日和采集时间均严格证明同日时，核验可比
-  OHLC/pre-close。实时 quote 绝不冒充历史补数或未知日期收盘。
-- 每个 `MarketDayFact` 的 metadata/source refs 追加逐字段审计；API 明确投影
-  `fieldChecks:[{field,state=verified|conflict|single_source|unavailable,reason,sourceValues:
-  [{source,value,observedAt}]}]` 和 `anomalyReason`。冲突保留两边原值和理由，整体是 anomaly，不平均、
-  不择优、不派生价格指标。历史补数或缺有效第二源标 `single_source` 和回退原因，可保留 TuShare 事实但
-  不得称已交叉验证。涨停价/衍生状态也说明字段来源；最小报价单位沿用现有人民币股票规则及实际涨停价，
-  不加策略阈值。
-- 主 hit/touch 的分子和分母先筛 `sampleClass=primary`，再筛 D2 到期且两日完整可核；overlap 无论命中与否
-  只进入 overlap 指标。`incompleteCount` 是不完整总数，`dataGapCount` 是其信息性子集；Swift “资料不完整”
-  只显示前者，绝不相加。
+### C · 结果和来源覆盖 API（owner：C）
 
-### 6. DTO、迁移与兼容
+**C1 · 每窗口冻结评价配置是成绩前置条件（P2）。** API 只为拥有完整、可验证的该窗口冻结
+`evaluationPolicy` 与 `marketCollection` 的窗口投影成绩。缺任何必需项时，不得临时从行情事实合成 records 或
+命中率；返回明确 `not_configured`／配置缺口，并保留已有合法历史窗口的可读性。不得用当前绑定配置替代丢失的
+窗口配置，也不静默删掉样本。库中已有成绩也必须经过同一配置门禁；无效窗口净化 API 投影，既有记录保持不变。
 
-- API envelope 保持 additive `k10-api-v2`，旧 Build 32 可忽略新字段，Build 33 必须使用新字段；不建立
-  K9/K8、双写或旧语义兼容 API。`K10CompanyWindow` 及相关列表用 `displayRank`；`K10Comparison` 增加历史
-  cases/coverage；`K10MarketDay` 增加 field checks/异常理由。缺字段显示“未记录/待核”，不编造。
-- Swift `K10Value` 改为递归 `string|number|bool|null|object([String:K10Value])|array([K10Value])`，其
-  `Codable`/`Equatable` 必须覆盖嵌套 lifecycle content。Swift 必须直接解真实 FastAPI JSON；手写的简化
-  JSON fixture 不能代替跨端验收。
-- `SCHEMA_VERSION` 从 2 前滚到 3，创建晨报、晨报项、分析请求与必要索引，并扩展行情 availability 的 `anomaly` 状态约束。若 SQLite 需要重建该表，必须逐行核验原主键、版本、数值、refs、行数与外键不变；不删除、改写或伪造既有
-  机会、窗口、选择、行情、生命周期或分析修订。`initialize_schema()` 仍只属于 API 启动、显式写命令或
-  受控迁移；GET/read helper 零 DDL。
-- 分析失败重试沿用同一全局版本：Schema 3 同步移除分析表的 `(observation, revision, role)` 唯一限制，保留工件 ID 唯一及全部失败尝试；公开每版每方显示最新尝试。迁移须核验原行哈希、数量和外键，禁止用反方另增版本绕过配对。
-- 生产迁移前必须确认目标路径/schema/完整性/WAL，建立并核验升级前备份哈希，用当时真实数据副本演练，
-  再前滚并核对配置/数据不变量。本次已完成。回滚只能使用当次升级前备份和对应运行包；有后续业务写入时
-  先制定数据保留方案，绝不用首扫前快照直接覆盖。`v3.0.1-b32` 仅作不可变代码恢复锚点。
+**C2 · `limit_data_unavailable` 纳入数据缺数（P2）。** `incompleteCount` 继续是总数；若已收市日的
+`closeLimitUp` 或 `touchedLimitUp` 因涨停价/状态不可核而为 `null`，其 `limit_data_unavailable` gap 必须计入
+`dataGapCount`，同时不伪作普通未命中。未来交易日仅为 `pendingCount`。
+
+**C3 · event group 单列 overlap 指标（P2）。** 每个事件组在已有 `primary` 外增加 `overlap` metrics，
+与总体/cohort 的分类和分母定义一致。该组的公司/机会计数可含重叠机会，但 UI/API 不得把 overlap 混入
+primary 指标，也不能产生“有重叠公司却所有指标为 0”的误导。
+
+**C4 · 来源时间质量和回补范围投影（P2）。** `ScanOut`／source coverage DTO 显式传递每来源
+`timeCoverage`、`unknownPublicationTimeCount`、`uncertainTimeDocumentRefs`，以及该 scan 冻结的
+`sourceReplay`（nominal/effective/replay start、cutoff、seconds、gaps）。覆盖完成状态不等于时间精度完整；
+API 不得将 partial 时间质量投影为 complete。
+
+**C 的文件所有权**：`Backend/neckline/api/k10.py`、`k10_schemas.py` 与
+`Backend/tests/test_k10_v304_api.py`。不改 `pipeline.py`、Swift 或数据库 schema。
+
+### D · Build 35 客户端和真实 DTO fixture（owner：root）
+
+**D1 · 解码新增加性字段。** Swift 模型解码 event-group overlap metrics、scan/source 时间质量和 replay
+范围；缺字段仍兼容 Build 33，显示“未记录／待核”，不得编造完整性。
+
+**D2 · 用户可读的覆盖与成绩。** 机会/来源区域展示来源时间待核数量和回补范围/缺口；表现页在事件分组中
+独立展示 overlap 指标。晨报 fallback 的真实 complete coverage 显示“已核”。UI 不得改变服务端提供的 rank、
+selection、窗口或主/overlap 归属。
+
+**D3 · 真实跨端 fixture。** 从隔离 Schema 3 DB 的 FastAPI 响应解码当前 Swift models，覆盖时间 partial/replay、
+完整晨报 fallback、撤回独立 refs、主/重叠 event group、limit 缺数和配置缺失。手写简化 JSON 不能替代此链。
+
+**D 的文件所有权**：`App/Neckline/Networking/K10Models.swift`、`Views/OpportunitiesView.swift`、
+`Views/PerformanceView.swift`、`Views/SettingsView.swift`、`Views/EvidenceViews.swift`、`Views/K10Presentation.swift`、
+`App/NecklineTests/K10V3Tests.swift`、
+`Backend/tests/k10_v304_fixture.py`、`Backend/tests/test_k10_v304_fixture.py`。D 在 C 固定 DTO 后接入；不改 API。
+
+### 版本治理、接口与集成顺序
+
+- 版本与发布文件、README、最终 QA 协调由根会话持有。Build 35 必须在 iOS/macOS 版本、Python release
+  元数据及 health/API 版本投影一致；这不是发布授权。
+- 本轮保持 **Schema 3**。上述修复使用既有 scan coverage、document metadata、生命周期 content、比较和结果
+  投影；无数据库表/约束迁移。实施中若发现必须持久化新结构，先停止该分支，更新本计划并走受控 Schema 迁移，
+  不得暗中创建 Schema 4。
+- API 保持 additive `k10-api-v2`：Build 33 可忽略 Build 35 新字段，Build 35 使用字段并对历史缺失作诚实
+  显示。DTO 字段名以 C 的 schemas 为唯一来源，D 不创建并行本地语义。
+- B 与 C 可并行；A 可先完成 A1–A3，接 B 的纯 helper 后串行完成 A4；D 在 C 固定 DTO 后接入。所有包看到
+  他人修改必须保留并适配，不得回退既有 Build 34 工程。
 
 ## 验收门槛
 
-每项必须有“Build 32 可复现、Build 33 修复”的临时数据库离线测试，禁止真实模型、Tavily、生产数据库
-或 `.env` 回退。至少覆盖：
+所有复现使用临时 SQLite、确定性 provider/transport 和临时进程凭据；禁止 `.env`、生产数据库、真实模型、
+Tavily 或真实行情回退。新增测试必须从报告的问题边界进入，不能只用手工构造的下游对象弱化场景。
 
-1. lifecycle content 含对象、数组、数字、布尔、null 时，实际 Swift DTO 解码并在详情可读。
-2. 晨报覆盖 kept/skipped/unhandled、多催化、撤回和晨间新增；五段顺序、rank、独立 refs、完整无变化与
-   覆盖不足待核正确。
-3. `withdrawal → evidence_update` 仍终态；新的 keep 为 409 且无新 observation/task；历史可读。
-4. primary 命中、overlap 命中、缺数各一时，主/overlap hit 与分母正确，资料不完整只显示一次。
-5. API 与 Swift 都保持发布 rank；风险或创建时间不得改变顺序。
-6. 双主推、循环比较、遗漏 peer、正文概率预测拒绝；“不能估计涨停概率”通过。成功/平淡/失败历史 case
-   都有冻结真实 docs，缺任一类显示 coverage 缺口。
-7. 初始、用户问题第 2 版、新资料第 3 版按链可读；request 幂等，失败 retry 不增 revision，终态窗口不被
-   补充分析改写。
-8. 双源一致、字段冲突、历史单源回退、无法证明 quote 日期四种行情情形均带原因/refs；冲突不派生。
-
-跨端合成验收必须覆盖：生产 handler（确定性
-provider/transport）→ 临时 Schema 3 DB → 实际 FastAPI router/JSON → 当前 Swift `K10Models` decoder →
-真实填充的机会、晨报、关注/分析、表现页面。一个链中必须看见晨报排序、撤回后普通更新、overlap 命中、
-缺数、分析第 2 版、历史证据/缺口和行情冲突原因。手写 Swift JSON、HTTP 200、APNs 或空页面均不构成交付。
-
-最终执行：
+1. 真实 CLI enqueue → worker → handler：文档已入库、水位已写、失租发生在输入冻结前；接手后同一 scan
+   冻结同一 refs，模型读取一次，发布一次，候选不从 1 变为 0。另测已冻结后的 retry 仍不重读/重发。
+2. 两个历史公司 case 共享同一 document revision 时，coverage refs 去重、case refs 保留、正式发布成功；
+   正向概率在事件/候选/历史 assessment/classification 全部拒绝，否定语句通过；DeepSeek raw 重复公司行在
+   dict 折叠前失败。明确并列的事件内 rank 在跨事件排序后保持并列，而 `displayRank` 独立可读。
+3. 同一隔离 DB 的 API：窗口冻结评价配置缺失不返回临时命中；完整历史配置仍可读；收市后的 limit 状态缺数
+   计入 `dataGapCount`；重叠 event group 有独立指标；scan DTO 带 timeCoverage、未知时间 refs 与 replay。
+4. 晨报完整 fallback 通过真实 endpoint 投影为 complete/“已核”；独立反证 refs 在 lifecycle、详情 API 和
+   下一晨 target 全链可读，普通晨间来源不替代独立核验。
+5. 生产 handler 的离线 provider/transport → 临时 Schema 3 DB → 实际 FastAPI JSON → 当前 Swift decoder，
+   覆盖 A–C 的所有新增字段和上列缺陷；再查看 macOS/iOS 的真实填充及空态。每平台最多一个 QA 实例，复用
+   `/tmp/neckline-v3-qa/macos` 与 `/tmp/neckline-v3-qa/ios`，设置 `NK_DISABLE_PERSISTENT_CREDENTIALS=1`，
+   结束时关闭实例、清理 superseded QA bundle，保留生产客户端；视觉对照
+   `archive/Neckline_V3_界面参考/` 的白卡、蓝色重点、克制文字和清晰导航。
+6. 每次 Swift 改动后必须运行：
 
 ```bash
 cd Backend
@@ -166,26 +166,19 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/pl
 xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -destination 'generic/platform=iOS Simulator'
 ```
 
-任何 Swift 改动后三条 `xcodebuild` 一条不能省，并跑相关 XCTest。原生 QA 复用
-`/tmp/neckline-v3-qa/macos` 与 `/tmp/neckline-v3-qa/ios`，每平台一个隔离实例，设置
-`NK_DISABLE_PERSISTENT_CREDENTIALS=1`；对照 `archive/Neckline_V3_界面参考/` 的真实空态及填充态，
-关闭进程并清理 superseded QA bundle，保留安装中的生产客户端。
+并运行有改动的 XCTest、完整 Backend 回归、`git diff --check`。一个平台构建、HTTP 200、空页面、手写客户端
+fixture 或旧回归通过，均不能单独证明本轮情景修复。
 
 ## 用户网页操作清单
 
-无。本次发布不需要用户网页授权或付款；仅保留约定由用户完成的 iOS 安装。
+无。用户已授权本轮完整发布，不重复请求批准；iOS 沿用用户自行安装约定。
 
 ## 状态、恢复与下一步
 
-- **待用户决定事项**：无。
-- **修复完成**：原审查十一项全部落地；发布原子校验、旧分析状态、晚晨归组、历史 as-of/引用一致性、同版本分析重试等复审边界同步闭环。原生 QA 补出的取消误报、同连接刷新/分析链竞态及原因原文丢失也已修复。Store/API、策略历史和最后 Swift 边界独立复验均无剩余可报告 P1/P2。
-- **自动验证**：最终 Backend **616 passed**（21 条既有 Polars 警告）；macOS build、iOS Simulator build、iOS Simulator build-for-testing 全通过，额外 macOS build-for-testing 通过。双端 XCTest 各执行 31 项：**30 passed / 1 skipped / 0 failures**；跳过的是旧的独立外部 smoke，新 Schema 3 实际 API 跨端验收在两端均已执行并通过。`git diff --check` 通过。
-- **实际页面验收**：双端真实空态和填充态、五段晨报、两版完整正反分析/任务完成状态/来源原文、历史案例及缺口、行情冲突及单源原因、主/重叠命中与缺数均已查看；保持白卡蓝色视觉方向。fixture 走生产 worker claim/finish、真实 handler/store/API，只替换离线 provider/transport，未调用真实模型、搜索或行情服务。
-- **验收材料**：临时库 `/tmp/neckline-v302-validation/populated-r2.sqlite`；最终日志为同目录 `backend-full.log`、`macos-final-*.log`、`ios-final-*.log`，双端 `*-final-tests.xcresult`。固定 QA 目录仍是 `/tmp/neckline-v3-qa/macos` 与 `/tmp/neckline-v3-qa/ios`；仅复用 `.qa.livev14`，模拟器 ID `211DD03C-812D-4A42-97EF-F693D7DF924C`。
-- **发布完成**：main 和 `v3.0.2-b33` 已推送，[GitHub Release](https://github.com/linocai/Neckline/releases/tag/v3.0.2-b33) 已发布为最新版本；六个资产上传完整且 SHA256 与本地一致。后端源码 manifest、已安装 wheel 3.0.2、双端正式归档与 tag 对应，签名严格验证通过。
-- **生产核验**：已确认服务器 `ser657204219523 / 114.66.2.205`、`/opt/neckline/data/neckline.db`。本机/公网 health 为 `v3.0.2 / v3.0.2-b33`，API/worker active、重启计数 0、启动后 warning 日志 0；鉴权返回 401，三个配置范围已配置。Schema 3 完整性/外键/新约束及索引通过，所有既有表的列、行数和逐行哈希保留。
-- **客户端交付**：Mac `/Applications/Neckline.app` 已换装并启动，唯一实例的实际路径及 Dock 目标一致；原生设置页确认 3.0.2 Build 33、Prod 连接与三个已配置范围。iOS 包为 `/Users/linotsai/Downloads/Neckline-v3.0.2-b33-iOS-development.ipa`，按约定由用户安装。
-- **恢复锚点**：成功发布备份 `/opt/neckline/data/backups/v3.0.2-b33-predeploy-20260907-r2`，含本次前后 DB、B32 runtime 与 receipt；哈希及恢复步骤见 README。Mac 备份 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.1-build32-pre-v302-20260907.app`。首次尝试的同名前缀无 `-r2` 备份仍保持不可变。
-- **已解决的发布异常**：首次探针误要求分页 DTO 带 `schemaVersion`，触发回滚；恢复同步继承 staging 的 0700 导致服务暂时无法进入运行目录。已按核验过的 tar 恢复 `root:root / 0755` 并完整确认 B32/Schema 2 基线后再试。修正版逐接口校验真实 DTO、同步始终保留生产目录元数据；第二次发布成功，首轮恢复现场保留。产品源码及 tag 未因部署脚本修正而改变。
-- **清理**：临时 API 8769 已关闭；Mac QA 已退出，模拟器 QA bundle 已卸载，额外/过期测试 App 已删除，固定两端构建目录留作复用。生产只运行正式 Build 33。部署临时副本清理结果与最终回执保存在成功备份目录。
-- **后续观察**：发布未提前入队，既定首轮晚扫 **2026-09-07 21:00 CST**、首轮晨扫 **2026-09-08 09:00 CST**。真实整晚覆盖、耗时及推送仍待首轮运行验证，不以离线测试代替；没有剩余施工或发布阻塞。
+- **状态**：11 项修复及旧成绩/旧草稿边界已闭环；完整 Backend 682 passed。独立复核确认来源恢复与晨报证据链，追加边界由 root 重跑原复现及持久回归通过。
+- **当前验收**：双端 build/build-for-testing 通过；每端 XCTest 32 passed、1 个旧可选 smoke skip，Build 35 真实 API 验收已运行。双端原生填充/空态已核对，含来源待核、完整晨报、反证阅读及事件重叠成绩。QA 仅使用 `/tmp/neckline-v304-validation/` 合成数据、固定两个 QA 目录及模拟器 `211DD03C-812D-4A42-97EF-F693D7DF924C`。
+- **恢复锚点**：生产 DB/runtime 继续是
+  `/opt/neckline/data/backups/v3.0.2-b33-predeploy-20260907-r2`；Mac 备份继续是
+  `/Users/linotsai/Lino/app_backups/Neckline-v3.0.1-build32-pre-v302-20260907.app`。有后续业务写入时先制定
+  数据保留方案，绝不用旧快照覆盖。
+- **下一步**：正在执行用户授权的一条龙发布；实际生产已核验 B33/Schema 3、无运行任务、无 K9 活动。仅追加回补参数的配置修订 2，保留所有既有修订。清理 QA 后提交 main 并推送、创建 `v3.0.4-b35` 不可变标签，严格验签后备份与部署、换装 Mac，交付 iOS IPA，核对公网/鉴权/定时器后更新发布记录。

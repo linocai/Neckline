@@ -17,7 +17,12 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 from .config import ConfigurationStatus, validate_run_config
 from .types import EventRevision
 from .universe import CompanyMetadataProvider, Eligibility, evaluate_company
-from .opportunity_discovery import NEW_KINDS, validate_classification, validate_event_comparison
+from .opportunity_discovery import (
+    NEW_KINDS,
+    normalize_catalyst_stage,
+    validate_classification,
+    validate_event_comparison,
+)
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -105,6 +110,10 @@ class CandidateComparison:
         "presentOutcomes": [], "missingOutcomes": ["success", "flat", "failure"],
         "reason": "historical_context_not_configured", "sourceRefs": [],
     })
+    # ``rank`` is the event-local editorial order. The publication list position is
+    # stored independently on DiscoveryCandidate and publication_samples.
+    rank_namespace: str | None = None
+    event_rank: int | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,7 @@ class DiscoveryCandidate:
     comparison: CandidateComparison
     eligibility: Eligibility
     opportunity: Mapping[str, Any] = field(default_factory=dict)
+    display_rank: int | None = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +193,34 @@ class DiscoveryWriter(Protocol):
         self, *, event: EventRevision, mapping_id: str, candidate: DiscoveryCandidate
     ) -> None:
         ...
+
+
+class FrozenDiscoveryDraftCompatibilityError(ValueError):
+    """A pre-B35 draft has lost information needed for an honest publication."""
+
+
+def _require_recoverable_formal_ranks(frozen: Mapping[str, Any]) -> None:
+    """Reject old global-only draft ranks instead of inventing event-local ordering.
+
+    B34 wrote a globally rewritten ``comparison.rank`` but did not retain either the
+    event-local rank or the per-company list rank.  That is ambiguous even where a
+    particular old record happens to look harmless; publishing it would make a tied
+    comparison claim an order it never had.  Only formal candidates/deferred entries
+    need this boundary—updates and background evidence cannot be published as samples.
+    """
+    for section in ("candidates", "deferred"):
+        rows = frozen.get(section)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            comparison = row.get("comparison") if isinstance(row, Mapping) else None
+            if (not isinstance(comparison, Mapping)
+                    or comparison.get("rankNamespace") != "event"
+                    or comparison.get("eventRank") != comparison.get("rank")
+                    or not isinstance(row.get("displayRank"), int)):
+                raise FrozenDiscoveryDraftCompatibilityError(
+                    "旧冻结发现结果缺少事件内排序，已阻止发布；请基于冻结输入重新生成比较"
+                )
 
 
 def _validate_refs(refs: Sequence[EvidenceRef], available: set[EvidenceRef], *, label: str) -> None:
@@ -220,12 +258,143 @@ def _reject_uncalibrated_prediction(value: Any, *, path: str = "output") -> None
     score = r"(?:(?:机械|预测|模型|综合|优先)\s*)?(?:评分|分数|score)"
     probability_numeric = r"(?:\d{1,3}(?:\.\d+)?\s*%?|0?\.\d+)"
     score_numeric = r"(?:\d+(?:\.\d+)?\s*分?|0?\.\d+)"
-    if re.search(rf"{probability}\s*(?:为|是|约|达|有|[:：=])?\s*{probability_numeric}", text, re.IGNORECASE) or re.search(
-        rf"{probability_numeric}\s*(?:的)?\s*(?:概率|几率)\s*(?:涨停|封板)", text, re.IGNORECASE
-    ) or re.search(
-        rf"{score}\s*(?:为|是|约|达|有|[:：=])?\s*{score_numeric}", text, re.IGNORECASE
-    ):
+    connective = r"(?:可能|预计|有望|或将|将|可|能|大致|约)?\s*"
+    patterns = (
+        rf"{probability}\s*{connective}(?:为|是|约|达(?:到)?|有|[:：=])?\s*{probability_numeric}",
+        rf"{probability_numeric}\s*(?:的)?\s*(?:概率|几率)\s*(?:涨停|封板)",
+        rf"{probability_numeric}\s*(?:涨停|封板)\s*(?:概率|几率)",
+        rf"{score}\s*(?:为|是|约|达|有|[:：=])?\s*{score_numeric}",
+    )
+    refusal = re.compile(
+        r"(?:不(?:能|可|会|应|予)?|未|无法|不能|难以|不可)\s*"
+        r"(?:估计|判断|预测|给出|提供|输出|计算)?\s*$"
+    )
+    matches = (match for pattern in patterns for match in re.finditer(pattern, text, re.IGNORECASE))
+    def affirmative(match: re.Match[str]) -> bool:
+        # Negation must belong to this clause: "不能估计，但涨停概率70%" is
+        # still an affirmative prediction. Source evidence is not sent through this
+        # model-output guard; a model cannot bypass it by saying "资料显示".
+        clause = re.split(r"[。！？；;，,]", text[:match.start()])[-1]
+        return refusal.search(clause) is None
+    if any(affirmative(match) for match in matches):
         raise ValueError(f"K10 比较不得输出未校准概率或机械预测分数：{path}")
+
+
+def reject_uncalibrated_prediction(value: Any, *, path: str = "output") -> None:
+    """Public boundary guard for nested model-derived comparison output."""
+    _reject_uncalibrated_prediction(value, path=path)
+
+
+def validate_event_comparison_rows(rows: Any) -> tuple[Mapping[str, Any], ...]:
+    """Reject raw duplicate model rows before a dictionary could silently hide one."""
+    if not isinstance(rows, list):
+        raise ValueError("事件整体比较输出缺少 candidates")
+    seen: set[str] = set()
+    normalized: list[Mapping[str, Any]] = []
+    for item in rows:
+        if (not isinstance(item, Mapping) or not isinstance(item.get("companyCode"), str)
+                or not item["companyCode"].strip()):
+            raise ValueError("事件整体比较公司项无效")
+        company_code = item["companyCode"]
+        if company_code in seen:
+            raise ValueError("事件整体比较同一公司不得重复")
+        seen.add(company_code)
+        normalized.append(item)
+    return tuple(normalized)
+
+
+def _normalized_event_state(event_state: str) -> str:
+    if not isinstance(event_state, str) or not (normalized := event_state.strip().casefold()):
+        raise ValueError("事件状态不能为空")
+    return normalized
+
+
+_EVENT_LABEL_KEYS = ("topic", "topics", "theme", "themes", "mechanism", "mechanisms")
+
+
+def _merged_top_level_labels(events: Sequence[EventDraft]) -> dict[str, Any]:
+    """Preserve every explicit structured label needed by historical comparison.
+
+    ``sourceFacts`` retains the complete per-source model output.  HistoricalCaseLoader
+    intentionally reads only top-level structured labels, however, so copying the first
+    source or dropping the top level would silently make merged events incomparable.
+    """
+    merged: dict[str, Any] = {}
+    for key in _EVENT_LABEL_KEYS:
+        values: list[str] = []
+        seen: set[str] = set()
+        for event in events:
+            value = event.facts.get(key)
+            items = value if isinstance(value, (list, tuple, set)) else (value,)
+            for item in items:
+                if not isinstance(item, str) or not (text := item.strip()):
+                    continue
+                semantic = text.casefold()
+                if semantic not in seen:
+                    seen.add(semantic)
+                    values.append(text)
+        if values:
+            # A list has the same meaning to the historical label reader as a scalar,
+            # and avoids arbitrarily discarding a second source's distinct label.
+            merged[key] = values
+    return merged
+
+
+def _merge_same_event_sources(events: Sequence[EventDraft]) -> tuple[EventDraft, ...]:
+    """Combine supporting source versions before verification and comparison.
+
+    A correction or denial has a distinct event state and is deliberately retained as a
+    separate lifecycle input.  Supporting reports for the same canonical event and stage
+    instead become one evidence-grounded event, so a later source cannot overwrite the
+    earlier source during candidate selection.
+    """
+    groups: dict[tuple[str, str, str], list[EventDraft]] = {}
+    for event in events:
+        identity = (event.canonical_key, normalize_catalyst_stage(event.stage_key),
+                    _normalized_event_state(event.event_state))
+        groups.setdefault(identity, []).append(event)
+    merged: list[EventDraft] = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        first = group[0]
+        refs = tuple(dict.fromkeys(ref for event in group for ref in event.source_refs))
+        source_facts = [
+            {
+                "sourceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
+                               for ref in event.source_refs],
+                "facts": dict(event.facts),
+            }
+            for event in group
+        ]
+        headlines = tuple(dict.fromkeys(event.headline for event in group if event.headline))
+        merged.append(EventDraft(
+            canonical_key=first.canonical_key,
+            stage_key=first.stage_key,
+            event_state=first.event_state,
+            headline="；".join(headlines),
+            event_kind=first.event_kind,
+            facts={**_merged_top_level_labels(group), "sourceFacts": source_facts},
+            source_refs=refs,
+        ))
+    return tuple(merged)
+
+
+def _open_event_opportunities(*, previous: Sequence[Mapping[str, Any]],
+                              company_code: str, canonical_key: str) -> tuple[Mapping[str, Any], ...]:
+    """Find every still-open formal target for a known event/company risk.
+
+    A missing related id must never make a known risk look like first-seen metadata
+    pending.  When multiple windows are still open, every one receives the conservative
+    risk update instead of choosing an arbitrary predecessor.
+    """
+    return tuple(
+        old for old in previous
+        if old.get("companyCode") == company_code
+        and old.get("canonicalKey") == canonical_key
+        and old.get("state") not in {"withdrawn", "expired"}
+    )
 
 
 def run_discovery(
@@ -253,11 +422,14 @@ def run_discovery(
     excluded: list[DiscoveryCandidate] = []
     updates: list[DiscoveryCandidate] = []
     background: list[DiscoveryCandidate] = []
+    understood: list[EventDraft] = []
     for document in documents:
         if leaseguard is not None:
             leaseguard()
         for event in model.understand(document=document):
             _validate_refs(event.source_refs, available, label="事件")
+            understood.append(event)
+    for event in _merge_same_event_sources(understood):
             if leaseguard is not None:
                 leaseguard()
             verification = verify(event)
@@ -291,6 +463,10 @@ def run_discovery(
                 code: {"summary": item.summary, "differences": item.differences}
                 for code, item in event_candidates.items()
             }, path="eventComparison.candidates")
+            event_candidates = {
+                code: replace(item, rank_namespace="event", event_rank=item.rank)
+                for code, item in event_candidates.items()
+            }
             event = replace(event, facts={**event.facts, "eventComparison": {
                 "summary": event_comparison.summary,
                 "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
@@ -333,6 +509,21 @@ def run_discovery(
                     background.append(candidate)
                     continue
                 if decision["kind"] == "needs_review" and decision.get("relatedOpportunityId") is None:
+                    related = _open_event_opportunities(
+                        previous=previous_opportunities, company_code=mapping.company_code,
+                        canonical_key=event.canonical_key,
+                    )
+                    if related:
+                        # Do not guess which old window a known risk belongs to.  Each still
+                        # open formal opportunity receives the same conservative lifecycle
+                        # update, while the source event remains one append-only revision.
+                        for old in related:
+                            updates.append(replace(candidate, opportunity={
+                                **decision,
+                                "relatedOpportunityId": old["opportunityId"],
+                                "reason": "模型未关联旧机会；按同事件同公司补记风险。" + decision["reason"],
+                            }))
+                        continue
                     # First-seen unresolved evidence is retained as a pending mapping/event,
                     # never a formal candidate.  A hard universe exclusion remains an exclusion
                     # even when its event's evidence also needs review.
@@ -394,7 +585,7 @@ def run_discovery(
             if key in seen_keys:
                 continue
             seen_keys.add(key)
-            ranked = replace(candidate, comparison=replace(candidate.comparison, rank=index))
+            ranked = replace(candidate, display_rank=index)
             (deferred if phase == "evening" and index > max_evening_candidates else selected).append(ranked)
     return DiscoveryRun("completed", config, tuple(events), tuple(verified_events), tuple(selected), tuple(deferred),
                         tuple(pending), tuple(excluded), len({item.mapping.company_code for item in deferred}), tuple(updates), tuple(background))
@@ -455,6 +646,10 @@ class SqliteDiscoveryWriter:
                       "evidenceRefs": self._refs(candidate.comparison.evidence_refs), "rank": candidate.comparison.rank,
                       "classification": dict(candidate.opportunity),
                       **historical_context}
+        if candidate.comparison.rank_namespace is not None:
+            comparison["rankNamespace"] = candidate.comparison.rank_namespace
+        if candidate.comparison.event_rank is not None:
+            comparison["eventRank"] = candidate.comparison.event_rank
         if candidate.comparison.market_context is not None:
             comparison["marketContext"] = dict(candidate.comparison.market_context)
         create_candidate(
@@ -470,6 +665,7 @@ class SqliteDiscoveryWriter:
             category=str(candidate.comparison.differences["role"]),
             comparison=comparison, evidence_refs=tuple(self._refs(candidate.comparison.evidence_refs)),
             source_marker="new", related_opportunity_id=candidate.opportunity.get("relatedOpportunityId"),
+            display_rank=candidate.display_rank,
         ))
 
     def append_update(self, *, event: EventRevision, candidate: DiscoveryCandidate) -> None:
@@ -561,14 +757,18 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
         from .historical_cases import freeze_historical_context
         historical_context = freeze_historical_context({"historicalCases": list(candidate.comparison.historical_cases),
                                                         "historicalCoverage": candidate.comparison.historical_coverage})
-        return {"eventIndex": index, "mapping": {"companyCode": candidate.mapping.company_code,
+        return {"eventIndex": index, "displayRank": candidate.display_rank,
+                "mapping": {"companyCode": candidate.mapping.company_code,
                 "affectedStage": candidate.mapping.affected_stage,
                 "relationEvidence": [_ref_payload(ref) for ref in candidate.mapping.relation_evidence],
                 "inference": dict(candidate.mapping.inference), "uncertainty": candidate.mapping.uncertainty},
                 "comparison": {"summary": candidate.comparison.summary,
                 "differences": dict(candidate.comparison.differences),
                 "evidenceRefs": [_ref_payload(ref) for ref in candidate.comparison.evidence_refs],
-                "rank": candidate.comparison.rank, "marketContext": candidate.comparison.market_context,
+                "rank": candidate.comparison.rank,
+                "rankNamespace": candidate.comparison.rank_namespace,
+                "eventRank": candidate.comparison.event_rank,
+                "marketContext": candidate.comparison.market_context,
                 **historical_context},
                 "opportunity": dict(candidate.opportunity),
                 "eligibility": {"state": candidate.eligibility.state, "reason": candidate.eligibility.reason}}
@@ -586,6 +786,7 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
     """Rebuild a frozen draft without model or source access, for idempotent publication."""
     if frozen.get("version") != 3 or frozen.get("state") != "completed":
         raise ValueError("冻结发现结果版本或状态无效")
+    _require_recoverable_formal_ranks(frozen)
     config = validate_run_config(configuration, scope="discovery")
     if not config.ready:
         raise ValueError("冻结发现结果所需配置不可用")
@@ -635,6 +836,9 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
             rank = comparison.get("rank")
             if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int) or rank < 1):
                 raise ValueError("冻结发现结果排序无效")
+            display_rank = row.get("displayRank", comparison.get("displayRank"))
+            if display_rank is not None and (isinstance(display_rank, bool) or not isinstance(display_rank, int) or display_rank < 1):
+                raise ValueError("冻结发现结果清单排序无效")
             if not isinstance(eligibility.get("state"), str) or (eligibility.get("reason") is not None and not isinstance(eligibility.get("reason"), str)):
                 raise ValueError("冻结发现结果资格无效")
             event = events[index]
@@ -643,8 +847,9 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
                                     dict(mapping["inference"]), mapping["uncertainty"]),
                 CandidateComparison(comparison["summary"], dict(comparison["differences"]),
                                     _refs_from_payload(comparison.get("evidenceRefs")), rank, comparison.get("marketContext"),
-                                    tuple(historical_context["historicalCases"]), historical_context["historicalCoverage"]),
-                Eligibility(eligibility["state"], eligibility["reason"]), dict(row["opportunity"])))
+                                    tuple(historical_context["historicalCases"]), historical_context["historicalCoverage"],
+                                    comparison.get("rankNamespace"), comparison.get("eventRank")),
+                Eligibility(eligibility["state"], eligibility["reason"]), dict(row["opportunity"]), display_rank))
         return tuple(items)
     selected, deferred, pending, excluded = candidates("candidates"), candidates("deferred"), candidates("metadataPending"), candidates("excluded")
     return DiscoveryRun("completed", config, tuple(events), tuple(verifications), selected, deferred, pending, excluded,
@@ -666,4 +871,5 @@ __all__ = [
     "CandidateComparison", "CompanyMappingDraft", "DiscoveryCandidate", "DiscoveryDocument", "DiscoveryModel", "EventComparison",
     "DiscoveryRun", "DiscoveryWriter", "EvidenceRef", "EventDraft", "EventVerification", "SqliteDiscoveryWriter", "Verification",
     "VerificationFunction", "freeze_discovery_run", "thaw_discovery_run", "load_documents_from_store", "persist_discovery", "run_discovery",
+    "reject_uncalibrated_prediction", "validate_event_comparison_rows", "FrozenDiscoveryDraftCompatibilityError",
 ]

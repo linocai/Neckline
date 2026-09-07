@@ -3,7 +3,7 @@
   "universe": "chinext",
   "excludeBaijiu": true,
   "hardExclusions": {"approved": true, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]},
-  "sourceAdapters": [{"key": "tushare-major-news"}],
+  "sourceAdapters": [{"key": "tushare-major-news", "lateArrivalReplaySeconds": 86400}],
   "modelRoutes": {"discovery": "deepseek-v4-pro", "analysis": "deepseek-v4-pro", "morning": "deepseek-v4-pro"},
   "taskPolicies": {
     "discovery": {"maxAttempts": 3, "maxSourceRequests": 128, "maxVerificationRequests": 128, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},

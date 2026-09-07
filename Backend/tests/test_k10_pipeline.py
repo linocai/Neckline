@@ -44,7 +44,9 @@ def fixed_test_clock(monkeypatch):
 def _configuration():
     import json
     from pathlib import Path
-    return json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
+    configuration = json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
+    configuration["sourceAdapters"] = [{"key": "fixture-source", "lateArrivalReplaySeconds": 86400}]
+    return configuration
 
 
 
@@ -164,6 +166,10 @@ def test_evening_scan_uses_prior_source_watermark_and_persists_fake_end_to_end(t
     assert result.status == "completed"
     assert result.checkpoint["candidateCount"] == 1
     assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+    replay = store.get_scan(scan_id=result.checkpoint["scanId"], db_path=path)["coverage"]["sourceReplay"]
+    assert replay == {"sourceKey": "fixture-source", "nominalStartAt": "2026-09-04T21:00:00+08:00",
+                      "effectiveStartAt": "2026-09-04T21:00:00+08:00", "replayStartAt": "2026-09-06T21:00:00+08:00",
+                      "cutoffAt": "2026-09-07T21:00:00+08:00", "replaySeconds": 86400, "requestState": "completed"}
     assert adapter.request.previous_cursor == "old-cursor"
     assert len(store.list_candidates(scan_id=result.checkpoint["scanId"], state="offered", db_path=path)) == 1
     assert store.get_scan(scan_id=result.checkpoint["scanId"], db_path=path)["status"] == "completed"

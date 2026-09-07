@@ -32,7 +32,8 @@ def test_morning_target_projection_uses_target_rank_scoped_refs_and_one_expiry(m
     targets = [
         _target(opportunity_id="active", state="active", rank=3, is_new=True, refs=[REF_A]),
         _target(opportunity_id="withdrawn", state="withdrawn", rank=1, refs=[REF_B], lifecycle=[
-            {"kind": "withdrawn", "sourceRefs": [WITHDRAWAL]},
+            {"kind": "withdrawn", "sourceRefs": [WITHDRAWAL],
+             "content": {"independentVerificationRefs": [WITHDRAWAL]}},
         ]),
         _target(opportunity_id="expired", state="expired", d1="2026-09-04", d2="2026-09-07", rank=2),
         _target(opportunity_id="old", state="expired", d1="2026-09-01", d2="2026-09-02", rank=4),

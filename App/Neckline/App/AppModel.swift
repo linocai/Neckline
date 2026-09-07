@@ -22,6 +22,7 @@ struct K10CacheContext: Hashable {
     var selectionDetails: [K10SelectionDetail] = []
     var scanSummaries: [K10Scan] = []
     var morningReport: K10MorningReport?
+    var morningReportLoadError: String?
     var analysisChains: [String: K10AnalysisChain] = [:]
     var opportunityDetails: [String: K10OpportunityDetail] = [:]
     var analysisRequestInFlightWindowIDs: Set<String> = []
@@ -79,7 +80,7 @@ struct K10CacheContext: Hashable {
     }
     func resetForConnectionChange() {
         advanceConnectionGeneration()
-        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; usage = nil; providers = []; tavilyKeySet = false
+        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; usage = nil; providers = []; tavilyKeySet = false
         selectedOpportunity = nil; selectedWindow = nil; lastAvailableAt = nil; offline = false; state = .idle; cacheClearer()
     }
     func refresh() async {
@@ -114,9 +115,25 @@ struct K10CacheContext: Hashable {
             let newWindows = try await windowsTask
             let newSelections = try await selectionsTask
             let newMorningReport: K10MorningReport?
-            do { newMorningReport = try await morningReportTask }
+            let newMorningReportLoadError: String?
+            do {
+                newMorningReport = try await morningReportTask
+                newMorningReportLoadError = nil
+            }
             catch is CancellationError { throw CancellationError() }
-            catch { newMorningReport = nil }
+            catch let error as K10APIError {
+                if case .notFound = error {
+                    newMorningReport = nil
+                    newMorningReportLoadError = nil
+                } else {
+                    newMorningReport = morningReport
+                    newMorningReportLoadError = error.localizedDescription
+                }
+            }
+            catch {
+                newMorningReport = morningReport
+                newMorningReportLoadError = error.localizedDescription
+            }
             let newResults: K10Results?
             do { newResults = try await resultTask }
             catch is CancellationError { throw CancellationError() }
@@ -138,6 +155,7 @@ struct K10CacheContext: Hashable {
             companyWindows = newWindows
             selectionDetails = newSelections
             morningReport = newMorningReport
+            morningReportLoadError = newMorningReportLoadError
             opportunityDetails = [:]
             scanSummaries = scans
             results = newResults
@@ -190,6 +208,23 @@ struct K10CacheContext: Hashable {
     func open(_ opportunity: K10Opportunity) async {
         let generation = connectionGeneration
         if let detail = await loadOpportunity(opportunity), isCurrent(generation) { selectedOpportunity = detail }
+    }
+    func openOpportunity(id: String) async {
+        let generation = connectionGeneration
+        guard !offline, let service = serviceFactory() else {
+            toast = offline ? "离线快照未缓存完整机会资料。" : "服务连接不可用"
+            return
+        }
+        do {
+            let detail = try await service.opportunity(id: id)
+            guard isCurrent(generation) else { return }
+            selectedOpportunity = detail
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrent(generation) else { return }
+            toast = error.localizedDescription
+        }
     }
 
     func openNotification(_ route: K10PushRoute) async {

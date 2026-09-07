@@ -119,6 +119,38 @@ final class K10V3Tests: XCTestCase {
         if case .ready = model.state {} else { XCTFail("synthetic model should load") }
     }
 
+    @MainActor func testMorningTransportFailurePreservesSameConnectionReportThenRecovers() async throws {
+        let service = ControlledK10Service(batchID: "morning-retry")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let previous = try XCTUnwrap(model.morningReport)
+
+        await service.setMorningFailure(.server(503, "反向代理暂不可用"))
+        await model.refresh()
+        XCTAssertEqual(model.morningReport, previous)
+        XCTAssertEqual(model.morningReportLoadError, "反向代理暂不可用")
+        if case .ready = model.state {} else { XCTFail("a morning-only 503 must keep the page readable") }
+
+        await service.setMorningFailure(nil)
+        await model.refresh()
+        XCTAssertEqual(model.morningReport?.reportId, previous.reportId)
+        XCTAssertNil(model.morningReportLoadError)
+
+        await service.setMorningFailure(.notFound("尚无晨报"))
+        await model.refresh()
+        XCTAssertNil(model.morningReport)
+        XCTAssertNil(model.morningReportLoadError)
+
+        await service.setMorningFailure(nil)
+        await model.refresh()
+        XCTAssertNotNil(model.morningReport)
+        model.resetForConnectionChange()
+        await service.setMorningFailure(.server(503, "新连接晨报不可用"))
+        await model.refresh()
+        XCTAssertNil(model.morningReport, "新连接不能泄露旧连接的晨报")
+        XCTAssertEqual(model.morningReportLoadError, "新连接晨报不可用")
+    }
+
     @MainActor func testSupplementaryRequestRefreshesAnAlreadyOpenAnalysisChain() async throws {
         let service = ControlledK10Service(batchID: "analysis-refresh")
         let model = AppModel(serviceFactory: { service })
@@ -202,8 +234,9 @@ final class K10V3Tests: XCTestCase {
     }
 
     func testV302RealProducerContractDecodesMorningLifecycleAnalysisHistoryAndMarket() async throws {
-        guard let raw = ProcessInfo.processInfo.environment["NK_V302_API_URL"], let baseURL = URL(string: raw) else {
-            throw XCTSkip("set NK_V302_API_URL to run the Schema 3 producer-to-Swift contract test")
+        let environment = ProcessInfo.processInfo.environment
+        guard let raw = environment["NK_V304_API_URL"] ?? environment["NK_V303_API_URL"] ?? environment["NK_V302_API_URL"], let baseURL = URL(string: raw) else {
+            throw XCTSkip("set NK_V303_API_URL (or NK_V302_API_URL) to run the producer-to-Swift contract test")
         }
         let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
         let latestReport = try await client.latestMorningReport()
@@ -221,6 +254,14 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(K10OpportunityDetail.self, from: JSONEncoder().encode(lifecycleDetail)), lifecycleDetail)
 
         let windows = try await client.companyWindows()
+        for opportunityID in Set(windows.flatMap(\.opportunities).map(\.opportunityId)) where !details.contains(where: { $0.opportunityId == opportunityID }) {
+            details.append(try await client.opportunity(id: opportunityID))
+        }
+        let materialStage = try XCTUnwrap(details.flatMap(\.samples).first(where: { $0.comparison.classification?.kind == "material_stage" })?.comparison.classification)
+        XCTAssertFalse(materialStage.newFacts.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(materialStage.changedJudgment).isEmpty)
+        XCTAssertFalse(materialStage.twoDayReason.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(materialStage.relatedOpportunityId).isEmpty)
         let selections = try await client.selections()
         let analyzedSelection = try XCTUnwrap(selections.first(where: { detail in
             detail.state == "kept" && detail.analyses.contains { $0.role == "pro" && $0.fullText != nil }
@@ -240,12 +281,74 @@ final class K10V3Tests: XCTestCase {
         let results = try await client.results()
         XCTAssertGreaterThan(results.overlap.observedCompleteCount, 0)
         XCTAssertEqual(results.overlap.eligibleCount, 0)
+        let primaryMetrics = try XCTUnwrap(results.primary["all"])
+        XCTAssertGreaterThan(primaryMetrics.pendingCount, 0)
+        XCTAssertGreaterThan(primaryMetrics.suspendedCount, 0)
+        XCTAssertGreaterThan(primaryMetrics.dataGapCount, 0)
+        XCTAssertGreaterThan(primaryMetrics.anomalyCount, 0)
+        XCTAssertLessThanOrEqual(primaryMetrics.dataGapCount, primaryMetrics.incompleteCount)
         let cohort = try XCTUnwrap(results.cohorts?.first)
         let sourceBatches = try XCTUnwrap(cohort.batchIds)
         XCTAssertFalse(sourceBatches.isEmpty)
         XCTAssertTrue(sourceBatches.contains(cohort.batchId))
+        XCTAssertNotNil(cohort.primary["all"])
+        XCTAssertNotNil(results.eventGroups?.first?.primary["all"])
         let day = try XCTUnwrap(results.records.flatMap { [$0.d1, $0.d2] }.compactMap { $0 }.first(where: { !($0.fieldChecks ?? []).isEmpty }))
         XCTAssertFalse(day.fieldChecks?.isEmpty ?? true)
+    }
+
+    func testBuild35RealProducerPreservesCoverageConfigurationOverlapAndWithdrawnEvidence() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["NK_V304_API_URL"], let baseURL = URL(string: raw) else {
+            throw XCTSkip("set NK_V304_API_URL to run Build 35 real producer acceptance")
+        }
+        let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
+        let scan = try await client.latestScan(window: "evening")
+        XCTAssertEqual(scan.coverageStatus, "partial")
+        let source = try XCTUnwrap(scan.sourceCoverage.first)
+        XCTAssertEqual(source.timeCoverage, "partial")
+        XCTAssertEqual(source.unknownPublicationTimeCount, 1)
+        let uncertain = try XCTUnwrap(source.uncertainTimeDocumentRefs?.first)
+        XCTAssertEqual(uncertain.publishedPrecision, "unknown")
+        XCTAssertNotNil(uncertain.documentId)
+        let replay = try XCTUnwrap(scan.sourceReplay)
+        XCTAssertEqual(replay.replaySeconds, 86400)
+        XCTAssertNotNil(replay.nominalStartAt)
+        XCTAssertNotNil(replay.effectiveStartAt)
+        XCTAssertNotNil(replay.replayStartAt)
+        XCTAssertNotNil(replay.cutoffAt)
+
+        let results = try await client.results()
+        XCTAssertEqual(results.configurationState, "not_configured")
+        XCTAssertEqual(results.primary["all"]?.notConfiguredCount, 1)
+        let unconfigured = try XCTUnwrap(results.records.first(where: { $0.companyCode == "300006.SZ" }))
+        XCTAssertEqual(unconfigured.evaluationConfigurationState, "not_configured")
+        XCTAssertFalse(unconfigured.primaryEligible)
+        XCTAssertNil(unconfigured.closeLimitHitAny, "完整行情不能绕过冻结评价配置门禁")
+        XCTAssertTrue(unconfigured.evaluationConfigurationMissing?.contains("evaluationPolicy") ?? false)
+        let missingLimit = try XCTUnwrap(results.records.first(where: { $0.companyCode == "300003.SZ" }))
+        XCTAssertTrue(missingLimit.gaps.contains("limit_data_unavailable"))
+        XCTAssertEqual(results.primary["all"]?.dataGapCount, 2)
+        let overlapEvent = try XCTUnwrap(results.eventGroups?.first(where: { ($0.overlap?.hitCount ?? 0) > 0 }))
+        XCTAssertEqual(overlapEvent.overlap?.hitCount, 1)
+        XCTAssertEqual(overlapEvent.overlap?.eligibleCount, 0)
+        XCTAssertNil(overlapEvent.overlap?.hitRate)
+
+        let fetchedReport = try await client.latestMorningReport()
+        let report = try XCTUnwrap(fetchedReport)
+        let fallback = try XCTUnwrap(report.items.first(where: { $0.section == "continuing_or_expiring" }))
+        XCTAssertEqual(fallback.coverageStatus, "complete")
+        let withdrawal = try XCTUnwrap(report.items.first(where: { $0.section == "major_contrary" }))
+        XCTAssertTrue(withdrawal.independentVerificationRefs.contains { $0.documentId == "doc-v304-independent" })
+        let detail = try await client.opportunity(id: XCTUnwrap(withdrawal.opportunityId))
+        let lifecycle = try XCTUnwrap(detail.lifecycleEvents.first(where: { $0.kind == "withdrawal" }))
+        XCTAssertTrue(lifecycle.sourceRefs.contains { $0.documentId == "doc-v304-independent" && $0.title != nil })
+        XCTAssertEqual(lifecycle.independentVerificationRefs?.map(\.documentId), ["doc-v304-independent"])
+        let peers = detail.samples.filter { $0.category == "tied" }
+        XCTAssertEqual(peers.count, 2)
+        XCTAssertEqual(Set(peers.compactMap { $0.comparison.eventRank }), [1])
+        XCTAssertEqual(Set(peers.compactMap(\.rank)), [1, 2])
+        XCTAssertTrue(peers.allSatisfy { $0.comparison.rankNamespace == "event" })
+        XCTAssertEqual(try JSONDecoder().decode(K10OpportunityDetail.self, from: JSONEncoder().encode(detail)), detail)
     }
 
     private func containsNestedValue(_ content: [String: K10Value]) -> Bool {
@@ -717,10 +820,16 @@ private actor ControlledK10Service: K10Servicing {
     private let firstAnalysisChainRevision: Int?
     private let laterAnalysisChainRevision: Int?
     private let fixture = K10SyntheticUIService()
+    private let morningReport = K10MorningReport(
+        schemaVersion: "k10-api-v3", reportId: "controlled-morning", scanId: "controlled-scan", revision: 1,
+        cutoffAt: "2026-09-07T08:30:00+08:00", createdAt: "2026-09-07T08:35:00+08:00", status: "completed",
+        coverage: [:], coverageStatus: "complete", coverageGaps: [], items: []
+    )
     private var analysisRevision = 1
     private var retryCalls = 0
     private var publicationCalls = 0
     private var analysisChainCalls = 0
+    private var morningFailure: K10APIError?
 
     init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
         self.batchID = batchID
@@ -760,6 +869,10 @@ private actor ControlledK10Service: K10Servicing {
         if empty { return [] }
         return try await fixture.companyWindows()
     }
+    func latestMorningReport() async throws -> K10MorningReport? {
+        if let morningFailure { throw morningFailure }
+        return morningReport
+    }
     func opportunity(id: String) async throws -> K10OpportunityDetail {
         if let opportunityGate { await opportunityGate.wait() }
         return try await fixture.opportunity(id: id)
@@ -791,6 +904,7 @@ private actor ControlledK10Service: K10Servicing {
     func configuration() async throws -> K10Configuration { try await fixture.configuration() }
     func usageSummary() async throws -> K10UsageSummary { try await fixture.usageSummary() }
     func retryCallCount() -> Int { retryCalls }
+    func setMorningFailure(_ value: K10APIError?) { morningFailure = value }
 }
 
 private actor ControlledAdminService: K10AdminServicing {

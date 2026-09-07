@@ -29,10 +29,19 @@ struct OpportunitySheet: View {
                                         Text(sample.companyName ?? sample.companyCode).font(NKFont.headline)
                                         Spacer()
                                         if let rank = sample.rank {
-                                            Text("第 \(rank) 位")
+                                            Text("清单第 \(rank) 位")
                                                 .font(NKFont.caption)
                                                 .foregroundStyle(NK.textSecondary)
                                         }
+                                    }
+                                    if let rank = sample.comparison.eventRank {
+                                        Text(sample.category == "tied" ? "事件内并列第 \(rank) 位" : "事件内第 \(rank) 位")
+                                            .font(NKFont.caption)
+                                            .foregroundStyle(NK.accent)
+                                    } else {
+                                        Text("事件内名次未记录")
+                                            .font(NKFont.caption)
+                                            .foregroundStyle(NK.textTertiary)
                                     }
                                     if let summary = sample.comparison.summary {
                                         Text(summary).font(NKFont.body)
@@ -147,8 +156,14 @@ struct LifecycleBlock: View {
                             if !item.content.isEmpty {
                                 LifecycleContentView(content: item.content)
                             }
-                            if !item.sourceRefs.isEmpty {
-                                ForEach(item.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                            let independent = item.independentVerificationRefs ?? []
+                            let independentIDs = Set(independent.map(\.id))
+                            ForEach(item.sourceRefs.filter { !independentIDs.contains($0.id) }) {
+                                SourceReferenceLine(source: $0, model: model)
+                            }
+                            if !independent.isEmpty {
+                                Text("独立核验依据").font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.accent)
+                                ForEach(independent) { SourceReferenceLine(source: $0, model: model) }
                             }
                         }
                         if item.id != events.last?.id { Divider().overlay(NK.hairline) }

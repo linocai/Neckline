@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 from .sources import (
     SourceAdapter,
@@ -37,6 +37,14 @@ class SourceIngestionOutcome:
 
 
 @dataclass(frozen=True)
+class StoredDocument:
+    """One append result, including whether this scan created a usable version."""
+
+    version: DocumentVersion
+    is_new: bool
+
+
+@dataclass(frozen=True)
 class IngestionRun:
     state: str
     scan_id: str | None
@@ -58,7 +66,7 @@ class IngestionWriter(Protocol):
 
     def append_document_version(
         self, *, source_key: str, document: SourceDocumentInput
-    ) -> DocumentVersion:
+    ) -> StoredDocument:
         ...
 
     def record_source_outcome(
@@ -102,12 +110,15 @@ class SqliteIngestionWriter:
     逐源结果汇总在 ``ingest_to_sqlite`` 的 scan coverage 内统一冻结。
     """
 
-    def __init__(self, *, db_path: Path) -> None:
+    def __init__(self, *, db_path: Path, scan_id: str | None = None,
+                 leaseguard: Callable[[], None] | None = None) -> None:
         self._db_path = db_path
+        self._scan_id = scan_id
+        self._leaseguard = leaseguard
 
     def append_document_version(
         self, *, source_key: str, document: SourceDocumentInput
-    ) -> DocumentVersion:
+    ) -> StoredDocument:
         from .store import append_document_version
 
         document_id = _stable_id("doc", source_key, document.external_id)
@@ -123,7 +134,7 @@ class SqliteIngestionWriter:
         content_sha256 = sha256(
             json.dumps(content_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        return append_document_version(
+        appended = append_document_version(
             document_id=document_id,
             source_key=source_key,
             external_id=document.external_id,
@@ -138,6 +149,14 @@ class SqliteIngestionWriter:
             metadata=document.metadata,
             created_at=_utc_text(document.fetched_at),
             db_path=self._db_path,
+            scan_id=self._scan_id,
+            leaseguard=self._leaseguard,
+            return_append_result=True,
+        )
+        version, is_new = appended
+        return StoredDocument(
+            version=version,
+            is_new=is_new,
         )
 
     def record_source_outcome(
@@ -166,6 +185,8 @@ class SqliteIngestionWriter:
 
         if scan_id is None:
             raise ValueError("持久 K10 来源水位必须绑定 scan_id")
+        if self._leaseguard is not None:
+            self._leaseguard()
         success_text = _utc_text(success_watermark)
         watermark_id = _stable_id("watermark", scan_id, source_key, success_text, cursor or "")
         append_source_watermark(
@@ -193,6 +214,7 @@ def ingest_to_sqlite(
     created_at: datetime,
     completed_at: datetime,
     finalize: bool = True,
+    leaseguard: Callable[[], None] | None = None,
 ) -> IngestionRun:
     """执行一轮摄取；编排器可延后冻结 scan 直到下游发现已落库。"""
     from .store import create_scan
@@ -216,7 +238,7 @@ def ingest_to_sqlite(
         db_path=db_path,
     )
     run = IngestionOrchestrator(
-        adapters=adapters, writer=SqliteIngestionWriter(db_path=db_path)
+        adapters=adapters, writer=SqliteIngestionWriter(db_path=db_path, scan_id=scan_id, leaseguard=leaseguard)
     ).ingest(
         window=window,
         source_watermarks=source_watermarks,
@@ -334,7 +356,7 @@ class IngestionOrchestrator:
                 failed_count += 1
                 continue
 
-            stored, duplicates, late, uncertain = self._append_documents(coverage, result, window)
+            stored, duplicates, late, uncertain, new_refs, uncertain_refs = self._append_documents(coverage, result, window)
             state = _outcome_state(result)
             self._writer.record_source_outcome(
                 scan_id=scan_id, coverage=coverage, result=result, state=state, error=None
@@ -359,6 +381,9 @@ class IngestionOrchestrator:
                         **result.coverage_record(coverage),
                         "lateDocumentCount": late,
                         "unknownPublicationTimeCount": uncertain,
+                        "timeCoverage": "partial" if uncertain else "complete",
+                        "newDocumentRefs": new_refs,
+                        "uncertainTimeDocumentRefs": uncertain_refs,
                     },
                 )
             )
@@ -381,19 +406,32 @@ class IngestionOrchestrator:
 
     def _append_documents(
         self, coverage: SourceCoverage, result: SourceFetchResult, window: ScanWindow
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int, list[dict[str, object]], list[dict[str, object]]]:
         seen: set[str] = set()
         stored = duplicates = late = uncertain = 0
+        new_refs: list[dict[str, object]] = []
+        uncertain_refs: list[dict[str, object]] = []
         for document in result.documents:
             fingerprint = _document_fingerprint(coverage.source_key, document)
             if fingerprint in seen:
                 duplicates += 1
                 continue
             seen.add(fingerprint)
-            self._writer.append_document_version(source_key=coverage.source_key, document=document)
+            saved = self._writer.append_document_version(source_key=coverage.source_key, document=document)
             stored += 1
+            if isinstance(saved, StoredDocument):
+                version, is_new = saved.version, saved.is_new
+            else:
+                # Non-SQLite test writers predate the append-result contract.  They remain
+                # suitable for ingestion-only tests, while production always supplies a
+                # concrete new/duplicate result.
+                version, is_new = saved, True
+            ref = {"documentId": version.document_id, "revision": version.revision}
+            if is_new:
+                new_refs.append(ref)
             if document.published_precision != "exact":
                 uncertain += 1
+                uncertain_refs.append(ref)
             elif (
                 document.published_at is not None
                 and document.published_at <= window.cutoff_at
@@ -401,9 +439,9 @@ class IngestionOrchestrator:
             ):
                 # A version published before cutoff but obtained later is never discarded.
                 late += 1
-        return stored, duplicates, max(late, result.late_document_count), max(
+        return (stored, duplicates, max(late, result.late_document_count), max(
             uncertain, result.unknown_publication_time_count
-        )
+        ), new_refs, uncertain_refs)
 
 
 def _failed_coverage(coverage: SourceCoverage) -> dict[str, object]:
@@ -421,6 +459,6 @@ def _failed_coverage(coverage: SourceCoverage) -> dict[str, object]:
 
 
 __all__ = [
-    "IngestionOrchestrator", "IngestionRun", "IngestionWriter", "SourceIngestionOutcome",
+    "IngestionOrchestrator", "IngestionRun", "IngestionWriter", "SourceIngestionOutcome", "StoredDocument",
     "SqliteIngestionWriter", "finalize_ingestion_scan", "ingestion_coverage", "ingest_to_sqlite",
 ]

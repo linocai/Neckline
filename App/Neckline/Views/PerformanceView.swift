@@ -17,7 +17,7 @@ struct PerformanceView: View {
                     PerformanceDashboard(results: results)
                     PerformanceFilterBar(selection: $filter)
 
-                    if results.state == "not_configured", let reason = results.reason {
+                    if let reason = results.reason {
                         PerformanceNotice(icon: "exclamationmark.triangle.fill", text: reason.message)
                     }
 
@@ -143,7 +143,12 @@ private struct PerformanceDashboard: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
                     MetricTile(title: "两日收盘封板", value: "\(primary.hitCount)", note: "仅完整主样本")
                     MetricTile(title: "两日触板", value: primary.touchRate.map { String(format: "%.1f%%", $0 * 100) } ?? "待核", note: "分母同可核主样本")
-                    MetricTile(title: "资料不完整", value: "\(primary.incompleteCount)", note: "包含缺数子集，不作未命中")
+                    MetricTile(title: "未到期／待核", value: "\(primary.pendingCount)", note: "不计为未命中")
+                    MetricTile(title: "停牌", value: "\(primary.suspendedCount)", note: "单列，不计为未命中")
+                    MetricTile(title: "行情缺数", value: "\(primary.dataGapCount)", note: "资料不完整的子集，不可相加")
+                    MetricTile(title: "行情异常", value: "\(primary.anomalyCount)", note: "单列，不计为未命中")
+                    MetricTile(title: "资料不完整", value: "\(primary.incompleteCount)", note: "含行情缺数子集，不可相加")
+                    MetricTile(title: "评价未配置", value: primary.notConfiguredCount.map(String.init) ?? "未记录", note: "保留样本，暂不计成绩")
                     MetricTile(title: "未冻结", value: "\(primary.selectionPendingCount)", note: "尚未归入三组")
                 }
 
@@ -238,9 +243,13 @@ private struct CohortMetricRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title).font(NKFont.callout).frame(width: 72, alignment: .leading)
             if let metric {
-                Text(observedOnly
-                     ? "样本 \(metric.sampleCount) · 可核 \(metric.observedCompleteCount) · 收盘封板 \(metric.hitCount)"
-                     : "样本 \(metric.sampleCount) · 可核 \(metric.eligibleCount) · 收盘封板 \(metric.hitCount)")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(observedOnly
+                         ? "样本 \(metric.sampleCount) · 可核 \(metric.observedCompleteCount) · 收盘封板 \(metric.hitCount)"
+                         : "样本 \(metric.sampleCount) · 可核 \(metric.eligibleCount) · 收盘封板 \(metric.hitCount)")
+                    Text("评价未配置 \(metric.notConfiguredCount.map(String.init) ?? "未记录")")
+                    Text("未到期／待核 \(metric.pendingCount) · 停牌 \(metric.suspendedCount) · 缺数 \(metric.dataGapCount) · 异常 \(metric.anomalyCount) · 不完整 \(metric.incompleteCount)（缺数为不完整子集）")
+                }
                     .font(NKFont.caption.monospacedDigit())
                     .foregroundStyle(NK.textSecondary)
                 Spacer(minLength: 0)
@@ -270,6 +279,13 @@ private struct EventGroupResults: View {
                             .font(NKFont.caption)
                             .foregroundStyle(NK.textSecondary)
                         CohortMetricRow(title: "主样本", metric: group.primary["all"])
+                        Divider().overlay(NK.hairline)
+                        if let overlap = group.overlap {
+                            CohortMetricRow(title: "重叠观察", metric: overlap, showsRate: false, observedOnly: true)
+                        } else {
+                            Text("该事件的重叠成绩未记录")
+                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        }
                     }
                 }
             }
@@ -297,6 +313,11 @@ private struct EvaluationCard: View {
                     }
                 }
 
+                if value.evaluationConfigurationState == "not_configured" {
+                    Label("该窗口的评价规则未配置，暂不参与成绩。已发布候选与原定观察窗口保留。", systemImage: "exclamationmark.triangle.fill")
+                        .font(NKFont.callout).foregroundStyle(NK.amber)
+                }
+
                 marketDayColumns
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -309,7 +330,7 @@ private struct EvaluationCard: View {
                 }
 
                 if !value.gaps.isEmpty {
-                    Label(value.gaps.joined(separator: "、"), systemImage: "exclamationmark.triangle.fill")
+                    Label(value.gaps.map(k10ReasonText).joined(separator: "、"), systemImage: "exclamationmark.triangle.fill")
                         .font(NKFont.caption)
                         .foregroundStyle(NK.amber)
                 }
@@ -319,7 +340,7 @@ private struct EvaluationCard: View {
                     ForEach(value.factRefs) { SourceReferenceLine(source: $0, model: model) }
                 }
 
-                Text("结果第 \(value.revision) 版 · 更新 \(k10DisplayTime(value.updatedAt))")
+                Text(value.revision > 0 ? "结果第 \(value.revision) 版 · 更新 \(k10DisplayTime(value.updatedAt))" : "尚未生成持久成绩 · 状态更新 \(k10DisplayTime(value.updatedAt))")
                     .font(NKFont.caption)
                     .foregroundStyle(NK.textTertiary)
             }

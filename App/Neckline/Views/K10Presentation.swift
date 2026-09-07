@@ -31,7 +31,7 @@ func k10ReasonText(_ value: String?) -> String {
         return k10ReasonText(String(value[value.index(after: separator)...]))
     }
     let known = [
-        "coverage_incomplete":"资料覆盖不完整", "source_unavailable":"资料暂不可用", "search_failed":"资料检索未完成",
+        "limit_data_unavailable":"涨停价或封板状态缺失", "evaluation_configuration_missing":"评价规则未配置", "coverage_incomplete":"资料覆盖不完整", "source_unavailable":"资料暂不可用", "search_failed":"资料检索未完成",
         "missing_outcomes":"所需历史结果不完整", "single_source_fallback":"仅单一来源，未能交叉核验",
         "quote_trade_date_unproven":"无法证明报价属于目标交易日", "source_conflict":"来源数值存在冲突",
         "field_unavailable":"字段暂不可用", "missing_data":"资料缺失", "same_day_post_close_sources_agree":"两个实时来源同日收市后数值一致",

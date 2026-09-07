@@ -42,6 +42,9 @@ struct OpportunitiesView: View {
                     openSettings: { model.tab = .settings }
                 )
 
+                if let error = model.morningReportLoadError {
+                    MorningReportRefreshNotice(report: model.morningReport, error: error, model: model)
+                }
                 if let morningReport = model.morningReport {
                     MorningReportCard(report: morningReport, model: model)
                 }
@@ -197,6 +200,35 @@ struct OpportunitiesView: View {
         macSelectedWindowID = openWindows[next].companyWindowId
     }
     #endif
+}
+
+private struct MorningReportRefreshNotice: View {
+    let report: K10MorningReport?
+    let error: String
+    @Bindable var model: AppModel
+
+    var body: some View {
+        V3Card {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(NK.amber)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("晨报暂未刷新").font(NKFont.headline)
+                    Text(detail).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    Text(error).font(NKFont.caption).foregroundStyle(NK.amber)
+                }
+                Spacer(minLength: 8)
+                Button("重试") { Task { await model.refresh() } }
+                    .buttonStyle(V3SecondaryButtonStyle())
+            }
+        }
+        .accessibilityLabel("晨报暂未刷新，可重试")
+    }
+
+    private var detail: String {
+        report.map { "仍显示截止 \(k10DisplayTime($0.cutoffAt)) 的上一份晨报。" }
+            ?? "暂未取得可显示的晨报，稍后可重试。"
+    }
 }
 
 private struct MorningReportCard: View {
@@ -643,6 +675,29 @@ struct ComparisonDetails: View {
             }
             if let twoDayReason = comparison.twoDayReason {
                 ComparisonDetailLine(icon: "calendar", label: "两日观察依据", value: twoDayReason)
+            }
+            Divider().overlay(NK.hairline)
+            if let classification = comparison.classification {
+                Text("本次为何新建机会").font(NKFont.callout.weight(.medium))
+                ComparisonDetailLine(icon: "doc.text", label: "新增事实", value: classification.newFacts)
+                ComparisonDetailLine(icon: "arrow.triangle.branch", label: "判断依据", value: classification.reason)
+                if let changed = classification.changedJudgment, !changed.isEmpty {
+                    ComparisonDetailLine(icon: "arrow.up.arrow.down", label: "改变判断", value: changed)
+                }
+                ComparisonDetailLine(icon: "calendar.badge.clock", label: "新两日理由", value: classification.twoDayReason)
+                if let relatedID = classification.relatedOpportunityId, !relatedID.isEmpty {
+                    Button {
+                        Task { await model.openOpportunity(id: relatedID) }
+                    } label: {
+                        Label("查看关联原机会", systemImage: "arrowshape.turn.up.left")
+                            .font(NKFont.caption.weight(.medium))
+                            .foregroundStyle(NK.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("查看关联原机会 \(relatedID)")
+                }
+            } else {
+                ComparisonDetailLine(icon: "questionmark.circle", label: "分类说明", value: "未记录／待核")
             }
             if let coverage = comparison.historicalCoverage {
                 Divider().overlay(NK.hairline)
