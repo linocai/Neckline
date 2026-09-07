@@ -1,11 +1,11 @@
 # Neckline
 
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-07 已发布
-**3.0.2 / 双端 Build 33 / K10-v1.4 / Schema 3**，后端发布集合为 `v3.0.2-b33`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.2-b33)；Mac 已换装并启动，iOS development IPA 由用户自行安装。
+**3.0.4 / 双端 Build 35 / K10-v1.4 / Schema 3**，后端发布集合为 `v3.0.4-b35`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.4-b35)；Mac 已换装并启动，iOS development IPA 由用户自行安装。
 
-**3.0.4 / 双端 Build 35 正在工程修复，尚未发布。** 接续未发布的 Build 34 工作，修复独立 K10 一致性复核确认的 11 项问题：扫描中断恢复、历史来源去重、评价配置门禁、事件内比较与全局排序、模型输出校验、缺数与重叠成绩，以及来源覆盖和晨报反证阅读链。
-完成情况与验收证据统一记录在 PROJECT_PLAN；生产仍为上述 Build 33 / Schema 3。
+本次合并未单独发布的 Build 34 修复，完成 K10 一致性复核确认的 11 项问题：扫描中断恢复、历史来源去重、
+冻结评价配置门禁、事件内排序、模型输出校验、缺数和重叠统计，以及来源时间质量与晨报反证阅读链。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -35,7 +35,7 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 价格观察以 D1 开盘为参照，分别给出两日高低收与整个窗口的极值；除权资料不足时跨日指标留空。
 同 D1/D2、同评价版本的三组可以对照，晚间与开盘前晨间来源合并统计并保留各批次；同一事件涉及多家公司时另列事件关联，不能相加当作多次独立催化成功。
 
-Build 33 补齐全候选五段晨报、事件整体公司比较、带来源及缺口的历史同类资料、追加追问与正反版本阅读链。
+全候选五段晨报已就绪，配套事件整体公司比较、带来源及缺口的历史同类资料、追加追问与正反版本阅读链。
 行情逐字段展示双源核验、单源回退或冲突原因；重叠机会保留实际命中记录，缺数与异常不会充作未命中。
 撤回与两日到期为终态，普通资料更新和补充分析不会重新激活旧机会。
 
@@ -58,9 +58,9 @@ Tavily 使用 general 查询，并只凭来源字段或原文明确发布时间�
 首轮扫描定于 **2026-09-07 21:00 CST**，首轮晨扫为 **2026-09-08 09:00 CST**。
 首轮补取起点显式设为 2026-09-04 21:00；成功来源水位建立后优先使用真实水位，部署没有提前入队。
 
-3.0.4 待发布工程配置包含每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
+生产配置修订 2 包含每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
 用于有界回补晚到资料，记录实际回查范围和缺口。它不是无限历史覆盖，也不允许把新取得的资料回填为旧推荐。
-发布 3.0.4 时须追加不可变配置修订并更新显式运行绑定；不得改写现有修订或用代码默认补齐。
+修订 1 原样保留，API 和 timer 的显式绑定已更新为修订 2；不得改写现有修订或用代码默认补齐。
 
 API 使用 `/api/v1/k10/`，通用连接/推送设置仍在 `/api/v1/settings`，设备注册为 `/api/v1/devices`。
 API 启动只验证鉴权和既有 schema；GET 不迁移、不启动模型。重任务由独立 K10 worker 执行，timer 只入队。
@@ -92,49 +92,33 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-生产沿用既有部署目标与 `/opt/neckline`，由 `neckline.service` 提供 API，`neckline-k10-worker.service`
-执行后台任务。K10 晚/晨 timer 分别为 21:00 / 09:00；行情更新 18:30，19:30 / 20:30 有界重试。
-`/etc/neckline/k10.env` 显式绑定 `k10-v1.4-production` 修订 1。连接、模型密钥及设备保留，NPM/UFW 未改。
-K9 的 daily/evening/recovery/facts/report/strategy 单元、旧表、运行模块与活动资料均已退出；无双写或兼容页面。
+源码提交 `15628894046762fa0b2085964af91efc7e76e612`，不可变标签 `v3.0.4-b35`；后续发布记录提交不移动标签。
+已核验服务器 `ser657204219523`（`114.66.2.205`）、`/opt/neckline/data/neckline.db` 与公网
+`https://nk.linotsai.top`。API/worker 均正常，重启计数和发布后警告为 0，未鉴权请求返回 401。
+三个配置范围均已配置，`/etc/neckline/k10.env` 绑定 `k10-v1.4-production` 修订 2；密钥与设备保留。
+晚/晨 timer 为 21:00 / 09:00，行情更新 18:30、19:30 / 20:30 有界重试。K9 无活动运行链。
 
-当前双端及后端源码 `47c9fd0d2a04c2d924b94fc8d51d53f93bd73d60`，不可变标签 `v3.0.2-b33`；
-发布记录的后续提交不移动标签。GitHub 六个发布文件的 SHA256 已逐一核对。
-正式包已严格验签，Mac 为 arm64/x86_64 通用架构；运行路径和 Dock 均为 `/Applications/Neckline.app`，仅一个正式实例。
-iOS development IPA 位于 `/Users/linotsai/Downloads/Neckline-v3.0.2-b33-iOS-development.ipa`，仍由用户本人安装。
-已核验服务器 `ser657204219523`（`114.66.2.205`）和 `/opt/neckline/data/neckline.db`；本机与公网
-`https://nk.linotsai.top` 的 health 为 `v3.0.2 / v3.0.2-b33`。API/worker 正常，发布后检查重启计数与警告日志均为 0；
-候选、分析、评价三个配置范围已配置，未鉴权请求返回 401。Mac 设置页也已实际核验连接、版本和三个范围。
+Mac 严格验签通过，为 arm64/x86_64 通用架构；正式运行位置 `/Applications/Neckline.app`，仅一个实例。
+设置页已实际核验生产连接、3.0.4 / Build 35 和三个配置范围。iOS development IPA 位于
+`/Users/linotsai/Downloads/Neckline-v3.0.4-b35-iOS-development.ipa`，由用户安装。
+GitHub 六个文件的 SHA256 与本地逐一一致；后端归档、wheel 和 manifest 保存在
+`/opt/neckline/releases/v3.0.4-b35/`。
 
-本次 Schema 2→3 的成功回滚点为 `/opt/neckline/data/backups/v3.0.2-b33-predeploy-20260907-r2`。
-其中 `runtime.tar.gz`、原 wheel 位置、单元与配置哈希、数据库副本和 `receipt.json` 共同确定 B32 恢复集。
-先用当时真实数据库副本演练，再执行受控迁移；所有既有表的列、行数与逐行哈希一致，完整性、外键、新约束及索引通过。
+本次备份：`/opt/neckline/data/backups/v3.0.4-b35-predeploy-20260907/`。其中 `receipt.json`、
+`runtime.tar.gz`、旧配置绑定及部署前后 SQLite 副本构成恢复集；备份哈希已复验。先在服务器真实数据库的
+隔离副本演练配置追加，再部署；Schema 3 不变，全部既有表和记录逐行保持一致，仅追加配置修订 2。
 数据库 SHA256：
 
-- `neckline-pre.db`：`37f28d61c72fa518b3959a548c88165603894d29c3ee7754ef9ce0690624c37e`
-- `neckline-post.db`：`8f85522dd961c75995ae4cb6be15cdcbfca6803f454b5a96cc73c04844632e77`
+- `neckline-pre.db`：`48b9e3ecacd9be6dde5031fe60104c93bbff757ee0026cd54ed9d2d771da3f88`
+- `neckline-post.db`：`eb19ebeb0ce932569afc6166b9e1fba7898cb4790b9d85fb815d39ea21c96a0b`
 
-若需撤回 3.0.2，先确认当前业务写入情况、备份现场并停止四个 timer 及 API/worker/入队/行情 service，
-完成 SQLite 检查点。确认恢复该快照不会丢弃后续业务数据后，使用当前 V3 的显式
-`python -m neckline.k10.migration restore`，传入生产绝对 `--db`、相同的 `--confirmed-target`、
-本次 `neckline-pre.db` 的 `--backup`/上述 `--backup-sha256` 和 `--writers-stopped`；再恢复配套 B32 代码、
-原 wheel 及单元配置，保留运行根目录已核验的 `root:root / 0755`。随后重载并核验 health、鉴权、配置、完整性及定时器。
-已有新业务时，先制定保留新增数据的恢复方案，不能直接覆盖首扫前快照。
-Mac 对应恢复 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.1-build32-pre-v302-20260907.app`。
-当前后端包、wheel 和 manifest 位于 `/opt/neckline/releases/v3.0.2-b33/`；此前不可变备份继续保留。
+撤回 B35 时先确认目标、备份现场并停止四个 timer 和 API/worker/入队/行情 service。恢复上述 runtime、
+已验哈希的 B33 wheel 和配置绑定修订 1，保持 `/opt/neckline` 的 `root:root / 0755` 以及原配置权限。
+本轮无 schema 迁移，优先保留业务数据库及未绑定的追加修订，不用旧快照覆盖新业务。恢复后核对 health、
+鉴权、三范围配置、完整性及定时器。Mac 对应恢复
+`/Users/linotsai/Lino/app_backups/Neckline-v3.0.2-build33-pre-v304-20260907.app`。
 
-以下是首次整体退回 K9 的独立灾难恢复路径，不用于撤回本次 3.0.2 升级。
-已核验的回滚目录为 `/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907`。
-其中 `runtime.tar.gz` 含旧源码、依赖和配置；`units/` 与 `unit-states.json` 记录旧服务；
-`retired-data.tar.gz` 保存已从活动目录移除的 K9 资料；`neckline-k9.db` 为迁移前库，
-SHA256 为 `9cc808637336eb6fd52d109aca8a1be4f7e56badae93d0c974f3de96665e141b`。
-`neckline-v3-post.db` 是迁移后已核验副本，完整哈希和发布 manifest 留在该目录的 `backup-receipt.json`。
-不得下载或公开含凭据的备份。
-
-如必须回滚，先核验目标与备份哈希，停止 API、K10 worker、全部新 timer 及其运行中的 service，
-为回滚前现场另建备份并完成 SQLite 检查点。仍使用 V3 代码运行显式入口
-`python -m neckline.k10.migration restore`，传入 `--db`、相同绝对路径的 `--confirmed-target`、
-上述 `--backup`、`--backup-sha256` 和 `--writers-stopped`；随后一并恢复旧源码/依赖/配置、
-旧活动资料与原单元状态，清除新运行文件后重载服务。不能仅恢复数据库却继续启动 V3。
-重新核验旧版 health、完整性、外键、鉴权和定时器；Mac 同步恢复
-`/Users/linotsai/Lino/app_backups/Neckline-v2.7.0-build19-pre-v3-20260907.app`。
-首次迁移演练的含凭据临时副本已清除，正式回滚备份保留。已有备份与不可变标签不能覆盖。
+更早的 B33 迁移与 K9 灾难恢复备份分别保留在
+`/opt/neckline/data/backups/v3.0.2-b33-predeploy-20260907-r2/` 和
+`/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907/`；各自 receipt 固定其版本、哈希和恢复配套，
+不能与 B35 的运行文件混搭，也不得下载或公开含凭据的备份。
