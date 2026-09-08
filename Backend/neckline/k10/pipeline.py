@@ -1021,6 +1021,10 @@ class _CheckpointedDiscoveryModel:
     def _run(self, *, operation: str, stage: str, item_key: str, item: Mapping[str, Any],
              invoke: Callable[[], Any], encode: Callable[[Any], Mapping[str, Any] | list[Any]],
              decode: Callable[[Mapping[str, Any] | list[Any]], Any]) -> Any:
+        if operation in {"verify", "map", "compare", "classify", "prioritize"}:
+            item, _digest, _key, _row = self._recovery_target(
+                operation=operation, stage=stage, item_key=item_key, item=item,
+                eligible=lambda code: code == "execution_paused" or "json" in code)
         def remember_validation(exc: Exception) -> None:
             if not isinstance(self._base, DeepSeekDiscoveryModel):
                 return
@@ -2603,6 +2607,20 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
                                 status="failed", pipeline_state="discovery_failed", coverage_extra=running_coverage)
         raise
+
+    finalization_issues = [issue for issue in run.issues if issue.stage in {"classify", "prioritize"}]
+    if title_enabled and finalization_issues:
+        # A provider pause/failure after research is unfinished execution, not a
+        # completed report with fewer candidates. Keep the frozen work recoverable
+        # and publish none of the incomplete aggregate.
+        failure = {**running_coverage, "executionState": "finalization_incomplete",
+                   "finalizationFailure": finalization_issues[0].code,
+                   "researchRequired": bool(run.events), "researchEventCount": len(run.events)}
+        finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
+                                status="failed", pipeline_state="finalization_incomplete", coverage_extra=failure)
+        return TaskResult("failed", "finalization_incomplete",
+                          {"scanId": scan_id, "safeErrorCode": finalization_issues[0].code},
+                          "候选分类或排序未完整完成，冻结扫描未发布，可受控恢复")
 
     matches = _morning_review_matches(run=run, existing=prior_candidates) if kind == "morning" else []
     research_required = title_enabled and bool(run.events)

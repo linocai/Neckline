@@ -924,7 +924,7 @@ def run_discovery(
         # Only independent events overlap. Each event retains its sequential
         # question/evidence/comparison state machine and durable checkpoints.
         with ThreadPoolExecutor(max_workers=investigation_concurrency) as executor:
-            pending = {}
+            research_futures = {}
             remaining = iter(merged_events)
             def submit_next() -> bool:
                 event = next(remaining, None)
@@ -932,15 +932,15 @@ def run_discovery(
                     return False
                 if leaseguard is not None:
                     leaseguard()
-                pending[executor.submit(investigate, event)] = event
+                research_futures[executor.submit(investigate, event)] = event
                 return True
             for _ in range(investigation_concurrency):
                 if not submit_next():
                     break
-            while pending:
-                finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+            while research_futures:
+                finished, _ = wait(research_futures, return_when=FIRST_COMPLETED)
                 for future in finished:
-                    event = pending.pop(future)
+                    event = research_futures.pop(future)
                     try:
                         research_results[id(event)] = future.result()
                     except (DiscoverySliceYield, DiscoveryDeadlineExceeded):
