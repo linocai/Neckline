@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class K10SchemaError(RuntimeError):
@@ -417,10 +417,85 @@ CREATE TABLE k10_analysis_requests (
 CREATE INDEX idx_k10_analysis_requests_window ON k10_analysis_requests(company_window_id, global_revision);
 """
 
+
+# Execution settings are deliberately separate from the K10 strategy pack.  A recovery
+# can bind a new, audited execution profile while retaining the original strategy
+# revision, cutoff and frozen document references.
+_V4 = r"""
+CREATE TABLE k10_execution_config_revisions (
+  config_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  payload_json TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (config_id, revision),
+  UNIQUE (config_id, content_sha256)
+);
+
+CREATE TABLE k10_task_execution_bindings (
+  task_id TEXT PRIMARY KEY REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  execution_config_id TEXT NOT NULL,
+  execution_config_revision INTEGER NOT NULL,
+  execution_content_sha256 TEXT NOT NULL,
+  binding_kind TEXT NOT NULL CHECK(binding_kind IN ('scheduled','recovery')),
+  bound_at TEXT NOT NULL,
+  FOREIGN KEY(execution_config_id, execution_config_revision)
+    REFERENCES k10_execution_config_revisions(config_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_task_execution_profile
+  ON k10_task_execution_bindings(execution_config_id, execution_config_revision);
+
+CREATE TABLE k10_scan_execution_bindings (
+  scan_id TEXT PRIMARY KEY REFERENCES k10_scans(scan_id) ON DELETE RESTRICT,
+  task_id TEXT NOT NULL UNIQUE REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  execution_config_id TEXT NOT NULL,
+  execution_config_revision INTEGER NOT NULL,
+  execution_content_sha256 TEXT NOT NULL,
+  binding_kind TEXT NOT NULL CHECK(binding_kind IN ('scheduled','recovery')),
+  bound_at TEXT NOT NULL,
+  FOREIGN KEY(execution_config_id, execution_config_revision)
+    REFERENCES k10_execution_config_revisions(config_id, revision) ON DELETE RESTRICT
+);
+
+CREATE TABLE k10_execution_item_checkpoints (
+  task_id TEXT NOT NULL REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  item_kind TEXT NOT NULL CHECK(item_kind IN ('document','event','global')),
+  item_key TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  input_sha256 TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed')),
+  attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0),
+  network_attempt_count INTEGER NOT NULL CHECK(network_attempt_count >= 0),
+  repair_attempt_count INTEGER NOT NULL CHECK(repair_attempt_count >= 0),
+  elapsed_ms INTEGER NOT NULL CHECK(elapsed_ms >= 0),
+  input_tokens INTEGER CHECK(input_tokens IS NULL OR input_tokens >= 0),
+  output_tokens INTEGER CHECK(output_tokens IS NULL OR output_tokens >= 0),
+  result_json TEXT,
+  safe_error_code TEXT,
+  safe_error_ref TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(task_id, item_kind, item_key, stage)
+);
+CREATE INDEX idx_k10_execution_items_task_status
+  ON k10_execution_item_checkpoints(task_id, status, item_kind, stage);
+
+CREATE TABLE k10_task_retry_schedules (
+  task_id TEXT PRIMARY KEY REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  not_before_at TEXT NOT NULL,
+  scheduled_attempt_count INTEGER NOT NULL CHECK(scheduled_attempt_count >= 1),
+  failure_attempt_count INTEGER NOT NULL CHECK(failure_attempt_count >= 0),
+  retry_kind TEXT NOT NULL CHECK(retry_kind IN ('continuation','failure')),
+  safe_error_code TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_k10_task_retry_due ON k10_task_retry_schedules(not_before_at, task_id);
+"""
+
 _DROP_V1 = (
     # Delete dependency children first.  This path is exercised only after a verified backup,
     # but must still work on a populated V1.4 database with foreign keys enabled.
-    "k10_task_outbox", "k10_analysis_requests", "k10_morning_report_items", "k10_morning_reports", "k10_company_window_observations", "k10_tasks", "k10_evaluation_records", "k10_morning_updates",
+    "k10_task_retry_schedules", "k10_execution_item_checkpoints", "k10_scan_execution_bindings", "k10_task_execution_bindings", "k10_execution_config_revisions", "k10_task_outbox", "k10_analysis_requests", "k10_morning_report_items", "k10_morning_reports", "k10_company_window_observations", "k10_tasks", "k10_evaluation_records", "k10_morning_updates",
     "k10_company_window_evaluation_revisions", "k10_market_day_fact_revisions", "k10_company_window_selection_snapshots", "k10_company_window_actions", "k10_opportunity_lifecycle_events", "k10_publication_samples", "k10_opportunities", "k10_company_windows", "k10_publication_batches", "k10_plan_commands", "k10_plan_revisions", "k10_analysis_revisions", "k10_observations", "k10_candidate_actions",
     "k10_candidates", "k10_source_watermark_updates", "k10_scans", "k10_company_mappings",
     "k10_event_revisions", "k10_events", "k10_source_document_versions", "k10_source_documents",
@@ -515,14 +590,23 @@ def initialize_schema(db_path: Path) -> int:
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (2,?)", (_now(),))
             _apply_v3(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
+            _apply_v4(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
         elif version == 1:
             _apply_v2(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (2,?)", (_now(),))
             _apply_v3(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
+            _apply_v4(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
         elif version == 2:
             _apply_v3(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
+            _apply_v4(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
+        elif version == 3:
+            _apply_v4(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
     return SCHEMA_VERSION
@@ -549,6 +633,14 @@ def _apply_v3(conn: sqlite3.Connection) -> None:
     _upgrade_market_fact_availability(conn)
     _upgrade_analysis_revision_attempts(conn)
     for statement in _V3.split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+
+
+def _apply_v4(conn: sqlite3.Connection) -> None:
+    """Add execution recovery ledgers without rewriting a frozen K10 strategy record."""
+    for statement in _V4.split(";"):
         statement = statement.strip()
         if statement:
             conn.execute(statement)
@@ -657,15 +749,38 @@ def _downgrade_analysis_revision_attempts(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE k10_analysis_revisions_v3")
 
 
+def _downgrade_v4(conn: sqlite3.Connection) -> None:
+    """Only an empty V4 ledger can be DDL-downgraded; otherwise restore the verified backup."""
+    for table in ("k10_execution_config_revisions", "k10_task_execution_bindings", "k10_scan_execution_bindings",
+                  "k10_execution_item_checkpoints", "k10_task_retry_schedules"):
+        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+            raise K10SchemaError("schema 4 含执行恢复记录，须恢复已核备份，不能降级丢失数据")
+    for table in ("k10_task_retry_schedules", "k10_execution_item_checkpoints", "k10_scan_execution_bindings",
+                  "k10_task_execution_bindings", "k10_execution_config_revisions"):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
 def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
     """仅用于演练/受控回滚；调用方必须先完成备份验证。"""
-    if target_version not in {0, 2}:
-        raise ValueError("当前 K10 仅支持回滚到 schema 0 或 2")
+    if target_version not in {0, 2, 3}:
+        raise ValueError("当前 K10 仅支持回滚到 schema 0、2 或 3")
     with write_connection(db_path) as conn:
         version = _version(conn)
+        if target_version == 3:
+            if version == 3:
+                return 3
+            if version != 4:
+                raise K10SchemaError(f"不能从未知 K10 schema {version} 回滚到 3")
+            _downgrade_v4(conn)
+            conn.execute("DELETE FROM k10_schema_migrations WHERE version=4")
+            return 3
         if target_version == 2:
             if version == 2:
                 return 2
+            if version == 4:
+                _downgrade_v4(conn)
+                conn.execute("DELETE FROM k10_schema_migrations WHERE version=4")
+                version = 3
             if version != 3:
                 raise K10SchemaError(f"不能从未知 K10 schema {version} 回滚到 2")
             # This is a controlled DDL rollback for rehearsal only. Production rollback must
@@ -680,6 +795,10 @@ def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
             return 0
         if version != SCHEMA_VERSION:
             raise K10SchemaError(f"不能回滚未知 K10 schema {version}")
+        # V4 carries resumable work.  Unlike an empty-schema rehearsal, a
+        # populated execution ledger may not be discarded by a convenience
+        # downgrade; production must restore its verified predeploy backup.
+        _downgrade_v4(conn)
         for table in _DROP_V1:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("DROP TABLE IF EXISTS k10_schema_migrations")

@@ -300,7 +300,9 @@ def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
     api_settings.parquet_dir.mkdir(parents=True, exist_ok=True)
     init_schema(db_path=api_settings.db_path)
     from neckline.k10.schema import initialize_schema
+    from neckline.k10.notifications import initialize_notifications_schema
     initialize_schema(api_settings.db_path)
+    initialize_notifications_schema(api_settings.db_path)
     tc_mod.reset_cache()
 
     monkeypatch.setattr(app_mod, "_DB_PATH_OVERRIDE", api_settings.db_path)

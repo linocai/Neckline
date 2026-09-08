@@ -30,6 +30,11 @@ def _db(path: Path) -> int:
     return store.append_run_config(config_id="fixture", payload=_configuration(), created_at=NOW.isoformat(), db_path=path)
 
 
+def _execution(path: Path) -> int:
+    payload = json.loads((Path(__file__).parents[1] / "neckline" / "config" / "k10-execution-v1.json").read_text(encoding="utf-8"))
+    return store.append_execution_config(config_id="fixture-execution", payload=payload, created_at=NOW.isoformat(), db_path=path)
+
+
 def test_configure_appends_validated_immutable_pack(tmp_path):
     path = tmp_path / "configure.sqlite"
     initialize_schema(path)
@@ -118,10 +123,17 @@ def test_cli_worker_once_with_empty_queue_constructs_production_handlers_without
 def test_cli_enqueue_then_worker_handler_reaches_source_event_and_candidate(tmp_path, capsys):
     path = tmp_path / "cli-worker.sqlite"
     revision = _db(path)
+    execution_revision = _execution(path)
     _watermark(path)
     assert main(["enqueue", "--db", str(path), "--kind", "evening", "--trading-day", "2026-09-07",
-                 "--config-id", "fixture", "--config-revision", str(revision)]) == 0
+                 "--config-id", "fixture", "--config-revision", str(revision),
+                 "--execution-config-id", "fixture-execution", "--execution-config-revision", str(execution_revision)]) == 0
     task_id = capsys.readouterr().out.strip()
+    execution_binding = store.task_execution_profile(task_id=task_id, db_path=path)
+    assert execution_binding is not None
+    assert execution_binding["configId"] == "fixture-execution"
+    assert execution_binding["revision"] == execution_revision
+    assert execution_binding["bindingKind"] == "scheduled"
     adapter = _Adapter()
 
     def evening(context):

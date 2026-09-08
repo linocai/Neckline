@@ -17,6 +17,7 @@ from .discovery import DiscoveryDocument, EventDraft
 from .source_metadata import PublicationMetadataResolver
 from .types import DocumentVersion
 from . import store
+from .verification_checkpoints import VerificationCheckpointError, VerificationCheckpointStore
 
 
 @dataclass(frozen=True)
@@ -77,13 +78,21 @@ class TavilyEvidenceGateway:
 
     def __init__(self, *, db_path: Path, request_limit: int | None, client: SearchClient | None = None,
                  clock: Callable[[], datetime] | None = None,
-                 metadata_resolver: PublicationMetadataResolver | None = None) -> None:
+                 metadata_resolver: PublicationMetadataResolver | None = None, task_id: str | None = None,
+                 leaseguard: Callable[[], None] | None = None,
+                 checkpoint_store: VerificationCheckpointStore | None = None,
+                 network_max_attempts: int | None = None, lease_owner: str | None = None) -> None:
         self.db_path, self.request_limit = db_path, request_limit
         self.client = client
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.metadata_resolver = metadata_resolver
-        self.requests = 0
-        self.credits = 0
+        if checkpoint_store is not None and task_id is not None and checkpoint_store.task_id != task_id:
+            raise ValueError("Tavily 核验 task_id 与检查点不一致")
+        self.checkpoint_store = checkpoint_store or (
+            VerificationCheckpointStore(db_path=db_path, task_id=task_id, leaseguard=leaseguard, lease_owner=lease_owner) if task_id else None
+        )
+        self.network_max_attempts = network_max_attempts
+        self.requests, self.credits = self.checkpoint_store.budget_snapshot() if self.checkpoint_store else (0, 0)
 
     def fetch(self, *, event: EventDraft, retrieved_at: datetime, cutoff_at: datetime,
               cutoff_inclusive: bool = False) -> VerificationEvidenceBundle:
@@ -91,7 +100,12 @@ class TavilyEvidenceGateway:
             raise ValueError("核验 cutoff 必须带时区")
         if not isinstance(self.request_limit, int) or isinstance(self.request_limit, bool) or self.request_limit < 1:
             return VerificationEvidenceBundle("pending", (), (), {"provider": "tavily", "state": "pending", "reason": "maxVerificationRequests_missing", "requests": self.requests})
-        if self.requests >= self.request_limit:
+        if self.checkpoint_store is not None and (
+            not isinstance(self.network_max_attempts, int) or isinstance(self.network_max_attempts, bool)
+            or self.network_max_attempts < 1
+        ):
+            return self._pending("networkMaxAttempts_missing")
+        if self.checkpoint_store is None and self.requests >= self.request_limit:
             return VerificationEvidenceBundle("pending", (), (), {"provider": "tavily", "state": "pending", "reason": "request_limit_reached", "requests": self.requests, "credits": self.credits})
         client = self.client
         if client is None:
@@ -99,11 +113,41 @@ class TavilyEvidenceGateway:
             if not key:
                 return VerificationEvidenceBundle("pending", (), (), {"provider": "tavily", "state": "pending", "reason": "tavily_api_key_missing", "requests": self.requests})
             client = TavilySearchClient(key)
+        checkpoint_key: str | None = None
+        checkpoint_input: str | None = None
+        if self.checkpoint_store is not None:
+            source_refs = sorted(
+                ({"documentId": ref.document_id, "revision": ref.revision} for ref in event.source_refs),
+                key=lambda item: (item["documentId"], item["revision"]),
+            )
+            checkpoint_key = self.checkpoint_store.item_key(
+                canonical_key=event.canonical_key, stage_key=event.stage_key, event_state=event.event_state,
+            )
+            checkpoint_input = self.checkpoint_store.input_sha256(
+                canonical_key=event.canonical_key, stage_key=event.stage_key, event_state=event.event_state,
+                headline=event.headline, event_kind=event.event_kind, facts=event.facts, source_refs=source_refs,
+                cutoff_at=_text(cutoff_at), cutoff_inclusive=cutoff_inclusive,
+            )
+            claim = self.checkpoint_store.claim(item_key=checkpoint_key, input_sha256=checkpoint_input,
+                                                request_limit=self.request_limit, network_max_attempts=self.network_max_attempts)
+            self.requests = claim.requests
+            if claim.state == "reused":
+                return self._restore_checkpoint_bundle(claim.result)
+            if claim.state == "pending":
+                return self._pending(claim.reason or "verification_checkpoint_pending")
         # This is user-readable event language only.  Internal stage keys are
         # not query terms and materially reduce search precision in practice.
         query = event.headline[:400]
-        self.requests += 1
-        response = client.search(query)
+        if self.checkpoint_store is None:
+            self.requests += 1
+        try:
+            response = client.search(query)
+        except Exception:
+            if self.checkpoint_store is not None:
+                self.checkpoint_store.fail_retryable(item_key=checkpoint_key, input_sha256=checkpoint_input,
+                                                     safe_error_code="tavily_request_outcome_unknown")
+                return self._pending("tavily_request_outcome_unknown")
+            raise
         # The caller's retrieved_at was captured before the blocking request.
         # Persist the actual completion time instead, so fetchedAt never
         # pretends that source material was available before it arrived.
@@ -114,11 +158,18 @@ class TavilyEvidenceGateway:
         record_usage(task="discovery", result=None, trade_date=obtained_at.date(), outcome="search_success" if response.ok else "search_failed",
                      tavily_credits=response.credits, searched=True, duration_ms=response.wall_ms,
                      failure_reason=None if response.ok else response.reason, db_path=self.db_path)
+        response_reason = response.reason if not self.checkpoint_store else (
+            "tavily_response_unavailable" if not response.ok else "coverage_pending"
+        )
         coverage: dict[str, Any] = {"provider": "tavily", "query": query, "requests": self.requests,
                                     "requestLimit": self.request_limit, "state": "pending", "credits": response.credits,
-                                    "reason": response.reason}
+                                    "reason": response_reason}
         if response.credits is not None:
             self.credits += response.credits
+        if self.checkpoint_store is not None and not response.ok:
+            self.checkpoint_store.fail_retryable(item_key=checkpoint_key, input_sha256=checkpoint_input,
+                                                 safe_error_code="tavily_response_unavailable")
+            return self._pending("tavily_response_unavailable")
         docs: list[DiscoveryDocument] = []
         eligible: list[DiscoveryDocument] = []
         for index, hit in enumerate(response.hits):
@@ -167,9 +218,65 @@ class TavilyEvidenceGateway:
             elif precision == "date" and published_at and datetime.fromisoformat(published_at).date() < cutoff_at.date():
                 eligible.append(document)
         state = "available" if response.ok and response.credits is not None and eligible else "pending"
-        reason = "ok" if state == "available" else (response.reason if not response.ok else "coverage_gap_or_usage_unavailable")
+        reason = "ok" if state == "available" else (
+            "tavily_response_unavailable" if self.checkpoint_store and not response.ok
+            else (response.reason if not response.ok else "coverage_gap_or_usage_unavailable")
+        )
         coverage.update({"state": state, "reason": reason, "documents": len(docs), "eligibleDocuments": len(eligible), "creditsTotal": self.credits})
-        return VerificationEvidenceBundle(state, tuple(docs), tuple(eligible), coverage)
+        bundle = VerificationEvidenceBundle(state, tuple(docs), tuple(eligible), coverage)
+        if self.checkpoint_store is not None:
+            safe_coverage = {
+                "provider": "tavily", "state": state, "reason": reason, "requestState": "reserved",
+                "requests": self.requests, "requestLimit": self.request_limit, "credits": response.credits,
+                "creditsTotal": self.credits, "documents": len(docs), "eligibleDocuments": len(eligible),
+            }
+            result = {
+                "state": state,
+                "documentRefs": [self._document_ref(document) for document in docs],
+                "eligibleDocumentRefs": [self._document_ref(document) for document in eligible],
+                "coverage": safe_coverage,
+            }
+            self.checkpoint_store.complete(item_key=checkpoint_key, input_sha256=checkpoint_input, result=result)
+            return VerificationEvidenceBundle(state, tuple(docs), tuple(eligible), safe_coverage)
+        return bundle
+
+    @staticmethod
+    def _document_ref(document: DiscoveryDocument) -> dict[str, Any]:
+        return {"documentId": document.document_id, "revision": document.revision}
+
+    def _pending(self, reason: str) -> VerificationEvidenceBundle:
+        return VerificationEvidenceBundle("pending", (), (), {
+            "provider": "tavily", "state": "pending", "reason": reason,
+            "requestState": "pending", "requests": self.requests, "requestLimit": self.request_limit,
+            "credits": self.credits,
+        })
+
+    def _restore_checkpoint_bundle(self, result: Mapping[str, Any] | None) -> VerificationEvidenceBundle:
+        if not isinstance(result, Mapping):
+            raise VerificationCheckpointError("verification_checkpoint_corrupt")
+        raw_refs = result.get("documentRefs")
+        raw_eligible = result.get("eligibleDocumentRefs")
+        coverage = result.get("coverage")
+        if not isinstance(raw_refs, list) or not isinstance(raw_eligible, list) or not isinstance(coverage, Mapping):
+            raise VerificationCheckpointError("verification_checkpoint_corrupt")
+        docs = store.load_document_versions(refs=raw_refs, db_path=self.db_path, source_keys=(self.source_key,))
+        if len(docs) != len(raw_refs):
+            return self._pending("checkpoint_documents_unavailable")
+        restored = tuple(DiscoveryDocument(
+            str(item["documentId"]), int(item["revision"]), item.get("publishedAt"), str(item["fetchedAt"]),
+            item.get("originalText"), item.get("excerpt"), item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {},
+        ) for item in docs)
+        index = {(item.document_id, item.revision): item for item in restored}
+        try:
+            eligible = tuple(index[(str(ref["documentId"]), int(ref["revision"]))] for ref in raw_eligible)
+        except (KeyError, TypeError, ValueError):
+            return self._pending("checkpoint_documents_unavailable")
+        safe_coverage = dict(coverage)
+        safe_coverage.update({"requestState": "reused", "requests": self.requests, "creditsTotal": self.credits})
+        state = result.get("state")
+        if state not in {"available", "pending"}:
+            raise VerificationCheckpointError("verification_checkpoint_corrupt")
+        return VerificationEvidenceBundle(state, restored, eligible, safe_coverage)
 
 
 __all__ = ["SearchClient", "TavilyEvidenceGateway", "VerificationEvidenceBundle"]

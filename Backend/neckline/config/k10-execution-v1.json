@@ -1,0 +1,35 @@
+{
+  "executionVersion": "k10-execution-v1",
+  "discovery": {
+    "documentBatchSize": 24,
+    "understandConcurrency": 12,
+    "keyPassageMaxCharacters": 12000,
+    "networkMaxAttempts": 2,
+    "jsonRepairMaxAttempts": 1,
+    "retryBackoffSeconds": [60, 300, 900],
+    "taskSliceSeconds": 110,
+    "completionDeadlineSeconds": 7200,
+    "continuationDelaySeconds": 1,
+    "modelOptions": {
+      "understand": {
+        "maxTokens": 8192,
+        "thinking": {"type": "disabled"}
+      },
+      "verify": {
+        "maxTokens": 3500,
+        "thinking": {"type": "enabled"},
+        "reasoningEffort": "high"
+      },
+      "companyComparison": {
+        "maxTokens": 3500,
+        "thinking": {"type": "enabled"},
+        "reasoningEffort": "high"
+      },
+      "prioritize": {
+        "maxTokens": 2200,
+        "thinking": {"type": "enabled"},
+        "reasoningEffort": "high"
+      }
+    }
+  }
+}

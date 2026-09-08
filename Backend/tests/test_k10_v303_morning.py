@@ -27,6 +27,18 @@ def _config() -> dict:
     return json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
 
 
+def _bind_execution(path: Path, task_id: str) -> None:
+    """Legacy scheduler regressions must use the same explicit B36 binding as production."""
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    revision = store.append_execution_config(
+        config_id="fixture-execution", payload=profile, created_at=STARTED.isoformat(), db_path=path,
+    )
+    store.bind_task_execution(
+        task_id=task_id, execution_config_id="fixture-execution", execution_config_revision=revision,
+        binding_kind="scheduled", bound_at=STARTED.isoformat(), db_path=path,
+    )
+
+
 def _seed(path: Path, *, formal_target: bool) -> tuple[str, int]:
     initialize_schema(path)
     with sqlite3.connect(path) as conn:
@@ -117,6 +129,7 @@ def _run_morning_task(*, path: Path, config_id: str, revision: int, adapter, mon
     monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", lambda **_: adapter)
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
         config_revision=revision, now=now_at)
+    _bind_execution(path, task_id)
     task = run_once(db_path=path, worker_id="v303-fixture", lease_for=timedelta(minutes=5), clock=lambda: now_at,
         handlers={"morning_scan": lambda context: pipeline.production_scan_handler(
             context, tushare_token="fixture-token", parquet_dir=path.parent / "parquet", now=lambda: now_at,
@@ -181,34 +194,17 @@ def test_unreferenced_unknown_time_count_still_marks_morning_coverage_partial(tm
     assert len(report["groups"]["needs_review"]) == 1
 
 
-def test_discovery_failure_still_appends_a_retryable_morning_report(tmp_path, monkeypatch):
+def test_document_failure_still_appends_a_partial_morning_report(tmp_path, monkeypatch):
     path = tmp_path / "failure.sqlite"
     config_id, revision = _seed(path, formal_target=True)
     task_id, task = _run_morning_task(path=path, config_id=config_id, revision=revision, adapter=_ExactAdapter(), monkeypatch=monkeypatch,
         provider=_RaisingProvider())
 
-    assert task.status == "failed"
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT stage FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() == ("morning_report_unavailable",)
+    assert task.status == "completed"
     report = store.list_morning_reports(db_path=path)[0]
     assert report["status"] == "partial"
-    assert "morning_discovery_failed" in report["coverage"]["gaps"]
-    assert len(report["groups"]["needs_review"]) == 1
-    assert "无法确认" in report["groups"]["needs_review"][0]["content"]["summary"]
-
-    retry_at = STARTED + timedelta(minutes=1)
-    store.retry_task(task_id=task_id, expected_attempt_count=1, retried_at=retry_at.isoformat(), db_path=path)
-    scan_id = report["scanId"]
-    monkeypatch.setattr(pipeline, "execute_scan", lambda **_: TaskResult(
-        "completed", "discovery_completed", {"scanId": scan_id, "ingestionState": "completed", "discoveryState": "completed"},
-    ))
-    monkeypatch.setattr(pipeline, "_now", lambda: retry_at)
-    retried = run_once(db_path=path, worker_id="v303-retry", lease_for=timedelta(minutes=5), clock=lambda: retry_at,
-        handlers={"morning_scan": lambda context: pipeline.production_scan_handler(
-            context, tushare_token="fixture-token", parquet_dir=path.parent / "parquet", now=lambda: retry_at,
-        )}, task_id=task_id)
-    assert retried is not None and retried.status == "completed"
-    assert [item["revision"] for item in store.list_morning_reports(db_path=path)] == [2, 1]
+    assert report["coverage"]["discoveryState"] == "partial"
+    assert "morning_discovery_partial" in report["coverage"]["gaps"]
 
 
 @pytest.mark.parametrize("failure", ("provider", "token", "budget", "calendar"))
@@ -221,6 +217,7 @@ def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, 
         payload={"windowKind": "morning", "configId": config_id, "configRevision": revision},
         budget={"maxAttempts": 1, "maxSourceRequests": 0 if failure == "budget" else 128},
         created_at=STARTED.isoformat(), db_path=path)
+    _bind_execution(path, task_id)
     state = {"branchHit": False}
 
     def resolve(**_kwargs):
@@ -270,6 +267,7 @@ def test_worker_lease_loss_after_scan_returns_writes_no_morning_report(tmp_path,
     config_id, revision = _seed(path, formal_target=False)
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
         config_revision=revision, now=STARTED)
+    _bind_execution(path, task_id)
     scan_id = "scan-lost-after"
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=object(), error=None))
 
@@ -296,6 +294,7 @@ def test_worker_recovers_running_unavailable_scan_before_appending_report(tmp_pa
     config_id, revision = _seed(path, formal_target=False)
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
         config_revision=revision, now=STARTED)
+    _bind_execution(path, task_id)
     scan_id = pipeline._scan_id(kind="morning", cutoff_at=MORNING, identity=task_id)
     original_create = pipeline.store.create_scan
     first_context = {}

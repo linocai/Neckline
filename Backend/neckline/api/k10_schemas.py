@@ -119,6 +119,44 @@ class SourceReplayOut(K10Model):
     requestState: str | None = None
 
 
+class ExecutionDocumentCountsOut(K10Model):
+    received: int = Field(default=0, ge=0)
+    deduplicated: int = Field(default=0, ge=0)
+    templateSkipped: int = Field(default=0, ge=0)
+    understood: int = Field(default=0, ge=0)
+    fullText: int = Field(default=0, ge=0)
+    failedPending: int = Field(default=0, ge=0)
+
+
+class ExecutionEventCountsOut(K10Model):
+    verified: int = Field(default=0, ge=0)
+    compared: int = Field(default=0, ge=0)
+    # The count only exists after the immutable unified ranking freezes it.
+    # A zero before that point would falsely claim the scan found no candidates.
+    publishable: int | None = Field(default=None, ge=0)
+
+
+class SafeExecutionFailureOut(K10Model):
+    """Reader-safe failure data; raw provider output never reaches HTTP."""
+    stage: str = Field(min_length=1, max_length=80)
+    code: str = Field(min_length=1, max_length=120)
+    # A frozen document-version reference, if one exists.  This permits a
+    # reader to identify the affected item without exposing its body/hash.
+    ref: str | None = Field(default=None, max_length=320)
+
+
+class ExecutionProgressOut(K10Model):
+    state: Literal["running", "partial", "completed", "failed", "notConfigured"]
+    stage: str | None = Field(default=None, max_length=80)
+    documentCounts: ExecutionDocumentCountsOut = Field(default_factory=ExecutionDocumentCountsOut)
+    eventCounts: ExecutionEventCountsOut = Field(default_factory=ExecutionEventCountsOut)
+    coverageStatus: Literal["complete", "partial"]
+    nextRetryAt: str | None = None
+    safeFailures: list[SafeExecutionFailureOut] = Field(default_factory=list)
+    strategyBinding: dict[str, object] | None = None
+    executionBinding: dict[str, object] | None = None
+
+
 class SourceCoverageOut(K10Model):
     """A typed projection of a frozen source outcome.
 
@@ -155,6 +193,8 @@ class ScanOut(K10Model):
     configRevision: int | None = None
     createdAt: str
     completedAt: str | None = None
+    # Historical scans predate item-level checkpoints; absence is not zero.
+    executionProgress: ExecutionProgressOut | None = None
 
 
 class PublicationOut(K10Model):
@@ -523,6 +563,18 @@ class ConfigurationOut(K10Model):
     configId: str | None = None
     configRevision: int | None = None
     scopes: list[ConfigurationScopeOut]
+
+
+class NotificationReadinessOut(K10Model):
+    state: Literal["ready", "blocked", "notConfigured"]
+    reasonCode: str | None = Field(default=None, max_length=120)
+    nextRetryAt: str | None = None
+    checkedAt: str
+
+
+class OperationsReadinessOut(K10Model):
+    schemaVersion: str = SCHEMA_VERSION
+    notificationReadiness: NotificationReadinessOut
 
 
 class MorningReportItemOut(K10Model):

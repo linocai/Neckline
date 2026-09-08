@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import threading
 
 import pytest
 
@@ -8,12 +9,15 @@ from neckline.k10.discovery import (
     CandidateComparison,
     CompanyMappingDraft,
     DiscoveryDocument,
+    DiscoverySliceYield,
     EvidenceRef,
     EventComparison,
     EventDraft,
     SqliteDiscoveryWriter,
     Verification,
+    freeze_event_drafts,
     load_documents_from_store,
+    prepare_document_for_analysis,
     persist_discovery,
     run_discovery,
 )
@@ -137,6 +141,153 @@ def test_full_fake_pipeline_persists_event_mapping_and_only_thirty_evening_compa
         assert conn.execute("SELECT COUNT(*) FROM k10_company_mappings").fetchone()[0] == 31
 
 
+def test_html_preparation_keeps_fallback_and_table_facts_without_executing_markup():
+    document = DiscoveryDocument("doc-html", 1, NOW_TEXT, NOW_TEXT,
+                                 "<div>订单金额 <td>12亿元</td><script>drop()</script><embed src='x'><noscript>更正公告</noscript></div>",
+                                 None, {})
+    prepared = prepare_document_for_analysis(document)
+    assert prepared.evidence_ref == document.evidence_ref
+    assert "订单金额" in prepared.analysis_text and "12亿元" in prepared.analysis_text and "更正公告" in prepared.analysis_text
+    assert "drop()" not in prepared.analysis_text
+    assert prepared.extraction["version"] == "html-readable-v1"
+
+
+def test_understanding_checkpoint_resumes_only_validated_document_results():
+    documents = tuple(DiscoveryDocument(f"doc-{index}", 1, NOW_TEXT, NOW_TEXT, f"资料{index}", None, {}) for index in range(2))
+    checkpoints = []
+
+    class FailsOne(_Model):
+        def understand(self, *, document):
+            self.calls += 1
+            if document.document_id == "doc-0":
+                raise RuntimeError("malformed response")
+            return super().understand(document=document)
+
+    first_model = FailsOne()
+    first = run_discovery(documents=documents, configuration=_configuration(), model=first_model, verify=_verify,
+                          metadata=_Metadata(), cutoff_at=NOW, checkpoint=checkpoints.append)
+    completed = [item for item in checkpoints if item["state"] == "completed"]
+    assert first.state == "partial" and first.document_counts["understandFailed"] == 1 and len(completed) == 1
+    recovered = {EvidenceRef("doc-1", 1): tuple(
+        EventDraft(row["canonicalKey"], row["stageKey"], row["eventState"], row["headline"], row["eventKind"],
+                   row["facts"], (EvidenceRef("doc-1", 1),)) for row in completed[0]["events"]
+    )}
+    retry_model = _Model()
+    resumed = run_discovery(documents=documents, configuration=_configuration(), model=retry_model, verify=_verify,
+                            metadata=_Metadata(), cutoff_at=NOW, understood_by_document=recovered)
+    assert resumed.state == "completed" and retry_model.calls == 1
+
+
+def test_understanding_window_refills_after_each_completion_and_keeps_frozen_event_order():
+    """A slow first item must not hold the next window slot hostage.
+
+    The first document waits for document two to start.  A barrier implementation
+    cannot start document two until that wait ends; a bounded continuous queue can
+    checkpoint the quick peer, refill, and keep final merged refs in frozen order.
+    """
+    documents = tuple(DiscoveryDocument(f"doc-{index}", 1, NOW_TEXT, NOW_TEXT, f"资料{index}", None, {})
+                      for index in range(3))
+    document_two_started = threading.Event()
+    checkpoints: list[dict] = []
+
+    class WindowModel(_Model):
+        def understand(self, *, document):
+            self.calls += 1
+            if document.document_id == "doc-0":
+                assert document_two_started.wait(timeout=1)
+            elif document.document_id == "doc-2":
+                document_two_started.set()
+            return (EventDraft(canonical_key="shared", stage_key="same-stage", event_state="announcement",
+                               headline=document.document_id, event_kind="disclosure", facts={"doc": document.document_id},
+                               source_refs=(document.evidence_ref,)),)
+
+    verified_refs: list[tuple[EvidenceRef, ...]] = []
+    def verify(event):
+        verified_refs.append(event.source_refs)
+        return Verification("verified", "核验完成", event.source_refs)
+
+    first = run_discovery(documents=documents, configuration=_configuration(), model=WindowModel(), verify=verify,
+                          metadata=_Metadata(), cutoff_at=NOW, checkpoint=checkpoints.append,
+                          understand_concurrency=2, document_batch_size=2)
+    assert first.state == "completed"
+    assert [item["documentRef"]["documentId"] for item in checkpoints if item["state"] == "completed"] != ["doc-0", "doc-1", "doc-2"]
+    assert verified_refs == [(EvidenceRef("doc-0", 1), EvidenceRef("doc-1", 1), EvidenceRef("doc-2", 1))]
+
+    recovered = {
+        EvidenceRef(item["documentRef"]["documentId"], item["documentRef"]["revision"]):
+        tuple(EventDraft(row["canonicalKey"], row["stageKey"], row["eventState"], row["headline"], row["eventKind"],
+                         row["facts"], tuple(EvidenceRef(ref["documentId"], ref["revision"]) for ref in row["sourceRefs"]))
+              for row in item["events"])
+        for item in checkpoints if item["state"] == "completed"
+    }
+    resumed_refs: list[tuple[EvidenceRef, ...]] = []
+    resumed = run_discovery(documents=documents, configuration=_configuration(), model=_Model(),
+                            verify=lambda event: (resumed_refs.append(event.source_refs) or Verification("verified", "核验完成", event.source_refs)),
+                            metadata=_Metadata(), cutoff_at=NOW, understood_by_document=recovered,
+                            understand_concurrency=2, document_batch_size=2)
+    assert resumed.state == "completed"
+    assert resumed_refs == verified_refs
+    assert [(event.headline, event.facts, event.source_refs) for event in resumed.events] == [
+        (event.headline, event.facts, event.source_refs) for event in first.events
+    ]
+
+
+def test_understanding_slice_stops_admission_but_drains_inflight_checkpoints():
+    documents = tuple(DiscoveryDocument(f"doc-{index}", 1, NOW_TEXT, NOW_TEXT, f"资料{index}", None, {})
+                      for index in range(3))
+    release_second = threading.Event()
+    checkpoints: list[dict] = []
+
+    class SliceModel(_Model):
+        def __init__(self):
+            super().__init__()
+            self.seen: list[str] = []
+
+        def understand(self, *, document):
+            self.calls += 1
+            self.seen.append(document.document_id)
+            if document.document_id == "doc-1":
+                release_second.wait(timeout=1)
+            return (EventDraft("event-" + document.document_id, "stage", "announcement", "测试事件", "disclosure", {},
+                               (document.evidence_ref,)),)
+
+    calls = 0
+    def slice_after_initial_window():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            release_second.set()
+            from neckline.k10.discovery import DiscoverySliceYield
+            raise DiscoverySliceYield()
+
+    model = SliceModel()
+    with pytest.raises(DiscoverySliceYield):
+        run_discovery(documents=documents, configuration=_configuration(), model=model, verify=_verify,
+                      metadata=_Metadata(), cutoff_at=NOW, checkpoint=checkpoints.append,
+                      leaseguard=slice_after_initial_window, understand_concurrency=2, document_batch_size=2)
+    assert model.seen == ["doc-0", "doc-1"]
+    assert [item["documentRef"]["documentId"] for item in checkpoints if item["state"] == "completed"] == ["doc-0", "doc-1"]
+
+
+def test_pending_independent_verification_does_not_spend_company_comparison_calls():
+    class Recording(_Model):
+        def __init__(self):
+            super().__init__()
+            self.mapping_calls = 0
+
+        def map_companies(self, **kwargs):
+            self.mapping_calls += 1
+            return super().map_companies(**kwargs)
+
+    model = Recording()
+    document = DiscoveryDocument("doc", 1, NOW_TEXT, NOW_TEXT, "资料", None, {})
+    pending = run_discovery(documents=(document,), configuration=_configuration(), model=model,
+                            verify=lambda _event: Verification("needs_review", "额度待核", (), {"state": "pending"}),
+                            metadata=_Metadata(), cutoff_at=NOW)
+    assert pending.state == "partial" and not pending.candidates and model.mapping_calls == 0
+    assert [(issue.stage, issue.code) for issue in pending.issues] == [("verify", "verification_pending")]
+
+
 def test_new_stage_and_denial_become_event_revisions_and_missing_metadata_is_pending(tmp_path):
     path = tmp_path / "stages.db"
     _seed_documents(path, count=2)
@@ -164,16 +315,17 @@ def test_missing_model_configuration_short_circuits_before_model_and_invalid_evi
     def bad_verify(event):
         return Verification("verified", "bad", (EvidenceRef("invented", 1),))
 
-    with pytest.raises(ValueError, match="未输入的原始资料"):
-        run_discovery(documents=(document,), configuration=_configuration(), model=model, verify=bad_verify,
-                      metadata=_Metadata(), cutoff_at=NOW)
+    run = run_discovery(documents=(document,), configuration=_configuration(), model=model, verify=bad_verify,
+                        metadata=_Metadata(), cutoff_at=NOW)
+    assert run.state == "partial"
+    assert [(item.stage, item.code) for item in run.issues] == [("verify_or_map", "contract_invalid")]
 
 
 def test_uncalibrated_probability_is_rejected():
     document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
-    with pytest.raises(ValueError, match="未校准概率"):
-        run_discovery(documents=(document,), configuration=_configuration(), model=_Model(probability=True),
-                      verify=_verify, metadata=_Metadata(), cutoff_at=NOW)
+    run = run_discovery(documents=(document,), configuration=_configuration(), model=_Model(probability=True),
+                        verify=_verify, metadata=_Metadata(), cutoff_at=NOW)
+    assert run.state == "partial" and run.issues[0].stage == "compare"
 
 
 def test_event_comparison_is_single_complete_order_and_rejects_misaligned_roles():
@@ -204,9 +356,9 @@ def test_event_comparison_is_single_complete_order_and_rejects_misaligned_roles(
                 "gap": "不应独立判断", "rankChangeConditions": "资料", "twoDayReason": "催化"}, event.source_refs, rank=1)
             return EventComparison(result.summary, rows, result.evidence_refs)
 
-    with pytest.raises(ValueError, match="只能有一个主推"):
-        run_discovery(documents=(document,), configuration=_configuration(), model=Reversed(), verify=_verify,
-                      metadata=_Metadata(), cutoff_at=NOW)
+    rejected = run_discovery(documents=(document,), configuration=_configuration(), model=Reversed(), verify=_verify,
+                             metadata=_Metadata(), cutoff_at=NOW)
+    assert rejected.state == "partial" and rejected.issues[0].stage == "compare"
 
 
 @pytest.mark.parametrize("text", ["不输出涨停概率，无法估计涨停概率。", "不使用机械预测分数，只说明资料缺口。"])
@@ -250,9 +402,10 @@ def test_nested_positive_prediction_is_rejected_from_every_discovery_string(fiel
             return result
 
     document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
-    with pytest.raises(ValueError, match="未校准概率或机械预测分数"):
-        run_discovery(documents=(document,), configuration=_configuration(), model=Predicted(), verify=_verify,
-                      metadata=_Metadata(), cutoff_at=NOW)
+    run = run_discovery(documents=(document,), configuration=_configuration(), model=Predicted(), verify=_verify,
+                        metadata=_Metadata(), cutoff_at=NOW)
+    assert run.state == "partial"
+    assert run.issues and run.issues[0].code == "contract_invalid"
 
 
 def test_same_company_multiple_catalysts_share_quota_card_and_window(tmp_path):
@@ -319,9 +472,9 @@ def test_incomplete_company_comparison_cannot_be_formally_recommended():
         def compare_event(self, *, event, verification, mappings):
             return EventComparison("仅公司名单", {mappings[0].company_code: CandidateComparison("仅公司名单", {}, event.source_refs, 1)}, event.source_refs)
     document = DiscoveryDocument("doc-1", 1, NOW_TEXT, NOW_TEXT, "原文", None, {})
-    with pytest.raises(ValueError, match="主推"):
-        run_discovery(documents=(document,), configuration=_configuration(), model=Missing(),
-                      verify=_verify, metadata=_Metadata(), cutoff_at=NOW)
+    rejected = run_discovery(documents=(document,), configuration=_configuration(), model=Missing(),
+                             verify=_verify, metadata=_Metadata(), cutoff_at=NOW)
+    assert rejected.state == "partial" and rejected.issues[0].stage == "compare"
 
 
 def test_relationship_background_is_not_promoted_to_a_formal_alternative():

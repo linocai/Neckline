@@ -152,8 +152,8 @@ def test_v303_each_successful_response_records_its_own_actual_fetch_time():
     assert result.documents[0].fetched_at == _at(7, 21, 5)
 
 
-def test_v303_cli_worker_retry_reuses_frozen_input_after_source_then_model_failure(tmp_path):
-    """A source retry can never erase a prior frozen input before discovery finishes."""
+def test_v303_cli_worker_preserves_frozen_input_after_an_isolated_model_failure(tmp_path):
+    """One failed document leaves a partial frozen scan; it never re-collects its source."""
     path = tmp_path / "retry-worker.sqlite"
     initialize_schema(path)
     configuration = _configuration_for("fixture-source")
@@ -196,51 +196,30 @@ def test_v303_cli_worker_retry_reuses_frozen_input_after_source_then_model_failu
             self.documents.append(document)
             raise RuntimeError("model-timeout-after-source-frozen")
 
-    adapters = [Adapter(fail=False), Adapter(fail=True), Adapter(fail=True)]
-    first_model, second_model, third_model = FailingModel(), _VerifiedModel(), _VerifiedModel()
-    models = [first_model, second_model, third_model]
-    attempts = {"count": 0}
+    adapter = Adapter(fail=False)
+    first_model = FailingModel()
 
     def handler(context):
-        index = attempts["count"]
-        attempts["count"] += 1
         frozen = store.read_run_config(config_id=context.task.payload["configId"],
                                        revision=context.task.payload["configRevision"], db_path=context.db_path)
         return execute_scan(
             kind="evening", cutoff_at=datetime.fromisoformat(context.input_cutoff_at), configuration=frozen["payload"],
-            db_path=context.db_path, adapter=adapters[index], model=models[index], metadata=_Metadata(),
-            created_at=_at(7, 21, 5) + timedelta(minutes=index),
-            completed_at=_at(7, 21, 5) + timedelta(minutes=index),
+            db_path=context.db_path, adapter=adapter, model=first_model, metadata=_Metadata(),
+            created_at=_at(7, 21, 5), completed_at=_at(7, 21, 5),
             bootstrap_cutoff=context.task.payload.get("sourceBootstrapCutoff"), scan_identity=context.task.task_id,
             verification_gateway=_FixtureVerificationGateway(),
         )
 
     first = run_once(db_path=path, worker_id="worker", lease_for=timedelta(minutes=5),
                      handlers={"evening_scan": handler}, clock=lambda: _at(7, 21, 10), task_id=task_id)
-    assert first.status == "failed"
+    assert first.status == "completed"
     scan = next(item for item in store.list_scans(window_kind="evening", db_path=path) if item["scanId"].startswith("scan_"))
     frozen_refs = scan["coverage"]["inputDocumentRefs"]
     assert scan["coverage"]["inputSnapshotFrozen"] is True and frozen_refs
-    assert adapters[0].calls == 1 and len(first_model.documents) == 1
-
-    store.retry_task(task_id=task_id, expected_attempt_count=first.attempt_count,
-                     retried_at="2026-09-07T21:20:00+08:00", db_path=path)
-    second = run_once(db_path=path, worker_id="worker", lease_for=timedelta(minutes=5),
-                      handlers={"evening_scan": handler}, clock=lambda: _at(7, 21, 21), task_id=task_id)
-    assert second.status == "completed"
-    repaired = store.get_scan(scan_id=scan["scanId"], db_path=path)
-    assert repaired["coverage"]["inputSnapshotFrozen"] is True
-    assert repaired["coverage"]["inputDocumentRefs"] == frozen_refs
-    assert adapters[1].calls == 0  # a temporary source failure cannot replace frozen evidence
-    assert len(store.list_candidates(scan_id=scan["scanId"], state="offered", db_path=path)) == 1
-    assert len(store.list_publication_batches(db_path=path)) == 1
-
-    replay = execute_scan(
-        kind="evening", cutoff_at=_at(7, 21), configuration=configuration, db_path=path,
-        adapter=adapters[2], model=third_model, metadata=_Metadata(), created_at=_at(7, 21, 30),
-        completed_at=_at(7, 21, 30), scan_identity=task_id,
-        verification_gateway=_FixtureVerificationGateway(),
-    )
-    assert replay.status == "completed" and replay.stage == "scan_replayed"
-    assert adapters[2].calls == 0
+    assert adapter.calls == 1 and len(first_model.documents) == 1
+    partial = store.get_scan(scan_id=scan["scanId"], db_path=path)
+    assert partial is not None and partial["status"] == "partial"
+    assert partial["coverage"]["inputDocumentRefs"] == frozen_refs
+    # A partial scan can still publish completed candidates; here it records an explicit
+    # empty partial batch instead of silently claiming that no source item existed.
     assert len(store.list_publication_batches(db_path=path)) == 1

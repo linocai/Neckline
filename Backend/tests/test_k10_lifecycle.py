@@ -43,7 +43,7 @@ def _input(candidate_id: str, event_id: str, *, key: str, company: str = "300001
 def test_schema_v1_migrates_to_v2_without_partial_tables(tmp_path):
     path=tmp_path/"v1.sqlite"
     initialize_schema(path)
-    assert schema_version(path) == 3
+    assert schema_version(path) == 4
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
@@ -56,9 +56,9 @@ def test_existing_v1_schema_forwards_to_v2_in_one_controlled_transaction(tmp_pat
         conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
         schema._apply_v1(conn)
         conn.execute("INSERT INTO k10_schema_migrations VALUES(1,'2026-09-01T00:00:00+00:00')")
-    assert initialize_schema(path) == 3
+    assert initialize_schema(path) == 4
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (3,)
+        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (4,)
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
 

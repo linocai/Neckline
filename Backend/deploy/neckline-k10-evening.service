@@ -13,4 +13,4 @@ EnvironmentFile=/etc/neckline/k10.env
 # It is a fetch start, never a success watermark.  Once a real successful source
 # watermark exists runtime ignores this value, so no manual cleanup is needed.
 # An omitted first-start value stays auditable as source_bootstrap/not_configured.
-ExecStart=/bin/sh -c 'set -- "$K10_PYTHON" -m neckline.k10.cli enqueue --db "$K10_DB_PATH" --kind evening --trading-day "$(TZ=Asia/Shanghai /bin/date +%%F)" --config-id "$K10_CONFIG_ID" --config-revision "$K10_CONFIG_REVISION"; if [ -n "${K10_INITIAL_BOOTSTRAP_CUTOFF:-}" ]; then set -- "$@" --bootstrap-cutoff "$K10_INITIAL_BOOTSTRAP_CUTOFF"; fi; exec "$@"'
+ExecStart=/bin/sh -c 'set -- "$K10_PYTHON" -m neckline.k10.cli enqueue --db "$K10_DB_PATH" --kind evening --trading-day "$(TZ=Asia/Shanghai /bin/date +%%F)" --config-id "$K10_CONFIG_ID" --config-revision "$K10_CONFIG_REVISION" --execution-config-id "$K10_EXECUTION_CONFIG_ID" --execution-config-revision "$K10_EXECUTION_CONFIG_REVISION"; if [ -n "${K10_INITIAL_BOOTSTRAP_CUTOFF:-}" ]; then set -- "$@" --bootstrap-cutoff "$K10_INITIAL_BOOTSTRAP_CUTOFF"; fi; exec "$@"'

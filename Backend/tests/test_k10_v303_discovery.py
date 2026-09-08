@@ -338,8 +338,11 @@ def test_positive_limit_probability_word_orders_are_rejected(text):
         )}, event.source_refs)
 
     model.compare_event = compare_event  # type: ignore[method-assign]
-    with pytest.raises(ValueError, match="未校准概率"):
-        _run(model=model)
+    # Build 36 quarantines one malformed model comparison instead of throwing
+    # away unrelated documents/events in the same scan.
+    run = _run(model=model)
+    assert run.state == "partial"
+    assert any(issue.stage == "compare" and issue.code == "contract_invalid" for issue in run.issues)
 
 
 def test_explicit_probability_refusal_remains_allowed():

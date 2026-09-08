@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from neckline.k10 import store
 from neckline.k10.notifications import (
     DeliveryResult,
     NotificationConflict,
+    NotificationRetryPolicy,
     NotificationSchemaUnavailable,
     dispatch_task_notifications,
     enqueue_task_notification,
@@ -25,6 +27,7 @@ from neckline.k10.windows import SHANGHAI
 
 
 NOW = datetime(2026, 9, 6, 13, 0, tzinfo=timezone.utc)
+TEST_RETRY_POLICY = NotificationRetryPolicy(timedelta(seconds=30), timedelta(minutes=15))
 
 
 def test_worker_maintenance_recovers_missing_terminal_hook_and_uses_device_preferences(tmp_path, monkeypatch):
@@ -32,6 +35,7 @@ def test_worker_maintenance_recovers_missing_terminal_hook_and_uses_device_prefe
     from neckline.k10 import notification_runtime
     from neckline.push.apns import PushResult
     db = _db(tmp_path)
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=True, code="ready"))
     _finish_task(db)
     upsert_device("synthetic-device", db_path=db)
     calls = []
@@ -55,6 +59,7 @@ def test_disabled_notification_never_calls_apns(tmp_path, monkeypatch):
     from neckline.settings_store import set_push_kinds
     from neckline.notify_kinds import ALL_KINDS
     db = _db(tmp_path)
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=True, code="ready"))
     _finish_task(db)
     upsert_device("synthetic-device", db_path=db)
     set_push_kinds({kind: False for kind in ALL_KINDS}, db_path=db)
@@ -185,7 +190,7 @@ def test_terminal_hook_is_idempotent_and_payload_is_whitelisted(tmp_path: Path):
 
     assert dispatch_task_notifications(
         db_path=db_path, list_device_tokens=lambda: ("device-a", "device-a"), delete_device=lambda _: False,
-        sender=sender, worker_id="push-worker", now=NOW + timedelta(minutes=2),
+        sender=sender, worker_id="push-worker", now=NOW + timedelta(minutes=2), retry_policy=TEST_RETRY_POLICY,
     ) == 1
     assert sent == [("device-a", first.notification_id)]
     assert get_notification(notification_id=first.notification_id, db_path=db_path).status == "sent"
@@ -196,6 +201,7 @@ def test_real_company_window_analysis_task_produces_only_v14_push_ids(tmp_path, 
     from neckline.k10 import notification_runtime
 
     db_path = _db(tmp_path)
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=True, code="ready"))
     company_window_id, opportunity_id = _finish_real_window_analysis_task(db_path)
     upsert_device("synthetic-device", db_path=db_path)
     calls = []
@@ -234,7 +240,7 @@ def test_legacy_queued_and_expired_sending_rows_are_normalized_only_at_push_boun
     assert dispatch_task_notifications(
         db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
         sender=lambda **kwargs: outbound.append((kwargs["deep_link"], kwargs["body"])) or DeliveryResult(ok=True),
-        worker_id="push-worker", now=NOW + timedelta(minutes=2),
+        worker_id="push-worker", now=NOW + timedelta(minutes=2), retry_policy=TEST_RETRY_POLICY,
     ) == 2
     assert [deep_link for deep_link, _body in outbound] == [{"scanId": "scan-1"}, {"scanId": "scan-1"}]
     assert all("observationId" not in deep_link and "companyCandidateId" not in deep_link for deep_link, _body in outbound)
@@ -318,7 +324,7 @@ def test_transient_delivery_retries_and_invalid_token_is_removed(tmp_path: Path)
 
     common = dict(
         db_path=db_path, list_device_tokens=lambda: tuple(devices), delete_device=delete_device,
-        sender=flaky_sender, worker_id="push-worker",
+        sender=flaky_sender, worker_id="push-worker", retry_policy=TEST_RETRY_POLICY,
     )
     assert dispatch_task_notifications(**common, now=NOW + timedelta(minutes=2)) == 1
     assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "queued"
@@ -336,6 +342,7 @@ def test_no_devices_marks_the_logical_notification_sent(tmp_path: Path):
     assert dispatch_task_notifications(
         db_path=db_path, list_device_tokens=lambda: (), delete_device=lambda _: False,
         sender=lambda **_: pytest.fail("no device means no APNs call"), worker_id="push-worker", now=NOW + timedelta(minutes=2),
+        retry_policy=TEST_RETRY_POLICY,
     ) == 1
     assert notification.kind == "k10_morning"
     assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "sent"
@@ -355,6 +362,7 @@ def test_crash_recovery_reuses_stable_collapse_id(tmp_path: Path):
         dispatch_task_notifications(
             db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
             sender=crashed_sender, worker_id="push-worker", now=NOW + timedelta(minutes=2), lease_for=timedelta(seconds=5),
+            retry_policy=TEST_RETRY_POLICY,
         )
 
     def recovered_sender(**kwargs):
@@ -364,6 +372,7 @@ def test_crash_recovery_reuses_stable_collapse_id(tmp_path: Path):
     assert dispatch_task_notifications(
         db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
         sender=recovered_sender, worker_id="recovery-worker", now=NOW + timedelta(minutes=3), lease_for=timedelta(seconds=5),
+        retry_policy=TEST_RETRY_POLICY,
     ) == 1
     assert collapse_ids == [notification.notification_id, notification.notification_id]
     assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "sent"
@@ -380,3 +389,145 @@ def test_read_does_not_create_notification_schema(tmp_path: Path):
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='k10_task_notifications'"
         ).fetchone() is None
+
+
+def test_missing_apns_blocks_without_attempt_then_recovers(tmp_path, monkeypatch):
+    from neckline.api.stores import upsert_device
+    from neckline.k10 import notification_runtime
+
+    db_path = _db(tmp_path)
+    _finish_task(db_path)
+    notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    upsert_device("synthetic-device", db_path=db_path)
+    calls: list[object] = []
+    monkeypatch.setattr(notification_runtime, "send_push", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=False, code="key_unreadable"))
+    maintain = notification_runtime.create_notification_maintenance(db_path=db_path, worker_id="fixture-worker")
+
+    maintain(); maintain()
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT attempt_count,next_attempt_at,blocked_reason FROM k10_task_notifications WHERE notification_id=?",
+                           (notification.notification_id,)).fetchone()
+    assert row == (0, None, "key_unreadable")
+    health = notification_runtime.notification_readiness(db_path=db_path, now=NOW)
+    assert health.state == "blocked" and health.reason_code == "key_unreadable"
+    assert calls == []
+
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=True, code="ready"))
+    monkeypatch.setattr(notification_runtime, "send_push", lambda *a, **k: calls.append((a, k)) or type("Result", (), {"ok": True, "reason": "ok"})())
+    maintain()
+    assert len(calls) == 1
+    assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "sent"
+
+
+def test_configuration_recovery_releases_only_bounded_outbox_batch(tmp_path, monkeypatch):
+    from neckline.api.stores import upsert_device
+    from neckline.k10 import notification_runtime
+
+    db_path = _db(tmp_path)
+    notifications = []
+    for index in range(5):
+        task_id = f"task-{index}"
+        _finish_task(db_path, task_id=task_id)
+        notifications.append(enqueue_task_notification(task_id=task_id, db_path=db_path, created_at=NOW))
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE k10_task_notifications SET attempt_count=20448 WHERE notification_id=?",
+                     (notifications[0].notification_id,))
+    upsert_device("synthetic-device", db_path=db_path)
+    sent: list[object] = []
+    monkeypatch.setattr(notification_runtime, "send_push", lambda *a, **k: sent.append((a, k)) or type("Result", (), {"ok": True, "reason": "ok"})())
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=False, code="key_unreadable"))
+    maintain = notification_runtime.create_notification_maintenance(db_path=db_path, worker_id="fixture-worker")
+    maintain()
+    assert sent == []
+
+    monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=True, code="ready"))
+    maintain()
+    assert len(sent) == 4  # recovery never drains an accumulated backlog in one worker tick
+    maintain()
+    assert len(sent) == 5
+
+
+def test_transient_backoff_is_persisted_and_capped_for_large_legacy_attempt_count(tmp_path: Path):
+    db_path = _db(tmp_path)
+    _finish_task(db_path)
+    notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE k10_task_notifications SET attempt_count=20448 WHERE notification_id=?", (notification.notification_id,))
+    sender = lambda **_: DeliveryResult(ok=False, reason="network unavailable")
+    assert dispatch_task_notifications(
+        db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
+        sender=sender, worker_id="push-worker", now=NOW, retry_policy=TEST_RETRY_POLICY,
+    ) == 1
+    with sqlite3.connect(db_path) as conn:
+        retry_at, error, attempts = conn.execute(
+            "SELECT next_attempt_at,last_error,attempt_count FROM k10_task_notifications WHERE notification_id=?",
+            (notification.notification_id,),
+        ).fetchone()
+    assert error == "delivery_retry_needed" and attempts == 20449
+    assert datetime.fromisoformat(retry_at) == NOW + timedelta(minutes=15)
+    assert dispatch_task_notifications(
+        db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
+        sender=sender, worker_id="push-worker", now=NOW + timedelta(minutes=14, seconds=59), retry_policy=TEST_RETRY_POLICY,
+    ) == 0
+
+
+def test_v1_outbox_migration_preserves_queued_row_and_marks_it_due(tmp_path: Path):
+    from neckline.k10 import notifications as notification_module
+
+    db_path = tmp_path / "v1.sqlite3"
+    initialize_schema(db_path)
+    _finish_task(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(notification_module._V1)
+        conn.execute("INSERT INTO k10_notification_schema_migrations(version,applied_at) VALUES(1,?)", (_stamp(),))
+        conn.execute(
+            "INSERT INTO k10_task_notifications(notification_id,idempotency_key,task_id,task_attempt_count,kind,terminal_status,"
+            "title,body,deep_link_json,status,attempt_count,last_error,lease_owner,lease_until,created_at,updated_at) "
+            "VALUES('old-notification','old-key','task-1',1,'k10_analysis','completed','t','b','{}','queued',7,NULL,NULL,NULL,?,?)",
+            (_stamp(), _stamp()),
+        )
+    assert initialize_notifications_schema(db_path, applied_at=NOW) == 2
+    with sqlite3.connect(db_path) as conn:
+        version = conn.execute("SELECT MAX(version) FROM k10_notification_schema_migrations").fetchone()[0]
+        row = conn.execute("SELECT attempt_count,next_attempt_at,blocked_reason FROM k10_task_notifications WHERE notification_id='old-notification'").fetchone()
+    assert version == 2 and row == (7, _stamp(), None)
+
+
+def test_api_and_worker_startup_gate_main_schema_and_notification_schema(tmp_path, monkeypatch):
+    """A release must not start an API/worker on main schema 4 with stale notification schema."""
+    import dataclasses
+    from fastapi.testclient import TestClient
+    import neckline.api.app as app_module
+    import neckline.api.deps as deps_module
+    from neckline.config import Settings
+    from neckline.db import init_schema
+
+    db_path = tmp_path / "startup-gate.sqlite"
+    isolated = dataclasses.replace(Settings(tushare_token=None), api_token="test-api-token-1234", db_path=db_path)
+    monkeypatch.setattr(app_module, "_DB_PATH_OVERRIDE", db_path)
+    monkeypatch.setattr(deps_module, "settings", isolated)
+    init_schema(db_path)
+    initialize_schema(db_path)
+
+    with pytest.raises(NotificationSchemaUnavailable):
+        with TestClient(app_module.app):
+            pass
+
+    initialize_notifications_schema(db_path)
+    with TestClient(app_module.app) as client:
+        assert client.get("/api/v1/health").status_code == 200
+
+
+def test_delivery_runtime_config_is_explicit_and_reports_missing_file(tmp_path, monkeypatch):
+    from neckline.k10 import notification_runtime
+
+    config = notification_runtime.load_notification_delivery_config()
+    assert config.retry_policy.initial_delay == timedelta(seconds=30)
+    assert config.retry_policy.maximum_delay == timedelta(minutes=15)
+    assert config.dispatch_batch_size == 4
+
+    db_path = _db(tmp_path)
+    monkeypatch.setattr(notification_runtime, "_NOTIFICATION_RUNTIME_CONFIG_PATH", tmp_path / "missing.json")
+    state = notification_runtime.notification_readiness(db_path=db_path, now=NOW)
+    assert state.state == "notConfigured" and state.reason_code == "notification_runtime_config_missing"

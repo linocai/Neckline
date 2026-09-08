@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from neckline.k10 import SchemaUnavailable, validate_run_config
+from neckline.k10 import SchemaUnavailable, validate_execution_config, validate_run_config
 from neckline.k10 import store
 from neckline.k10.market_context import MarketContextError, collect_market_context
 from neckline.k10.evaluation import EvaluationInputError, evaluate_company_window, evaluation_state
@@ -44,6 +44,7 @@ from .k10_schemas import (
     ConfigurationScopeOut,
     EvaluationMetricsOut,
     Evidence,
+    ExecutionProgressOut,
     HistoricalCaseOut,
     HistoricalCoverageOut,
     JobOut,
@@ -57,6 +58,7 @@ from .k10_schemas import (
     OpportunityDetail,
     OpportunityListOut,
     OpportunityOut,
+    OperationsReadinessOut,
     PageMeta,
     PublicationListOut,
     PublicationOut,
@@ -81,6 +83,7 @@ from .k10_schemas import (
 DbPathProvider = Callable[[], Path]
 TokenDependency = Callable[..., None]
 CurrentConfigBindingProvider = Callable[[], tuple[str | None, int | None, str | None]]
+CurrentExecutionConfigBindingProvider = Callable[[], tuple[str | None, int | None, str | None]]
 
 
 def _now() -> str:
@@ -944,7 +947,8 @@ def _analysis_chain(path: Path, company_window_id: str) -> AnalysisChainOut:
 
 def create_router(db_path_provider: DbPathProvider, require_token_dependency: TokenDependency,
                   parquet_dir_provider: Callable[[], Path],
-                  current_config_binding_provider: CurrentConfigBindingProvider | None = None) -> APIRouter:
+                  current_config_binding_provider: CurrentConfigBindingProvider | None = None,
+                  current_execution_config_binding_provider: CurrentExecutionConfigBindingProvider | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/v1/k10", tags=["k10"], dependencies=[Depends(require_token_dependency)])
 
     def db_path() -> Path:
@@ -983,6 +987,22 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             return None, None, "未绑定 K10_CONFIG_ID"
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
             return None, None, "未绑定有效的 K10_CONFIG_REVISION"
+        return config_id.strip(), revision, None
+
+    def current_execution_config_binding() -> tuple[str | None, int | None, str | None]:
+        """Read the deployed execution profile only; scans and latest rows are never fallbacks."""
+        if current_execution_config_binding_provider is None:
+            return None, None, "未绑定 K10_EXECUTION_CONFIG_ID/K10_EXECUTION_CONFIG_REVISION"
+        try:
+            config_id, revision, binding_error = current_execution_config_binding_provider()
+        except Exception:
+            return None, None, "当前执行配置绑定不可读取"
+        if binding_error:
+            return None, None, str(binding_error)
+        if not isinstance(config_id, str) or not config_id.strip():
+            return None, None, "未绑定 K10_EXECUTION_CONFIG_ID"
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            return None, None, "未绑定有效的 K10_EXECUTION_CONFIG_REVISION"
         return config_id.strip(), revision, None
 
     @router.get("/scans/latest", response_model=ScanOut)
@@ -1278,17 +1298,51 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                   if config_id is not None and revision is not None and binding_error is None else None)
         if config is None and binding_error is None:
             binding_error = "K10_CONFIG_ID/K10_CONFIG_REVISION 指向的配置修订不存在"
+        execution_id, execution_revision, execution_binding_error = current_execution_config_binding()
+        execution_config = (store.read_execution_config(config_id=execution_id, revision=execution_revision, db_path=path)
+                            if execution_id is not None and execution_revision is not None and execution_binding_error is None else None)
+        if execution_config is None and execution_binding_error is None:
+            execution_binding_error = "K10_EXECUTION_CONFIG_ID/K10_EXECUTION_CONFIG_REVISION 指向的执行配置修订不存在"
         scopes = []
         for scope in ("candidate", "analysis", "evaluation"):
             if binding_error is not None:
                 missing = (["K10_CONFIG_ID", "K10_CONFIG_REVISION"]
                            if config_id is None or revision is None else [])
+                errors = [binding_error]
+                if scope == "candidate" and execution_binding_error is not None:
+                    if execution_id is None or execution_revision is None:
+                        missing.extend(["K10_EXECUTION_CONFIG_ID", "K10_EXECUTION_CONFIG_REVISION"])
+                    errors.append(execution_binding_error)
                 scopes.append(ConfigurationScopeOut(scope=scope, state="not_configured", missing=missing,
-                                                    errors=[binding_error]))
+                                                    errors=errors))
                 continue
             result = validate_run_config(config["payload"], scope=scope)
-            scopes.append(ConfigurationScopeOut(scope=scope, state="configured" if result.ready else "not_configured", missing=list(result.missing), errors=list(result.errors)))
+            missing, errors = list(result.missing), list(result.errors)
+            if scope == "candidate":
+                if execution_binding_error is not None:
+                    if execution_id is None or execution_revision is None:
+                        missing.extend(["K10_EXECUTION_CONFIG_ID", "K10_EXECUTION_CONFIG_REVISION"])
+                    errors.append(execution_binding_error)
+                else:
+                    execution_result = validate_execution_config(execution_config["payload"])
+                    missing.extend(execution_result.missing)
+                    errors.extend(execution_result.errors)
+            scopes.append(ConfigurationScopeOut(scope=scope, state="configured" if not missing and not errors else "not_configured", missing=missing, errors=errors))
         return ConfigurationOut(configId=config["configId"] if config else None, configRevision=config["revision"] if config else None, scopes=scopes)
+
+    @router.get("/operations/readiness", response_model=OperationsReadinessOut)
+    def operations_readiness() -> OperationsReadinessOut:
+        # This is intentionally a read-only health projection.  It must not
+        # initialize notification tables, talk to APNs or reveal credential paths.
+        from neckline.k10.notification_runtime import notification_readiness
+
+        readiness = notification_readiness(db_path=db_path())
+        return OperationsReadinessOut(notificationReadiness={
+            "state": readiness.state,
+            "reasonCode": readiness.reason_code,
+            "nextRetryAt": readiness.next_retry_at,
+            "checkedAt": readiness.checked_at,
+        })
 
     return router
 
@@ -1338,6 +1392,15 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
     if coverage_status in {"completed", "complete"} and time_partial:
         coverage_status = "partial"
     publication = next((item for item in publications if item["scanId"] == value["scanId"]), None)
+    progress = store.execution_progress_for_scan(scan_id=str(value["scanId"]), db_path=path)
+    # The store deliberately carries taskId for local correlation.  That is
+    # not a reader-facing progress field; expose only the safe aggregate DTO.
+    progress_out = (ExecutionProgressOut.model_validate({
+        key: progress[key] for key in (
+            "state", "stage", "documentCounts", "eventCounts", "coverageStatus", "nextRetryAt",
+            "safeFailures", "strategyBinding", "executionBinding",
+        ) if key in progress
+    }) if isinstance(progress, Mapping) else None)
     return ScanOut(scanId=str(value["scanId"]), window=str(value["windowKind"]), cutoffAt=str(value["cutoffAt"]), status=str(value["status"]),
                    coverageStatus=coverage_status, coverageGaps=[str(item) for item in gaps],
                    sourceCoverage=_source_coverage_outcomes(outcomes, path=path),
@@ -1345,7 +1408,8 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
                    publicationStatus="published" if publication else "not_published",
                    publicationBatchId=publication["batchId"] if publication else None,
                    availableAt=publication["availableAt"] if publication else None, configId=value.get("configId"),
-                   configRevision=value.get("configRevision"), createdAt=str(value["createdAt"]), completedAt=value.get("completedAt"))
+                   configRevision=value.get("configRevision"), createdAt=str(value["createdAt"]), completedAt=value.get("completedAt"),
+                   executionProgress=progress_out)
 
 
 def _company_window(value: Mapping[str, Any], company_name: str | None, opportunities: list[OpportunityOut], samples: list[PublicationSampleOut],

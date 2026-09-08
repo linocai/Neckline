@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from neckline import config as runtime_config
-from neckline.k10.config import validate_run_config
+from neckline.k10.config import validate_execution_config, validate_run_config
 
 
 def _base() -> dict:
@@ -22,6 +22,17 @@ def test_v14_pack_is_ready_for_all_live_scopes_with_no_cost_cap():
         assert validate_run_config(payload,scope=scope).ready
     assert set(payload["modelRoutes"].values()) == {"deepseek-v4-pro"}
     assert all(item["costLimit"] is None for item in payload["taskPolicies"].values())
+
+
+def test_execution_pack_is_explicit_and_ready_without_strategy_defaults():
+    payload = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    assert validate_execution_config(payload).ready
+    discovery = payload["discovery"]
+    assert discovery["documentBatchSize"] == 24
+    assert discovery["understandConcurrency"] == 12
+    assert discovery["modelOptions"]["understand"]["maxTokens"] == 8192
+    payload["discovery"]["understandConcurrency"] = 0
+    assert not validate_execution_config(payload).ready
 
 
 def test_v14_rejects_removed_price_route_and_any_extra_hard_rule():
@@ -76,3 +87,10 @@ def test_environment_config_binding_is_explicit_and_rejects_illegal_revision(mon
     assert invalid.k10_config_id == "k10-production"
     assert invalid.k10_config_revision is None
     assert invalid.k10_config_binding_error == "K10_CONFIG_REVISION 必须是正整数"
+
+    monkeypatch.setenv("K10_EXECUTION_CONFIG_ID", "execution-production")
+    monkeypatch.setenv("K10_EXECUTION_CONFIG_REVISION", "1")
+    execution = runtime_config._load_settings()
+    assert execution.k10_execution_config_id == "execution-production"
+    assert execution.k10_execution_config_revision == 1
+    assert execution.k10_execution_config_binding_error is None

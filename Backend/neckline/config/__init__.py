@@ -57,6 +57,11 @@ class Settings:
     k10_config_id: Optional[str] = None
     k10_config_revision: Optional[int] = None
     k10_config_binding_error: Optional[str] = None
+    # Operational profile is a distinct immutable binding.  It governs recovery
+    # mechanics only and must never be mistaken for a K10 strategy revision.
+    k10_execution_config_id: Optional[str] = None
+    k10_execution_config_revision: Optional[int] = None
+    k10_execution_config_binding_error: Optional[str] = None
 
     @property
     def has_api_token(self) -> bool:
@@ -103,12 +108,18 @@ def _load_settings() -> Settings:
     k10_config_revision, k10_config_binding_error = _positive_int(
         os.environ.get("K10_CONFIG_REVISION"), name="K10_CONFIG_REVISION"
     )
+    k10_execution_config_revision, k10_execution_config_binding_error = _positive_int(
+        os.environ.get("K10_EXECUTION_CONFIG_REVISION"), name="K10_EXECUTION_CONFIG_REVISION"
+    )
 
     return Settings(
         tushare_token=_clean(os.environ.get("TUSHARE_TOKEN")),
         k10_config_id=_clean(os.environ.get("K10_CONFIG_ID")),
         k10_config_revision=k10_config_revision,
         k10_config_binding_error=k10_config_binding_error,
+        k10_execution_config_id=_clean(os.environ.get("K10_EXECUTION_CONFIG_ID")),
+        k10_execution_config_revision=k10_execution_config_revision,
+        k10_execution_config_binding_error=k10_execution_config_binding_error,
         db_path=db_path,
         parquet_dir=parquet_dir,
         api_token=_clean(os.environ.get("API_TOKEN")),

@@ -26,6 +26,7 @@ _SCOPES = {
 _K10_MODEL_TASKS = ("discovery", "analysis", "morning")
 _DEEPSEEK_V4_PRO = "deepseek-v4-pro"
 _ROUTE_REQUIRED_BY_SCOPE = {"discovery": "discovery", "analysis": "analysis", "morning": "morning"}
+_EXECUTION_STAGES = ("understand", "verify", "companyComparison", "prioritize")
 
 
 def _present(value: Any) -> bool:
@@ -130,4 +131,64 @@ def validate_run_config(payload: Mapping[str, Any] | None, *, scope: str) -> Con
     return ConfigurationStatus("not_configured", tuple(missing), tuple(errors)) if missing or errors else ConfigurationStatus("configured", (), ())
 
 
-__all__=["ConfigurationStatus","validate_run_config"]
+def validate_execution_config(payload: Mapping[str, Any] | None) -> ConfigurationStatus:
+    """Validate an operational profile without changing a frozen K10 strategy pack.
+
+    There are intentionally no code defaults here.  Every field which can alter
+    throughput, retry consumption or model reasoning must be bound to the task.
+    """
+    required = ("executionVersion", "discovery")
+    if not isinstance(payload, Mapping):
+        return ConfigurationStatus("not_configured", required, ("缺少执行配置包",))
+    missing = tuple(key for key in required if not _present(payload.get(key)))
+    errors: list[str] = []
+    if payload.get("executionVersion") != "k10-execution-v1":
+        errors.append("executionVersion 必须是 k10-execution-v1")
+    if set(payload) != set(required):
+        errors.append("执行配置只能包含 executionVersion 与 discovery")
+    discovery = payload.get("discovery")
+    expected = {"documentBatchSize", "understandConcurrency", "keyPassageMaxCharacters",
+                "networkMaxAttempts", "jsonRepairMaxAttempts", "retryBackoffSeconds",
+                "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions"}
+    if not isinstance(discovery, Mapping) or set(discovery) != expected:
+        errors.append("discovery 执行配置字段不完整或包含未知字段")
+    else:
+        for name in ("documentBatchSize", "understandConcurrency", "keyPassageMaxCharacters",
+                     "networkMaxAttempts", "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds"):
+            value = discovery[name]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                errors.append(f"discovery.{name} 必须是正整数")
+        repairs = discovery["jsonRepairMaxAttempts"]
+        if isinstance(repairs, bool) or not isinstance(repairs, int) or repairs < 0:
+            errors.append("discovery.jsonRepairMaxAttempts 必须是非负整数")
+        backoff = discovery["retryBackoffSeconds"]
+        if (not isinstance(backoff, list) or not backoff or
+            any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in backoff) or
+            any(later <= earlier for earlier, later in zip(backoff, backoff[1:]))):
+            errors.append("discovery.retryBackoffSeconds 必须是严格递增的正整数列表")
+        options = discovery["modelOptions"]
+        if not isinstance(options, Mapping) or set(options) != set(_EXECUTION_STAGES):
+            errors.append("discovery.modelOptions 必须逐项声明 understand、verify、companyComparison、prioritize")
+        else:
+            for stage in _EXECUTION_STAGES:
+                option = options[stage]
+                if not isinstance(option, Mapping) or not {"maxTokens", "thinking"} <= set(option):
+                    errors.append(f"discovery.modelOptions.{stage} 必须包含 maxTokens 与 thinking")
+                    continue
+                max_tokens = option["maxTokens"]
+                if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+                    errors.append(f"discovery.modelOptions.{stage}.maxTokens 必须是正整数")
+                thinking = option["thinking"]
+                thinking_type = thinking.get("type") if isinstance(thinking, Mapping) else None
+                if not isinstance(thinking_type, str) or thinking_type not in {"disabled", "enabled"}:
+                    errors.append(f"discovery.modelOptions.{stage}.thinking.type 必须为 disabled 或 enabled")
+                elif thinking_type == "disabled":
+                    if set(thinking) != {"type"} or set(option) != {"maxTokens", "thinking"}:
+                        errors.append(f"discovery.modelOptions.{stage}.thinking disabled 时不能附带推理强度")
+                elif (set(thinking) != {"type"} or set(option) != {"maxTokens", "thinking", "reasoningEffort"} or
+                      not isinstance(option.get("reasoningEffort"), str) or option.get("reasoningEffort") not in {"low", "high", "max"}):
+                    errors.append(f"discovery.modelOptions.{stage}.thinking enabled 时必须明确 reasoningEffort")
+    return ConfigurationStatus("not_configured", missing, tuple(errors)) if missing or errors else ConfigurationStatus("configured", (), ())
+
+
+__all__=["ConfigurationStatus","validate_execution_config","validate_run_config"]

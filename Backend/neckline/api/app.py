@@ -18,13 +18,14 @@ from neckline.api.schemas import (
 from neckline.api.stores import upsert_device
 from neckline.config import settings
 from neckline.k10.schema import read_connection, require_schema
+from neckline.k10.notifications import require_notifications_schema
 from neckline.settings_store import (
     create_provider, delete_provider, get_app_settings, get_tavily_api_key, list_providers_public,
     set_push_kinds, set_tavily_api_key, update_provider,
 )
 
 VERSION = "v3.0.4"
-RELEASE_SET = "v3.0.4-b35"
+RELEASE_SET = "v3.0.4-b36"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
     # the API never runs a scan, starts a background model or mutates a database.
     with read_connection(_db()) as connection:
         require_schema(connection)
+    require_notifications_schema(_db())
     yield
 
 
@@ -50,6 +52,11 @@ app.include_router(create_k10_router(db_path_provider=_db, require_token_depende
                                          settings.k10_config_id,
                                          settings.k10_config_revision,
                                          settings.k10_config_binding_error,
+                                     ),
+                                     current_execution_config_binding_provider=lambda: (
+                                         settings.k10_execution_config_id,
+                                         settings.k10_execution_config_revision,
+                                         settings.k10_execution_config_binding_error,
                                      )))
 
 

@@ -1,6 +1,8 @@
 """Regression coverage for the Build 35 read contract."""
 from __future__ import annotations
 
+from hashlib import sha256
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -82,6 +84,7 @@ def test_v304_scan_and_lifecycle_hydrate_time_uncertainty_and_independent_eviden
         scan = client.get("/api/v1/k10/scans/scan-v304-coverage")
         detail = client.get("/api/v1/k10/opportunities/" + ids["withdrawnOpportunityId"])
     assert scan.status_code == detail.status_code == 200
+    assert scan.json()["executionProgress"] is None, "旧扫描没有新检查点时不能伪造零进度"
     source = scan.json()["sourceCoverage"][0]
     assert scan.json()["coverageStatus"] == "partial"
     assert source["timeCoverage"] == "partial"
@@ -98,6 +101,81 @@ def test_v304_scan_and_lifecycle_hydrate_time_uncertainty_and_independent_eviden
         "doc-v304-morning", "doc-v304-independent"
     }
     assert {ref["documentId"] for ref in withdrawal["independentVerificationRefs"]} == {"doc-v304-independent"}
+
+
+def test_operations_readiness_is_read_only_and_only_returns_safe_notification_codes(tmp_path):
+    from tests.k10_v304_fixture import build_fixture
+
+    path = tmp_path / "operations-readiness.sqlite"
+    build_fixture(path)
+    before = sha256(path.read_bytes()).hexdigest()
+    with _client(path, tmp_path) as client:
+        response = client.get("/api/v1/k10/operations/readiness")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    readiness = body["notificationReadiness"]
+    assert body["schemaVersion"] == "k10-api-v2"
+    assert readiness["state"] in {"ready", "blocked", "notConfigured"}
+    assert readiness["reasonCode"] in {
+        None, "credentials_missing", "key_unreadable", "key_invalid",
+        "notification_schema_unavailable", "delivery_blocked",
+    }
+    assert "AuthKey" not in str(body) and "/" not in str(body)
+    assert sha256(path.read_bytes()).hexdigest() == before
+
+
+def test_scan_projects_sanitized_resumable_progress_without_task_or_provider_details(tmp_path):
+    from tests.k10_v304_fixture import build_fixture
+
+    path = tmp_path / "execution-progress.sqlite"
+    build_fixture(path)
+    stamp = "2026-09-08T21:00:00+00:00"
+    store.create_scan(
+        scan_id="scan-execution-progress", window_kind="evening", cutoff_at=stamp,
+        config_id="cfg-fixture", config_revision=1, status="running",
+        coverage={"inputDocumentRefs": [{"documentId": "doc-a", "revision": 1}, {"documentId": "doc-b", "revision": 1}]},
+        created_at=stamp, completed_at=None, db_path=path,
+    )
+    store.enqueue_task(
+        task_id="task-execution-progress", kind="evening_scan", idempotency_key="execution-progress",
+        input_version="frozen-input", input_cutoff_at=stamp, payload={"scanId": "scan-execution-progress"},
+        budget={}, created_at=stamp, db_path=path,
+    )
+    execution_revision = store.append_execution_config(
+        config_id="execution-fixture", payload={"workers": 2}, created_at=stamp, db_path=path,
+    )
+    store.bind_task_execution(
+        task_id="task-execution-progress", execution_config_id="execution-fixture",
+        execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=stamp, db_path=path,
+    )
+    store.bind_scan_execution(
+        scan_id="scan-execution-progress", task_id="task-execution-progress", execution_config_id="execution-fixture",
+        execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=stamp, db_path=path,
+    )
+    store.record_execution_checkpoint(
+        task_id="task-execution-progress", item_kind="document", item_key="doc-a@1", stage="understand",
+        input_sha256="a" * 64, status="completed", attempt_count=1, network_attempt_count=0, repair_attempt_count=0,
+        elapsed_ms=12, input_tokens=20, output_tokens=10, result={"events": []}, safe_error_code=None,
+        safe_error_ref=None, updated_at=stamp, db_path=path,
+    )
+    store.record_execution_checkpoint(
+        task_id="task-execution-progress", item_kind="document", item_key="doc-b@1", stage="understand",
+        input_sha256="b" * 64, status="failed", attempt_count=1, network_attempt_count=1, repair_attempt_count=1,
+        elapsed_ms=18, input_tokens=20, output_tokens=0, result=None, safe_error_code="model_output_invalid",
+        safe_error_ref="doc-b@1", updated_at=stamp, db_path=path,
+    )
+    with _client(path, tmp_path) as client:
+        response = client.get("/api/v1/k10/scans/scan-execution-progress")
+    assert response.status_code == 200, response.text
+    progress = response.json()["executionProgress"]
+    assert progress["documentCounts"] == {
+        "received": 2, "deduplicated": 2, "templateSkipped": 0, "understood": 1,
+        "fullText": 0, "failedPending": 1,
+    }
+    assert progress["safeFailures"] == [{"stage": "understand", "code": "model_output_invalid", "ref": "doc-b@1"}]
+    assert progress["state"] == "partial" and progress["coverageStatus"] == "partial"
+    assert progress["eventCounts"]["publishable"] is None, "统一排序前不能伪造可发布候选数"
+    assert "taskId" not in progress and "raw" not in str(progress).lower() and "prompt" not in str(progress).lower()
 
 
 def test_v304_event_groups_expose_overlap_metrics_separately_from_primary_rate(tmp_path):

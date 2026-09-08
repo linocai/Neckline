@@ -68,6 +68,9 @@ struct ScanCoverageSummary: View {
                                     Text("晚到资料回补范围未记录")
                                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                 }
+                                if let progress = scan.executionProgress {
+                                    ExecutionProgressCard(progress: progress)
+                                }
                                 if !scan.coverageGaps.isEmpty {
                                     Label(scan.coverageGaps.joined(separator: "、"), systemImage: "exclamationmark.triangle.fill")
                                         .font(NKFont.caption)
@@ -143,6 +146,8 @@ struct SettingsView: View {
                         SettingsStatusRow(title: "晚间扫描", scan: model.scanSummaries.first { $0.window == "evening" })
                         SettingsDivider()
                         SettingsStatusRow(title: "晨间扫描", scan: model.scanSummaries.first { $0.window == "morning" })
+                        SettingsDivider()
+                        NotificationReadinessRow(readiness: model.operationsReadiness?.notificationReadiness)
                         SettingsDivider()
                         SettingsConfigurationRows(configuration: model.configuration)
                     }
@@ -308,6 +313,77 @@ private struct SettingsStatusRow: View {
             if let scan { V3Pill(text: scan.status) }
         }
         .padding(.vertical, 10)
+    }
+}
+
+private struct NotificationReadinessRow: View {
+    let readiness: K10NotificationReadiness?
+
+    var body: some View {
+        HStack {
+            Image(systemName: "bell.badge").foregroundStyle(NK.accent).frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("推送状态").font(NKFont.callout.weight(.semibold))
+                Text(detail).font(NKFont.caption).foregroundStyle(tone)
+            }
+            Spacer()
+            if let readiness { V3Pill(text: readiness.state) }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var detail: String {
+        guard let readiness else { return "状态尚未读取" }
+        switch readiness.state {
+        case "ready": return "推送服务已就绪"
+        case "blocked", "notConfigured":
+            let code = readiness.reasonCode.map { "（\(k10ExecutionFailureText($0))）" } ?? ""
+            return "推送待配置\(code)"
+        default: return "推送状态待核"
+        }
+    }
+    private var tone: Color { readiness?.state == "ready" ? NK.textSecondary : NK.amber }
+}
+
+private struct ExecutionProgressCard: View {
+    let progress: K10ExecutionProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("处理进度").font(NKFont.callout.weight(.semibold))
+                Spacer()
+                V3Pill(text: progress.state)
+            }
+            Text(stageText).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            Text("已获取 \(progress.documentCounts.received) · 已理解 \(progress.documentCounts.understood) · 已核验 \(progress.eventCounts.verified) / 已比较 \(progress.eventCounts.compared)")
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+            Text(progress.eventCounts.publishable.map { "统一排序后可发布 \($0) 家" } ?? "尚未完成统一排序，不显示可发布名额")
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            if progress.documentCounts.failedPending > 0 {
+                Text("\(progress.documentCounts.failedPending) 篇资料待恢复；本轮不是完整覆盖。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
+            if let nextRetryAt = progress.nextRetryAt {
+                Text("下次恢复：\(k10DisplayTime(nextRetryAt))").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+            if !progress.safeFailures.isEmpty {
+                DisclosureGroup("查看待处理原因") {
+                    ForEach(progress.safeFailures) { failure in
+                        Text("\(k10ExecutionStageText(failure.stage))：\(k10ExecutionFailureText(failure.code))")
+                            .font(NKFont.caption).foregroundStyle(NK.amber)
+                    }
+                }
+                .font(NKFont.caption)
+            }
+        }
+        .padding(9)
+        .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+    }
+
+    private var stageText: String {
+        let coverage = progress.coverageStatus == "partial" ? "资料尚未全部完成" : "资料处理完成"
+        return "\(k10ExecutionStageText(progress.stage ?? "pending")) · \(coverage)"
     }
 }
 

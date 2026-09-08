@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
 
@@ -88,6 +88,43 @@ def _actual_usage(raw_responses: List[Dict[str, Any]]) -> Dict[str, Any]:
         "raw_usage": {"responses": usages},
         "usage_unavailable": False,
     }
+
+
+def _model_options(options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Only explicit, validated execution controls may extend the wire request."""
+    if options is None:
+        return {}
+    if not isinstance(options, Mapping) or set(options) - {"maxTokens", "thinking", "reasoningEffort"}:
+        raise ValueError("模型执行选项包含未知字段")
+    result: Dict[str, Any] = {}
+    if "maxTokens" in options:
+        value = options["maxTokens"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("maxTokens 必须为正整数")
+        result["max_tokens"] = value
+    if "thinking" in options:
+        value = options["thinking"]
+        if (not isinstance(value, Mapping) or set(value) != {"type"} or
+                not isinstance(value["type"], str) or value["type"] not in {"enabled", "disabled"}):
+            raise ValueError("thinking 必须明确为 enabled 或 disabled")
+        result["thinking"] = dict(value)
+    if "reasoningEffort" in options:
+        value = options["reasoningEffort"]
+        if not isinstance(value, str) or value not in {"low", "high", "max"}:
+            raise ValueError("reasoningEffort 必须为 low、high 或 max")
+        if result.get("thinking", {}).get("type") == "disabled":
+            raise ValueError("关闭思考时不能同时指定思考强度")
+        result["reasoning_effort"] = value
+    return result
+
+
+def _failure_code(reason: str) -> str:
+    if reason.startswith("上游 "):
+        status = reason.removeprefix("上游 ").split("/", 1)[0]
+        return "provider_http_" + status if status.isdigit() and len(status) == 3 else "provider_http_error"
+    if reason.startswith("响应解析异常"):
+        return "response_json_invalid"
+    return "provider_transport"
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -197,14 +234,18 @@ class OpenAICompatProvider(LLMProvider):
         enable_search: bool = True,
         search_query: Optional[str] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        model_options: Optional[Mapping[str, Any]] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
+        explicit_options = _model_options(model_options)
         if not self.api_key:
-            return LLMResult(ok=False, reason="缺少 API key", provider=self.name, model=self.model)
+            return LLMResult(ok=False, reason="缺少 API key", provider=self.name, model=self.model,
+                             error_code="provider_configuration")
         try:
             import httpx  # noqa: F401  (惰性导入,未装依赖时优雅降级不崩)
         except ImportError:
-            return LLMResult(ok=False, reason="httpx 未安装", provider=self.name, model=self.model)
+            return LLMResult(ok=False, reason="httpx 未安装", provider=self.name, model=self.model,
+                             error_code="provider_dependency")
 
         wire_messages: List[Dict[str, Any]] = [m.to_api() for m in messages]
         tools = self._search_tools(search_query) if enable_search else None
@@ -216,6 +257,7 @@ class OpenAICompatProvider(LLMProvider):
             # 逐字节相同 —— 检索类/所有直接 new 出来的 provider 的 wire 格式未变。
             payload: Dict[str, Any] = {
                 "model": self.model, "messages": wire_messages, "stream": bool(self.use_streaming),
+                **explicit_options,
             }
             if response_format is not None:
                 payload["response_format"] = dict(response_format)
@@ -223,18 +265,31 @@ class OpenAICompatProvider(LLMProvider):
                 payload["tools"] = tools
             body, err = self._post(payload, transport)
             if err is not None:
-                return LLMResult(ok=False, reason=err, provider=self.name, model=self.model, raw_responses=raw_responses)
+                return LLMResult(ok=False, reason=err, error_code=_failure_code(err),
+                                 provider=self.name, model=self.model, raw_responses=raw_responses,
+                                 **_actual_usage(raw_responses))
             raw_responses.append(body)
 
             try:
                 choice = body["choices"][0]
                 msg = choice.get("message") or {}
                 finish_reason = choice.get("finish_reason")
-            except (KeyError, IndexError, TypeError) as e:
+                if not isinstance(msg, dict):
+                    raise TypeError("message")
+                if finish_reason is not None and not isinstance(finish_reason, str):
+                    raise TypeError("finish_reason")
+            except (KeyError, IndexError, TypeError, AttributeError):
                 return LLMResult(
-                    ok=False, reason=f"响应结构异常: {e}", provider=self.name, model=self.model,
-                    raw_responses=raw_responses,
+                    ok=False, reason="响应结构异常", error_code="response_structure_invalid",
+                    provider=self.name, model=self.model, raw_responses=raw_responses,
+                    **_actual_usage(raw_responses),
                 )
+
+            if finish_reason in {"length", "content_filter"}:
+                code = "response_truncated" if finish_reason == "length" else "response_filtered"
+                return LLMResult(ok=False, reason="模型响应未完整结束", error_code=code,
+                                 finish_reason=finish_reason, provider=self.name, model=self.model,
+                                 raw_responses=raw_responses, **_actual_usage(raw_responses))
 
             all_hits.extend(self._extract_top_level_search_hits(body))
 
@@ -252,8 +307,20 @@ class OpenAICompatProvider(LLMProvider):
             if not isinstance(content, str) or not content.strip():
                 return LLMResult(
                     ok=False, reason="模型输出为空", provider=self.name, model=self.model,
-                    raw_responses=raw_responses,
+                    error_code="response_empty", finish_reason=finish_reason,
+                    raw_responses=raw_responses, **_actual_usage(raw_responses),
                 )
+            if response_format is not None and response_format.get("type") == "json_object":
+                try:
+                    valid_object = isinstance(json.loads(content), dict)
+                except (ValueError, TypeError):
+                    valid_object = False
+                if not valid_object:
+                    # HTTP success is not success of the requested JSON protocol. Keep
+                    # the actual paid usage while withholding malformed model material.
+                    return LLMResult(ok=False, reason="模型未返回有效 JSON 对象", error_code="response_json_invalid",
+                                     finish_reason=finish_reason, provider=self.name, model=self.model,
+                                     raw_responses=raw_responses, **_actual_usage(raw_responses))
             if enable_search and not all_hits:
                 # 开了搜索却一条都没回来属于静默失效，必须留痕。
                 logger.warning(
@@ -263,7 +330,7 @@ class OpenAICompatProvider(LLMProvider):
                 )
             return LLMResult(
                 ok=True, content=content, search_hits=all_hits, provider=self.name, model=self.model,
-                raw_responses=raw_responses,
+                raw_responses=raw_responses, finish_reason=finish_reason,
                 # 未开搜索时恒 None(没有引擎可言,不冒充"用了某个引擎");开了搜索
                 # 才读 `_search_engine_value()`(P1-7 基线捞的就是这个值)。
                 search_engine=(self._search_engine_value() if enable_search else None),
@@ -272,7 +339,8 @@ class OpenAICompatProvider(LLMProvider):
 
         return LLMResult(
             ok=False, reason=f"工具调用轮数超过上限({self.max_tool_rounds})",
-            provider=self.name, model=self.model, raw_responses=raw_responses,
+            error_code="provider_tool_limit", provider=self.name, model=self.model,
+            raw_responses=raw_responses, **_actual_usage(raw_responses),
         )
 
     def _post(self, payload: Dict[str, Any], transport: Optional[Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -312,7 +380,7 @@ class OpenAICompatProvider(LLMProvider):
                 logger.warning(
                     "%s 调用第 %d/%d 次异常(将重试;本次已耗 %.1fs%s): %s",
                     self.name, attempt, self.max_attempts, time.monotonic() - started,
-                    ",流式" if streaming else "", e,
+                    ",流式" if streaming else "", type(e).__name__,
                 )
                 if attempt < self.max_attempts and retry_delay:
                     time.sleep(retry_delay)
@@ -332,8 +400,8 @@ class OpenAICompatProvider(LLMProvider):
             return None, f"上游 {resp.status_code}{suffix}"
         try:
             return resp.json(), None
-        except Exception as e:  # noqa: BLE001
-            return None, f"响应解析异常: {e}"
+        except Exception:  # noqa: BLE001
+            return None, "响应解析异常"
 
     def _attempt_stream(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """累积完整 SSE 响应；中断时抛给重试层，绝不返回半截 JSON。

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 
 @dataclass
@@ -61,6 +61,9 @@ class LLMResult:
     usage_unavailable: bool = True
     # Tavily 是独立账单；成功检索后即使后续推理失败也必须把真实 credits 带回调用点。
     tavily_credits: Optional[int] = None
+    # Safe transport/shape diagnostics; never contain response text or credentials.
+    error_code: Optional[str] = None
+    finish_reason: Optional[str] = None
 
 
 def search_coverage_line(hit_count: int) -> str:
@@ -88,6 +91,7 @@ class LLMProvider(ABC):
         enable_search: bool = True,
         search_query: Optional[str] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        model_options: Optional[Mapping[str, Any]] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
         """`search_query`(v1.3.4 新增,可选):**显式指定联网搜索的检索词**。

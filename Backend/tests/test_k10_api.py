@@ -21,15 +21,21 @@ from neckline.k10.types import OpportunityPublicationInput
 NOW = "2026-09-06T12:00:00+00:00"
 
 
-def _client(path: Path, *, config_binding: tuple[str | None, int | None, str | None] = (None, None, None)) -> TestClient:
+def _client(path: Path, *, config_binding: tuple[str | None, int | None, str | None] = (None, None, None),
+            execution_config_binding: tuple[str | None, int | None, str | None] = (None, None, None)) -> TestClient:
     app = FastAPI()
     app.include_router(create_router(lambda: path, lambda: None, lambda: path.parent / "parquet",
-                                    current_config_binding_provider=lambda: config_binding))
+                                    current_config_binding_provider=lambda: config_binding,
+                                    current_execution_config_binding_provider=lambda: execution_config_binding))
     return TestClient(app)
 
 
 def _ready_config() -> dict:
     return json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
+
+
+def _execution_config() -> dict:
+    return json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
 
 
 def _seed(path: Path) -> str:
@@ -86,9 +92,10 @@ def test_configuration_uses_explicit_ready_binding_before_any_scan_and_never_wri
     path = tmp_path / "configuration.sqlite"
     initialize_schema(path)
     assert store.append_run_config(config_id="current", payload=_ready_config(), created_at=NOW, db_path=path) == 1
+    assert store.append_execution_config(config_id="execution", payload=_execution_config(), created_at=NOW, db_path=path) == 1
     before = sha256(path.read_bytes()).hexdigest()
 
-    with _client(path, config_binding=("current", 1, None)) as client:
+    with _client(path, config_binding=("current", 1, None), execution_config_binding=("execution", 1, None)) as client:
         response = client.get("/api/v1/k10/configuration")
 
     assert response.status_code == 200
@@ -108,11 +115,12 @@ def test_configuration_uses_bound_revision_not_an_old_scan_or_another_config(tmp
     current_update = _ready_config()
     current_update["sourceAdapters"] = [{"key": "newer-current-source"}]
     assert store.append_run_config(config_id="current", payload=current_update, created_at=NOW, db_path=path) == 2
+    assert store.append_execution_config(config_id="execution", payload=_execution_config(), created_at=NOW, db_path=path) == 1
     store.create_scan(scan_id="old-scan", window_kind="evening", cutoff_at=NOW, config_id="old",
                       config_revision=old_revision, status="completed", coverage={"status": "complete"},
                       created_at=NOW, completed_at=NOW, db_path=path)
 
-    with _client(path, config_binding=("current", current_revision, None)) as client:
+    with _client(path, config_binding=("current", current_revision, None), execution_config_binding=("execution", 1, None)) as client:
         response = client.get("/api/v1/k10/configuration")
 
     assert response.status_code == 200
@@ -144,6 +152,26 @@ def test_configuration_reports_missing_invalid_or_unknown_explicit_binding(tmp_p
     assert body["configId"] is None and body["configRevision"] is None
     assert all(scope["state"] == "not_configured" for scope in body["scopes"])
     assert all(any(error in message for message in scope["errors"]) for scope in body["scopes"])
+
+
+@pytest.mark.parametrize(
+    ("execution_binding", "error"),
+    [
+        ((None, None, None), "未绑定 K10_EXECUTION_CONFIG_ID"),
+        (("execution", None, "K10_EXECUTION_CONFIG_REVISION 必须是正整数"), "K10_EXECUTION_CONFIG_REVISION 必须是正整数"),
+        (("missing", 1, None), "执行配置修订不存在"),
+    ],
+)
+def test_candidate_configuration_requires_current_explicit_execution_binding_only(tmp_path: Path, execution_binding, error: str) -> None:
+    path = tmp_path / "execution-configuration.sqlite"
+    initialize_schema(path)
+    store.append_run_config(config_id="current", payload=_ready_config(), created_at=NOW, db_path=path)
+    with _client(path, config_binding=("current", 1, None), execution_config_binding=execution_binding) as client:
+        body = client.get("/api/v1/k10/configuration").json()
+    scopes = {item["scope"]: item for item in body["scopes"]}
+    assert scopes["candidate"]["state"] == "not_configured"
+    assert any(error in message for message in scopes["candidate"]["errors"])
+    assert scopes["analysis"]["state"] == scopes["evaluation"]["state"] == "configured"
 
 
 def test_publications_project_company_cards_and_multifield_wire_contract(tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ where = ["."]
 include = ["neckline*"]
 
 [tool.setuptools.package-data]
-"neckline.config" = ["k10-v1.4.json"]
+"neckline.config" = ["k10-v1.4.json", "k10-execution-v1.json", "notification-delivery-v1.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -225,6 +225,17 @@ def _deepseek_comparison(payload: dict, *, history: dict | None = None) -> DeepS
     model = DeepSeekDiscoveryModel(_ComparisonProvider(payload), historical_context_loader=(
         (lambda **_: history) if history is not None else None
     ))
+    model.set_execution_policy({
+        "documentBatchSize": 2, "understandConcurrency": 2, "keyPassageMaxCharacters": 1000,
+        "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0, "retryBackoffSeconds": [1], "taskSliceSeconds": 60,
+        "completionDeadlineSeconds": 7200, "continuationDelaySeconds": 1,
+        "modelOptions": {
+            "understand": {"maxTokens": 1800, "thinking": {"type": "disabled"}},
+            "verify": {"maxTokens": 1800, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+            "companyComparison": {"maxTokens": 1800, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+            "prioritize": {"maxTokens": 1800, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+        },
+    })
     model.set_scan_cutoff(NOW)
     document = DiscoveryDocument("doc-current", 1, NOW.isoformat(), NOW.isoformat(), "当前资料", None, {})
     model._documents[document.evidence_ref] = document

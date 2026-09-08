@@ -77,6 +77,21 @@ def test_get_jwt_missing_p8_file(tmp_path, ec_key_pem, monkeypatch):
     assert apns.get_jwt() is None                     # 读 .p8 失败 → None(不抛)
 
 
+def test_readiness_is_safe_for_missing_and_invalid_key(tmp_path, ec_key_pem, monkeypatch):
+    priv, _ = ec_key_pem
+    missing = _apns_settings(tmp_path, priv, apns_key_path=str(tmp_path / "missing.p8"))
+    monkeypatch.setattr(apns, "settings", missing)
+    apns.reset_jwt_cache()
+    assert apns.apns_readiness(now=1).code == "key_unreadable"
+    assert str(tmp_path) not in apns.apns_readiness(now=2).code
+
+    invalid = tmp_path / "invalid.p8"
+    invalid.write_text("not a private key", encoding="utf-8")
+    monkeypatch.setattr(apns, "settings", _apns_settings(tmp_path, invalid.read_text(), apns_key_path=str(invalid)))
+    apns.reset_jwt_cache()
+    assert apns.apns_readiness(now=3).code == "key_invalid"
+
+
 # —— payload / send_push ——————————————————————————————————————————————
 
 def test_build_payload():
@@ -141,7 +156,7 @@ def test_send_push_no_config_graceful(monkeypatch):
     monkeypatch.setattr(apns, "settings", Settings(tushare_token=None))
     apns.reset_jwt_cache()
     res = apns.send_push("t", "a", "b")               # 无凭证 + 无注入 jwt → ok=False,不抛
-    assert res.ok is False and "JWT" in res.reason
+    assert res.ok is False and res.reason == "apns_credentials_missing"
 
 
 def test_send_push_failure_reason(tmp_path, ec_key_pem, monkeypatch):

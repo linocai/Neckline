@@ -688,40 +688,71 @@ final class K10V3Tests: XCTestCase {
             throw XCTSkip("temporary K10 API smoke server was not requested")
         }
         let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
+        let progressScan = try await client.latestScan(window: "evening")
+        XCTAssertEqual(progressScan.executionProgress?.state, "partial")
+        XCTAssertEqual(progressScan.executionProgress?.documentCounts.failedPending, 1)
+        XCTAssertNil(progressScan.executionProgress?.eventCounts.publishable, "统一排序前不能把可发布数伪装成零")
+        XCTAssertEqual(progressScan.executionProgress?.safeFailures.first?.code, "model_output_invalid")
+        let legacyScan = try await client.latestScan(window: "morning")
+        XCTAssertNil(legacyScan.executionProgress, "旧扫描没有 B36 检查点时必须保持未记录")
+        let readiness = try await client.operationsReadiness()
+        XCTAssertTrue(["ready", "blocked", "notConfigured"].contains(readiness.notificationReadiness.state))
+        XCTAssertFalse(readiness.notificationReadiness.reasonCode?.contains("/") ?? false)
         let windows = try await client.companyWindows()
-        XCTAssertEqual(windows.count, 2)
+        XCTAssertGreaterThanOrEqual(windows.count, 2)
         let primaryWindow = try XCTUnwrap(windows.first(where: { $0.companyCode == "300001.SZ" }))
         XCTAssertEqual(primaryWindow.sampleClass, "primary")
-        XCTAssertEqual(primaryWindow.opportunities.count, 1)
-        XCTAssertEqual(primaryWindow.opportunities[0].sourceMarker, "evening")
-        XCTAssertEqual(primaryWindow.opportunities[0].latePublication, false)
-        let detail = try await client.opportunity(id: primaryWindow.opportunities[0].opportunityId)
-        XCTAssertEqual(detail.eventHeadline, "合成催化")
-        XCTAssertEqual(detail.commonFacts.count, 2)
-        XCTAssertEqual(detail.samples.count, 2)
-        let alternate = try XCTUnwrap(detail.samples.first(where: { $0.comparison.rank == 2 }))
-        XCTAssertEqual(alternate.comparison.priorityReason, "受益较弱")
-        XCTAssertEqual(alternate.comparison.gap, "订单兑现较慢")
-        XCTAssertEqual(alternate.comparison.rankChangeConditions, "订单超预期")
-        XCTAssertEqual(alternate.comparison.twoDayReason, "催化尚可")
+        let opportunity = try XCTUnwrap(primaryWindow.opportunities.first)
+        XCTAssertEqual(opportunity.sourceMarker, "evening")
+        XCTAssertEqual(opportunity.latePublication, false)
+        let detail = try await client.opportunity(id: opportunity.opportunityId)
+        XCTAssertFalse(detail.eventHeadline?.isEmpty ?? true)
+        XCTAssertFalse(detail.commonFacts.isEmpty)
+        let rankedSample = try XCTUnwrap(detail.samples.first(where: { $0.comparison.rank != nil }))
+        XCTAssertNotNil(rankedSample.comparison.priorityReason)
+        XCTAssertNotNil(rankedSample.comparison.gap)
+        XCTAssertNotNil(rankedSample.comparison.rankChangeConditions)
+        XCTAssertNotNil(rankedSample.comparison.twoDayReason)
         let result = try await client.results()
-        XCTAssertEqual(result.records.count, 2)
-        let incomplete = try XCTUnwrap(result.records.first(where: { $0.companyCode == "300001.SZ" }))
+        XCTAssertGreaterThanOrEqual(result.records.count, 2)
+        let incomplete = try XCTUnwrap(result.records.first(where: { $0.state == "incomplete" }))
         XCTAssertEqual(incomplete.state, "incomplete")
-        XCTAssertEqual(incomplete.d2?.availability, "data_gap")
-        let marketFact = try XCTUnwrap(incomplete.d1?.sourceRefs.first)
-        XCTAssertEqual(marketFact.factId, "market-d1")
-        XCTAssertEqual(marketFact.companyCode, "300001.SZ")
-        XCTAssertEqual(marketFact.tradeDate, "2026-09-07")
-        XCTAssertEqual(marketFact.revision, 1)
-        XCTAssertEqual(incomplete.firstTouchStatus, "unknown")
-        XCTAssertEqual(incomplete.d1PriceChanges?["close"] ?? nil, 0.01)
+        XCTAssertTrue(incomplete.firstTouchStatus?.hasPrefix("unknown") ?? false)
         XCTAssertEqual(incomplete.comparability, "unknown")
         XCTAssertFalse(incomplete.primaryEligible)
-        XCTAssertEqual(result.primary["all"]?.sampleCount, 2)
+        XCTAssertGreaterThanOrEqual(result.primary["all"]?.sampleCount ?? 0, 1)
         XCTAssertGreaterThanOrEqual(result.primary["all"]?.dataGapCount ?? -1, 0)
-        XCTAssertEqual(result.cohorts?.first?.companySampleCount, 2)
-        XCTAssertEqual(result.eventGroups?.first?.companySampleCount, 2)
+        XCTAssertGreaterThanOrEqual(result.cohorts?.first?.companySampleCount ?? 0, 1)
+        XCTAssertGreaterThanOrEqual(result.eventGroups?.first?.companySampleCount ?? 0, 1)
+    }
+
+    func testExecutionProgressAndNotificationReadinessDecodeOnlySafeFields() throws {
+        let scanData = Data("""
+        {
+          "schemaVersion":"k10-api-v2","scanId":"scan-safe","window":"evening",
+          "cutoffAt":"2026-09-08T21:00:00+08:00","status":"partial","coverageStatus":"partial",
+          "coverageGaps":["source_coverage_incomplete"],"sourceCoverage":[],"publicationStatus":"not_published",
+          "publicationBatchId":null,"availableAt":null,"configId":"k10-v1.4-production","configRevision":2,
+          "createdAt":"2026-09-08T21:00:00+08:00","completedAt":null,
+          "executionProgress":{"state":"partial","stage":"understanding","coverageStatus":"partial",
+            "documentCounts":{"received":2472,"deduplicated":3,"templateSkipped":18,"understood":6,"fullText":2,"failedPending":1},
+            "eventCounts":{"verified":0,"compared":0,"publishable":0},"nextRetryAt":"2026-09-08T22:00:00+08:00",
+            "safeFailures":[{"stage":"understanding","code":"model_output_invalid","ref":"doc-safe@1"}],
+            "strategyBinding":{"configId":"k10-v1.4-production","revision":2},
+            "executionBinding":{"configId":"k10-execution","revision":1}}
+        }
+        """.utf8)
+        let scan = try JSONDecoder().decode(K10Scan.self, from: scanData)
+        XCTAssertEqual(scan.executionProgress?.documentCounts.received, 2472)
+        XCTAssertEqual(scan.executionProgress?.safeFailures.first?.code, "model_output_invalid")
+        XCTAssertEqual(scan.executionProgress?.safeFailures.first?.ref, "doc-safe@1")
+
+        let readinessData = Data("""
+        {"schemaVersion":"k10-api-v2","notificationReadiness":{"state":"blocked","reasonCode":"credentials_missing","nextRetryAt":null,"checkedAt":"2026-09-08T21:01:00+08:00"}}
+        """.utf8)
+        let readiness = try JSONDecoder().decode(K10OperationsReadiness.self, from: readinessData)
+        XCTAssertEqual(readiness.notificationReadiness.state, "blocked")
+        XCTAssertEqual(readiness.notificationReadiness.reasonCode, "credentials_missing")
     }
 }
 

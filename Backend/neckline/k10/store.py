@@ -88,6 +88,127 @@ def read_run_config(*, config_id: str, revision: int, db_path: Path) -> Optional
             "contentSha256": row[1], "createdAt": row[2]}
 
 
+def append_execution_config(
+    *, config_id: str, payload: Mapping[str, Any], created_at: str, db_path: Path,
+) -> int:
+    """Append an immutable execution profile; it never mutates a strategy revision."""
+    fingerprint = _hash(payload)
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        old = conn.execute(
+            "SELECT revision FROM k10_execution_config_revisions WHERE config_id=? AND content_sha256=?",
+            (config_id, fingerprint),
+        ).fetchone()
+        if old is not None:
+            return int(old[0])
+        revision = int(conn.execute(
+            "SELECT COALESCE(MAX(revision),0) FROM k10_execution_config_revisions WHERE config_id=?", (config_id,)
+        ).fetchone()[0]) + 1
+        conn.execute(
+            "INSERT INTO k10_execution_config_revisions(config_id,revision,payload_json,content_sha256,created_at) "
+            "VALUES(?,?,?,?,?)", (config_id, revision, _json(payload), fingerprint, created_at),
+        )
+    return revision
+
+
+def read_execution_config(*, config_id: str, revision: int, db_path: Path) -> Optional[dict[str, Any]]:
+    """Read the exact operational revision; absence never falls back to a latest profile."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT payload_json,content_sha256,created_at FROM k10_execution_config_revisions "
+            "WHERE config_id=? AND revision=?", (config_id, revision),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"configId": config_id, "revision": revision, "payload": json.loads(row[0]),
+            "contentSha256": row[1], "createdAt": row[2]}
+
+
+def bind_task_execution(
+    *, task_id: str, execution_config_id: str, execution_config_revision: int,
+    binding_kind: str, bound_at: str, db_path: Path,
+) -> dict[str, Any]:
+    """Bind a task once to a profile, with a recorded content hash for audit and recovery."""
+    if binding_kind not in {"scheduled", "recovery"}:
+        raise ValueError("execution binding_kind 必须是 scheduled 或 recovery")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        profile = conn.execute(
+            "SELECT content_sha256,payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
+            (execution_config_id, execution_config_revision),
+        ).fetchone()
+        if profile is None:
+            raise K10Conflict("指定执行配置修订不存在")
+        if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
+            raise K10Conflict("执行绑定任务不存在")
+        expected = (execution_config_id, execution_config_revision, str(profile[0]), binding_kind)
+        old = conn.execute(
+            "SELECT execution_config_id,execution_config_revision,execution_content_sha256,binding_kind "
+            "FROM k10_task_execution_bindings WHERE task_id=?", (task_id,),
+        ).fetchone()
+        if old is not None:
+            if tuple(old) != expected:
+                raise K10Conflict("任务已绑定不同执行配置，拒绝静默替换")
+        else:
+            conn.execute(
+                "INSERT INTO k10_task_execution_bindings(task_id,execution_config_id,execution_config_revision,"
+                "execution_content_sha256,binding_kind,bound_at) VALUES(?,?,?,?,?,?)",
+                (task_id, *expected, bound_at),
+            )
+    return {"configId": execution_config_id, "revision": execution_config_revision,
+            "contentSha256": str(profile[0]), "bindingKind": binding_kind, "payload": json.loads(profile[1])}
+
+
+def bind_scan_execution(
+    *, scan_id: str, task_id: str, execution_config_id: str, execution_config_revision: int,
+    binding_kind: str, bound_at: str, db_path: Path,
+) -> None:
+    """Record the same explicit execution profile on the scan created by that task."""
+    profile = read_execution_config(config_id=execution_config_id, revision=execution_config_revision, db_path=db_path)
+    if profile is None:
+        raise K10Conflict("指定执行配置修订不存在")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        if conn.execute("SELECT 1 FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone() is None:
+            raise K10Conflict("执行绑定扫描不存在")
+        task_binding = conn.execute(
+            "SELECT execution_config_id,execution_config_revision,execution_content_sha256,binding_kind "
+            "FROM k10_task_execution_bindings WHERE task_id=?", (task_id,),
+        ).fetchone()
+        expected = (task_id, execution_config_id, execution_config_revision, profile["contentSha256"], binding_kind)
+        if task_binding is None or tuple(task_binding) != expected[1:]:
+            raise K10Conflict("扫描执行绑定必须与任务的不可变绑定一致")
+        old = conn.execute(
+            "SELECT task_id,execution_config_id,execution_config_revision,execution_content_sha256,binding_kind "
+            "FROM k10_scan_execution_bindings WHERE scan_id=?", (scan_id,),
+        ).fetchone()
+        if old is not None:
+            if tuple(old) != expected:
+                raise K10Conflict("扫描已绑定不同执行配置，拒绝静默替换")
+            return
+        conn.execute(
+            "INSERT INTO k10_scan_execution_bindings(scan_id,task_id,execution_config_id,execution_config_revision,"
+            "execution_content_sha256,binding_kind,bound_at) VALUES(?,?,?,?,?,?,?)",
+            (scan_id, *expected, bound_at),
+        )
+
+
+def task_execution_profile(*, task_id: str, db_path: Path) -> Optional[dict[str, Any]]:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT b.execution_config_id,b.execution_config_revision,b.execution_content_sha256,b.binding_kind,"
+            "b.bound_at,c.payload_json FROM k10_task_execution_bindings b "
+            "JOIN k10_execution_config_revisions c ON c.config_id=b.execution_config_id "
+            "AND c.revision=b.execution_config_revision WHERE b.task_id=?", (task_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"configId": row[0], "revision": int(row[1]), "contentSha256": row[2],
+            "bindingKind": row[3], "boundAt": row[4], "payload": json.loads(row[5])}
+
+
 def append_document_version(
     *, document_id: str, source_key: str, external_id: str, canonical_url: Optional[str],
     content_sha256: str, published_at: Optional[str], published_precision: str, fetched_at: str,
@@ -1519,8 +1640,11 @@ def claim_tasks(
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
         rows = conn.execute(
-            "SELECT task_id FROM k10_tasks WHERE status='queued' OR (status='running' AND lease_until < ?) "
-            "ORDER BY created_at,task_id LIMIT ?", (now_text, limit),
+            "SELECT t.task_id FROM k10_tasks t LEFT JOIN k10_task_retry_schedules r ON r.task_id=t.task_id "
+            "WHERE (t.status='queued' AND (r.not_before_at IS NULL OR r.not_before_at <= ?)) "
+            "OR (t.status='running' AND t.lease_until < ?) "
+            "ORDER BY CASE t.kind WHEN 'morning_scan' THEN 0 WHEN 'evening_scan' THEN 1 ELSE 2 END, t.created_at,t.task_id LIMIT ?",
+            (now_text, now_text, limit),
         ).fetchall()
         task_ids = [str(row[0]) for row in rows]
         claimed: list[Task] = []
@@ -1528,8 +1652,9 @@ def claim_tasks(
             conn.execute(
                 "UPDATE k10_tasks SET status='running',stage='leased',attempt_count=attempt_count+1,"
                 "lease_owner=?,lease_until=?,updated_at=? WHERE task_id=? AND "
-                "(status='queued' OR (status='running' AND lease_until < ?))",
-                (worker_id, lease_until, now_text, task_id, now_text),
+                "((status='queued' AND NOT EXISTS (SELECT 1 FROM k10_task_retry_schedules r WHERE r.task_id=k10_tasks.task_id AND r.not_before_at > ?)) "
+                "OR (status='running' AND lease_until < ?))",
+                (worker_id, lease_until, now_text, task_id, now_text, now_text),
             )
             row = conn.execute(
                 "SELECT task_id,kind,status,attempt_count,lease_owner,lease_until,payload_json FROM k10_tasks "
@@ -1550,8 +1675,9 @@ def claim_task_by_id(*, task_id: str, worker_id: str, now: datetime, lease_for: 
         _require_write_schema(conn)
         changed = conn.execute(
             "UPDATE k10_tasks SET status='running',stage='leased',attempt_count=attempt_count+1,lease_owner=?,lease_until=?,updated_at=? "
-            "WHERE task_id=? AND (status='queued' OR (status='running' AND lease_until < ?))",
-            (worker_id, lease_until, now_text, task_id, now_text),
+            "WHERE task_id=? AND ((status='queued' AND NOT EXISTS (SELECT 1 FROM k10_task_retry_schedules r WHERE r.task_id=k10_tasks.task_id AND r.not_before_at > ?)) "
+            "OR (status='running' AND lease_until < ?))",
+            (worker_id, lease_until, now_text, task_id, now_text, now_text),
         ).rowcount
         if changed != 1:
             return None
@@ -1568,7 +1694,252 @@ def task_execution_input(*, task_id: str, db_path: Path) -> Optional[dict[str, A
         row = conn.execute("SELECT budget_json,checkpoint_json,input_version,input_cutoff_at FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
     if row is None:
         return None
-    return {"budget": json.loads(row[0]), "checkpoint": json.loads(row[1]), "inputVersion": row[2], "inputCutoffAt": row[3]}
+    return {"budget": json.loads(row[0]), "checkpoint": json.loads(row[1]), "inputVersion": row[2], "inputCutoffAt": row[3],
+            "executionProfile": task_execution_profile(task_id=task_id, db_path=db_path)}
+
+
+_UNSAFE_EXECUTION_RESULT_KEYS = frozenset({"prompt", "rawResponse", "raw_response", "originalText", "original_text"})
+
+
+def _safe_execution_result(value: Any) -> Any:
+    """Persist only validated derivative output, never a provider response or prompt body."""
+    if isinstance(value, Mapping):
+        if _UNSAFE_EXECUTION_RESULT_KEYS & {str(key) for key in value}:
+            raise ValueError("执行检查点不得保存 prompt、原始响应或全文资料")
+        return {str(key): _safe_execution_result(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_execution_result(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ValueError("执行检查点结果必须是 JSON 值")
+
+
+def record_execution_checkpoint(
+    *, task_id: str, item_kind: str, item_key: str, stage: str, input_sha256: str, status: str,
+    attempt_count: int, network_attempt_count: int, repair_attempt_count: int, elapsed_ms: int,
+    input_tokens: int | None, output_tokens: int | None, result: Mapping[str, Any] | list[Any] | None,
+    safe_error_code: str | None, safe_error_ref: str | None, updated_at: str, db_path: Path,
+    leaseguard: Callable[[], None] | None = None,
+) -> None:
+    """Atomically persist one resumable, sanitized item stage under the owning task lease.
+
+    ``leaseguard`` must be read-only.  It runs once before opening the write
+    transaction to fail quickly, and again after ``BEGIN IMMEDIATE`` has
+    reserved the writer slot.  The latter check closes the hand-off window in
+    which a former worker passed an early guard but another worker then claimed
+    the expired task before this checkpoint was persisted.
+    """
+    if item_kind not in {"document", "event", "global"} or not item_key or not stage or not input_sha256:
+        raise ValueError("执行检查点缺少有效 item、stage 或输入哈希")
+    if status not in {"pending", "running", "completed", "failed"}:
+        raise ValueError("执行检查点状态无效")
+    numbers = (attempt_count, network_attempt_count, repair_attempt_count, elapsed_ms)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in numbers):
+        raise ValueError("执行检查点计数必须是非负整数")
+    if any(value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+           for value in (input_tokens, output_tokens)):
+        raise ValueError("执行检查点 token 必须是非负整数或 null")
+    if status == "completed" and result is None:
+        raise ValueError("完成的执行检查点必须保存已校验的派生结果")
+    if status != "completed" and result is not None:
+        raise ValueError("未完成执行检查点不能保存未经完成的结果")
+    if status == "failed" and not safe_error_code:
+        raise ValueError("失败执行检查点必须有安全错误码")
+    if leaseguard is not None:
+        leaseguard()
+    safe_result = _safe_execution_result(result) if result is not None else None
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        # ``write_connection`` has begun the immediate transaction, so a new
+        # claimant cannot interleave after this check and before the upsert.
+        # TaskContext.require_lease uses a read-only connection; a write guard
+        # here would deadlock and is deliberately not a supported callback.
+        if leaseguard is not None:
+            leaseguard()
+        if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
+            raise K10Conflict("执行检查点任务不存在")
+        expected = (input_sha256, status, attempt_count, network_attempt_count, repair_attempt_count,
+                    elapsed_ms, input_tokens, output_tokens, _json(safe_result) if safe_result is not None else None,
+                    safe_error_code, safe_error_ref)
+        old = conn.execute(
+            "SELECT input_sha256,status,attempt_count,network_attempt_count,repair_attempt_count,elapsed_ms,"
+            "input_tokens,output_tokens,result_json,safe_error_code,safe_error_ref FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
+            (task_id, item_kind, item_key, stage),
+        ).fetchone()
+        if old is not None and old[1] == "completed" and tuple(old) != expected:
+            raise K10Conflict("已完成执行检查点不可被重写")
+        conn.execute(
+            "INSERT INTO k10_execution_item_checkpoints(task_id,item_kind,item_key,stage,input_sha256,status,"
+            "attempt_count,network_attempt_count,repair_attempt_count,elapsed_ms,input_tokens,output_tokens,"
+            "result_json,safe_error_code,safe_error_ref,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(task_id,item_kind,item_key,stage) DO UPDATE SET input_sha256=excluded.input_sha256,"
+            "status=excluded.status,attempt_count=excluded.attempt_count,network_attempt_count=excluded.network_attempt_count,"
+            "repair_attempt_count=excluded.repair_attempt_count,elapsed_ms=excluded.elapsed_ms,input_tokens=excluded.input_tokens,"
+            "output_tokens=excluded.output_tokens,result_json=excluded.result_json,safe_error_code=excluded.safe_error_code,"
+            "safe_error_ref=excluded.safe_error_ref,updated_at=excluded.updated_at",
+            (task_id, item_kind, item_key, stage, *expected, updated_at),
+        )
+
+
+def completed_execution_items(*, task_id: str, item_kind: str, stage: str, db_path: Path) -> list[dict[str, Any]]:
+    """Read only immutable completed derivatives for a frozen-task resume."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            "SELECT item_key,input_sha256,result_json,attempt_count,network_attempt_count,repair_attempt_count,"
+            "elapsed_ms,input_tokens,output_tokens,updated_at FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND item_kind=? AND stage=? AND status='completed' ORDER BY item_key",
+            (task_id, item_kind, stage),
+        ).fetchall()
+    return [{"itemKey": row[0], "inputSha256": row[1], "result": json.loads(row[2]), "attemptCount": row[3],
+             "networkAttemptCount": row[4], "repairAttemptCount": row[5], "elapsedMs": row[6],
+             "inputTokens": row[7], "outputTokens": row[8], "updatedAt": row[9]} for row in rows]
+
+
+def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict[str, Any]]:
+    """Safe aggregate for API/UI; source text, prompts and raw model output never leave the ledger."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        scan = conn.execute(
+            "SELECT s.status,s.coverage_json,s.config_id,s.config_revision,c.content_sha256,"
+            "b.task_id,b.execution_config_id,b.execution_config_revision,b.execution_content_sha256,b.binding_kind,t.stage,t.status "
+            "FROM k10_scans s LEFT JOIN k10_run_config_revisions c ON c.config_id=s.config_id AND c.revision=s.config_revision "
+            "LEFT JOIN k10_scan_execution_bindings b ON b.scan_id=s.scan_id "
+            "LEFT JOIN k10_tasks t ON t.task_id=b.task_id WHERE s.scan_id=?", (scan_id,),
+        ).fetchone()
+        if scan is None:
+            return None
+        if scan[5] is None:
+            return None
+        coverage = json.loads(scan[1])
+        task_id = scan[5]
+        rows = [] if task_id is None else conn.execute(
+            "SELECT item_kind,item_key,stage,status,safe_error_code,safe_error_ref,updated_at,result_json FROM k10_execution_item_checkpoints "
+            "WHERE task_id=?", (task_id,),
+        ).fetchall()
+        retry = None if task_id is None else conn.execute(
+            "SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?", (task_id,)
+        ).fetchone()
+    def keys(kind: str, stage: str, status: str = "completed") -> set[str]:
+        return {str(row[1]) for row in rows if row[0] == kind and row[2] == stage and row[3] == status}
+
+    def failure_stage(stage: object) -> str:
+        """Project ledger internals into the stable user-facing progress phases."""
+        return {
+            "model:understand": "understand",
+            "model:verify": "verify",
+            "tavily_evidence": "verify",
+            "model:map": "comparison",
+            "model:compare": "comparison",
+            "model:classify": "comparison",
+            "model:prioritize": "publication",
+            "verify_or_map": "verify",
+        }.get(str(stage), str(stage))
+
+    def document_failure_ref(row: tuple[Any, ...]) -> str:
+        """Merge only the documented key/full understanding variants into their source ref."""
+        ref = str(row[5] or row[1])
+        if row[0] != "document":
+            return ref
+        for suffix in (":key", ":full"):
+            if not ref.endswith(suffix):
+                continue
+            source_ref = ref[:-len(suffix)]
+            document_id, separator, revision = source_ref.rpartition("@")
+            if separator and document_id and revision.isdecimal():
+                return source_ref
+        return ref
+
+    phase_by_stage = {
+        "model:understand": ("understanding", 0),
+        "model:verify": ("verification", 1),
+        "tavily_evidence": ("verification", 1),
+        "model:map": ("comparison", 2),
+        "model:compare": ("comparison", 3),
+        "model:classify": ("comparison", 4),
+        "model:prioritize": ("prioritize", 5),
+    }
+    model_phases = [(phase_by_stage[row[2]], str(row[6] or "")) for row in rows
+                    if row[3] in {"pending", "running", "completed"} and row[2] in phase_by_stage]
+    # Checkpoint timestamps are normalized UTC text.  The phase rank resolves
+    # only same-second writes deterministically; a later recovery operation can
+    # therefore move the displayed phase back to verification when warranted.
+    model_phase = max(model_phases, key=lambda item: (item[1], item[0][1]))[0][0] if model_phases else None
+    refs = coverage.get("inputDocumentRefs") if isinstance(coverage, Mapping) else None
+    received = len(refs) if isinstance(refs, list) else 0
+    deduplicated = len({str(ref.get("documentId")) for ref in refs if isinstance(ref, Mapping) and isinstance(ref.get("documentId"), str)}) if isinstance(refs, list) else 0
+    failures: list[dict[str, str]] = []
+    failure_keys: set[tuple[str, str, str]] = set()
+    for row in rows:
+        if row[3] != "failed" or not isinstance(row[4], str):
+            continue
+        stage = failure_stage(row[2])
+        ref = document_failure_ref(row)
+        failure_key = (stage, row[4], ref)
+        if failure_key not in failure_keys:
+            failures.append({"code": row[4], "ref": ref, "stage": stage})
+            failure_keys.add(failure_key)
+    state_map = {"queued": "running", "running": "running", "completed": "completed",
+                 "partial": "partial", "failed": "failed", "not_configured": "notConfigured"}
+    raw_scan_status = str(scan[0])
+    task_status = str(scan[11]) if scan[11] is not None else ""
+    scan_state = state_map.get(raw_scan_status, "failed")
+    if failures and scan_state in {"running", "completed"}:
+        scan_state = "partial"
+    candidate_count = coverage.get("candidateCount") if isinstance(coverage, Mapping) else None
+    if isinstance(candidate_count, bool) or not isinstance(candidate_count, int) or candidate_count < 0:
+        candidate_count = None
+    understood_count = len(keys("document", "understand"))
+    template_skipped_count = len(keys("document", "template_filter"))
+    full_text_count = 0
+    for row in rows:
+        if row[0] != "document" or row[2] != "understand" or row[3] != "completed":
+            continue
+        try:
+            result = json.loads(row[7])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(result, Mapping) and result.get("fullTextUsed") is True:
+            full_text_count += 1
+    failed_pending_count = len({document_failure_ref(row) for row in rows if row[0] == "document" and row[3] == "failed"})
+    next_retry_at = retry[0] if retry is not None and task_status == "queued" else None
+    if next_retry_at is not None:
+        display_stage = "recovery"
+    elif raw_scan_status == "completed":
+        display_stage = "published"
+    elif raw_scan_status in {"partial", "failed", "not_configured"}:
+        # The scan has a terminal result and no scheduled continuation.  Keep
+        # its failure/partial state in the pill, but do not promise recovery.
+        display_stage = "completed"
+    elif model_phase is not None:
+        display_stage = model_phase
+    elif failures:
+        display_stage = "failed_pending"
+    elif received and understood_count + template_skipped_count >= deduplicated:
+        display_stage = "awaiting_verification"
+    elif understood_count:
+        display_stage = "understanding"
+    elif isinstance(coverage, Mapping) and coverage.get("inputSnapshotFrozen") is True:
+        display_stage = "fetched"
+    else:
+        display_stage = str(scan[10])
+    return {"state": scan_state, "stage": display_stage,
+            "documentCounts": {"received": received, "deduplicated": deduplicated,
+                               "templateSkipped": template_skipped_count,
+                               "understood": understood_count,
+                               "fullText": full_text_count,
+                               "failedPending": failed_pending_count},
+            "eventCounts": {"verified": len(keys("event", "model:verify")),
+                            "compared": len(keys("event", "model:compare")),
+                            "publishable": candidate_count},
+            "coverageStatus": "complete" if scan_state == "completed" and not failures else "partial",
+            "nextRetryAt": next_retry_at, "safeFailures": failures,
+            "strategyBinding": None if scan[2] is None or scan[3] is None else
+                {"configId": scan[2], "revision": int(scan[3]), "contentSha256": scan[4]},
+            "executionBinding": None if task_id is None else
+                {"configId": scan[6], "revision": scan[7], "contentSha256": scan[8], "bindingKind": scan[9]},
+            "taskId": task_id}
 
 
 def finish_task(
@@ -1582,6 +1953,7 @@ def finish_task(
     now_text = finished_at.astimezone(timezone.utc).isoformat(timespec="seconds")
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
+        checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint)
         changed = conn.execute(
             "UPDATE k10_tasks SET status=?,stage=?,checkpoint_json=?,error_text=?,lease_owner=NULL,lease_until=NULL,"
             "updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
@@ -1589,6 +1961,122 @@ def finish_task(
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务租约已失效或不属于当前 worker")
+        conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
+
+
+def schedule_task_retry(
+    *, task_id: str, worker_id: str, stage: str, checkpoint: Mapping[str, Any], safe_error_code: str,
+    not_before_at: datetime, scheduled_at: datetime, retry_kind: str, max_failure_attempts: int, db_path: Path,
+) -> bool:
+    """Schedule a slice continuation or bounded failure retry without a terminal notification."""
+    if (not safe_error_code or not stage or not_before_at.tzinfo is None or scheduled_at.tzinfo is None or
+        retry_kind not in {"continuation", "failure"} or isinstance(max_failure_attempts, bool) or
+        not isinstance(max_failure_attempts, int) or max_failure_attempts < 1):
+        raise ValueError("延后重试需要安全错误码、阶段和带时区时间")
+    not_before = not_before_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+    now_text = scheduled_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute(
+            "SELECT t.attempt_count,COALESCE(r.failure_attempt_count,0),t.checkpoint_json FROM k10_tasks t "
+            "LEFT JOIN k10_task_retry_schedules r ON r.task_id=t.task_id "
+            "WHERE t.task_id=? AND t.status='running' AND t.lease_owner=? AND t.lease_until >= ?",
+            (task_id, worker_id, now_text),
+        ).fetchone()
+        if row is None:
+            raise K10Conflict("任务租约已失效或不属于当前 worker")
+        failure_count = int(row[1]) + (1 if retry_kind == "failure" else 0)
+        if retry_kind == "failure" and failure_count >= max_failure_attempts:
+            return False
+        checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint, existing_raw=row[2])
+        changed = conn.execute(
+            "UPDATE k10_tasks SET status='queued',stage='retry_scheduled',checkpoint_json=?,error_text=?,"
+            "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
+            (_json(checkpoint), safe_error_code, now_text, task_id, worker_id),
+        ).rowcount
+        if changed != 1:
+            raise K10Conflict("任务重试排程未取得当前租约")
+        conn.execute(
+            "INSERT INTO k10_task_retry_schedules(task_id,not_before_at,scheduled_attempt_count,failure_attempt_count,retry_kind,safe_error_code,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET not_before_at=excluded.not_before_at,"
+            "scheduled_attempt_count=excluded.scheduled_attempt_count,failure_attempt_count=excluded.failure_attempt_count,"
+            "retry_kind=excluded.retry_kind,safe_error_code=excluded.safe_error_code,updated_at=excluded.updated_at",
+            (task_id, not_before, int(row[0]), failure_count, retry_kind, safe_error_code, now_text, now_text),
+        )
+    return True
+
+
+def _execution_started_at(raw: object) -> str | None:
+    if not isinstance(raw, Mapping):
+        return None
+    value = raw.get("executionStartedAt")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[str, Any], existing_raw: object | None = None) -> dict[str, Any]:
+    """Carry the task-owned whole-run start across handler checkpoint replacement."""
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("任务 checkpoint 必须是对象")
+    existing = existing_raw
+    if existing is None:
+        row = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        existing = row[0] if row is not None else None
+    try:
+        parsed = json.loads(existing) if isinstance(existing, str) else existing
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    started = _execution_started_at(parsed)
+    merged = dict(checkpoint)
+    if started is not None:
+        merged["executionStartedAt"] = started
+    return merged
+
+
+def ensure_task_execution_started(
+    *, task_id: str, worker_id: str, started_at: datetime, db_path: Path,
+) -> str:
+    """Persist the first real handler-entry time for one explicitly bound task.
+
+    This is intentionally task state rather than process state: slice retries,
+    lease recovery and a restarted worker continue the same whole-run deadline.
+    """
+    if not worker_id or started_at.tzinfo is None:
+        raise ValueError("任务执行起点需要 worker 与带时区时间")
+    now_text = started_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute(
+            "SELECT checkpoint_json FROM k10_tasks WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
+            (task_id, worker_id, now_text),
+        ).fetchone()
+        if row is None:
+            raise K10Conflict("任务租约已失效或不属于当前 worker")
+        try:
+            checkpoint = json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("任务 checkpoint 无效") from exc
+        if not isinstance(checkpoint, Mapping):
+            raise K10Conflict("任务 checkpoint 无效")
+        existing = _execution_started_at(checkpoint)
+        if existing is not None:
+            return existing
+        stored = dict(checkpoint)
+        stored["executionStartedAt"] = now_text
+        changed = conn.execute(
+            "UPDATE k10_tasks SET checkpoint_json=?,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
+            (_json(stored), now_text, task_id, worker_id, now_text),
+        ).rowcount
+        if changed != 1:
+            raise K10Conflict("任务执行起点未取得当前租约")
+    return now_text
 
 
 def renew_task_lease(
@@ -1629,6 +2117,7 @@ def retry_task(
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务不是可重试的当前失败版本")
+        conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
         row = conn.execute(
             "SELECT task_id,kind,status,attempt_count,lease_owner,lease_until,payload_json FROM k10_tasks WHERE task_id=?",
             (task_id,),
@@ -2252,15 +2741,15 @@ def list_company_window_evaluations(*, company_window_id: str | None = None, db_
 __all__ = [
     "K10Conflict", "append_analysis_revision", "append_candidate_action", "append_company_mapping", "append_company_window_action",
     "append_company_window_evaluation", "append_document_version", "append_market_day_fact",
-    "append_morning_update", "append_opportunity_update", "append_run_config", "append_source_watermark",
+    "append_execution_config", "append_morning_update", "append_opportunity_update", "append_run_config", "append_source_watermark",
     "append_event_revision", "candidate_state", "claim_task_by_id", "claim_tasks", "create_candidate",
-    "create_scan", "enqueue_task", "finalize_scan", "finish_task", "freeze_company_window_selection",
+    "bind_scan_execution", "bind_task_execution", "completed_execution_items", "create_scan", "enqueue_task", "execution_progress_for_scan", "finalize_scan", "finish_task", "freeze_company_window_selection",
     "get_candidate", "get_company_window_selection", "get_observation", "get_opportunity", "get_opportunity_for_candidate", "get_publication_batch", "get_scan",
     "latest_document_version", "latest_event_revision", "latest_market_day_facts", "latest_source_watermark", "list_candidates",
     "list_company_windows", "list_company_window_evaluations", "list_market_day_facts", "list_observations", "list_opportunities", "market_day_fact_id",
     "list_opportunity_lifecycle_events", "list_publication_batches", "list_publication_samples", "list_scans", "list_source_document_versions",
     "load_analysis_revision", "load_candidate_context", "load_document_versions", "load_observation_context",
-    "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities", "read_run_config",
-    "reopen_scan", "renew_task_lease", "retry_task", "task_execution_input", "update_running_scan_coverage",
+    "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities", "read_execution_config", "read_run_config",
+    "record_execution_checkpoint", "reopen_scan", "renew_task_lease", "retry_task", "schedule_task_retry", "task_execution_input", "task_execution_profile", "update_running_scan_coverage",
     "withdraw_opportunity",
 ]

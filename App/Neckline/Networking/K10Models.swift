@@ -64,10 +64,33 @@ struct K10SourceReplay: Codable, Equatable {
     let sourceKey: String?; let nominalStartAt: String?; let effectiveStartAt: String?
     let replayStartAt: String?; let cutoffAt: String?; let replaySeconds: Int?; let requestState: String?
 }
+struct K10ExecutionDocumentCounts: Codable, Equatable {
+    let received: Int; let deduplicated: Int; let templateSkipped: Int; let understood: Int; let fullText: Int; let failedPending: Int
+}
+struct K10ExecutionEventCounts: Codable, Equatable {
+    let verified: Int; let compared: Int; let publishable: Int?
+}
+struct K10SafeExecutionFailure: Codable, Identifiable, Equatable {
+    let stage: String; let code: String; let ref: String?
+    var id: String { "\(stage)#\(code)#\(ref ?? "scan")" }
+}
+struct K10ExecutionProgress: Codable, Equatable {
+    let state: String; let stage: String?; let documentCounts: K10ExecutionDocumentCounts; let eventCounts: K10ExecutionEventCounts
+    let coverageStatus: String; let nextRetryAt: String?; let safeFailures: [K10SafeExecutionFailure]
+    var strategyBinding: [String: K10Value]? = nil
+    var executionBinding: [String: K10Value]? = nil
+}
+struct K10NotificationReadiness: Codable, Equatable {
+    let state: String; let reasonCode: String?; let nextRetryAt: String?; let checkedAt: String
+}
+struct K10OperationsReadiness: Codable, Equatable {
+    let schemaVersion: String; let notificationReadiness: K10NotificationReadiness
+}
 struct K10Scan: Codable, Identifiable, Equatable {
     let schemaVersion: String; let scanId: String; let window: String; let cutoffAt: String; let status: String; let coverageStatus: String
     let coverageGaps: [String]; let sourceCoverage: [K10SourceCoverage]; let createdAt: String; let completedAt: String?
     var sourceReplay: K10SourceReplay? = nil
+    var executionProgress: K10ExecutionProgress? = nil
     var id: String { scanId }
 }
 

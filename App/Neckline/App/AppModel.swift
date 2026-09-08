@@ -28,6 +28,7 @@ struct K10CacheContext: Hashable {
     var analysisRequestInFlightWindowIDs: Set<String> = []
     var results: K10Results?
     var configuration: K10Configuration?
+    var operationsReadiness: K10OperationsReadiness?
     var usage: K10UsageSummary?
     var providers: [K10Provider] = []
     var tavilyKeySet = false
@@ -80,7 +81,7 @@ struct K10CacheContext: Hashable {
     }
     func resetForConnectionChange() {
         advanceConnectionGeneration()
-        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; usage = nil; providers = []; tavilyKeySet = false
+        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; usage = nil; providers = []; tavilyKeySet = false
         selectedOpportunity = nil; selectedWindow = nil; lastAvailableAt = nil; offline = false; state = .idle; cacheClearer()
     }
     func refresh() async {
@@ -109,6 +110,7 @@ struct K10CacheContext: Hashable {
             async let morningReportTask = service.latestMorningReport()
             async let resultTask = service.results()
             async let configurationTask = service.configuration()
+            async let operationsReadinessTask = service.operationsReadiness()
             async let usageTask = service.usageSummary()
             let scans = try await [evening, morning].compactMap { $0 }
             let newPublications = try await publicationsTask
@@ -142,6 +144,10 @@ struct K10CacheContext: Hashable {
             do { newConfiguration = try await configurationTask }
             catch is CancellationError { throw CancellationError() }
             catch { newConfiguration = nil }
+            let newOperationsReadiness: K10OperationsReadiness?
+            do { newOperationsReadiness = try await operationsReadinessTask }
+            catch is CancellationError { throw CancellationError() }
+            catch { newOperationsReadiness = operationsReadiness }
             let newUsage: K10UsageSummary?
             do { newUsage = try await usageTask }
             catch is CancellationError { throw CancellationError() }
@@ -160,6 +166,7 @@ struct K10CacheContext: Hashable {
             scanSummaries = scans
             results = newResults
             configuration = newConfiguration
+            operationsReadiness = newOperationsReadiness
             usage = newUsage
             lastAvailableAt = publications.map(\.availableAt).max()
             analysisChains = analysisChains.filter { entry in newWindows.contains { $0.companyWindowId == entry.key } }

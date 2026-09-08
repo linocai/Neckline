@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -27,10 +27,19 @@ class TaskResult:
     stage: str
     checkpoint: Mapping[str, Any] = field(default_factory=dict)
     error: str | None = None
+    retry_at: datetime | None = None
+    retry_kind: str | None = None
+    safe_error_code: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in {"completed", "failed", "not_configured", "cancelled"}:
             raise ValueError("TaskResult requires a terminal task status")
+        if self.retry_at is None:
+            if self.retry_kind is not None or self.safe_error_code is not None:
+                raise ValueError("retry metadata requires retry_at")
+        elif (self.retry_at.tzinfo is None or self.status != "failed" or
+              self.retry_kind not in {"continuation", "failure"} or not self.safe_error_code):
+            raise ValueError("deferred TaskResult requires failed status, timezone, retry kind and safe error code")
 
 
 @dataclass(frozen=True)
@@ -43,6 +52,10 @@ class TaskContext:
     db_path: Path
     lease_lost: threading.Event
     assert_lease: Callable[[], None] | None = None
+    execution_profile: Mapping[str, Any] | None = None
+    failure_attempt_count: int = 0
+    execution_started_at: datetime | None = None
+    execution_deadline_at: datetime | None = None
 
     def require_lease(self) -> None:
         """Handlers call this before publishing artifacts or doing another call."""
@@ -59,12 +72,25 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _execution_deadline(*, profile: Mapping[str, Any], started_at: datetime) -> datetime:
+    payload = profile.get("payload")
+    discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+    seconds = discovery.get("completionDeadlineSeconds") if isinstance(discovery, Mapping) else None
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1:
+        raise ValueError("执行配置缺少 completionDeadlineSeconds")
+    return started_at + timedelta(seconds=seconds)
+
+
 def _context(task: Task, db_path: Path, lease_lost: threading.Event, clock: Callable[[], datetime]) -> TaskContext:
     with read_connection(db_path) as connection:
         require_schema(connection)
         row = connection.execute(
-            "SELECT budget_json,checkpoint_json,input_version,input_cutoff_at "
-            "FROM k10_tasks WHERE task_id=?", (task.task_id,),
+            "SELECT t.budget_json,t.checkpoint_json,t.input_version,t.input_cutoff_at,"
+            "b.execution_config_id,b.execution_config_revision,b.execution_content_sha256,b.binding_kind,c.payload_json,"
+            "COALESCE(r.failure_attempt_count,0) FROM k10_tasks t "
+            "LEFT JOIN k10_task_execution_bindings b ON b.task_id=t.task_id "
+            "LEFT JOIN k10_execution_config_revisions c ON c.config_id=b.execution_config_id AND c.revision=b.execution_config_revision "
+            "LEFT JOIN k10_task_retry_schedules r ON r.task_id=t.task_id WHERE t.task_id=?", (task.task_id,),
         ).fetchone()
     if row is None:
         raise store.K10Conflict("任务已不存在")
@@ -77,7 +103,10 @@ def _context(task: Task, db_path: Path, lease_lost: threading.Event, clock: Call
         if current is None or current[0] != "running" or current[1] != task.lease_owner or not current[2] or current[2] < now:
             lease_lost.set()
             raise store.K10Conflict("任务租约已失效，请等待恢复")
-    return TaskContext(task, json.loads(row[0]), json.loads(row[1]), row[2], row[3], db_path, lease_lost, assert_lease)
+    profile = None if row[4] is None else {"configId": row[4], "revision": int(row[5]), "contentSha256": row[6],
+                                            "bindingKind": row[7], "payload": json.loads(row[8])}
+    return TaskContext(task, json.loads(row[0]), json.loads(row[1]), row[2], row[3], db_path, lease_lost,
+                       assert_lease, profile, int(row[9]))
 
 
 def run_once(
@@ -123,12 +152,20 @@ def run_once(
         handler = handlers.get(task.kind)
         if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
             result = TaskResult("not_configured", "configuration", error="任务重试上限未配置")
-        elif task.attempt_count > maximum:
+        elif context.execution_profile is None and task.attempt_count > maximum:
             result = TaskResult("failed", "attempt_limit", context.checkpoint, "任务已达到重试上限")
         elif handler is None:
             result = TaskResult("not_configured", "configuration", error="任务处理器尚未配置")
         else:
             try:
+                if context.execution_profile is not None:
+                    started_text = store.ensure_task_execution_started(
+                        task_id=task.task_id, worker_id=worker_id, started_at=clock(), db_path=db_path,
+                    )
+                    started_at = datetime.fromisoformat(started_text)
+                    context = replace(context, execution_started_at=started_at,
+                                      execution_deadline_at=_execution_deadline(profile=context.execution_profile,
+                                                                               started_at=started_at))
                 result = handler(context)
                 if not isinstance(result, TaskResult):
                     raise TypeError("K10 handler must return TaskResult")
@@ -140,10 +177,19 @@ def run_once(
                 logger.warning("K10 task failed: %s (%s)", task.task_id, type(exc).__name__)
                 result = TaskResult("failed", "execution", context.checkpoint, "任务执行失败，可查看已完成资料并重试")
         context.require_lease()
-        store.finish_task(
-            task_id=task.task_id, worker_id=worker_id, status=result.status, stage=result.stage,
-            checkpoint=result.checkpoint, error_text=result.error, finished_at=clock(), db_path=db_path,
-        )
+        if result.retry_at is not None:
+            scheduled = store.schedule_task_retry(
+                task_id=task.task_id, worker_id=worker_id, stage=result.stage, checkpoint=result.checkpoint,
+                safe_error_code=str(result.safe_error_code), not_before_at=result.retry_at, scheduled_at=clock(),
+                retry_kind=str(result.retry_kind), max_failure_attempts=maximum, db_path=db_path,
+            )
+            if not scheduled:
+                result = TaskResult("failed", "attempt_limit", result.checkpoint, "任务已达到重试上限")
+        if result.retry_at is None:
+            store.finish_task(
+                task_id=task.task_id, worker_id=worker_id, status=result.status, stage=result.stage,
+                checkpoint=result.checkpoint, error_text=result.error, finished_at=clock(), db_path=db_path,
+            )
     finally:
         stopped.set()
         heartbeat_thread.join()

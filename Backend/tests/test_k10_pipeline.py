@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 import json
 import threading
 import pytest
 
-from neckline.k10 import store
-from neckline.k10.discovery import CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventComparison, EventDraft, Verification
-from neckline.k10.pipeline import DeepSeekDiscoveryModel, PipelineError, _run_morning_reviews, execute_scan
+from neckline.k10 import pipeline, store
+from neckline.k10.cli import frozen_scan_input_sha256, recover_scan
+from neckline.k10.discovery import CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventComparison, EventDraft, Verification, prepare_document_for_analysis, run_discovery
+from neckline.k10.pipeline import DeepSeekDiscoveryModel, PipelineError, _CheckpointedDiscoveryModel, _run_morning_reviews, execute_scan
 from neckline.k10.schema import initialize_schema as _initialize_schema
 from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchResult
 from neckline.k10.universe import CompanyMetadata
@@ -47,6 +49,22 @@ def _configuration():
     configuration = json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
     configuration["sourceAdapters"] = [{"key": "fixture-source", "lateArrivalReplaySeconds": 86400}]
     return configuration
+
+
+def _deepseek(provider, **kwargs):
+    model = DeepSeekDiscoveryModel(provider, **kwargs)
+    model.set_execution_policy({
+        "documentBatchSize": 2, "understandConcurrency": 2, "keyPassageMaxCharacters": 1000,
+        "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0, "retryBackoffSeconds": [1], "taskSliceSeconds": 60,
+        "completionDeadlineSeconds": 7200, "continuationDelaySeconds": 1,
+        "modelOptions": {
+            "understand": {"maxTokens": 1800, "thinking": {"type": "disabled"}},
+            "verify": {"maxTokens": 1800, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+            "companyComparison": {"maxTokens": 1800, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+            "prioritize": {"maxTokens": 1800, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+        },
+    })
+    return model
 
 
 
@@ -364,15 +382,14 @@ def test_failed_frozen_scan_reopens_without_changing_its_identity(tmp_path):
                 raise RuntimeError("synthetic")
             return super().understand(document=document)
     model = FailsThenWorks()
-    import pytest
-    with pytest.raises(RuntimeError):
-        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path, adapter=_Adapter(),
-                     model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="recover-task")
+    first = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path, adapter=_Adapter(),
+                         model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="recover-task")
+    assert first.status == "completed" and first.stage == "partial_coverage"
     scan_id = next(item["scanId"] for item in store.list_scans(window_kind="evening", db_path=path) if item["scanId"].startswith("scan_"))
-    assert store.get_scan(scan_id=scan_id, db_path=path)["status"] == "failed"
+    assert store.get_scan(scan_id=scan_id, db_path=path)["status"] == "partial"
     recovered = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path, adapter=_Adapter(),
                              model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1), scan_identity="recover-task")
-    assert recovered.status == "completed" and recovered.checkpoint["scanId"] == scan_id
+    assert recovered.status == "completed" and recovered.stage == "scan_replayed" and recovered.checkpoint["scanId"] == scan_id
 
 
 def test_recovery_reuses_frozen_window_and_snapshot_after_source_watermark_advances(tmp_path):
@@ -388,10 +405,9 @@ def test_recovery_reuses_frozen_window_and_snapshot_after_source_watermark_advan
             return super().understand(document=document)
 
     adapter, model = _Adapter(), FailsOnce()
-    import pytest
-    with pytest.raises(RuntimeError):
-        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                     adapter=adapter, model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="frozen")
+    first_result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                                adapter=adapter, model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="frozen")
+    assert first_result.status == "completed" and first_result.stage == "partial_coverage"
     scan_id = _scan_id_for(path, "frozen")
     failed = store.get_scan(scan_id=scan_id, db_path=path)
     assert failed["coverage"]["inputSnapshotFrozen"] is True
@@ -401,7 +417,7 @@ def test_recovery_reuses_frozen_window_and_snapshot_after_source_watermark_advan
     recovered = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
                              adapter=adapter, model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
                              scan_identity="frozen")
-    assert recovered.status == "completed"
+    assert recovered.status == "completed" and recovered.stage == "scan_replayed"
     assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
     assert adapter.request.previous_cursor == "old-cursor"
 
@@ -425,10 +441,10 @@ def test_frozen_retry_keeps_only_the_original_market_wide_documents(tmp_path):
             return super().understand(document=document)
 
     model = FailsOnce()
-    with pytest.raises(RuntimeError):
-        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
-                     scan_identity="frozen-source-boundary", verification_gateway=_FixtureVerificationGateway())
+    first_result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                                adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                                scan_identity="frozen-source-boundary", verification_gateway=_FixtureVerificationGateway())
+    assert first_result.status == "completed" and first_result.stage == "partial_coverage"
     scan_id = _scan_id_for(path, "frozen-source-boundary")
     frozen = store.get_scan(scan_id=scan_id, db_path=path)["coverage"]["inputDocumentRefs"]
     assert len(frozen) == 1
@@ -437,8 +453,8 @@ def test_frozen_retry_keeps_only_the_original_market_wide_documents(tmp_path):
     recovered = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
                              adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
                              scan_identity="frozen-source-boundary", verification_gateway=_FixtureVerificationGateway())
-    assert recovered.status == "completed"
-    assert model.seen == ["公司的原始公告文本", "公司的原始公告文本"]
+    assert recovered.status == "completed" and recovered.stage == "scan_replayed"
+    assert model.seen == ["公司的原始公告文本"]
 
 
 def test_recovery_publishes_frozen_model_draft_without_second_model_run(tmp_path, monkeypatch):
@@ -583,15 +599,16 @@ class _Provider(LLMProvider):
             outputs = (*outputs[:3], json.dumps({"output": json.loads(outputs[3])}))
         self._outputs = iter(outputs)
 
-    def chat(self, messages, *, enable_search=True, search_query=None, response_format=None, transport=None):
-        self.calls.append((messages, enable_search, response_format))
+    def chat(self, messages, *, enable_search=True, search_query=None, response_format=None, transport=None,
+             model_options=None):
+        self.calls.append((messages, enable_search, response_format, model_options))
         return LLMResult(ok=True, content=next(self._outputs), provider="fixture", model="deepseek-v4-pro",
                          prompt_tokens=3, completion_tokens=4, total_tokens=7, usage_unavailable=False)
 
 
 def test_deepseek_discovery_model_uses_structured_json_and_preserves_usage():
     provider = _Provider()
-    model = DeepSeekDiscoveryModel(provider)
+    model = _deepseek(provider)
     model.set_scan_cutoff(CUTOFF)
     document = DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "不可信资料", None, {})
     event = model.understand(document=document)[0]
@@ -605,7 +622,7 @@ def test_deepseek_discovery_model_uses_structured_json_and_preserves_usage():
     assert comparison.summary == "事件共同比较"
     assert comparison.candidates["300001.SZ"].summary == "比较"
     assert verification.state == "verified"
-    assert all(search is False and output == {"type": "json_object"} for _, search, output in provider.calls)
+    assert all(search is False and output == {"type": "json_object"} for _, search, output, _ in provider.calls)
     assert "不可信证据数据" in provider.calls[0][0][0].content
     def payload(call):
         content = call[0][1].content
@@ -637,11 +654,11 @@ def test_deepseek_cannot_self_verify_or_cite_unfrozen_evidence():
             return LLMResult(ok=True, content=output, provider="fixture", model="deepseek-v4-pro",
                              prompt_tokens=1, completion_tokens=1, total_tokens=2, usage_unavailable=False)
 
-    source_only = DeepSeekDiscoveryModel(Provider({"documentId": "doc", "revision": 1}))
+    source_only = _deepseek(Provider({"documentId": "doc", "revision": 1}))
     event = source_only.understand(document=DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {}))[0]
     assert source_only.verify(event).state == "needs_review"
 
-    unfrozen = DeepSeekDiscoveryModel(Provider({"documentId": "invented", "revision": 9}))
+    unfrozen = _deepseek(Provider({"documentId": "invented", "revision": 9}))
     event = unfrozen.understand(document=DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {}))[0]
     with pytest.raises(PipelineError, match="未输入的冻结资料"):
         unfrozen.verify(event)
@@ -663,7 +680,7 @@ def test_deepseek_missing_verification_refs_is_a_reviewable_gap(state, refs):
             return LLMResult(ok=True, content=content, provider="fixture", model="deepseek-v4-pro",
                              prompt_tokens=1, completion_tokens=1, total_tokens=2, usage_unavailable=False)
 
-    model = DeepSeekDiscoveryModel(Provider())
+    model = _deepseek(Provider())
     event = model.understand(document=DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {}))[0]
     verification = model.verify(event)
     assert verification.state == "needs_review"
@@ -673,7 +690,7 @@ def test_deepseek_missing_verification_refs_is_a_reviewable_gap(state, refs):
 
 def test_deepseek_compare_accepts_only_the_actual_sole_output_wrapper():
     provider = _Provider(wrap_compare=True)
-    model = DeepSeekDiscoveryModel(provider)
+    model = _deepseek(provider)
     document = DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {})
     event = model.understand(document=document)[0]
     evidence = DiscoveryDocument("tavily-doc", 1, (CUTOFF - timedelta(hours=1)).isoformat(),
@@ -706,13 +723,13 @@ def test_deepseek_mapping_discards_hk_counterparty_but_rejects_unknown_code_form
                              prompt_tokens=1, completion_tokens=1, total_tokens=2, usage_unavailable=False)
 
     document = DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {})
-    model = DeepSeekDiscoveryModel(Provider("02015.HK"))
+    model = _deepseek(Provider("02015.HK"))
     event = model.understand(document=document)[0]
     mappings = model.map_companies(event=event, verification=Verification("needs_review", "待核", event.source_refs))
     assert [mapping.company_code for mapping in mappings] == ["300207.SZ"]
     assert "港/美股" in model.provider.calls[1][1].content
 
-    malformed = DeepSeekDiscoveryModel(Provider("L2015.HK"))
+    malformed = _deepseek(Provider("L2015.HK"))
     event = malformed.understand(document=document)[0]
     with pytest.raises(PipelineError, match="TuShare ts_code"):
         malformed.map_companies(event=event, verification=Verification("needs_review", "待核", event.source_refs))
@@ -874,10 +891,10 @@ def test_retry_keeps_the_original_opportunity_history_used_for_classification(tm
             return super().understand(document=document)
 
     model = Interrupted()
-    with pytest.raises(RuntimeError):
-        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
-                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
-                     scan_identity="history-frozen")
+    first_result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                                adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                                scan_identity="history-frozen")
+    assert first_result.status == "completed" and first_result.stage == "partial_coverage"
     first = next(row for row in store.list_scans(window_kind="evening", db_path=path) if row["scanId"] != "previous")
     assert first["coverage"]["inputOpportunitySnapshot"] == []
     monkeypatch.setattr(pipeline, "_existing_opportunity_context", lambda **_: pytest.fail("retry must not read later history"))
@@ -885,7 +902,7 @@ def test_retry_keeps_the_original_opportunity_history_used_for_classification(tm
                           adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
                           scan_identity="history-frozen")
     assert result.status == "completed"
-    assert model.histories == [[], []]
+    assert model.histories == [[]]
     recovered = store.get_scan(scan_id=first["scanId"], db_path=path)
     assert recovered["coverage"]["inputVisibleAt"] == first["coverage"]["inputVisibleAt"]
 
@@ -924,7 +941,7 @@ def test_event_comparison_classifies_historical_case_only_from_frozen_source_quo
             }, ensure_ascii=False), provider="fixture", model="fixture")
 
     event = EventDraft("current", "order", "confirmed", "当前事件", "disclosure", {"mechanism": "材料"}, (EvidenceRef("doc-current", 1),))
-    model = DeepSeekDiscoveryModel(Provider(), historical_context_loader=lambda **_: {
+    model = _deepseek(Provider(), historical_context_loader=lambda **_: {
         "historicalCases": [{"caseId": "external:doc-history@1", "outcome": "unclassified", "summary": "历史资料",
             "observedAt": "2026-08-01T09:00:00+08:00", "sourceRefs": [{"documentId": "doc-history", "revision": 1}],
             "marketFacts": [], "sourceBasedDescription": "该案例最终成功，且有公开复盘。"}],
@@ -939,3 +956,203 @@ def test_event_comparison_classifies_historical_case_only_from_frozen_source_quo
     history = comparison.candidates["300001.SZ"].historical_cases
     assert history[0]["outcome"] == "success"
     assert history[0]["categoryEvidence"] == [{"documentId": "doc-history", "revision": 1, "quote": "该案例最终成功"}]
+
+
+def test_task_bound_model_stage_retries_provider_failure_once_and_caches_the_validated_result(tmp_path):
+    """The B36 retry budget is consumed in the same run, not left for a lucky future slice."""
+    path = tmp_path / "stage-retry.sqlite"
+    initialize_schema(path)
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    profile["discovery"]["networkMaxAttempts"] = 2
+    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    store.enqueue_task(task_id="task-stage", kind="evening_scan", idempotency_key="task-stage", input_version="fixture",
+                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    binding = store.bind_task_execution(task_id="task-stage", execution_config_id="execution", execution_config_revision=revision,
+                                        binding_kind="scheduled", bound_at=CREATED.isoformat(), db_path=path)
+
+    class Base:
+        def __init__(self): self.calls, self.usage_records = 0, []
+        def verify(self, _event):
+            self.calls += 1
+            self.usage_records.append({"inputTokens": 3, "outputTokens": 2, "totalTokens": 5})
+            if self.calls == 1:
+                raise PipelineError("temporary provider outage", code="provider_transport")
+            return Verification("verified", "独立资料确认", (EvidenceRef("doc-1", 1),))
+
+    base = Base()
+    model = _CheckpointedDiscoveryModel(base=base, task_id="task-stage", execution_profile=binding,
+                                        cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    event = EventDraft("event-1", "initial", "confirmed", "事件", "disclosure", {}, (EvidenceRef("doc-1", 1),))
+    assert model.verify(event).state == "verified"
+    assert base.calls == 2
+    rows = store.completed_execution_items(task_id="task-stage", item_kind="event", stage="model:verify", db_path=path)
+    assert len(rows) == 1 and rows[0]["networkAttemptCount"] == 2
+    assert rows[0]["inputTokens"] == 6 and rows[0]["outputTokens"] == 4
+    assert model.verify(event).state == "verified"
+    assert base.calls == 2  # exact same frozen input hydrates cache, never calls provider again
+
+
+def test_task_bound_truncation_is_pending_without_repeating_identical_request(tmp_path):
+    """More output capacity must be an explicit new profile/input, never a blind retry."""
+    path = tmp_path / "stage-truncated.sqlite"
+    initialize_schema(path)
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    assert profile["discovery"]["modelOptions"]["understand"]["maxTokens"] == 8192
+    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    store.enqueue_task(task_id="task-truncated", kind="evening_scan", idempotency_key="task-truncated", input_version="fixture",
+                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    binding = store.bind_task_execution(task_id="task-truncated", execution_config_id="execution", execution_config_revision=revision,
+                                        binding_kind="scheduled", bound_at=CREATED.isoformat(), db_path=path)
+
+    class Base:
+        def __init__(self): self.calls, self.usage_records = 0, []
+        def verify(self, _event):
+            self.calls += 1
+            self.usage_records.append({"inputTokens": 9, "outputTokens": 8192, "totalTokens": 8201})
+            raise PipelineError("output limit", code="response_truncated")
+
+    event = EventDraft("event-1", "initial", "confirmed", "事件", "disclosure", {}, (EvidenceRef("doc-1", 1),))
+    model = _CheckpointedDiscoveryModel(base=Base(), task_id="task-truncated", execution_profile=binding,
+                                        cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    with pytest.raises(PipelineError, match="模型阶段未完成") as raised:
+        model.verify(event)
+    assert raised.value.code == "response_truncated"
+    # An unchanged item/input is a terminal pending error: a later slice reads
+    # the safe ledger state and does not spend another identical 8192-token call.
+    with pytest.raises(PipelineError) as retried:
+        model.verify(event)
+    assert retried.value.code == "response_truncated"
+    assert model._base.calls == 1
+    with store.read_connection(path) as conn:
+        row = conn.execute("SELECT status,attempt_count,network_attempt_count,safe_error_code,input_tokens,output_tokens "
+                           "FROM k10_execution_item_checkpoints WHERE task_id='task-truncated' AND stage='model:verify'").fetchone()
+    assert row == ("failed", 1, 1, "response_truncated", 9, 8192)
+
+
+def test_full_text_route_marks_the_final_document_coarse_checkpoint(tmp_path):
+    """The progress marker follows a successful key→full route, not a model row name."""
+    path = tmp_path / "full-text-coarse.sqlite"
+    initialize_schema(path)
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    profile["discovery"]["keyPassageMaxCharacters"] = 12
+    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    store.enqueue_task(task_id="task-full-text", kind="evening_scan", idempotency_key="task-full-text", input_version="fixture",
+                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    binding = store.bind_task_execution(task_id="task-full-text", execution_config_id="execution", execution_config_revision=revision,
+                                        binding_kind="scheduled", bound_at=CREATED.isoformat(), db_path=path)
+
+    class Provider:
+        def __init__(self): self.calls = 0
+        def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            payload = ({"events": [], "needsFullText": True} if self.calls == 1 else {
+                "events": [{"canonicalKey": "full-event", "stageKey": "initial", "eventState": "confirmed",
+                            "headline": "全文事件", "eventKind": "disclosure", "facts": {},
+                            "sourceRefs": [{"documentId": "full-doc", "revision": 1}]}], "needsFullText": False})
+            return LLMResult(ok=True, content=json.dumps(payload), provider="fixture", model="deepseek-v4-pro",
+                             prompt_tokens=5, completion_tokens=4, total_tokens=9, usage_unavailable=False)
+
+    provider = Provider()
+    base = DeepSeekDiscoveryModel(provider)
+    base.set_execution_policy(profile["discovery"])
+    base.set_scan_cutoff(CUTOFF)
+    model = _CheckpointedDiscoveryModel(base=base, task_id="task-full-text", execution_profile=binding,
+                                        cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    document = DiscoveryDocument("full-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "第一段足够长\n第二段仍是冻结全文", None, {})
+    checkpoints: list[dict] = []
+    run = run_discovery(documents=(document,), configuration=_configuration(), model=model,
+                        verify=lambda event: Verification("needs_review", "独立资料待核", (), {"state": "pending"}),
+                        metadata=_Metadata(), cutoff_at=CUTOFF, checkpoint=checkpoints.append)
+    assert run.state == "partial" and provider.calls == 2
+    final = next(item for item in checkpoints if item["state"] == "completed")
+    assert final["fullTextUsed"] is True
+    # A process that stopped after the two model ledgers, before its coarse
+    # document write, replays both routes from the exact cache and retains the
+    # same progress fact without another provider call.
+    cached_base = DeepSeekDiscoveryModel(provider)
+    cached_base.set_execution_policy(profile["discovery"])
+    cached_base.set_scan_cutoff(CUTOFF)
+    cached = _CheckpointedDiscoveryModel(base=cached_base, task_id="task-full-text", execution_profile=binding,
+                                         cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    prepared = prepare_document_for_analysis(document)
+    assert cached.understand(document=prepared)[0].canonical_key == "full-event"
+    assert cached.full_text_used(document=prepared) is True and provider.calls == 2
+
+
+def test_task_deadline_finalizes_running_scan_without_publication(tmp_path, monkeypatch):
+    path = tmp_path / "deadline-terminal.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    execution_revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    store.enqueue_task(task_id="task-deadline", kind="evening_scan", idempotency_key="task-deadline", input_version="fixture",
+                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    binding = store.bind_task_execution(task_id="task-deadline", execution_config_id="execution",
+                                        execution_config_revision=execution_revision, binding_kind="scheduled",
+                                        bound_at=CREATED.isoformat(), db_path=path)
+
+    class Model(_Model):
+        def set_execution_policy(self, _policy): pass
+        def set_scan_cutoff(self, _cutoff): pass
+        def set_previous_opportunities(self, _previous): pass
+
+    from neckline.k10.discovery import DiscoveryDeadlineExceeded
+    monkeypatch.setattr("neckline.k10.pipeline.run_discovery", lambda **_: (_ for _ in ()).throw(DiscoveryDeadlineExceeded()))
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=_Adapter(), model=Model(), metadata=_Metadata(), created_at=CREATED,
+                          scan_identity="deadline-terminal", verification_gateway=_FixtureVerificationGateway(),
+                          task_id="task-deadline", execution_profile=binding,
+                          execution_deadline_at=CREATED + timedelta(hours=2))
+    assert result.status == "failed" and result.stage == "deadline"
+    scan = store.get_scan(scan_id=result.checkpoint["scanId"], db_path=path)
+    assert scan is not None and scan["status"] == "failed" and scan["coverage"]["executionState"] == "deadline"
+    assert store.list_publication_batches(db_path=path) == []
+
+
+def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_adapter(tmp_path, monkeypatch):
+    """The actual CLI recovery task reaches production handler without source collection."""
+    path = tmp_path / "cli-recovery.sqlite"
+    initialize_schema(path)
+    config = _configuration()
+    config["sourceAdapters"] = [{"key": "tushare-major-news", "lateArrivalReplaySeconds": 86400}]
+    strategy_revision = store.append_run_config(config_id="strategy", payload=config, created_at=CREATED.isoformat(), db_path=path)
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    execution_revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    document = store.append_document_version(
+        document_id="frozen-doc", source_key="tushare-major-news", external_id="frozen-doc", canonical_url=None,
+        content_sha256=sha256(b"frozen").hexdigest(), published_at=(CUTOFF - timedelta(minutes=1)).isoformat(),
+        published_precision="exact", fetched_at=CREATED.isoformat(), original_text="冻结资料正文", excerpt=None,
+        fetch_version="fixture", metadata={}, created_at=CREATED.isoformat(), db_path=path,
+    )
+    scan_id = "scan_" + "a" * 32
+    refs = [{"documentId": document.document_id, "revision": document.revision}]
+    store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id="strategy",
+                      config_revision=strategy_revision, status="failed", created_at=CREATED.isoformat(),
+                      completed_at=CREATED.isoformat(), db_path=path,
+                      coverage={"inputSnapshotFrozen": True, "inputDocumentRefs": refs, "ingestionState": "completed",
+                                "state": "completed", "window": {"kind": "evening", "startAt": (CUTOFF - timedelta(days=1)).isoformat(),
+                                "cutoffAt": CUTOFF.isoformat(), "startInclusive": False, "cutoffInclusive": True}})
+    task_id = recover_scan(db_path=path, scan_id=scan_id, execution_config_id="execution", execution_config_revision=execution_revision,
+                           confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=path), now=CREATED)
+
+    class Provider:
+        calls = 0
+        def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            return LLMResult(ok=True, content='{"events":[],"needsFullText":false}', provider="fixture", model="deepseek-v4-pro",
+                             prompt_tokens=7, completion_tokens=3, total_tokens=10, usage_unavailable=False)
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: type("Resolution", (), {"provider": provider, "error": None})())
+    monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", lambda **_: pytest.fail("recovery attempted source collection"))
+    task = run_once(db_path=path, worker_id="recovery-worker", lease_for=timedelta(minutes=5), clock=lambda: CREATED,
+                    handlers={"evening_scan": lambda context: pipeline.production_scan_handler(
+                        context, tushare_token=None, parquet_dir=path.parent / "parquet", now=lambda: CREATED)}, task_id=task_id)
+    assert task is not None and task.status == "completed"
+    recovered = store.get_scan(scan_id=scan_id, db_path=path)
+    assert recovered is not None and recovered["coverage"]["inputDocumentRefs"] == refs
+    assert provider.calls == 1
+    assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"

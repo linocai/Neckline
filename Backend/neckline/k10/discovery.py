@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from hashlib import sha256
+from html import unescape
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
@@ -44,10 +47,133 @@ class DiscoveryDocument:
     original_text: Optional[str]
     excerpt: Optional[str]
     metadata: Mapping[str, Any]
+    # The append-only source record remains the evidence source.  This optional derived
+    # text is only the safe, local prompt representation for this particular frozen
+    # revision; it must never be mistaken for a newly fetched source version.
+    analysis_text: Optional[str] = None
+    extraction: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def evidence_ref(self) -> EvidenceRef:
         return EvidenceRef(self.document_id, self.revision)
+
+
+_READABLE_TEXT_EXTRACTION_VERSION = "html-readable-v1"
+
+
+class _ReadableTextParser(HTMLParser):
+    """Extract visible text without following resources or interpreting markup.
+
+    The source feed contains publisher HTML, including scripts and advertising widgets.
+    ``HTMLParser`` is used only as a local tokenizer: it neither evaluates attributes nor
+    resolves URLs.  Tables become line-oriented text so quantities and labels stay paired.
+    """
+
+    _DROP_CONTAINERS = frozenset({"script", "style", "template", "iframe", "object", "svg", "canvas"})
+    _DROP_VOID = frozenset({"embed"})
+    _BREAK = frozenset({"p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._dropped = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lowered = tag.lower()
+        if lowered in self._DROP_CONTAINERS:
+            self._dropped += 1
+            return
+        if lowered in self._DROP_VOID:
+            return
+        if self._dropped:
+            return
+        if lowered in self._BREAK:
+            self._parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() not in self._DROP_VOID:
+            self.handle_starttag(tag, attrs)
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered in self._DROP_CONTAINERS:
+            if self._dropped:
+                self._dropped -= 1
+            return
+        if not self._dropped and lowered in self._BREAK:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._dropped:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        # Keep paragraph boundaries but make arbitrary markup whitespace deterministic.
+        lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in "".join(self._parts).splitlines()]
+        return "\n".join(line for line in lines if line)
+
+
+def prepare_document_for_analysis(document: DiscoveryDocument) -> DiscoveryDocument:
+    """Return a frozen document with a safe local readable-text representation.
+
+    It is deliberately content-neutral: no ticker, sector, title, sentiment or benefit
+    keyword determines whether a document is retained.  The caller still decides any
+    explicitly configured template filtering separately.
+    """
+    if document.extraction.get("version") == _READABLE_TEXT_EXTRACTION_VERSION:
+        return document
+    raw = document.original_text or document.excerpt or ""
+    parser = _ReadableTextParser()
+    try:
+        parser.feed(raw)
+        parser.close()
+        readable = parser.text()
+    except (AssertionError, ValueError):
+        # HTMLParser can reject pathological declarations.  Preserve the literal text as
+        # plain input rather than interpreting it or silently losing a frozen document.
+        readable = re.sub(r"\s+", " ", unescape(raw)).strip()
+    if not readable:
+        readable = re.sub(r"\s+", " ", unescape(raw)).strip()
+    return replace(document, analysis_text=readable, extraction={
+        "version": _READABLE_TEXT_EXTRACTION_VERSION,
+        "sourceCharacters": len(raw),
+        "readableCharacters": len(readable),
+    })
+
+
+@dataclass(frozen=True)
+class DocumentFilterDecision:
+    """A deterministic pre-model decision, limited to explicit template handling."""
+
+    state: str  # include | template | needs_review
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.state not in {"include", "template", "needs_review"} or not self.reason:
+            raise ValueError("资料初筛状态无效")
+
+
+@dataclass(frozen=True)
+class DiscoveryIssue:
+    """Safe, durable status for an independently failed unit; never model output."""
+
+    stage: str
+    code: str
+    document_ref: EvidenceRef | None = None
+    canonical_key: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.stage or not self.code:
+            raise ValueError("发现失败状态缺少阶段或错误码")
+
+
+class DiscoverySliceYield(RuntimeError):
+    """Cooperative execution boundary; never a model/data failure."""
+
+
+class DiscoveryDeadlineExceeded(RuntimeError):
+    """The task's one persisted completion deadline elapsed; do not publish partial work."""
 
 
 @dataclass(frozen=True)
@@ -178,6 +304,8 @@ class DiscoveryRun:
     deferred_count: int
     updates: tuple[DiscoveryCandidate, ...] = ()
     background: tuple[DiscoveryCandidate, ...] = ()
+    issues: tuple[DiscoveryIssue, ...] = ()
+    document_counts: Mapping[str, int] = field(default_factory=dict)
 
 
 class DiscoveryWriter(Protocol):
@@ -397,24 +525,83 @@ def _open_event_opportunities(*, previous: Sequence[Mapping[str, Any]],
     )
 
 
+def freeze_event_drafts(events: Sequence[EventDraft]) -> list[dict[str, Any]]:
+    """Serialize only validated event drafts for a per-document recovery record."""
+    return [{"canonicalKey": event.canonical_key, "stageKey": event.stage_key,
+             "eventState": event.event_state, "headline": event.headline,
+             "eventKind": event.event_kind, "facts": dict(event.facts),
+             "sourceRefs": [_ref_payload(ref) for ref in event.source_refs]}
+            for event in events]
+
+
+def thaw_event_drafts(value: Any) -> tuple[EventDraft, ...]:
+    if not isinstance(value, list):
+        raise ValueError("理解检查点事件无效")
+    events: list[EventDraft] = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            raise ValueError("理解检查点事件无效")
+        required = ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")
+        if (any(not isinstance(row.get(key), str) or not row[key] for key in required)
+                or not isinstance(row.get("facts"), Mapping)):
+            raise ValueError("理解检查点事件无效")
+        events.append(EventDraft(row["canonicalKey"], row["stageKey"], row["eventState"],
+                                 row["headline"], row["eventKind"], dict(row["facts"]),
+                                 _refs_from_payload(row.get("sourceRefs"))))
+    return tuple(events)
+
+
+def _safe_issue_code(exc: Exception) -> str:
+    """Map implementation/provider failures to an auditable, non-sensitive code."""
+    explicit = getattr(exc, "code", None)
+    if isinstance(explicit, str) and re.fullmatch(r"[a-z0-9_]{3,64}", explicit):
+        return explicit
+    if isinstance(exc, TimeoutError):
+        return "network_timeout"
+    if isinstance(exc, ConnectionError):
+        return "network_failed"
+    if isinstance(exc, (ValueError, TypeError)):
+        return "contract_invalid"
+    return "operation_failed"
+
+
 def run_discovery(
     *, documents: Sequence[DiscoveryDocument], configuration: Mapping[str, Any] | None,
     model: DiscoveryModel, verify: VerificationFunction, metadata: CompanyMetadataProvider,
     cutoff_at: datetime, phase: str = "evening", max_evening_candidates: int = 30,
     leaseguard: Callable[[], None] | None = None,
     previous_opportunities: Sequence[Mapping[str, Any]] = (),
+    understood_by_document: Mapping[EvidenceRef, Sequence[EventDraft]] | None = None,
+    document_filter: Callable[[DiscoveryDocument], DocumentFilterDecision] | None = None,
+    checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+    understand_concurrency: int | None = None,
+    document_batch_size: int | None = None,
 ) -> DiscoveryRun:
-    """执行可注入发现链；仅晚间可生成最多 30 条新候选。"""
+    """执行可注入发现链；仅晚间可生成最多 30 条新候选。
+
+    ``document_batch_size`` is deliberately a bounded scheduling window, not a
+    provider payload batch.  At most that many document understand operations
+    may be queued or in flight; each completed document is checkpointed and
+    immediately makes room for the next one.  ``understand_concurrency`` is
+    the independent upper bound on simultaneous provider calls.  Keeping the
+    two separate prevents one slow document from turning a whole nominal batch
+    into a barrier, while still preventing an unbounded 2,000-document submit.
+    """
     if cutoff_at.tzinfo is None:
         raise ValueError("cutoff_at 必须带时区")
     if phase not in {"evening", "morning"}:
         raise ValueError("K10 discovery phase 必须是 evening 或 morning")
     if max_evening_candidates != 30:
         raise ValueError("K10 晚间候选上限固定为 30，不接受运行时策略默认或改写")
+    if understand_concurrency is not None and (isinstance(understand_concurrency, bool) or understand_concurrency < 1):
+        raise ValueError("理解并发必须是正整数")
+    if document_batch_size is not None and (isinstance(document_batch_size, bool) or document_batch_size < 1):
+        raise ValueError("理解批大小必须是正整数")
     config = validate_run_config(configuration, scope="discovery")
     if not config.ready:
         return DiscoveryRun("not_configured", config, (), (), (), (), (), (), 0)
-    available = {document.evidence_ref for document in documents}
+    prepared_documents = tuple(prepare_document_for_analysis(document) for document in documents)
+    available = {document.evidence_ref for document in prepared_documents}
     events: list[EventDraft] = []
     verified_events: list[EventVerification] = []
     all_candidates: list[DiscoveryCandidate] = []
@@ -422,24 +609,169 @@ def run_discovery(
     excluded: list[DiscoveryCandidate] = []
     updates: list[DiscoveryCandidate] = []
     background: list[DiscoveryCandidate] = []
-    understood: list[EventDraft] = []
-    for document in documents:
-        if leaseguard is not None:
-            leaseguard()
-        for event in model.understand(document=document):
+    # Checkpoints are intentionally written in completion order, but later
+    # merge/verification must be independent of thread timing and resume shape.
+    # Keep the final event stream keyed by the frozen document reference and
+    # reassemble it in frozen input order after all document work is settled.
+    understood_by_ref: dict[EvidenceRef, tuple[EventDraft, ...]] = {}
+    issues: list[DiscoveryIssue] = []
+    counts = {"input": len(prepared_documents), "templateFiltered": 0, "needsReview": 0,
+              "understood": 0, "understandFailed": 0, "eventFailed": 0}
+    recovered = understood_by_document or {}
+    pending_documents: list[DiscoveryDocument] = []
+    for document in prepared_documents:
+        if document.evidence_ref in recovered:
+            recovered_events = tuple(recovered[document.evidence_ref])
+            for event in recovered_events:
+                _validate_refs(event.source_refs, available, label="恢复事件")
+            understood_by_ref[document.evidence_ref] = recovered_events
+            counts["understood"] += 1
+            continue
+        decision = document_filter(document) if document_filter is not None else DocumentFilterDecision("include", "未配置模板过滤")
+        if decision.state == "template":
+            counts["templateFiltered"] += 1
+            if checkpoint is not None:
+                checkpoint({"stage": "understand", "state": "template", "reason": decision.reason,
+                            "documentRef": _ref_payload(document.evidence_ref), "extraction": dict(document.extraction)})
+            continue
+        if decision.state == "needs_review":
+            counts["needsReview"] += 1
+        pending_documents.append(document)
+
+    def complete_understanding(document: DiscoveryDocument, result: Sequence[EventDraft]) -> None:
+        events_for_document = tuple(result)
+        for event in events_for_document:
             _validate_refs(event.source_refs, available, label="事件")
-            understood.append(event)
+        understood_by_ref[document.evidence_ref] = events_for_document
+        counts["understood"] += 1
+        full_text_used = getattr(model, "full_text_used", None)
+        # This is a display/progress derivative only.  The model operation
+        # cache remains exactly the same validated event payload and input
+        # digest; a marker is true solely after a key→full route succeeded.
+        used_full_text = bool(full_text_used(document=document)) if callable(full_text_used) else False
+        if checkpoint is not None:
+            checkpoint({"stage": "understand", "state": "completed", "documentRef": _ref_payload(document.evidence_ref),
+                        "events": freeze_event_drafts(events_for_document), "extraction": dict(document.extraction),
+                        "fullTextUsed": used_full_text})
+
+    def fail_understanding(document: DiscoveryDocument, exc: Exception) -> None:
+        counts["understandFailed"] += 1
+        issue = DiscoveryIssue("understand", _safe_issue_code(exc), document.evidence_ref)
+        issues.append(issue)
+        if checkpoint is not None:
+            checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                        "documentRef": _ref_payload(document.evidence_ref), "extraction": dict(document.extraction)})
+
+    concurrency = understand_concurrency or 1
+    # An omitted window retains the historical "all supplied docs" behaviour
+    # for direct, non-production unit callers.  Bound production execution
+    # always supplies documentBatchSize from its frozen execution profile.
+    window = document_batch_size or len(pending_documents) or 1
+
+    def complete_future(document: DiscoveryDocument, future) -> None:
+        try:
+            # Persist in completion order.  Candidate/event ordering remains
+            # deterministic below, after all complete event work is globally
+            # prioritized; a checkpoint must never wait for a slow peer.
+            complete_understanding(document, future.result())
+        except Exception as exc:  # independent document failures are recoverable units
+            if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                raise
+            fail_understanding(document, exc)
+
+    if concurrency == 1 or len(pending_documents) <= 1:
+        for document in pending_documents:
+            if leaseguard is not None:
+                leaseguard()
+            try:
+                complete_understanding(document, model.understand(document=document))
+            except Exception as exc:  # independent document failures are recoverable units
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                    raise
+                fail_understanding(document, exc)
+    else:
+        # Submit only a fixed window.  Once a slice boundary is reached, stop
+        # admitting new work, drain the already charged requests into durable
+        # checkpoints, then yield.  This avoids losing successful peers and
+        # avoids enqueuing work that a fresh continuation cannot safely own.
+        documents_iter = iter(pending_documents)
+        yield_requested = False
+        exhausted = False
+        with ThreadPoolExecutor(max_workers=min(concurrency, window)) as executor:
+            futures: dict[Any, DiscoveryDocument] = {}
+
+            def refill() -> None:
+                nonlocal exhausted, yield_requested
+                while not exhausted and not yield_requested and len(futures) < window:
+                    try:
+                        document = next(documents_iter)
+                    except StopIteration:
+                        exhausted = True
+                        return
+                    try:
+                        if leaseguard is not None:
+                            leaseguard()
+                    except DiscoverySliceYield:
+                        yield_requested = True
+                        return
+                    futures[executor.submit(model.understand, document=document)] = document
+
+            refill()
+            if yield_requested and not futures:
+                raise DiscoverySliceYield()
+            while futures:
+                future = next(as_completed(futures))
+                document = futures.pop(future)
+                # A slice boundary affects only admission.  This completed
+                # derivative and all already in-flight peers still need their
+                # checkpoint writes before the continuation is scheduled.
+                if not yield_requested:
+                    try:
+                        if leaseguard is not None:
+                            leaseguard()
+                    except DiscoverySliceYield:
+                        yield_requested = True
+                complete_future(document, future)
+                if not yield_requested:
+                    refill()
+        if yield_requested:
+            raise DiscoverySliceYield()
+    understood = [event for document in prepared_documents
+                  for event in understood_by_ref.get(document.evidence_ref, ())]
     for event in _merge_same_event_sources(understood):
-            if leaseguard is not None:
-                leaseguard()
-            verification = verify(event)
-            available.update(document.evidence_ref for document in verification.documents)
-            _validate_refs(verification.evidence_refs, available, label="重点核验")
-            if leaseguard is not None:
-                leaseguard()
-            mappings = tuple(model.map_companies(event=event, verification=verification))
+            events.append(event)  # an understood event remains auditable if later stages fail
+            try:
+                if leaseguard is not None:
+                    leaseguard()
+                verification = verify(event)
+                available.update(document.evidence_ref for document in verification.documents)
+                _validate_refs(verification.evidence_refs, available, label="重点核验")
+                coverage_state = verification.coverage.get("state") if isinstance(verification.coverage, Mapping) else None
+                if coverage_state == "pending":
+                    # A bounded independent-evidence request that has not run is a visible
+                    # pending item, not permission to spend map/compare/classify calls on a
+                    # self-certified event.  The append-only event survives for retry.
+                    verified_events.append(EventVerification(event, verification))
+                    issue = DiscoveryIssue("verify", "verification_pending", canonical_key=event.canonical_key)
+                    issues.append(issue)
+                    if checkpoint is not None:
+                        checkpoint({"stage": issue.stage, "state": "pending", "code": issue.code,
+                                    "canonicalKey": event.canonical_key})
+                    continue
+                if leaseguard is not None:
+                    leaseguard()
+                mappings = tuple(model.map_companies(event=event, verification=verification))
+            except Exception as exc:
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                    raise
+                counts["eventFailed"] += 1
+                issue = DiscoveryIssue("verify_or_map", _safe_issue_code(exc), canonical_key=event.canonical_key)
+                issues.append(issue)
+                if checkpoint is not None:
+                    checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                "canonicalKey": event.canonical_key})
+                continue
             if not mappings:
-                events.append(event)  # stage / denial always survive as an event revision input.
                 verified_events.append(EventVerification(event, verification))
                 continue
             if len({mapping.company_code for mapping in mappings}) != len(mappings):
@@ -449,49 +781,82 @@ def run_discovery(
                 raise ValueError("发现模型缺少同事件整体公司比较")
             if leaseguard is not None:
                 leaseguard()
-            event_comparison = comparer(event=event, verification=verification, mappings=mappings)
-            _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
-            event_candidates = event_comparison.candidates
-            validate_event_comparison(
-                summary=event_comparison.summary, comparisons={
-                    code: {"summary": item.summary, "differences": item.differences, "rank": item.rank}
+            try:
+                event_comparison = comparer(event=event, verification=verification, mappings=mappings)
+                _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
+            except Exception as exc:
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                    raise
+                counts["eventFailed"] += 1
+                issue = DiscoveryIssue("compare", _safe_issue_code(exc), canonical_key=event.canonical_key)
+                issues.append(issue)
+                if checkpoint is not None:
+                    checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                "canonicalKey": event.canonical_key})
+                continue
+            try:
+                event_candidates = event_comparison.candidates
+                validate_event_comparison(
+                    summary=event_comparison.summary, comparisons={
+                        code: {"summary": item.summary, "differences": item.differences, "rank": item.rank}
+                        for code, item in event_candidates.items()
+                    }, company_codes=tuple(mapping.company_code for mapping in mappings),
+                )
+                _reject_uncalibrated_prediction(event_comparison.summary, path="eventComparison.summary")
+                _reject_uncalibrated_prediction({
+                    code: {"summary": item.summary, "differences": item.differences}
                     for code, item in event_candidates.items()
-                }, company_codes=tuple(mapping.company_code for mapping in mappings),
-            )
-            _reject_uncalibrated_prediction(event_comparison.summary, path="eventComparison.summary")
-            _reject_uncalibrated_prediction({
-                code: {"summary": item.summary, "differences": item.differences}
-                for code, item in event_candidates.items()
-            }, path="eventComparison.candidates")
-            event_candidates = {
-                code: replace(item, rank_namespace="event", event_rank=item.rank)
-                for code, item in event_candidates.items()
-            }
-            event = replace(event, facts={**event.facts, "eventComparison": {
-                "summary": event_comparison.summary,
-                "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
-                                 for ref in event_comparison.evidence_refs],
-            }})
-            events.append(event)
+                }, path="eventComparison.candidates")
+                event_candidates = {
+                    code: replace(item, rank_namespace="event", event_rank=item.rank)
+                    for code, item in event_candidates.items()
+                }
+                event = replace(event, facts={**event.facts, "eventComparison": {
+                    "summary": event_comparison.summary,
+                    "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
+                                     for ref in event_comparison.evidence_refs],
+                }})
+            except Exception as exc:
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                    raise
+                counts["eventFailed"] += 1
+                issue = DiscoveryIssue("compare", _safe_issue_code(exc), canonical_key=event.canonical_key)
+                issues.append(issue)
+                if checkpoint is not None:
+                    checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                "canonicalKey": event.canonical_key})
+                continue
+            events[-1] = event
             verified_events.append(EventVerification(event, verification))
             for mapping in mappings:
-                _validate_refs(mapping.relation_evidence, available, label="公司映射")
-                if leaseguard is not None:
-                    leaseguard()
-                comparison = event_candidates[mapping.company_code]
-                _validate_refs(comparison.evidence_refs, available, label="候选比较")
-                status = evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at))
-                classifier = getattr(model, "classify_opportunity", None)
-                if not callable(classifier):
-                    raise ValueError("发现模型缺少机会延续/新催化分类")
-                prior = tuple(old for old in previous_opportunities if old.get("companyCode") == mapping.company_code)
-                decision = validate_classification(
-                    classifier(event=event, verification=verification, mapping=mapping,
-                               comparison=comparison, previous=prior),
-                    canonical_key=event.canonical_key, stage_key=event.stage_key,
-                    company_code=mapping.company_code, previous=prior,
-                )
-                _reject_uncalibrated_prediction(decision, path="classification")
+                try:
+                    _validate_refs(mapping.relation_evidence, available, label="公司映射")
+                    if leaseguard is not None:
+                        leaseguard()
+                    comparison = event_candidates[mapping.company_code]
+                    _validate_refs(comparison.evidence_refs, available, label="候选比较")
+                    status = evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at))
+                    classifier = getattr(model, "classify_opportunity", None)
+                    if not callable(classifier):
+                        raise ValueError("发现模型缺少机会延续/新催化分类")
+                    prior = tuple(old for old in previous_opportunities if old.get("companyCode") == mapping.company_code)
+                    decision = validate_classification(
+                        classifier(event=event, verification=verification, mapping=mapping,
+                                   comparison=comparison, previous=prior),
+                        canonical_key=event.canonical_key, stage_key=event.stage_key,
+                        company_code=mapping.company_code, previous=prior,
+                    )
+                    _reject_uncalibrated_prediction(decision, path="classification")
+                except Exception as exc:
+                    if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                        raise
+                    counts["eventFailed"] += 1
+                    issue = DiscoveryIssue("classify", _safe_issue_code(exc), canonical_key=event.canonical_key)
+                    issues.append(issue)
+                    if checkpoint is not None:
+                        checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                    "canonicalKey": event.canonical_key, "companyCode": mapping.company_code})
+                    continue
                 if decision["kind"] in NEW_KINDS and verification.state != "verified":
                     # A model cannot promote a source document into a formal opportunity by
                     # calling it ``initial``/``material_stage``/``independent`` while the
@@ -587,8 +952,10 @@ def run_discovery(
             seen_keys.add(key)
             ranked = replace(candidate, display_rank=index)
             (deferred if phase == "evening" and index > max_evening_candidates else selected).append(ranked)
-    return DiscoveryRun("completed", config, tuple(events), tuple(verified_events), tuple(selected), tuple(deferred),
-                        tuple(pending), tuple(excluded), len({item.mapping.company_code for item in deferred}), tuple(updates), tuple(background))
+    state = "partial" if issues else "completed"
+    return DiscoveryRun(state, config, tuple(events), tuple(verified_events), tuple(selected), tuple(deferred),
+                        tuple(pending), tuple(excluded), len({item.mapping.company_code for item in deferred}), tuple(updates), tuple(background),
+                        tuple(issues), counts)
 
 
 class SqliteDiscoveryWriter:
@@ -690,7 +1057,7 @@ class SqliteDiscoveryWriter:
 def persist_discovery(*, run: DiscoveryRun, writer: DiscoveryWriter,
                       leaseguard: Callable[[], None] | None = None) -> None:
     """先保存事件及全部可用映射，再保存最多 30 个合格公司候选。"""
-    if run.state != "completed":
+    if run.state not in {"completed", "partial"}:
         return
     revisions: dict[int, EventRevision] = {}
     verification_by_event = {id(item.event): item.verification for item in run.verifications}
@@ -736,11 +1103,6 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
     revisions. Source material remains in the append-only source-document store.
     """
     event_index = {id(event): index for index, event in enumerate(run.events)}
-    def event_payload(event: EventDraft) -> dict[str, Any]:
-        return {"canonicalKey": event.canonical_key, "stageKey": event.stage_key,
-                "eventState": event.event_state, "headline": event.headline,
-                "eventKind": event.event_kind, "facts": dict(event.facts),
-                "sourceRefs": [_ref_payload(ref) for ref in event.source_refs]}
     verification_by_event = {id(item.event): item.verification for item in run.verifications}
     def verification_payload(event: EventDraft) -> dict[str, Any]:
         verification = verification_by_event.get(id(event))
@@ -772,19 +1134,24 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
                 **historical_context},
                 "opportunity": dict(candidate.opportunity),
                 "eligibility": {"state": candidate.eligibility.state, "reason": candidate.eligibility.reason}}
-    return {"version": 3, "state": run.state, "events": [event_payload(event) for event in run.events],
+    return {"version": 4, "state": run.state, "events": freeze_event_drafts(run.events),
             "verifications": [verification_payload(event) for event in run.events],
             "candidates": [candidate_payload(item) for item in run.candidates],
             "deferred": [candidate_payload(item) for item in run.deferred],
             "metadataPending": [candidate_payload(item) for item in run.metadata_pending],
             "excluded": [candidate_payload(item) for item in run.excluded],
             "updates": [candidate_payload(item) for item in run.updates],
-            "background": [candidate_payload(item) for item in run.background], "deferredCount": run.deferred_count}
+            "background": [candidate_payload(item) for item in run.background], "deferredCount": run.deferred_count,
+            "issues": [{"stage": issue.stage, "code": issue.code,
+                        **({"documentRef": _ref_payload(issue.document_ref)} if issue.document_ref else {}),
+                        **({"canonicalKey": issue.canonical_key} if issue.canonical_key else {})}
+                       for issue in run.issues],
+            "documentCounts": dict(run.document_counts)}
 
 
 def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str, Any]) -> DiscoveryRun:
     """Rebuild a frozen draft without model or source access, for idempotent publication."""
-    if frozen.get("version") != 3 or frozen.get("state") != "completed":
+    if frozen.get("version") not in {3, 4} or frozen.get("state") not in {"completed", "partial"}:
         raise ValueError("冻结发现结果版本或状态无效")
     _require_recoverable_formal_ranks(frozen)
     config = validate_run_config(configuration, scope="discovery")
@@ -852,8 +1219,25 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
                 Eligibility(eligibility["state"], eligibility["reason"]), dict(row["opportunity"]), display_rank))
         return tuple(items)
     selected, deferred, pending, excluded = candidates("candidates"), candidates("deferred"), candidates("metadataPending"), candidates("excluded")
-    return DiscoveryRun("completed", config, tuple(events), tuple(verifications), selected, deferred, pending, excluded,
-                        int(frozen["deferredCount"]), candidates("updates"), candidates("background"))
+    raw_issues = frozen.get("issues", [])
+    if not isinstance(raw_issues, list):
+        raise ValueError("冻结发现结果失败项无效")
+    issues: list[DiscoveryIssue] = []
+    for row in raw_issues:
+        if not isinstance(row, Mapping) or not isinstance(row.get("stage"), str) or not isinstance(row.get("code"), str):
+            raise ValueError("冻结发现结果失败项无效")
+        raw_ref = row.get("documentRef")
+        ref = _refs_from_payload([raw_ref])[0] if raw_ref is not None else None
+        key = row.get("canonicalKey")
+        if key is not None and not isinstance(key, str):
+            raise ValueError("冻结发现结果失败项无效")
+        issues.append(DiscoveryIssue(row["stage"], row["code"], ref, key))
+    counts = frozen.get("documentCounts", {})
+    if not isinstance(counts, Mapping) or any(not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, int) or value < 0
+                                              for key, value in counts.items()):
+        raise ValueError("冻结发现结果覆盖计数无效")
+    return DiscoveryRun(str(frozen["state"]), config, tuple(events), tuple(verifications), selected, deferred, pending, excluded,
+                        int(frozen["deferredCount"]), candidates("updates"), candidates("background"), tuple(issues), dict(counts))
 
 
 def load_documents_from_store(*, cutoff_at: str, db_path: Path) -> tuple[DiscoveryDocument, ...]:
@@ -868,8 +1252,9 @@ def load_documents_from_store(*, cutoff_at: str, db_path: Path) -> tuple[Discove
 
 
 __all__ = [
-    "CandidateComparison", "CompanyMappingDraft", "DiscoveryCandidate", "DiscoveryDocument", "DiscoveryModel", "EventComparison",
-    "DiscoveryRun", "DiscoveryWriter", "EvidenceRef", "EventDraft", "EventVerification", "SqliteDiscoveryWriter", "Verification",
+    "CandidateComparison", "CompanyMappingDraft", "DiscoveryCandidate", "DiscoveryDocument", "DiscoveryIssue", "DiscoveryModel", "EventComparison",
+    "DiscoveryRun", "DiscoveryDeadlineExceeded", "DiscoverySliceYield", "DiscoveryWriter", "DocumentFilterDecision", "EvidenceRef", "EventDraft", "EventVerification", "SqliteDiscoveryWriter", "Verification",
     "VerificationFunction", "freeze_discovery_run", "thaw_discovery_run", "load_documents_from_store", "persist_discovery", "run_discovery",
-    "reject_uncalibrated_prediction", "validate_event_comparison_rows", "FrozenDiscoveryDraftCompatibilityError",
+    "freeze_event_drafts", "thaw_event_drafts", "prepare_document_for_analysis", "reject_uncalibrated_prediction",
+    "validate_event_comparison_rows", "FrozenDiscoveryDraftCompatibilityError",
 ]

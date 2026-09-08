@@ -17,6 +17,7 @@ protocol K10Servicing: Sendable {
     func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job
     func results() async throws -> K10Results
     func configuration() async throws -> K10Configuration
+    func operationsReadiness() async throws -> K10OperationsReadiness
     func usageSummary() async throws -> K10UsageSummary
 }
 
@@ -28,6 +29,9 @@ extension K10Servicing {
     }
     func requestAnalysis(companyWindowID: String, request: K10AnalysisRequest) async throws -> K10AnalysisRequestResult {
         throw K10APIError.notFound("服务端尚未提供补充分析")
+    }
+    func operationsReadiness() async throws -> K10OperationsReadiness {
+        throw K10APIError.notFound("服务端尚未提供运行状态")
     }
 }
 
@@ -53,6 +57,7 @@ actor K10APIClient: K10Servicing {
     func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job { try await post("/api/v1/k10/jobs/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/retry", body: ["expectedAttemptCount": expectedAttemptCount]) }
     func results() async throws -> K10Results { try await get("/api/v1/k10/results") }
     func configuration() async throws -> K10Configuration { try await get("/api/v1/k10/configuration") }
+    func operationsReadiness() async throws -> K10OperationsReadiness { try await get("/api/v1/k10/operations/readiness") }
     func usageSummary() async throws -> K10UsageSummary { try await get("/api/v1/usage/summary") }
 
     private func allPages<Page: Decodable>(path: String, extra: [URLQueryItem], as _: Page.Type) async throws -> Page where Page: K10Paginated {

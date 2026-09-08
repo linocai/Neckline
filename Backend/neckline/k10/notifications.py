@@ -21,10 +21,11 @@ from neckline import notify_kinds
 from .schema import SchemaUnavailable, read_connection, require_schema, write_connection
 
 
-NOTIFICATION_SCHEMA_VERSION = 1
+NOTIFICATION_SCHEMA_VERSION = 2
 NOTIFICATION_KINDS = frozenset(notify_kinds.ALL_KINDS)
 TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "not_configured", "cancelled"})
 _PERMANENT_DEVICE_REASONS = frozenset({"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"})
+_CONFIGURATION_BLOCK_REASONS = frozenset({"credentials_missing", "key_unreadable", "key_invalid"})
 
 
 class NotificationError(RuntimeError):
@@ -55,9 +56,22 @@ class Notification:
 
 
 @dataclass(frozen=True)
+class NotificationRetryPolicy:
+    """Delivery engineering policy, independent of K10 strategy parameters."""
+
+    initial_delay: timedelta
+    maximum_delay: timedelta
+
+    def __post_init__(self) -> None:
+        if self.initial_delay.total_seconds() <= 0 or self.maximum_delay < self.initial_delay:
+            raise ValueError("通知退避参数必须为正，且最大值不小于初始值")
+
+
+@dataclass(frozen=True)
 class DeliveryResult:
     ok: bool
     permanent_invalid: bool = False
+    configuration_unavailable: bool = False
     reason: str = ""
 
 
@@ -105,6 +119,12 @@ CREATE TABLE k10_notification_deliveries (
   PRIMARY KEY(notification_id, device_key)
 );
 """
+_V2 = """
+ALTER TABLE k10_task_notifications ADD COLUMN next_attempt_at TEXT;
+ALTER TABLE k10_task_notifications ADD COLUMN blocked_reason TEXT;
+CREATE INDEX idx_k10_notifications_due
+  ON k10_task_notifications(status, next_attempt_at, created_at);
+"""
 _DROP_V1 = ("k10_notification_deliveries", "k10_task_notifications", "k10_notification_schema_migrations")
 
 
@@ -137,6 +157,13 @@ def _require_notifications_schema(conn) -> None:
         )
 
 
+def require_notifications_schema(db_path: Path) -> int:
+    """Read-only startup gate; schema creation remains an explicit migration."""
+    with read_connection(db_path) as conn:
+        _require_notifications_schema(conn)
+    return NOTIFICATION_SCHEMA_VERSION
+
+
 def initialize_notifications_schema(db_path: Path, *, applied_at: datetime | None = None) -> int:
     """Explicit write-only migration; it is never reached from API reads or dispatch."""
     stamp = _utc_text(applied_at or datetime.now(timezone.utc))
@@ -152,7 +179,24 @@ def initialize_notifications_schema(db_path: Path, *, applied_at: datetime | Non
                     conn.execute(statement)
             conn.execute(
                 "INSERT INTO k10_notification_schema_migrations(version,applied_at) VALUES (?,?)",
-                (NOTIFICATION_SCHEMA_VERSION, stamp),
+                (1, stamp),
+            )
+            existing = 1
+        if existing == 1:
+            for statement in _V2.split(";"):
+                statement = statement.strip()
+                if statement:
+                    conn.execute(statement)
+            # Existing V1 queued rows were already eligible for dispatch.  Keep
+            # that fact through the schema upgrade; failed configuration will be
+            # explicitly blocked by runtime readiness before any send.
+            conn.execute(
+                "UPDATE k10_task_notifications SET next_attempt_at=updated_at "
+                "WHERE status='queued' AND next_attempt_at IS NULL"
+            )
+            conn.execute(
+                "INSERT INTO k10_notification_schema_migrations(version,applied_at) VALUES (?,?)",
+                (2, stamp),
             )
         elif existing != NOTIFICATION_SCHEMA_VERSION:
             raise NotificationError("缺少 K10 notification schema 迁移")
@@ -308,9 +352,10 @@ def enqueue_task_notification(
         notification_id = str(uuid4())
         conn.execute(
             "INSERT INTO k10_task_notifications(notification_id,idempotency_key,task_id,kind,terminal_status,task_attempt_count,title,body,"
-            "deep_link_json,status,attempt_count,last_error,lease_owner,lease_until,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,'queued',0,NULL,NULL,NULL,?,?)",
-            (notification_id, idempotency_key, task_id, kind, terminal_status, task_attempt_count, title, body, _json(deep_link), stamp, stamp),
+            "deep_link_json,status,attempt_count,last_error,lease_owner,lease_until,created_at,updated_at,next_attempt_at,blocked_reason) "
+            "VALUES(?,?,?,?,?,?,?,?,?,'queued',0,NULL,NULL,NULL,?,?,?,NULL)",
+            (notification_id, idempotency_key, task_id, kind, terminal_status, task_attempt_count, title, body,
+             _json(deep_link), stamp, stamp, stamp),
         )
     return Notification(notification_id, task_id, kind, terminal_status, task_attempt_count, title, body, deep_link, "queued", 0, stamp)
 
@@ -352,17 +397,19 @@ def _claim_next(
     exclusions = "" if not excluded_ids else " AND notification_id NOT IN (" + ",".join("?" for _ in excluded_ids) + ")"
     row = conn.execute(
         "SELECT notification_id FROM k10_task_notifications WHERE "
-        "(status='queued' OR (status='sending' AND lease_until < ?))" + exclusions +
-        " ORDER BY created_at,notification_id LIMIT 1",
-        (now_text, *sorted(excluded_ids)),
+        "((status='queued' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?) "
+        "OR (status='sending' AND lease_until < ?))" + exclusions +
+        " ORDER BY COALESCE(next_attempt_at,created_at),created_at,notification_id LIMIT 1",
+        (now_text, now_text, *sorted(excluded_ids)),
     ).fetchone()
     if row is None:
         return None
     notification_id = str(row[0])
     changed = conn.execute(
-        "UPDATE k10_task_notifications SET status='sending',attempt_count=attempt_count+1,lease_owner=?,lease_until=?,updated_at=? "
-        "WHERE notification_id=? AND (status='queued' OR (status='sending' AND lease_until < ?))",
-        (worker_id, lease_until, now_text, notification_id, now_text),
+        "UPDATE k10_task_notifications SET status='sending',attempt_count=attempt_count+1,lease_owner=?,lease_until=?,updated_at=?,blocked_reason=NULL "
+        "WHERE notification_id=? AND ((status='queued' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?) "
+        "OR (status='sending' AND lease_until < ?))",
+        (worker_id, lease_until, now_text, notification_id, now_text, now_text),
     ).rowcount
     if changed != 1:
         return None
@@ -374,12 +421,13 @@ def _claim_next(
 
 def _finish_delivery(
     *, db_path: Path, notification_id: str, worker_id: str, now_text: str,
-    delivered: Sequence[str], transient_error: bool,
+    delivered: Sequence[str], transient_error: bool, retry_policy: NotificationRetryPolicy,
+    blocked_reason: str | None = None,
 ) -> None:
     with write_connection(db_path) as conn:
         _require_notifications_schema(conn)
         row = conn.execute(
-            "SELECT status,lease_owner,lease_until FROM k10_task_notifications WHERE notification_id=?", (notification_id,)
+            "SELECT status,lease_owner,lease_until,attempt_count FROM k10_task_notifications WHERE notification_id=?", (notification_id,)
         ).fetchone()
         if row is None or row[0] != "sending" or row[1] != worker_id or row[2] < now_text:
             raise NotificationConflict("通知租约已失效，拒绝覆盖另一 dispatcher 的状态")
@@ -388,12 +436,53 @@ def _finish_delivery(
                 "INSERT OR IGNORE INTO k10_notification_deliveries(notification_id,device_key,delivered_at) VALUES(?,?,?)",
                 (notification_id, key, now_text),
             )
-        status = "queued" if transient_error else "sent"
+        if blocked_reason is not None:
+            status, next_attempt_at, last_error = "queued", None, blocked_reason
+        elif transient_error:
+            attempts = int(row[3])
+            # Cap both the exponent and the persisted retry rate.  We retain a
+            # notification for recovery rather than silently drop it after an
+            # arbitrary total-attempt count.
+            exponent = min(max(attempts - 1, 0), 30)
+            delay_seconds = min(retry_policy.maximum_delay.total_seconds(),
+                                retry_policy.initial_delay.total_seconds() * (2 ** exponent))
+            retry_at = datetime.fromisoformat(now_text) + timedelta(seconds=delay_seconds)
+            status, next_attempt_at, last_error = "queued", _utc_text(retry_at), "delivery_retry_needed"
+        else:
+            status, next_attempt_at, last_error = "sent", None, None
         conn.execute(
-            "UPDATE k10_task_notifications SET status=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=? "
+            "UPDATE k10_task_notifications SET status=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=?,"
+            "next_attempt_at=?,blocked_reason=? "
             "WHERE notification_id=?",
-            (status, "delivery_retry_needed" if transient_error else None, now_text, notification_id),
+            (status, last_error, now_text, next_attempt_at, blocked_reason, notification_id),
         )
+
+
+def suspend_notifications_for_configuration(*, db_path: Path, reason_code: str, now: datetime) -> int:
+    """Persist a safe configuration block without trying APNs or consuming attempts."""
+    if reason_code not in _CONFIGURATION_BLOCK_REASONS:
+        raise ValueError("未知 APNs 配置状态")
+    stamp = _utc_text(now)
+    with write_connection(db_path) as conn:
+        _require_notifications_schema(conn)
+        return conn.execute(
+            "UPDATE k10_task_notifications SET status='queued',next_attempt_at=NULL,blocked_reason=?,last_error=?,"
+            "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE status='queued' "
+            "OR (status='sending' AND lease_until < ?)",
+            (reason_code, reason_code, stamp, stamp),
+        ).rowcount
+
+
+def resume_configuration_blocked_notifications(*, db_path: Path, now: datetime) -> int:
+    """Make only configuration-blocked rows eligible after actual readiness returns."""
+    stamp = _utc_text(now)
+    with write_connection(db_path) as conn:
+        _require_notifications_schema(conn)
+        return conn.execute(
+            "UPDATE k10_task_notifications SET next_attempt_at=?,blocked_reason=NULL,updated_at=? "
+            "WHERE status='queued' AND next_attempt_at IS NULL AND blocked_reason IS NOT NULL",
+            (stamp, stamp),
+        ).rowcount
 
 
 def dispatch_task_notifications(
@@ -401,6 +490,7 @@ def dispatch_task_notifications(
     sender: NotificationSender, worker_id: str, now: datetime,
     lease_for: timedelta = timedelta(minutes=2), limit: int = 20,
     clock: Callable[[], datetime] | None = None,
+    retry_policy: NotificationRetryPolicy | None = None,
 ) -> int:
     """Dispatch bounded queued notifications through injected common device/APNs seams.
 
@@ -410,6 +500,8 @@ def dispatch_task_notifications(
     """
     if not worker_id or limit < 1 or lease_for.total_seconds() <= 0:
         raise ValueError("worker_id、limit、lease_for 必须有效")
+    if retry_policy is None:
+        raise ValueError("通知运行配置未提供退避策略")
     dispatched = 0
     claimed_ids: set[str] = set()
     for _ in range(limit):
@@ -435,6 +527,7 @@ def dispatch_task_notifications(
         delivered_now: list[str] = []
         seen_now: set[str] = set()
         transient_error = False
+        blocked_reason: str | None = None
         for token in current_tokens:
             key = _device_key(token)
             if key in delivered_already or key in seen_now:
@@ -468,11 +561,18 @@ def dispatch_task_notifications(
                     )
             elif result.permanent_invalid or result.reason in _PERMANENT_DEVICE_REASONS:
                 delete_device(token)
+            elif result.configuration_unavailable or result.reason.startswith("apns_"):
+                configuration_code = result.reason.removeprefix("apns_")
+                if configuration_code in _CONFIGURATION_BLOCK_REASONS:
+                    blocked_reason = configuration_code
+                    break
+                transient_error = True
             else:
                 transient_error = True
         _finish_delivery(
             db_path=db_path, notification_id=notification.notification_id, worker_id=worker_id,
-            now_text=_utc_text(clock() if clock is not None else now), delivered=delivered_now, transient_error=transient_error,
+            now_text=_utc_text(clock() if clock is not None else now), delivered=delivered_now,
+            transient_error=transient_error, retry_policy=retry_policy, blocked_reason=blocked_reason,
         )
         dispatched += 1
     return dispatched
@@ -480,6 +580,8 @@ def dispatch_task_notifications(
 
 __all__ = [
     "DeliveryResult", "NOTIFICATION_KINDS", "NOTIFICATION_SCHEMA_VERSION", "Notification", "NotificationConflict",
-    "NotificationError", "NotificationSchemaUnavailable", "dispatch_task_notifications", "enqueue_task_notification",
-    "get_notification", "initialize_notifications_schema", "on_task_terminal", "rollback_notifications_schema",
+    "NotificationError", "NotificationRetryPolicy", "NotificationSchemaUnavailable",
+    "dispatch_task_notifications", "enqueue_task_notification", "get_notification", "initialize_notifications_schema",
+    "on_task_terminal", "resume_configuration_blocked_notifications", "rollback_notifications_schema",
+    "require_notifications_schema", "suspend_notifications_for_configuration",
 ]

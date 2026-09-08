@@ -25,6 +25,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from neckline.config import settings
@@ -60,6 +61,87 @@ class PushResult:
 
 _jwt_cache: Dict[str, Any] = {"token": None, "iat": 0, "kid": None}
 
+# Readiness is deliberately separate from the JWT cache.  A broken or missing
+# credential must not cause the two-second worker loop to repeatedly open and
+# parse a private key.  Metadata changes invalidate a negative cache early;
+# otherwise a short recheck period lets an operator restore a mounted secret
+# without restarting the worker.
+_READINESS_RECHECK_SECONDS = 60
+_readiness_cache: Dict[str, Any] = {
+    "signature": None, "metadata": None, "checked_at": 0.0, "value": None,
+}
+
+
+@dataclass(frozen=True)
+class APNsReadiness:
+    """Safe operational status for health endpoints and the notification worker.
+
+    ``code`` is intentionally a small allow-list.  It never contains a file
+    path, private-key material, provider response, or OS exception text.
+    """
+
+    ready: bool
+    code: str
+
+
+_READINESS_CODES = frozenset(("ready", "credentials_missing", "key_unreadable", "key_invalid"))
+
+
+def _settings_signature() -> tuple[object, ...]:
+    return (settings.apns_key_id, settings.apns_team_id, settings.apns_bundle_id,
+            settings.apns_key_path, settings.apns_use_sandbox)
+
+
+def _key_metadata(path_value: Optional[str]) -> tuple[object, ...]:
+    if not path_value:
+        return ("no_path",)
+    try:
+        stat = Path(path_value).stat()
+    except OSError:
+        return ("unreadable",)
+    return ("file", stat.st_mtime_ns, stat.st_size)
+
+
+def apns_readiness(*, now: Optional[float] = None, force: bool = False) -> APNsReadiness:
+    """Check actual APNs credential usability without exposing secret details.
+
+    This performs one ES256 signing attempt after a readable key changes (or a
+    short negative-cache interval elapses).  It does not contact APNs.
+    """
+    checked_at = time.monotonic() if now is None else now
+    signature = _settings_signature()
+    metadata = _key_metadata(settings.apns_key_path)
+    cached = _readiness_cache.get("value")
+    if (not force and cached is not None and _readiness_cache.get("signature") == signature
+            and _readiness_cache.get("metadata") == metadata
+            and checked_at - float(_readiness_cache.get("checked_at", 0.0)) < _READINESS_RECHECK_SECONDS):
+        return cached
+    if not settings.has_apns_config:
+        value = APNsReadiness(False, "credentials_missing")
+    elif metadata[0] != "file":
+        value = APNsReadiness(False, "key_unreadable")
+    else:
+        try:
+            key_pem = _read_key(settings.apns_key_path)  # type: ignore[arg-type]
+            # Signing is the required usable-key check.  Do not cache this token:
+            # get_jwt owns the valid short-lived token cache.
+            build_jwt(key_pem=key_pem, key_id=settings.apns_key_id,  # type: ignore[arg-type]
+                      team_id=settings.apns_team_id, iat=int(time.time()))  # type: ignore[arg-type]
+        except OSError:
+            value = APNsReadiness(False, "key_unreadable")
+        except Exception:  # invalid PEM, wrong key type, or signing library failure
+            value = APNsReadiness(False, "key_invalid")
+        else:
+            value = APNsReadiness(True, "ready")
+    _readiness_cache.update({"signature": signature, "metadata": metadata,
+                             "checked_at": checked_at, "value": value})
+    return value
+
+
+def get_apns_readiness(*, force: bool = False) -> APNsReadiness:
+    """Named release/operations readiness entry point; never discloses a secret."""
+    return apns_readiness(force=force)
+
 
 def _read_key(key_path: str) -> str:
     with open(key_path, "r", encoding="utf-8") as f:
@@ -81,9 +163,8 @@ def build_jwt(*, key_pem: str, key_id: str, team_id: str, iat: Optional[int] = N
 
 
 def get_jwt(now: Optional[int] = None) -> Optional[str]:
-    """取缓存 JWT(≤ ~50min 复用,过期重签)。APNs 配置不全 / 读 .p8 失败 → None(不抛)。"""
-    if not settings.has_apns_config:
-        logger.warning("APNs 配置不全(KeyID/TeamID/BundleID/.p8 路径),跳过 JWT 构造")
+    """取缓存 JWT(≤ ~50min 复用,过期重签)。不可用凭证只返回 None。"""
+    if not apns_readiness().ready:
         return None
     now = int(now if now is not None else time.time())
     cached = _jwt_cache.get("token")
@@ -94,23 +175,24 @@ def get_jwt(now: Optional[int] = None) -> Optional[str]:
     ):
         return cached
     try:
-        key_pem = _read_key(settings.apns_key_path)  # type: ignore[arg-type]
-    except OSError as e:
-        logger.error("读取 .p8 失败(%s): %s", settings.apns_key_path, e)
+        token = build_jwt(
+            key_pem=_read_key(settings.apns_key_path),  # type: ignore[arg-type]
+            key_id=settings.apns_key_id,    # type: ignore[arg-type]
+            team_id=settings.apns_team_id,  # type: ignore[arg-type]
+            iat=now,
+        )
+    except Exception:
+        # A replacement/removal race after readiness is represented by the same
+        # safe result at the send boundary, never by an exception or a path log.
         return None
-    token = build_jwt(
-        key_pem=key_pem,
-        key_id=settings.apns_key_id,    # type: ignore[arg-type]
-        team_id=settings.apns_team_id,  # type: ignore[arg-type]
-        iat=now,
-    )
     _jwt_cache.update({"token": token, "iat": now, "kid": settings.apns_key_id})
     return token
 
 
 def reset_jwt_cache() -> None:
-    """清 JWT 缓存(测试/凭证热切换用)。"""
+    """清 JWT/readiness 缓存(测试/凭证热切换用)。"""
     _jwt_cache.update({"token": None, "iat": 0, "kid": None})
+    _readiness_cache.update({"signature": None, "metadata": None, "checked_at": 0.0, "value": None})
 
 
 def build_payload(
@@ -173,9 +255,12 @@ def send_push(
     """发一条 APNs 推送到单个 device_token。凭证不全 / JWT 取不到 → ok=False,reason 可读,
     **不抛崩**。transport / jwt_token 可注入(测试免真连 Apple / 免真 .p8)。"""
     transport = transport or _http2_post
+    readiness = apns_readiness()
+    if jwt_token is None and not readiness.ready:
+        return PushResult(ok=False, status=0, reason=f"apns_{readiness.code}")
     token = jwt_token if jwt_token is not None else get_jwt()
     if token is None:
-        return PushResult(ok=False, status=0, reason="APNs JWT 不可用(凭证缺失/读取失败)")
+        return PushResult(ok=False, status=0, reason="apns_key_unreadable")
 
     payload = build_payload(title, body, category=category, thread_id=thread_id, custom=custom)
     body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -198,6 +283,6 @@ def send_push(
 __all__ = [
     "PushResult",
     "CATEGORY_IMPORTANT", "CATEGORY_DIGEST",
-    "build_jwt", "get_jwt", "reset_jwt_cache", "build_payload", "send_push",
+    "APNsReadiness", "apns_readiness", "get_apns_readiness", "build_jwt", "get_jwt", "reset_jwt_cache", "build_payload", "send_push",
     "GATEWAY_SANDBOX", "GATEWAY_PROD",
 ]
