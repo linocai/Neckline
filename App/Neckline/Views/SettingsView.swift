@@ -21,7 +21,7 @@ struct ScanCoverageSummary: View {
                                             .foregroundStyle(NK.textSecondary)
                                     }
                                     Spacer()
-                                    V3Pill(text: scan.status)
+                                    V3Pill(text: scan.executionProgress?.state ?? scan.status)
                                 }
                                 ForEach(scan.sourceCoverage) { source in
                                     VStack(alignment: .leading, spacing: 3) {
@@ -147,6 +147,10 @@ struct SettingsView: View {
                         SettingsDivider()
                         SettingsStatusRow(title: "晨间扫描", scan: model.scanSummaries.first { $0.window == "morning" })
                         SettingsDivider()
+                        DiscoveryControlRow(control: model.operationsReadiness?.runControl, isPausing: model.discoveryPauseInFlight) {
+                            Task { await model.pauseDiscovery() }
+                        }
+                        SettingsDivider()
                         NotificationReadinessRow(readiness: model.operationsReadiness?.notificationReadiness)
                         SettingsDivider()
                         SettingsConfigurationRows(configuration: model.configuration)
@@ -223,7 +227,7 @@ struct SettingsView: View {
     private var coverageDetail: String { model.scanSummaries.isEmpty ? "尚无扫描回执" : "查看来源范围、成功水位与缺口" }
 }
 
-private struct SettingsCoverageScreen: View {
+struct SettingsCoverageScreen: View {
     @Bindable var model: AppModel
     let scans: [K10Scan]
 
@@ -310,7 +314,7 @@ private struct SettingsStatusRow: View {
                     .font(NKFont.caption).foregroundStyle(NK.textSecondary)
             }
             Spacer()
-            if let scan { V3Pill(text: scan.status) }
+            if let scan { V3Pill(text: scan.executionProgress?.state ?? scan.status) }
         }
         .padding(.vertical, 10)
     }
@@ -345,6 +349,44 @@ private struct NotificationReadinessRow: View {
     private var tone: Color { readiness?.state == "ready" ? NK.textSecondary : NK.amber }
 }
 
+private struct DiscoveryControlRow: View {
+    let control: K10ExecutionRunControl?
+    let isPausing: Bool
+    let pause: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: control?.state == "paused" ? "pause.circle.fill" : "play.circle")
+                .foregroundStyle(control?.state == "paused" ? NK.amber : NK.accent)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("资讯处理").font(NKFont.callout.weight(.semibold))
+                Text(detail).font(NKFont.caption).foregroundStyle(control?.state == "paused" ? NK.amber : NK.textSecondary)
+            }
+            Spacer()
+            if control?.state == "paused" {
+                V3Pill(text: "已暂停")
+            } else {
+                Button(isPausing ? "暂停中" : "暂停") { pause() }
+                    .font(NKFont.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(NK.accent)
+                    .disabled(isPausing)
+                    .accessibilityLabel("暂停后续资讯处理")
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var detail: String {
+        guard let control else { return "运行控制状态尚未读取" }
+        if control.state == "paused" {
+            return "后续自动处理已暂停；不会自动恢复"
+        }
+        return "开关已打开；仍须通过配置与预算检查"
+    }
+}
+
 private struct ExecutionProgressCard: View {
     let progress: K10ExecutionProgress
 
@@ -360,6 +402,24 @@ private struct ExecutionProgressCard: View {
                 .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
             Text(progress.eventCounts.publishable.map { "统一排序后可发布 \($0) 家" } ?? "尚未完成统一排序，不显示可发布名额")
                 .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            if let counts = progress.processingCounts {
+                Text("去重移除 \(counts.exactDeduplicated) · 模板排除 \(counts.templateExcluded) · 延后 \(counts.templateDeferred) · 保护 \(counts.templateProtected) · 资料包 \(counts.packages)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                Text("轻量理解 \(counts.lightweightUnderstood) · 待核 \(counts.pendingVerification) · 预算待处理 \(counts.pendingBudget)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(counts.pendingBudget > 0 ? NK.amber : NK.textSecondary)
+            }
+            if let cacheHits = progress.factCacheHits {
+                Text("已复用 \(cacheHits) 份已核事实，不重复调用模型")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+            }
+            if let budget = progress.budget {
+                Text(budgetDetail(budget)).font(NKFont.caption.monospacedDigit())
+                    .foregroundStyle(budget.state == "available" ? NK.textSecondary : NK.amber)
+            }
+            if progress.runControl?.state == "paused" {
+                Text("处理已暂停；不会自动恢复。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
             if progress.documentCounts.failedPending > 0 {
                 Text("\(progress.documentCounts.failedPending) 篇资料待恢复；本轮不是完整覆盖。")
                     .font(NKFont.caption).foregroundStyle(NK.amber)
@@ -382,8 +442,23 @@ private struct ExecutionProgressCard: View {
     }
 
     private var stageText: String {
+        if progress.state == "paused" { return "已暂停 · 后续自动处理不会启动" }
+        if progress.state == "budgetExhausted" { return "预算已用尽 · 其余资料保留待处理" }
         let coverage = progress.coverageStatus == "partial" ? "资料尚未全部完成" : "资料处理完成"
         return "\(k10ExecutionStageText(progress.stage ?? "pending")) · \(coverage)"
+    }
+
+    private func budgetDetail(_ budget: K10ExecutionBudget) -> String {
+        switch budget.state {
+        case "available":
+            let remaining = budget.remaining.map { " · 剩余 \($0.totalTokens) token / \($0.calls) 次" } ?? ""
+            let actual = budget.actual
+            return "预算实耗 \(actual?.totalTokens ?? 0) token / \(actual?.calls ?? 0) 次\(remaining)"
+        case "exhausted":
+            return "预算已用尽 · 未知占用 \(budget.unknown?.totalTokens ?? 0) token"
+        default:
+            return "预算未配置；不会发起模型或搜索调用"
+        }
     }
 }
 
@@ -418,7 +493,7 @@ private struct SettingsConfigurationRows: View {
     }
 
     private func scopeTitle(_ scope: String) -> String {
-        ["candidate": "候选发布", "analysis": "正反分析", "evaluation": "两日评价"][scope] ?? scope
+        ["candidate": "候选发布", "discovery": "资讯筛分与预算", "analysis": "正反分析", "evaluation": "两日评价"][scope] ?? scope
     }
 }
 

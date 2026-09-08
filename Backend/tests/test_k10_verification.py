@@ -15,6 +15,7 @@ from neckline.k10.verification_checkpoints import VerificationCheckpointError
 from neckline.k10.verification import TavilyEvidenceGateway
 from neckline.search.tavily import TavilySearchClient, TavilySearchResponse
 from neckline.llm.base import SearchHit
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 NOW = datetime(2026, 9, 7, 1, tzinfo=timezone.utc)
@@ -46,6 +47,20 @@ def _bound_task(path, *, task_id="task-verification"):
     return task_id
 
 
+def _bound_v2_task(path, *, task_id="task-verification-v2"):
+    created = NOW.isoformat()
+    store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id,
+                       input_version="input-v2", input_cutoff_at=created, payload={}, budget={"maxAttempts": 1},
+                       created_at=created, db_path=path)
+    config_id, revision = append_approved_execution_profile(
+        db_path=path, created_at=created, config_id=f"{task_id}-execution",
+    )
+    store.bind_task_execution(task_id=task_id, execution_config_id=config_id,
+                              execution_config_revision=revision, binding_kind="scheduled",
+                              bound_at=created, db_path=path)
+    return task_id
+
+
 def test_tavily_verification_persists_exact_documents_and_actual_credits(tmp_path):
     path = tmp_path / "verify.sqlite"
     initialize_schema(path)
@@ -74,6 +89,21 @@ def test_missing_verification_budget_never_reads_or_calls_tavily(tmp_path):
     assert bundle.state == "pending"
     assert bundle.coverage["reason"] == "maxVerificationRequests_missing"
     assert search.calls == 0
+
+
+def test_strict_tavily_budget_refuses_a_paused_v2_task_before_http(tmp_path):
+    path = tmp_path / "strict-paused.sqlite"
+    initialize_schema(path)
+    task_id = _bound_v2_task(path)
+    search = _Search()
+    bundle = TavilyEvidenceGateway(
+        db_path=path, request_limit=1, client=search, task_id=task_id,
+        leaseguard=lambda: None, network_max_attempts=1, spend_enforced=True,
+    ).fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    assert bundle.state == "pending"
+    assert bundle.coverage["reason"] == "execution_paused"
+    assert search.calls == 0
+    assert store.execution_budget_snapshot(task_id=task_id, db_path=path)["reservationCount"] == 0
 
 
 def test_task_bound_tavily_reuses_frozen_bundle_across_restart_and_shares_budget(tmp_path):

@@ -19,6 +19,7 @@ from neckline.k10.windows import SHANGHAI
 from neckline.llm.base import LLMProvider, LLMResult
 from neckline.k10.types import Task
 from neckline.k10.worker import TaskContext, run_once
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 DAY = date(2026, 9, 7)
@@ -308,6 +309,12 @@ def test_running_frozen_targeted_input_finishes_failed_without_rewriting_evidenc
     store.enqueue_task(task_id=identity, kind="evening_scan", idempotency_key="fixture-boundary",
                        input_version="fixture@1", input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
                        created_at=CREATED.isoformat(), db_path=path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=CREATED.isoformat(),
+                          changed_by="test", db_path=path)
+    execution_id, execution_revision = append_approved_execution_profile(db_path=path, created_at=CREATED.isoformat())
+    store.bind_task_execution(task_id=identity, execution_config_id=execution_id,
+                              execution_config_revision=execution_revision, binding_kind="scheduled",
+                              bound_at=CREATED.isoformat(), db_path=path)
     lease_calls = []
 
     def handler(_context):
@@ -1161,15 +1168,17 @@ def test_task_deadline_finalizes_running_scan_without_publication(tmp_path, monk
     assert store.list_publication_batches(db_path=path) == []
 
 
-def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_adapter(tmp_path, monkeypatch):
+@pytest.mark.parametrize("copies", [1, 2])
+def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_adapter(tmp_path, monkeypatch, copies):
     """The actual CLI recovery task reaches production handler without source collection."""
     path = tmp_path / "cli-recovery.sqlite"
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=CREATED.isoformat(),
+                          changed_by="test", db_path=path)
     config = _configuration()
     config["sourceAdapters"] = [{"key": "tushare-major-news", "lateArrivalReplaySeconds": 86400}]
     strategy_revision = store.append_run_config(config_id="strategy", payload=config, created_at=CREATED.isoformat(), db_path=path)
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    execution_revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    _, execution_revision = append_approved_execution_profile(db_path=path, created_at=CREATED.isoformat(), config_id="execution")
     document = store.append_document_version(
         document_id="frozen-doc", source_key="tushare-major-news", external_id="frozen-doc", canonical_url=None,
         content_sha256=sha256(b"frozen").hexdigest(), published_at=(CUTOFF - timedelta(minutes=1)).isoformat(),
@@ -1178,6 +1187,13 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
     )
     scan_id = "scan_" + "a" * 32
     refs = [{"documentId": document.document_id, "revision": document.revision}]
+    if copies == 2:
+        duplicate = store.append_document_version(
+            document_id="frozen-duplicate", source_key="tushare-major-news", external_id="frozen-duplicate", canonical_url=None,
+            content_sha256=sha256(b"frozen").hexdigest(), published_at=(CUTOFF - timedelta(minutes=1)).isoformat(),
+            published_precision="exact", fetched_at=CREATED.isoformat(), original_text="冻结资料正文", excerpt=None,
+            fetch_version="fixture", metadata={}, created_at=CREATED.isoformat(), db_path=path)
+        refs.append({"documentId": duplicate.document_id, "revision": duplicate.revision})
     store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id="strategy",
                       config_revision=strategy_revision, status="failed", created_at=CREATED.isoformat(),
                       completed_at=CREATED.isoformat(), db_path=path,
@@ -1203,4 +1219,8 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
     recovered = store.get_scan(scan_id=scan_id, db_path=path)
     assert recovered is not None and recovered["coverage"]["inputDocumentRefs"] == refs
     assert provider.calls == 1
+    assert recovered["coverage"]["processingCounts"]["received"] == copies
+    assert recovered["coverage"]["processingCounts"]["packages"] == 1
+    assert recovered["coverage"]["processingCounts"]["exactDeduplicated"] == copies - 1
+    assert store.read_screening_run(task_id=task_id, db_path=path) is not None
     assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"

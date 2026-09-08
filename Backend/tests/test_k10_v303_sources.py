@@ -22,6 +22,7 @@ from tests.test_k10_pipeline import (
     _configuration,
     initialize_schema,
 )
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:
@@ -156,12 +157,18 @@ def test_v303_cli_worker_preserves_frozen_input_after_an_isolated_model_failure(
     """One failed document leaves a partial frozen scan; it never re-collects its source."""
     path = tmp_path / "retry-worker.sqlite"
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="fixture_v303_sources", changed_at=_at(7, 20, 55).isoformat(),
+                          changed_by="test", db_path=path)
+    execution_id, execution_revision = append_approved_execution_profile(
+        db_path=path, created_at=_at(7, 20, 55).isoformat(), config_id="v303-source-execution",
+    )
     configuration = _configuration_for("fixture-source")
     revision = store.append_run_config(config_id="fixture", payload=configuration,
                                        created_at="2026-09-07T20:50:00+08:00", db_path=path)
     task_id = enqueue_scan(
         db_path=path, kind="evening", trading_day=date(2026, 9, 7), config_id="fixture",
         config_revision=revision, now=_at(7, 20, 55), bootstrap_cutoff=_at(4, 21).isoformat(),
+        execution_config_id=execution_id, execution_config_revision=execution_revision,
     )
 
     class Adapter:

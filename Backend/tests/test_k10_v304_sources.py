@@ -19,6 +19,7 @@ from tests.test_k10_pipeline import (
     _configuration,
     initialize_schema,
 )
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:
@@ -64,16 +65,23 @@ def _config() -> dict:
     return configuration
 
 
+def _enable_fixture_runtime(path, at: datetime) -> tuple[str, int]:
+    store.set_run_control(state="open", reason_code="fixture_v304_sources", changed_at=at.isoformat(), changed_by="test", db_path=path)
+    return append_approved_execution_profile(db_path=path, created_at=at.isoformat(), config_id="v304-source-execution")
+
+
 def test_v304_cli_worker_recovers_document_committed_before_input_freeze(tmp_path, monkeypatch):
     """An owner may die after the atomic document+scan marker commit, never losing that input."""
     path = tmp_path / "source-interrupt.sqlite"
     initialize_schema(path)
     configuration = _config()
     started = _at(7, 21, 1)
+    execution_id, execution_revision = _enable_fixture_runtime(path, started)
     revision = store.append_run_config(config_id="fixture", payload=configuration, created_at=started.isoformat(), db_path=path)
     task_id = enqueue_scan(
         db_path=path, kind="evening", trading_day=date(2026, 9, 7), config_id="fixture", config_revision=revision,
-        now=started, bootstrap_cutoff=_at(4, 21).isoformat(),
+        now=started, bootstrap_cutoff=_at(4, 21).isoformat(), execution_config_id=execution_id,
+        execution_config_revision=execution_revision,
     )
     adapter = _Adapter([_document("fresh", _at(7, 20))])
     model = _VerifiedModel()
@@ -125,6 +133,7 @@ def test_v304_cli_worker_recovers_document_committed_before_input_freeze(tmp_pat
 def test_v304_replayed_old_document_never_reenters_discovery_with_fresh_document(tmp_path):
     path = tmp_path / "old-and-fresh.sqlite"
     initialize_schema(path)
+    _enable_fixture_runtime(path, _at(7, 21))
     configuration = _config()
     old = _document("old", _at(7, 20))
     fresh = _document("fresh", _at(8, 20))
@@ -164,6 +173,7 @@ def test_v304_interrupted_old_and_fresh_replay_recovers_only_fresh_once(tmp_path
     """A replay can return old+fresh again after loss without waking the old opportunity."""
     path = tmp_path / "interrupted-old-and-fresh.sqlite"
     initialize_schema(path)
+    execution_id, execution_revision = _enable_fixture_runtime(path, _at(8, 21, 1))
     configuration = _config()
     old = _document("old", _at(7, 20))
     fresh = _document("fresh", _at(8, 20))
@@ -176,7 +186,8 @@ def test_v304_interrupted_old_and_fresh_replay_recovers_only_fresh_once(tmp_path
     assert first.status == "completed"
     revision = store.append_run_config(config_id="fixture", payload=configuration, created_at=_at(8, 20).isoformat(), db_path=path)
     task_id = enqueue_scan(db_path=path, kind="evening", trading_day=date(2026, 9, 8), config_id="fixture",
-                           config_revision=revision, now=_at(8, 21, 1))
+                           config_revision=revision, now=_at(8, 21, 1), execution_config_id=execution_id,
+                           execution_config_revision=execution_revision)
     adapter = _Adapter([old, fresh])
 
     class _RecordingModel(_VerifiedModel):
@@ -236,6 +247,7 @@ def test_v304_legacy_unpublished_draft_fails_clearly_without_recomputing(tmp_pat
 
     path = tmp_path / "legacy-draft.sqlite"
     initialize_schema(path)
+    _enable_fixture_runtime(path, _at(7, 21))
     configuration = _config()
     model = _VerifiedModel()
     adapter = _Adapter([_document("fresh", _at(7, 20))])

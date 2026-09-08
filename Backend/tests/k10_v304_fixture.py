@@ -24,6 +24,7 @@ from neckline.k10.worker import run_once
 
 from .k10_v302_fixture import _comparison, _config, _Provider
 from .k10_v303_fixture import build_fixture as build_previous_fixture
+from .k10_v305_fixture import append_approved_execution_profile
 
 
 def _publish(path: Path, *, marker: str, config_id: str, codes: tuple[str, ...], available: str) -> list[dict]:
@@ -126,6 +127,10 @@ def _morning(path: Path, targets: list[dict]) -> None:
     store.enqueue_task(task_id=task_id, kind="morning_review", idempotency_key=task_id,
         input_version="fixture-v304", input_cutoff_at=cutoff, payload=payload,
         budget=_config()["taskPolicies"]["morning"], created_at=cutoff, db_path=path)
+    execution_id, execution_revision = append_approved_execution_profile(db_path=path, created_at=cutoff)
+    store.bind_task_execution(task_id=task_id, execution_config_id=execution_id,
+        execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=cutoff, db_path=path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=cutoff, changed_by="test", db_path=path)
     raw = {"material": True, "reasonStatus": "invalidated", "observationStatus": "needs_review",
         "summary": "合成验收：独立核验确认核心理由失效，撤回推荐。",
         "materialContraryEvidence": [{"documentId": "doc-v304-independent", "revision": 1, "claim": "核心理由失效"}]}

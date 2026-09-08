@@ -739,20 +739,28 @@ final class K10V3Tests: XCTestCase {
             "eventCounts":{"verified":0,"compared":0,"publishable":0},"nextRetryAt":"2026-09-08T22:00:00+08:00",
             "safeFailures":[{"stage":"understanding","code":"model_output_invalid","ref":"doc-safe@1"}],
             "strategyBinding":{"configId":"k10-v1.4-production","revision":2},
-            "executionBinding":{"configId":"k10-execution","revision":1}}
+            "executionBinding":{"configId":"k10-execution","revision":1},
+            "runControl":{"state":"paused","reasonCode":"user_paused","changedAt":"2026-09-08T21:01:00+08:00"},
+            "processingCounts":{"received":2472,"exactDeduplicated":2000,"templateExcluded":300,"templateDeferred":20,"templateProtected":2,"packages":22,"lightweightUnderstood":18,"fullTextRequested":1,"fullTextCompleted":1,"pendingVerification":3,"pendingBudget":4},
+            "factCacheHits":6,"budget":{"state":"exhausted","reserved":{"calls":4,"inputTokens":500,"outputTokens":200,"totalTokens":700,"fullTextCalls":1,"retries":0,"searchRequests":1,"searchCredits":1},"occupied":{"calls":4,"inputTokens":500,"outputTokens":200,"totalTokens":700,"fullTextCalls":1,"retries":0,"searchRequests":1,"searchCredits":1},"actual":{"calls":3,"inputTokens":400,"outputTokens":150,"totalTokens":550,"fullTextCalls":1,"retries":0,"searchRequests":1,"searchCredits":1},"unknown":{"calls":1,"inputTokens":100,"outputTokens":50,"totalTokens":150,"fullTextCalls":0,"retries":0,"searchRequests":0,"searchCredits":0},"remaining":{"calls":0,"inputTokens":0,"outputTokens":0,"totalTokens":0,"fullTextCalls":0,"retries":0,"searchRequests":0,"searchCredits":0},"reservationCount":4}}
         }
         """.utf8)
         let scan = try JSONDecoder().decode(K10Scan.self, from: scanData)
         XCTAssertEqual(scan.executionProgress?.documentCounts.received, 2472)
         XCTAssertEqual(scan.executionProgress?.safeFailures.first?.code, "model_output_invalid")
         XCTAssertEqual(scan.executionProgress?.safeFailures.first?.ref, "doc-safe@1")
+        XCTAssertEqual(scan.executionProgress?.runControl?.state, "paused")
+        XCTAssertEqual(scan.executionProgress?.processingCounts?.packages, 22)
+        XCTAssertEqual(scan.executionProgress?.factCacheHits, 6)
+        XCTAssertEqual(scan.executionProgress?.budget?.state, "exhausted")
 
         let readinessData = Data("""
-        {"schemaVersion":"k10-api-v2","notificationReadiness":{"state":"blocked","reasonCode":"credentials_missing","nextRetryAt":null,"checkedAt":"2026-09-08T21:01:00+08:00"}}
+        {"schemaVersion":"k10-api-v2","notificationReadiness":{"state":"blocked","reasonCode":"credentials_missing","nextRetryAt":null,"checkedAt":"2026-09-08T21:01:00+08:00"},"runControl":{"state":"paused","reasonCode":"user_paused","changedAt":"2026-09-08T21:01:00+08:00"}}
         """.utf8)
         let readiness = try JSONDecoder().decode(K10OperationsReadiness.self, from: readinessData)
         XCTAssertEqual(readiness.notificationReadiness.state, "blocked")
         XCTAssertEqual(readiness.notificationReadiness.reasonCode, "credentials_missing")
+        XCTAssertEqual(readiness.runControl.reasonCode, "user_paused")
     }
 }
 

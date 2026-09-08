@@ -16,6 +16,7 @@ from neckline.k10.runtime import production_analysis_handler
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.k10.worker import run_once
 from neckline.llm.base import LLMResult
+from .k10_v305_fixture import append_approved_execution_profile
 
 
 NOW = "2026-09-06T12:00:00+00:00"
@@ -57,9 +58,15 @@ def _seed(path: Path) -> str:
 
 def test_selected_debate_then_morning_contrary_withdraws_without_erasing_history(tmp_path, monkeypatch):
     path = tmp_path / "k10.db"; _seed(path)
+    store.set_run_control(state="open", reason_code="fixture_approved", changed_at=NOW, changed_by="test", db_path=path)
+    execution_id, execution_revision = append_approved_execution_profile(db_path=path, created_at=NOW,
+                                                                           config_id="end-to-end-execution")
     with _client(path) as client:
         opportunity = client.get("/api/v1/k10/opportunities").json()["items"][0]
         chosen = client.post(f"/api/v1/k10/company-windows/{opportunity['companyWindowId']}/selection", json={"action": "keep", "idempotencyKey": "keep-1"}).json()
+    store.bind_task_execution(task_id=chosen["analysisJobId"], execution_config_id=execution_id,
+                              execution_config_revision=execution_revision, binding_kind="scheduled",
+                              bound_at=NOW, db_path=path)
     from neckline.k10 import runtime, morning_runtime
     analysis = FakeProvider([_result("正方全文"), _result("反方全文")])
     monkeypatch.setattr(runtime, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", analysis, "deepseek", None))
@@ -74,6 +81,9 @@ def test_selected_debate_then_morning_contrary_withdraws_without_erasing_history
     store.append_document_version(document_id="doc-2", source_key="fixture", external_id="2", canonical_url="https://example.test/contra", content_sha256="b" * 64, published_at=morning_cutoff, published_precision="exact", fetched_at=morning_cutoff, original_text="否认", excerpt=None, fetch_version="fixture", metadata={}, created_at=morning_cutoff, db_path=path)
     store.append_document_version(document_id="doc-3", source_key="fixture-independent", external_id="3", canonical_url="https://example.test/confirm", content_sha256="c" * 64, published_at=morning_cutoff, published_precision="exact", fetched_at=morning_cutoff, original_text="独立核验", excerpt=None, fetch_version="fixture", metadata={}, created_at=morning_cutoff, db_path=path)
     store.enqueue_task(task_id="morning-task", kind="morning_review", idempotency_key="morning", input_version="v", input_cutoff_at=morning_cutoff, payload={"candidateId": "cand-1", "observationId": chosen["observationId"], "originalCutoffAt": NOW, "morningEvidenceRefs": [{"documentId": "doc-2", "revision": 1}], "independentVerificationRefs": [{"documentId": "doc-3", "revision": 1}], "companyWindowId": opportunity["companyWindowId"], "displayRank": 1, "selectionState": "kept", "lifecycle": "active", "isNew": False, "sourceStatus": "complete", "configId": "cfg", "configRevision": 1}, budget={"maxAttempts": 2}, created_at=morning_cutoff, db_path=path)
+    store.bind_task_execution(task_id="morning-task", execution_config_id=execution_id,
+                              execution_config_revision=execution_revision, binding_kind="scheduled",
+                              bound_at=morning_cutoff, db_path=path)
     morning = FakeProvider([_result('{"material":true,"reasonStatus":"invalidated","observationStatus":"needs_review","summary":"晨间反证","materialContraryEvidence":[{"documentId":"doc-3","revision":1,"claim":"重大反证"}]}')])
     monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", morning, "deepseek", None))
     run_once(db_path=path, worker_id="morning", lease_for=timedelta(minutes=5), handlers={"morning_review": morning_review_handler}, clock=lambda: datetime(2026, 9, 7, 1, tzinfo=timezone.utc))

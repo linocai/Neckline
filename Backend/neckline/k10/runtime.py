@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 from . import store
 from .analysis import AnalysisArtifact, AnalysisInputError, augment_analysis_context, record_analysis_artifact, run_con, run_pro
 from .market_context import MarketContextError, attach_frozen_market_context
+from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
 from .providers import resolve_deepseek_v4_pro
 from .worker import TaskContext, TaskResult
 
@@ -125,6 +126,18 @@ def analysis_handler(
     resolution = resolver(configuration=configuration, task="analysis", db_path=context.db_path)
     if resolution.provider is None or not isinstance(configuration, Mapping):
         return TaskResult("not_configured", "configuration", context.checkpoint, resolution.error or "模型未配置")
+    # A B36 provider cannot quietly become a live fallback.  The concrete
+    # production provider is fail-closed until an explicit V2 spend context is
+    # bound around each role's only HTTP attempt.
+    bind_provider_execution_spending(provider=resolution.provider, task_id=context.task.task_id,
+                                     execution_profile=context.execution_profile)
+    pro_model_options = execution_model_options(execution_profile=context.execution_profile,
+                                                stage="analysisPro", option_stage="companyComparison")
+    con_model_options = execution_model_options(execution_profile=context.execution_profile,
+                                                stage="analysisCon", option_stage="companyComparison")
+    if isinstance(resolution.provider, MeteredProvider) and (pro_model_options is None or con_model_options is None):
+        return TaskResult("not_configured", "configuration", context.checkpoint,
+                          "正反分析模型输出上限未在冻结执行配置中明确")
     requested = _requested_snapshot(context, observation_id)
     if requested is None:
         return TaskResult("failed", "input", context.checkpoint, "观察对象、追加请求或冻结资料不存在")
@@ -158,7 +171,12 @@ def analysis_handler(
         return TaskResult("failed", "input", context.checkpoint, "冻结行情上下文无效")
     if pro is None:
         try:
-            pro = _with_pricing(run_pro(context=snapshot, cutoff_at=context.input_cutoff_at, provider=resolution.provider, revision=revision), configuration)
+            with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                        stage="analysisPro", item_key=f"{observation_id}:r{revision}",
+                                        attempt=context.task.attempt_count):
+                pro = _with_pricing(run_pro(context=snapshot, cutoff_at=context.input_cutoff_at,
+                                            provider=resolution.provider, revision=revision,
+                                            model_options=pro_model_options), configuration)
         except (AnalysisInputError, ValueError):
             return TaskResult("failed", "input", context.checkpoint, "冻结分析输入无效")
         context.require_lease()
@@ -177,7 +195,12 @@ def analysis_handler(
         pass
     else:
         try:
-            con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at, provider=resolution.provider, pro=pro, revision=revision), configuration)
+            with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                        stage="analysisCon", item_key=f"{observation_id}:r{revision}",
+                                        attempt=context.task.attempt_count):
+                con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at,
+                                            provider=resolution.provider, pro=pro, revision=revision,
+                                            model_options=con_model_options), configuration)
         except (AnalysisInputError, ValueError):
             return TaskResult("failed", "con_input", _checkpoint(pro=pro), "反方冻结输入无效")
         context.require_lease()

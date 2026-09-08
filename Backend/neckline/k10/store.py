@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .schema import read_connection, require_schema, write_connection
+from .config import validate_execution_config
 from .types import CompanyWindowObservation, DocumentVersion, EventRevision, Observation, OpportunityPublicationInput, PublicationBatch, Task
 
 
@@ -125,6 +127,407 @@ def read_execution_config(*, config_id: str, revision: int, db_path: Path) -> Op
             "contentSha256": row[1], "createdAt": row[2]}
 
 
+_SPEND_FIELDS = (
+    "calls", "inputTokens", "outputTokens", "totalTokens", "fullTextCalls", "retries", "searchRequests", "searchCredits",
+)
+_BUDGET_KEYS = (
+    "maxModelCalls", "maxInputTokens", "maxOutputTokens", "maxTotalTokens",
+    "maxFullTextCalls", "maxRetries", "maxSearchRequests", "maxSearchCredits",
+)
+_SPEND_COLUMN_PREFIXES = (
+    "calls", "input_tokens", "output_tokens", "total_tokens", "full_text_calls", "retries", "search_requests", "search_credits",
+)
+
+
+def _spend_amounts(value: Mapping[str, Any]) -> dict[str, int]:
+    if not isinstance(value, Mapping) or set(value) != set(_SPEND_FIELDS):
+        raise ValueError("预算预留必须精确包含调用、token、全文、重试和搜索字段")
+    result: dict[str, int] = {}
+    for key in _SPEND_FIELDS:
+        number = value[key]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+            raise ValueError(f"预算预留 {key} 必须为非负整数")
+        result[key] = number
+    if not any(result.values()):
+        raise ValueError("预算预留不能全部为零")
+    return result
+
+
+def _budget_limits(value: Mapping[str, Any]) -> dict[str, int]:
+    if not isinstance(value, Mapping) or set(value) != set(_BUDGET_KEYS):
+        raise K10Conflict("冻结执行配置预算不完整")
+    return {key: int(value[key]) for key in _BUDGET_KEYS}
+
+
+def append_screening_template(
+    *, template_id: str, payload: Mapping[str, Any], approval_state: str,
+    created_at: str, approved_at: str | None, db_path: Path,
+) -> int:
+    """Append an immutable screening template.  Approval is explicit and never inferred."""
+    if not isinstance(template_id, str) or not template_id.strip():
+        raise ValueError("template_id 必须非空")
+    if not isinstance(payload, Mapping) or not payload:
+        raise ValueError("筛分模板不得为空")
+    if approval_state not in {"draft", "approved", "retired"}:
+        raise ValueError("筛分模板批准状态无效")
+    if (approval_state == "approved") != (approved_at is not None):
+        raise ValueError("approved 模板必须且只能带 approved_at")
+    fingerprint = _hash(payload)
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        old = conn.execute(
+            "SELECT revision,approval_state,approved_at FROM k10_screening_template_revisions "
+            "WHERE template_id=? AND content_sha256=?", (template_id, fingerprint),
+        ).fetchone()
+        if old is not None:
+            if tuple(old[1:]) != (approval_state, approved_at):
+                raise K10Conflict("同一模板内容的批准状态不可被静默改写")
+            return int(old[0])
+        revision = int(conn.execute(
+            "SELECT COALESCE(MAX(revision),0) FROM k10_screening_template_revisions WHERE template_id=?", (template_id,)
+        ).fetchone()[0]) + 1
+        conn.execute(
+            "INSERT INTO k10_screening_template_revisions(template_id,revision,payload_json,content_sha256,approval_state,approved_at,created_at) "
+            "VALUES(?,?,?,?,?,?,?)", (template_id, revision, _json(payload), fingerprint, approval_state, approved_at, created_at),
+        )
+    return revision
+
+
+def read_screening_template(*, template_id: str, revision: int, db_path: Path) -> Optional[dict[str, Any]]:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT payload_json,content_sha256,approval_state,approved_at,created_at "
+            "FROM k10_screening_template_revisions WHERE template_id=? AND revision=?", (template_id, revision),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"templateId": template_id, "revision": revision, "payload": json.loads(row[0]), "contentSha256": row[1],
+            "approvalState": row[2], "approvedAt": row[3], "createdAt": row[4]}
+
+
+def record_screening_run(
+    *, task_id: str, input_manifest_sha256: str, result: Mapping[str, Any], created_at: str, db_path: Path,
+) -> None:
+    """Persist pre-model audit/package output once for a frozen task input."""
+    if not task_id or not isinstance(input_manifest_sha256, str) or len(input_manifest_sha256) != 64:
+        raise ValueError("筛分记录需要 task_id 与输入 SHA-256")
+    safe_result = _safe_execution_result(result)
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
+            raise K10Conflict("筛分记录任务不存在")
+        expected = (input_manifest_sha256, _json(safe_result))
+        old = conn.execute("SELECT input_manifest_sha256,result_json FROM k10_screening_runs WHERE task_id=?", (task_id,)).fetchone()
+        if old is not None:
+            if tuple(old) != expected:
+                raise K10Conflict("冻结任务的筛分记录不可被重写")
+            return
+        conn.execute("INSERT INTO k10_screening_runs(task_id,input_manifest_sha256,result_json,created_at) VALUES(?,?,?,?)",
+                     (task_id, *expected, created_at))
+
+
+def read_screening_run(*, task_id: str, db_path: Path) -> Optional[dict[str, Any]]:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute("SELECT input_manifest_sha256,result_json,created_at FROM k10_screening_runs WHERE task_id=?", (task_id,)).fetchone()
+    if row is None:
+        return None
+    return {"taskId": task_id, "inputManifestSha256": row[0], "result": json.loads(row[1]), "createdAt": row[2]}
+
+
+def store_fact_cache(
+    *, cache_key: str, source_refs: Sequence[Mapping[str, Any]], eligible_at: str,
+    template_content_sha256: str, model: str, prompt_input_sha256: str,
+    result: Mapping[str, Any] | list[Any], created_at: str, db_path: Path,
+) -> None:
+    """Store a validated generic fact derivative, never raw source/model text.
+
+    The caller supplies the cache identity from source versions and every
+    material template/model/prompt input.  A later cutoff reuses a fact only
+    when its original eligible instant is inside that cutoff.
+    """
+    if (not isinstance(cache_key, str) or not cache_key or not isinstance(template_content_sha256, str) or len(template_content_sha256) != 64
+            or not isinstance(prompt_input_sha256, str) or len(prompt_input_sha256) != 64
+            or not isinstance(model, str) or not model):
+        raise ValueError("事实缓存身份不完整")
+    canonical_eligible = _utc_instant(eligible_at)
+    safe_refs = _safe_execution_result(list(source_refs))
+    safe_result = _safe_execution_result(result)
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        expected = (_json(safe_refs), canonical_eligible, template_content_sha256, model, prompt_input_sha256, _json(safe_result))
+        old = conn.execute(
+            "SELECT source_refs_json,eligible_at,template_content_sha256,model,prompt_input_sha256,result_json "
+            "FROM k10_fact_cache WHERE cache_key=?", (cache_key,),
+        ).fetchone()
+        if old is not None:
+            if tuple(old) != expected:
+                raise K10Conflict("事实缓存键不可对应不同输入或结果")
+            return
+        conn.execute(
+            "INSERT INTO k10_fact_cache(cache_key,source_refs_json,eligible_at,template_content_sha256,model,prompt_input_sha256,result_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?)", (cache_key, *expected, created_at),
+        )
+
+
+def read_fact_cache(*, cache_key: str, cutoff_at: str, db_path: Path) -> Optional[dict[str, Any]]:
+    cutoff = _utc_instant(cutoff_at)
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT source_refs_json,eligible_at,template_content_sha256,model,prompt_input_sha256,result_json,created_at "
+            "FROM k10_fact_cache WHERE cache_key=?", (cache_key,),
+        ).fetchone()
+    if row is None or str(row[1]) > cutoff:
+        return None
+    return {"cacheKey": cache_key, "sourceRefs": json.loads(row[0]), "eligibleAt": row[1],
+            "templateContentSha256": row[2], "model": row[3], "promptInputSha256": row[4],
+            "result": json.loads(row[5]), "createdAt": row[6]}
+
+
+def run_control_status(*, db_path: Path) -> dict[str, Any]:
+    """Read the durable discovery switch.  Its migration default is closed."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT state,reason_code,changed_at,changed_by FROM k10_run_controls WHERE control_key='k10_discovery'"
+        ).fetchone()
+    if row is None:
+        return {"state": "closed", "reasonCode": "control_missing", "changedAt": None, "changedBy": None}
+    return {"state": row[0], "reasonCode": row[1], "changedAt": row[2], "changedBy": row[3]}
+
+
+def set_run_control(*, state: str, reason_code: str, changed_at: str, changed_by: str, db_path: Path) -> dict[str, Any]:
+    """The only store write which can explicitly open a paused discovery runtime."""
+    if state not in {"closed", "open"} or not isinstance(reason_code, str) or not reason_code.strip():
+        raise ValueError("运行控制需要明确 state 与 reason_code")
+    if not isinstance(changed_by, str) or not changed_by.strip():
+        raise ValueError("运行控制需要明确 changed_by")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        conn.execute(
+            "INSERT INTO k10_run_controls(control_key,state,reason_code,changed_at,changed_by) VALUES('k10_discovery',?,?,?,?) "
+            "ON CONFLICT(control_key) DO UPDATE SET state=excluded.state,reason_code=excluded.reason_code,"
+            "changed_at=excluded.changed_at,changed_by=excluded.changed_by",
+            (state, reason_code, changed_at, changed_by),
+        )
+    return run_control_status(db_path=db_path)
+
+
+def _bound_v2_config(conn, *, task_id: str) -> tuple[Mapping[str, Any] | None, str | None]:
+    row = conn.execute(
+        "SELECT c.payload_json FROM k10_task_execution_bindings b JOIN k10_execution_config_revisions c "
+        "ON c.config_id=b.execution_config_id AND c.revision=b.execution_config_revision WHERE b.task_id=?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return None, "execution_unbound"
+    payload = json.loads(row[0])
+    status = validate_execution_config(payload)
+    if not status.ready or payload.get("executionVersion") != "k10-execution-v2":
+        return None, "execution_not_configured"
+    template = payload["discovery"]["screeningTemplate"]
+    stored = conn.execute(
+        "SELECT payload_json,content_sha256,approval_state FROM k10_screening_template_revisions "
+        "WHERE template_id=? AND revision=?", (template["templateId"], template["revision"]),
+    ).fetchone()
+    if stored is None or stored[1] != template["contentSha256"] or stored[2] != "approved":
+        return None, "screening_template_not_approved"
+    stored_payload = json.loads(stored[0])
+    if stored_payload.get("rules") != template["rules"]:
+        return None, "screening_template_mismatch"
+    return payload, None
+
+
+def _reservation_occupancy(row: Sequence[Any]) -> tuple[int, ...]:
+    # A missing provider usage field is an unknown outcome and therefore keeps
+    # the full conservative reservation occupied.
+    state = str(row[0])
+    reserve = tuple(int(value) for value in row[1:9])
+    actual = row[9:17]
+    if state == "released":
+        return (0,) * len(_SPEND_FIELDS)
+    if state != "settled" or any(value is None for value in actual):
+        return reserve
+    return tuple(int(value) for value in actual)
+
+
+def _budget_snapshot_conn(conn, *, task_id: str) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT state, reserve_calls,reserve_input_tokens,reserve_output_tokens,reserve_total_tokens,reserve_full_text_calls,"
+        "reserve_retries,reserve_search_requests,reserve_search_credits,actual_calls,actual_input_tokens,actual_output_tokens,"
+        "actual_total_tokens,actual_full_text_calls,actual_retries,actual_search_requests,actual_search_credits "
+        "FROM k10_task_execution_spend_reservations WHERE task_id=?", (task_id,),
+    ).fetchall()
+    occupied = [0] * len(_SPEND_FIELDS)
+    reserved = [0] * len(_SPEND_FIELDS)
+    actual = [0] * len(_SPEND_FIELDS)
+    unknown = [0] * len(_SPEND_FIELDS)
+    for row in rows:
+        reserve = tuple(int(value) for value in row[1:9])
+        usage = _reservation_occupancy(row)
+        for index in range(len(_SPEND_FIELDS)):
+            reserved[index] += reserve[index]
+            occupied[index] += usage[index]
+            if row[0] == "settled" and row[9 + index] is not None:
+                actual[index] += int(row[9 + index])
+            if row[0] in {"reserved", "unknown"}:
+                unknown[index] += reserve[index]
+    return {"reserved": dict(zip(_SPEND_FIELDS, reserved)), "occupied": dict(zip(_SPEND_FIELDS, occupied)),
+            "actual": dict(zip(_SPEND_FIELDS, actual)), "unknown": dict(zip(_SPEND_FIELDS, unknown)),
+            "reservationCount": len(rows)}
+
+
+def execution_budget_snapshot(*, task_id: str, db_path: Path) -> dict[str, Any]:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        return _budget_snapshot_conn(conn, task_id=task_id)
+
+
+def execution_budget_status(*, task_id: str, db_path: Path) -> dict[str, Any]:
+    """Safe UI aggregate. A zero remaining counter is visible without being
+    relabelled as an external-call denial which has not actually occurred."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        payload, reason = _bound_v2_config(conn, task_id=task_id)
+        if payload is None:
+            return {"state": "notConfigured", "reserved": None, "occupied": None,
+                    "actual": None, "unknown": None, "reservationCount": 0, "remaining": None}
+        snapshot = _budget_snapshot_conn(conn, task_id=task_id)
+        limits = _budget_limits(payload["discovery"]["budgets"]["round"])
+    budget_keys = dict(zip(_SPEND_FIELDS, _BUDGET_KEYS))
+    remaining = {field: max(0, limits[budget_keys[field]] - snapshot["occupied"][field]) for field in _SPEND_FIELDS}
+    return {"state": "available", **snapshot, "remaining": remaining}
+
+
+def admit_execution_spend(
+    *, task_id: str, item_key: str, stage: str, kind: str, reservation_key: str,
+    reserved: Mapping[str, Any], created_at: str, db_path: Path,
+) -> dict[str, Any]:
+    """Atomically reserve one potential external call before it is sent.
+
+    The returned `pending_*` states are terminal for this attempt: callers must
+    not turn them into an upstream request.  A retry needs a new reservation
+    key, so an interrupted request cannot become a free duplicate.
+    """
+    if kind not in {"model", "full_text", "search", "retry"} or not item_key or not stage or not reservation_key:
+        raise ValueError("预算 admission 缺少有效 item、stage、kind 或 reservation_key")
+    amounts = _spend_amounts(reserved)
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        control = conn.execute("SELECT state,reason_code FROM k10_run_controls WHERE control_key='k10_discovery'").fetchone()
+        if control is None or control[0] != "open":
+            return {"state": "paused", "reason": "control_missing" if control is None else control[1], "reservationId": None}
+        payload, config_error = _bound_v2_config(conn, task_id=task_id)
+        if payload is None:
+            return {"state": "not_configured", "reason": config_error, "reservationId": None}
+        old = conn.execute(
+            "SELECT reservation_id,state FROM k10_task_execution_spend_reservations WHERE task_id=? AND reservation_key=?",
+            (task_id, reservation_key),
+        ).fetchone()
+        if old is not None:
+            old_state = str(old[1])
+            return {"state": "reused" if old_state == "settled" else "pending_outcome",
+                    "reason": None if old_state == "settled" else "reservation_already_exists", "reservationId": old[0]}
+        budgets = payload["discovery"]["budgets"]
+        try:
+            round_limits = _budget_limits(budgets["round"])
+            stage_limits = _budget_limits(budgets["stages"][stage])
+            reservation_limits = _budget_limits(budgets["reservation"][stage])
+        except (KeyError, K10Conflict):
+            return {"state": "not_configured", "reason": "budget_stage_missing", "reservationId": None}
+        proposed = _budget_snapshot_conn(conn, task_id=task_id)["occupied"]
+        key_for_budget = dict(zip(_SPEND_FIELDS, _BUDGET_KEYS))
+        for field in _SPEND_FIELDS:
+            if amounts[field] > reservation_limits[key_for_budget[field]]:
+                return {"state": "pending_budget", "reason": "reservation_limit", "reservationId": None}
+            if proposed[field] + amounts[field] > round_limits[key_for_budget[field]]:
+                return {"state": "pending_budget", "reason": "round_budget", "reservationId": None}
+        stage_rows = conn.execute(
+            "SELECT state,reserve_calls,reserve_input_tokens,reserve_output_tokens,reserve_total_tokens,reserve_full_text_calls,"
+            "reserve_retries,reserve_search_requests,reserve_search_credits,actual_calls,actual_input_tokens,actual_output_tokens,"
+            "actual_total_tokens,actual_full_text_calls,actual_retries,actual_search_requests,actual_search_credits "
+            "FROM k10_task_execution_spend_reservations WHERE task_id=? AND stage=?", (task_id, stage),
+        ).fetchall()
+        stage_occupied = [0] * len(_SPEND_FIELDS)
+        for row in stage_rows:
+            for index, value in enumerate(_reservation_occupancy(row)):
+                stage_occupied[index] += value
+        for index, field in enumerate(_SPEND_FIELDS):
+            if stage_occupied[index] + amounts[field] > stage_limits[key_for_budget[field]]:
+                return {"state": "pending_budget", "reason": "stage_budget", "reservationId": None}
+        reservation_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO k10_task_execution_spend_reservations(reservation_id,task_id,reservation_key,item_key,stage,kind,state,"
+            "reserve_calls,reserve_input_tokens,reserve_output_tokens,reserve_total_tokens,reserve_full_text_calls,reserve_retries,"
+            "reserve_search_requests,reserve_search_credits,actual_calls,actual_input_tokens,actual_output_tokens,actual_total_tokens,"
+            "actual_full_text_calls,actual_retries,actual_search_requests,actual_search_credits,created_at,settled_at) "
+            "VALUES(?,?,?,?,?,?, 'reserved', ?,?,?,?,?,?,?,?, NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,?,NULL)",
+            (reservation_id, task_id, reservation_key, item_key, stage, kind,
+             amounts["calls"], amounts["inputTokens"], amounts["outputTokens"], amounts["totalTokens"],
+             amounts["fullTextCalls"], amounts["retries"], amounts["searchRequests"], amounts["searchCredits"], created_at),
+        )
+    return {"state": "reserved", "reason": None, "reservationId": reservation_id}
+
+
+def settle_execution_spend(
+    *, reservation_id: str, outcome: str, actual: Mapping[str, Any] | None,
+    settled_at: str, db_path: Path,
+) -> dict[str, Any]:
+    """Settle exact provider usage or preserve the whole reservation as unknown."""
+    if outcome not in {"settled", "unknown"}:
+        raise ValueError("预算结算 outcome 必须是 settled 或 unknown")
+    amounts = None if actual is None else _spend_amounts(actual)
+    if (outcome == "settled") != (amounts is not None):
+        raise ValueError("settled 必须提供实际用量；unknown 不得伪造实际用量")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute(
+            "SELECT state,actual_calls,actual_input_tokens,actual_output_tokens,actual_total_tokens,actual_full_text_calls,"
+            "actual_retries,actual_search_requests,actual_search_credits FROM k10_task_execution_spend_reservations WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()
+        if row is None:
+            raise K10Conflict("预算 reservation 不存在")
+        if row[0] != "reserved":
+            existing = tuple(row[1:])
+            expected = tuple(amounts[field] for field in _SPEND_FIELDS) if amounts is not None else (None,) * len(_SPEND_FIELDS)
+            if row[0] == outcome and existing == expected:
+                return {"state": outcome, "reservationId": reservation_id}
+            raise K10Conflict("预算 reservation 已按不同结果结算")
+        if outcome == "unknown":
+            conn.execute("UPDATE k10_task_execution_spend_reservations SET state='unknown',settled_at=? WHERE reservation_id=?",
+                         (settled_at, reservation_id))
+        else:
+            conn.execute(
+                "UPDATE k10_task_execution_spend_reservations SET state='settled',actual_calls=?,actual_input_tokens=?,actual_output_tokens=?,"
+                "actual_total_tokens=?,actual_full_text_calls=?,actual_retries=?,actual_search_requests=?,actual_search_credits=?,settled_at=? WHERE reservation_id=?",
+                (amounts["calls"], amounts["inputTokens"], amounts["outputTokens"], amounts["totalTokens"],
+                 amounts["fullTextCalls"], amounts["retries"], amounts["searchRequests"], amounts["searchCredits"], settled_at, reservation_id),
+            )
+    return {"state": outcome, "reservationId": reservation_id}
+
+
+def cancel_execution_spend(*, reservation_id: str, cancelled_at: str, db_path: Path) -> dict[str, Any]:
+    """Release a reservation only when the caller proves no provider request was sent.
+
+    This supports a concurrent cache winner: the durable trace remains, while
+    its zero external use no longer blocks another independent item.
+    """
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute("SELECT state FROM k10_task_execution_spend_reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
+        if row is None:
+            raise K10Conflict("预算 reservation 不存在")
+        if row[0] == "released":
+            return {"state": "released", "reservationId": reservation_id}
+        if row[0] != "reserved":
+            raise K10Conflict("已发送或已结算的预算 reservation 不能释放")
+        conn.execute("UPDATE k10_task_execution_spend_reservations SET state='released',settled_at=? WHERE reservation_id=?",
+                     (cancelled_at, reservation_id))
+    return {"state": "released", "reservationId": reservation_id}
+
+
 def bind_task_execution(
     *, task_id: str, execution_config_id: str, execution_config_revision: int,
     binding_kind: str, bound_at: str, db_path: Path,
@@ -140,6 +543,19 @@ def bind_task_execution(
         ).fetchone()
         if profile is None:
             raise K10Conflict("指定执行配置修订不存在")
+        execution_payload = json.loads(profile[1])
+        execution_status = validate_execution_config(execution_payload)
+        if execution_payload.get("executionVersion") == "k10-execution-v2":
+            if not execution_status.ready:
+                raise K10Conflict("V2 执行配置未完整批准，拒绝绑定")
+            template = execution_payload["discovery"]["screeningTemplate"]
+            template_row = conn.execute(
+                "SELECT payload_json,content_sha256,approval_state FROM k10_screening_template_revisions "
+                "WHERE template_id=? AND revision=?", (template["templateId"], template["revision"]),
+            ).fetchone()
+            if (template_row is None or template_row[1] != template["contentSha256"] or template_row[2] != "approved" or
+                    json.loads(template_row[0]).get("rules") != template["rules"]):
+                raise K10Conflict("V2 执行配置未绑定相同的已批准筛分模板")
         if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
             raise K10Conflict("执行绑定任务不存在")
         expected = (execution_config_id, execution_config_revision, str(profile[0]), binding_kind)
@@ -1890,6 +2306,18 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
     candidate_count = coverage.get("candidateCount") if isinstance(coverage, Mapping) else None
     if isinstance(candidate_count, bool) or not isinstance(candidate_count, int) or candidate_count < 0:
         candidate_count = None
+    processing_keys = ("received", "exactDeduplicated", "templateExcluded", "templateDeferred", "templateProtected",
+                       "packages", "lightweightUnderstood", "fullTextRequested", "fullTextCompleted",
+                       "pendingVerification", "pendingBudget")
+    raw_processing = coverage.get("processingCounts") if isinstance(coverage, Mapping) else None
+    processing = None
+    if isinstance(raw_processing, Mapping) and set(raw_processing) == set(processing_keys):
+        candidate_processing = dict(raw_processing)
+        if all(not isinstance(value, bool) and isinstance(value, int) and value >= 0 for value in candidate_processing.values()):
+            processing = candidate_processing
+    raw_fact_cache_hits = coverage.get("factCacheHits") if isinstance(coverage, Mapping) else None
+    fact_cache_hits = (raw_fact_cache_hits if not isinstance(raw_fact_cache_hits, bool)
+                       and isinstance(raw_fact_cache_hits, int) and raw_fact_cache_hits >= 0 else None)
     understood_count = len(keys("document", "understand"))
     template_skipped_count = len(keys("document", "template_filter"))
     full_text_count = 0
@@ -1924,6 +2352,18 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
         display_stage = "fetched"
     else:
         display_stage = str(scan[10])
+    control = run_control_status(db_path=db_path)
+    run_control = {"state": "ready" if control["state"] == "open" else "paused",
+                   "reasonCode": control["reasonCode"], "changedAt": control["changedAt"]}
+    budget_pending = processing is not None and processing["pendingBudget"] > 0
+    if control["state"] == "closed" and (raw_scan_status in {"queued", "running"} or budget_pending):
+        scan_state = "paused"
+    budget = execution_budget_status(task_id=str(task_id), db_path=db_path)
+    if processing is not None and processing["pendingBudget"] > 0 and budget["state"] == "available":
+        budget = {**budget, "state": "exhausted"}
+    if control["state"] == "open" and budget["state"] == "exhausted" and (raw_scan_status in {"queued", "running"} or budget_pending):
+        scan_state = "budgetExhausted"
+        display_stage = "pending_budget"
     return {"state": scan_state, "stage": display_stage,
             "documentCounts": {"received": received, "deduplicated": deduplicated,
                                "templateSkipped": template_skipped_count,
@@ -1939,6 +2379,7 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
                 {"configId": scan[2], "revision": int(scan[3]), "contentSha256": scan[4]},
             "executionBinding": None if task_id is None else
                 {"configId": scan[6], "revision": scan[7], "contentSha256": scan[8], "bindingKind": scan[9]},
+            "runControl": run_control, "processingCounts": processing, "factCacheHits": fact_cache_hits, "budget": budget,
             "taskId": task_id}
 
 
@@ -1977,6 +2418,13 @@ def schedule_task_retry(
     now_text = scheduled_at.astimezone(timezone.utc).isoformat(timespec="seconds")
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
+        # This runs under the same immediate write transaction as the retry
+        # row.  A worker-side precheck alone leaves a pause→schedule window.
+        control = conn.execute(
+            "SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'"
+        ).fetchone()
+        if control is None or control[0] != "open":
+            return False
         row = conn.execute(
             "SELECT t.attempt_count,COALESCE(r.failure_attempt_count,0),t.checkpoint_json FROM k10_tasks t "
             "LEFT JOIN k10_task_retry_schedules r ON r.task_id=t.task_id "
@@ -2741,7 +3189,7 @@ def list_company_window_evaluations(*, company_window_id: str | None = None, db_
 __all__ = [
     "K10Conflict", "append_analysis_revision", "append_candidate_action", "append_company_mapping", "append_company_window_action",
     "append_company_window_evaluation", "append_document_version", "append_market_day_fact",
-    "append_execution_config", "append_morning_update", "append_opportunity_update", "append_run_config", "append_source_watermark",
+    "admit_execution_spend", "append_execution_config", "append_morning_update", "append_opportunity_update", "append_run_config", "append_screening_template", "append_source_watermark", "cancel_execution_spend",
     "append_event_revision", "candidate_state", "claim_task_by_id", "claim_tasks", "create_candidate",
     "bind_scan_execution", "bind_task_execution", "completed_execution_items", "create_scan", "enqueue_task", "execution_progress_for_scan", "finalize_scan", "finish_task", "freeze_company_window_selection",
     "get_candidate", "get_company_window_selection", "get_observation", "get_opportunity", "get_opportunity_for_candidate", "get_publication_batch", "get_scan",
@@ -2749,7 +3197,7 @@ __all__ = [
     "list_company_windows", "list_company_window_evaluations", "list_market_day_facts", "list_observations", "list_opportunities", "market_day_fact_id",
     "list_opportunity_lifecycle_events", "list_publication_batches", "list_publication_samples", "list_scans", "list_source_document_versions",
     "load_analysis_revision", "load_candidate_context", "load_document_versions", "load_observation_context",
-    "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities", "read_execution_config", "read_run_config",
-    "record_execution_checkpoint", "reopen_scan", "renew_task_lease", "retry_task", "schedule_task_retry", "task_execution_input", "task_execution_profile", "update_running_scan_coverage",
+    "execution_budget_snapshot", "execution_budget_status", "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities", "read_execution_config", "read_fact_cache", "read_run_config", "read_screening_run", "read_screening_template",
+    "record_execution_checkpoint", "record_screening_run", "reopen_scan", "renew_task_lease", "retry_task", "run_control_status", "schedule_task_retry", "set_run_control", "settle_execution_spend", "store_fact_cache", "task_execution_input", "task_execution_profile", "update_running_scan_coverage",
     "withdraw_opportunity",
 ]

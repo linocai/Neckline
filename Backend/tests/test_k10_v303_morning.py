@@ -17,6 +17,7 @@ from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetc
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.k10.windows import SHANGHAI
 from neckline.k10.worker import TaskContext, TaskResult, run_once
+from .k10_v305_fixture import append_approved_execution_profile
 
 
 MORNING = datetime(2026, 9, 8, 9, tzinfo=SHANGHAI)
@@ -27,20 +28,24 @@ def _config() -> dict:
     return json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
 
 
+def _execution(path: Path) -> tuple[str, int]:
+    """Scheduler regressions use an approved V2 profile and an open test-only control."""
+    return append_approved_execution_profile(db_path=path, created_at=STARTED.isoformat(),
+                                             config_id="fixture-execution")
+
+
 def _bind_execution(path: Path, task_id: str) -> None:
-    """Legacy scheduler regressions must use the same explicit B36 binding as production."""
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    revision = store.append_execution_config(
-        config_id="fixture-execution", payload=profile, created_at=STARTED.isoformat(), db_path=path,
-    )
+    config_id, revision = _execution(path)
     store.bind_task_execution(
-        task_id=task_id, execution_config_id="fixture-execution", execution_config_revision=revision,
+        task_id=task_id, execution_config_id=config_id, execution_config_revision=revision,
         binding_kind="scheduled", bound_at=STARTED.isoformat(), db_path=path,
     )
 
 
 def _seed(path: Path, *, formal_target: bool) -> tuple[str, int]:
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="fixture_approved", changed_at=STARTED.isoformat(),
+                          changed_by="test", db_path=path)
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE trade_cal(exchange TEXT, cal_date TEXT, is_open INTEGER)")
         conn.executemany("INSERT INTO trade_cal VALUES('SSE', ?, ?)", [
@@ -127,8 +132,10 @@ def _run_morning_task(*, path: Path, config_id: str, revision: int, adapter, mon
     monkeypatch.setattr(pipeline, "_now", lambda: now_at)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=provider, error=None))
     monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", lambda **_: adapter)
+    execution_id, execution_revision = _execution(path)
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
-        config_revision=revision, now=now_at)
+        config_revision=revision, now=now_at, execution_config_id=execution_id,
+        execution_config_revision=execution_revision)
     _bind_execution(path, task_id)
     task = run_once(db_path=path, worker_id="v303-fixture", lease_for=timedelta(minutes=5), clock=lambda: now_at,
         handlers={"morning_scan": lambda context: pipeline.production_scan_handler(
@@ -265,8 +272,10 @@ def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, 
 def test_worker_lease_loss_after_scan_returns_writes_no_morning_report(tmp_path, monkeypatch):
     path = tmp_path / "lost-lease-after-scan.sqlite"
     config_id, revision = _seed(path, formal_target=False)
+    execution_id, execution_revision = _execution(path)
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
-        config_revision=revision, now=STARTED)
+        config_revision=revision, now=STARTED, execution_config_id=execution_id,
+        execution_config_revision=execution_revision)
     _bind_execution(path, task_id)
     scan_id = "scan-lost-after"
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=object(), error=None))
@@ -292,8 +301,10 @@ def test_worker_lease_loss_after_scan_returns_writes_no_morning_report(tmp_path,
 def test_worker_recovers_running_unavailable_scan_before_appending_report(tmp_path, monkeypatch):
     path = tmp_path / "recover-running-unavailable.sqlite"
     config_id, revision = _seed(path, formal_target=False)
+    execution_id, execution_revision = _execution(path)
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
-        config_revision=revision, now=STARTED)
+        config_revision=revision, now=STARTED, execution_config_id=execution_id,
+        execution_config_revision=execution_revision)
     _bind_execution(path, task_id)
     scan_id = pipeline._scan_id(kind="morning", cutoff_at=MORNING, identity=task_id)
     original_create = pipeline.store.create_scan

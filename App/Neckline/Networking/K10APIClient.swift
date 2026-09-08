@@ -18,6 +18,7 @@ protocol K10Servicing: Sendable {
     func results() async throws -> K10Results
     func configuration() async throws -> K10Configuration
     func operationsReadiness() async throws -> K10OperationsReadiness
+    func pauseDiscovery() async throws -> K10DiscoveryPauseResult
     func usageSummary() async throws -> K10UsageSummary
 }
 
@@ -32,6 +33,9 @@ extension K10Servicing {
     }
     func operationsReadiness() async throws -> K10OperationsReadiness {
         throw K10APIError.notFound("服务端尚未提供运行状态")
+    }
+    func pauseDiscovery() async throws -> K10DiscoveryPauseResult {
+        throw K10APIError.notFound("服务端尚未提供暂停入口")
     }
 }
 
@@ -58,6 +62,7 @@ actor K10APIClient: K10Servicing {
     func results() async throws -> K10Results { try await get("/api/v1/k10/results") }
     func configuration() async throws -> K10Configuration { try await get("/api/v1/k10/configuration") }
     func operationsReadiness() async throws -> K10OperationsReadiness { try await get("/api/v1/k10/operations/readiness") }
+    func pauseDiscovery() async throws -> K10DiscoveryPauseResult { try await post("/api/v1/k10/operations/pause", body: [String: String]()) }
     func usageSummary() async throws -> K10UsageSummary { try await get("/api/v1/usage/summary") }
 
     private func allPages<Page: Decodable>(path: String, extra: [URLQueryItem], as _: Page.Type) async throws -> Page where Page: K10Paginated {

@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import re
 import time
+from threading import local
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -31,6 +32,7 @@ from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocum
 from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
 from .historical_cases import apply_historical_assessments
 from .model_execution import JsonRepairError, ModelInvocation, ModelNetworkError, SemanticValidationError, execute_model_operation
+from .metering import bind_provider_execution_spending, provider_spend_context
 from .opportunity_discovery import validate_classification, validate_event_comparison
 from .providers import resolve_deepseek_v4_pro
 from .tushare_news import TuShareMajorNewsAdapter
@@ -138,7 +140,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
     def __init__(self, provider: LLMProvider, *, market_context_loader: Callable[[str], Mapping[str, Any]] | None = None,
                  historical_context_loader: Callable[..., Mapping[str, Any]] | None = None) -> None:
         self.provider, self.usage_records, self._documents, self._verification_documents = provider, [], {}, {}
+        self._thread_usage = local()
         self._full_text_used: set[EvidenceRef] = set()
+        self._full_text_requested: set[EvidenceRef] = set()
         self._previous_opportunities: Sequence[Mapping[str, Any]] = ()
         self._market_context_loader = market_context_loader
         self._market_snapshots: dict[str, Mapping[str, Any]] = {}
@@ -164,6 +168,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         """Whether this frozen document completed the explicit key→full route."""
         return document.evidence_ref in self._full_text_used
 
+    def full_text_requested(self, *, document: DiscoveryDocument) -> bool:
+        return document.evidence_ref in self._full_text_requested
+
     def set_scan_cutoff(self, cutoff_at: datetime) -> None:
         if cutoff_at.tzinfo is None:
             raise ValueError("scan cutoff 必须带时区")
@@ -174,7 +181,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         required = {"documentBatchSize", "understandConcurrency", "keyPassageMaxCharacters",
                     "networkMaxAttempts", "jsonRepairMaxAttempts", "retryBackoffSeconds", "taskSliceSeconds",
                     "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions"}
-        if not isinstance(policy, Mapping) or set(policy) != required:
+        v2_fields = {"model", "screeningTemplate", "packageLimits", "budgets", "priorityOrder"}
+        if not isinstance(policy, Mapping) or not required <= set(policy) or set(policy) - required - v2_fields:
             raise PipelineError("发现执行包字段无效", code="execution_policy_invalid")
         for key in required - {"retryBackoffSeconds", "modelOptions", "jsonRepairMaxAttempts"}:
             value = policy.get(key)
@@ -254,10 +262,12 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                                                 ChatMessage(role="user", content=f"任务:{operation}\n{content}")],
                                                enable_search=False, response_format={"type":"json_object"},
                                                model_options=model_options)
-        self.usage_records.append({"operation": operation, "provider": result.provider, "model": result.model,
+        record = {"operation": operation, "provider": result.provider, "model": result.model,
                                    "inputTokens": result.prompt_tokens, "outputTokens": result.completion_tokens,
                                    "totalTokens": result.total_tokens, "usageUnavailable": result.usage_unavailable,
-                                   "finishReason": result.finish_reason, "errorCode": result.error_code})
+                                   "finishReason": result.finish_reason, "errorCode": result.error_code}
+        self.usage_records.append(record)
+        self._thread_usage.last = record
         return result
 
     @staticmethod
@@ -327,7 +337,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                      "放入 facts.background。若本篇没有当前新增或更新，events 必须是 []。"
                      "同一事项仍沿用 canonicalKey，阶段更新用 stageKey，不得因标题或日期重建旧催化。"
                      "若关键段落不足以判断，请 needsFullText=true；否则 false。")
-        return operation, {"documentId": document.document_id, "revision": document.revision,
+        payload = {"documentId": document.document_id, "revision": document.revision,
             "publicationContext": {"publishedAt": document.published_at, "fetchedAt": document.fetched_at,
                                   "scanCutoffAt": self._scan_cutoff_at}, "metadata": document.metadata,
             "knownEvents": self._previous_opportunities, "text": text, "textMode": text_mode,
@@ -337,6 +347,17 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                                     "headline": "string", "eventKind": "string", "facts": {},
                                     "sourceRefs": [{"documentId": document.document_id, "revision": document.revision}]}],
                       "needsFullText": False}}
+        if self._execution_policy is not None and "screeningTemplate" in self._execution_policy:
+            # Source-version facts are reusable. Time-dependent investment judgment
+            # belongs to verify/compare/classify, whose inputs retain the scan cutoff.
+            payload["publicationContext"].pop("scanCutoffAt", None)
+            payload.pop("knownEvents", None)
+            member_refs = document.metadata.get("memberRefs")
+            if isinstance(member_refs, list) and member_refs:
+                payload["sourceRefs"] = member_refs
+                payload["output"]["events"][0]["sourceRefs"] = member_refs
+            operation += "本阶段只提取资料披露时的原始事实，不判断当前价格、投资优先级或两个交易日的表现。引用必须选自传入真实来源，禁止引用资料包ID。"
+        return operation, payload
 
     @staticmethod
     def _decode_understand(raw: Mapping[str, Any]) -> tuple[tuple[EventDraft, ...], bool]:
@@ -363,52 +384,26 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         maximum = int(self._execution_policy["keyPassageMaxCharacters"]) if self._execution_policy is not None else len(text)
         excerpt = self._key_passages(text, maximum=maximum)
         excerpted = len(excerpt) < len(text)
-        positions = self._key_passage_positions(text, maximum=maximum)
-        operation = ("只提取本篇在 publication context 下新增、当前披露或实质更新的事件。"
-                     "历史融资轮次、旧投资/合资、旧和解、转载背景和回顾不得因本篇新发布时间重发为当前事件；"
-                     "放入 facts.background。若本篇没有当前新增或更新，events 必须是 []。"
-                     "同一事项仍沿用 canonicalKey，阶段更新用 stageKey，不得因标题或日期重建旧催化。"
-                     "若关键段落不足以判断，请 needsFullText=true；否则 false。")
-        payload={"documentId":document.document_id,"revision":document.revision,
-            "publicationContext":{"publishedAt":document.published_at,"fetchedAt":document.fetched_at,
-                                  "scanCutoffAt":self._scan_cutoff_at},"metadata":document.metadata,
-            "knownEvents": self._previous_opportunities,
-            "text":excerpt,"textMode":"key_passages","isExcerpt":excerpted,
-            "fullTextAvailable":excerpted,"paragraphIndexes":positions,
-            "extraction":dict(document.extraction),
-            "factsConvention":{"currentFacts":{},"background":{}},
-            "output":{"events":[{"canonicalKey":"string","stageKey":"string","eventState":"string",
-                                    "headline":"string","eventKind":"string","facts":{},
-                                    "sourceRefs":[{"documentId":document.document_id,"revision":document.revision}]}],
-                      "needsFullText":False}}
-        raw=self._json(operation=operation, payload=payload, model_options=self._model_options("understand"))
-        needs_full = raw.get("needsFullText", False)
-        if not isinstance(needs_full, bool):
-            raise PipelineError("理解输出 needsFullText 无效", code="understand_contract_invalid")
-        initial_rows = raw.get("events")
-        if not isinstance(initial_rows, list):
-            raise PipelineError("理解输出缺少 events", code="understand_contract_invalid")
-        # A bounded initial read may say "no event" only after the full frozen text has
-        # been checked.  This prevents document length from becoming a hidden exclusion.
-        full_text_route = excerpted and (needs_full or not initial_rows)
-        if full_text_route:
-            raw = self._json(operation=operation + "现已提供全文，请直接完成事件输出。",
-                             payload={**payload, "text": text, "textMode": "full_text", "isExcerpt": False,
-                                      "fullTextAvailable": False,
-                                      "paragraphIndexes": list(range(1, len([part for part in text.splitlines() if part.strip()]) + 1))},
-                             model_options=self._model_options("understand"))
-        rows=raw.get("events")
-        if not isinstance(rows,list): raise PipelineError("理解输出缺少 events", code="understand_contract_invalid")
-        out=[]
-        for row in rows:
-            if not isinstance(row,Mapping): raise PipelineError("events 项必须是对象", code="understand_contract_invalid")
-            required=("canonicalKey","stageKey","eventState","headline","eventKind")
-            if any(not isinstance(row.get(k),str) or not row[k].strip() for k in required) or not isinstance(row.get("facts"),Mapping):
-                raise PipelineError("事件结构不完整", code="understand_contract_invalid")
-            out.append(EventDraft(row["canonicalKey"],row["stageKey"],row["eventState"],row["headline"],row["eventKind"],dict(row["facts"]),_refs(row.get("sourceRefs"))))
-        if full_text_route:
+        operation, payload = self._understand_request_spec(
+            document=document, text=excerpt, text_mode="key_passages", is_excerpt=excerpted,
+            paragraph_indexes=self._key_passage_positions(text, maximum=maximum))
+        events, needs_full = self._decode_understand(self._json(
+            operation=operation, payload=payload, model_options=self._model_options("understand")))
+        # An empty event list never authorizes an additional model request.
+        if excerpted and needs_full:
+            self._full_text_requested.add(document.evidence_ref)
+            limits = self._execution_policy.get("packageLimits") if self._execution_policy else None
+            if isinstance(limits, Mapping) and limits.get("fullTextEnabled") is not True:
+                raise PipelineError("全文补读未获许可，资料待处理", code="full_text_disabled")
+            operation, payload = self._understand_request_spec(
+                document=document, text=text, text_mode="full_text", is_excerpt=False,
+                paragraph_indexes=list(range(1, len([part for part in text.splitlines() if part.strip()]) + 1)))
+            events, needs_full = self._decode_understand(self._json(
+                operation=operation, payload=payload, model_options=self._model_options("understand")))
+            if needs_full:
+                raise PipelineError("全文理解仍要求更多资料", code="understand_full_incomplete")
             self._full_text_used.add(document.evidence_ref)
-        return tuple(out)
+        return events
 
     def verify(self, event: EventDraft) -> Verification:
         evidence, available, independent = self._event_evidence(event)
@@ -593,16 +588,24 @@ class _CheckpointedDiscoveryModel:
         self._base, self._task_id, self._binding = base, task_id, execution_profile
         self._cutoff_at, self._db_path, self._leaseguard = _text(cutoff_at), db_path, leaseguard
         self._full_text_used: set[EvidenceRef] = set()
+        self._full_text_requested: set[EvidenceRef] = set()
         payload = execution_profile.get("payload")
         if not isinstance(payload, Mapping) or not isinstance(payload.get("discovery"), Mapping):
             raise PipelineError("发现执行配置未绑定", code="execution_policy_missing")
         self._policy = payload["discovery"]
+        self.fact_cache_hits = 0
+        if isinstance(base, DeepSeekDiscoveryModel):
+            bind_provider_execution_spending(provider=base.provider, task_id=task_id,
+                                             execution_profile=execution_profile)
 
     def __getattr__(self, name: str):
         return getattr(self._base, name)
 
     def full_text_used(self, *, document: DiscoveryDocument) -> bool:
         return document.evidence_ref in self._full_text_used
+
+    def full_text_requested(self, *, document: DiscoveryDocument) -> bool:
+        return document.evidence_ref in self._full_text_requested
 
     def register_documents(self, *, documents: Sequence[DiscoveryDocument]) -> None:
         register = getattr(self._base, "register_documents", None)
@@ -656,11 +659,19 @@ class _CheckpointedDiscoveryModel:
         def metered_invoke() -> Any:
             records = getattr(self._base, "usage_records", None)
             start = len(records) if isinstance(records, list) else 0
+            thread_usage = getattr(self._base, "_thread_usage", None)
+            if thread_usage is not None:
+                thread_usage.last = None
+            def current_usage():
+                if thread_usage is not None:
+                    value = getattr(thread_usage, "last", None)
+                    return value if isinstance(value, Mapping) else {}
+                added = records[start:] if isinstance(records, list) else []
+                return added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
             try:
                 value = invoke()
             except Exception as exc:
-                added = records[start:] if isinstance(records, list) else []
-                usage = added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
+                usage = current_usage()
                 code = getattr(exc, "code", None)
                 safe = code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code) else "model_execution_invalid"
                 error_type = (JsonRepairError if "json" in safe
@@ -668,24 +679,31 @@ class _CheckpointedDiscoveryModel:
                               else SemanticValidationError)
                 raise error_type(code=safe, input_tokens=usage.get("inputTokens"),
                                  output_tokens=usage.get("outputTokens"), total_tokens=usage.get("totalTokens")) from exc
-            added = records[start:] if isinstance(records, list) else []
             # Event/global stage methods each issue exactly one request.  Keep provider
             # metering truthful if an injected model does not expose a single record.
             if isinstance(value, LLMResult):
                 return value
-            usage = added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
+            usage = current_usage()
             return ModelInvocation(value=value, input_tokens=usage.get("inputTokens"),
                                    output_tokens=usage.get("outputTokens"), total_tokens=usage.get("totalTokens"))
         # The ledger owns each reservation/attempt.  Drive it immediately through
         # the explicitly bound retry budget so a terminal scan does not strand a
         # first transient failure waiting for a coincidental later slice.
         maximum_calls = int(self._policy["networkMaxAttempts"]) + int(self._policy["jsonRepairMaxAttempts"])
+        digest = self._digest(operation=operation, stage=stage, item=item)
+        spend_stage = ({"understand": "fullText" if item.get("textMode") == "full_text" else "lightweight",
+                        "map": "map", "classify": "classify", "compare": "companyComparison"}.get(operation, stage))
+        provider = getattr(self._base, "provider", None)
         result = None
         for _ in range(maximum_calls):
             result = execute_model_operation(
                 task_id=self._task_id, operation=operation, item_key=item_key,
-                input_sha256=self._digest(operation=operation, stage=stage, item=item), policy=self._policy,
+                input_sha256=digest, policy=self._policy,
                 operation_call=metered_invoke, validate=encode, db_path=self._db_path, leaseguard=self._leaseguard,
+                spend_context_factory=lambda attempt, repair: provider_spend_context(
+                    provider=provider, task_id=self._task_id, stage=spend_stage,
+                    item_key=f"{operation}:{item_key}:{digest}", attempt=attempt,
+                    full_text=spend_stage == "fullText"),
             )
             if result.status == "completed":
                 break
@@ -724,8 +742,9 @@ class _CheckpointedDiscoveryModel:
                     "textMode": mode, "text": material, "paragraphIndexes": list(indexes)}
             def encode(raw: Mapping[str, Any]) -> Mapping[str, Any]:
                 events, needs_full = self._base._decode_understand(raw)
-                expected_ref = document.evidence_ref
-                if any(not event.source_refs or any(ref != expected_ref for ref in event.source_refs) for event in events):
+                member_refs = document.metadata.get("memberRefs")
+                expected_refs = set(_refs(member_refs)) if isinstance(member_refs, list) and member_refs else {document.evidence_ref}
+                if any(not event.source_refs or any(ref not in expected_refs for ref in event.source_refs) for event in events):
                     raise PipelineError("理解事件引用不属于当前冻结资料", code="understand_reference_invalid")
                 if mode == "full_text" and needs_full:
                     raise PipelineError("全文理解仍要求更多资料", code="understand_full_incomplete")
@@ -734,14 +753,47 @@ class _CheckpointedDiscoveryModel:
                 if not isinstance(value, Mapping) or not isinstance(value.get("needsFullText"), bool):
                     raise PipelineError("理解缓存无效", code="model_cache_corrupt")
                 return thaw_event_drafts(value.get("events")), value["needsFullText"]
-            return self._run(operation="understand", stage="understand", item_key=f"{document.document_id}@{document.revision}:{suffix}",
+            template = self._policy.get("screeningTemplate")
+            cache_key = None
+            if isinstance(template, Mapping):
+                # Include the complete immutable source material, even when the
+                # prompt uses key passages. A changed hidden paragraph invalidates it.
+                prompt_hash = sha256(json.dumps({"operation": operation, "payload": payload,
+                    "modelOptions": self._base._model_options("understand")}, ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                cache_key = sha256(json.dumps({"version": "k10-source-facts-v1", "prompt": prompt_hash,
+                    "source": sha256(text.encode()).hexdigest(), "template": template,
+                    "model": self._policy["model"]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                cached = store.read_fact_cache(cache_key=cache_key, cutoff_at=self._cutoff_at, db_path=self._db_path)
+                if cached is not None:
+                    if self._leaseguard is not None:
+                        self._leaseguard()
+                    self.fact_cache_hits += 1
+                    return decode(cached["result"])
+            value = self._run(operation="understand", stage="understand", item_key=f"{document.document_id}@{document.revision}:{suffix}",
                              item=item,
                              invoke=lambda: self._base._request_json(operation=operation, payload=payload,
                                                                      model_options=self._base._model_options("understand")),
                              encode=encode, decode=decode)
+            if cache_key is not None:
+                summaries = document.metadata.get("sourceSummaries")
+                publication_times = ([row.get("publishedAt") or row.get("fetchedAt") for row in summaries]
+                                     if isinstance(summaries, list) and summaries
+                                     else [document.published_at or document.fetched_at])
+                eligible_at = max(publication_times, key=lambda value: datetime.fromisoformat(value))
+                refs = document.metadata.get("memberRefs") or [_ref_payload(document.evidence_ref)]
+                store.store_fact_cache(cache_key=cache_key, source_refs=refs, eligible_at=eligible_at,
+                    template_content_sha256=template["contentSha256"], model=self._policy["model"],
+                    prompt_input_sha256=prompt_hash, result={"events": freeze_event_drafts(value[0]), "needsFullText": value[1]},
+                    created_at=_text(_now()), db_path=self._db_path)
+            return value
 
         events, needs_full = one(material=excerpt, mode="key_passages", is_excerpt=excerpted, indexes=positions, suffix="key")
-        if excerpted and (needs_full or not events):
+        if excerpted and needs_full:
+            self._full_text_requested.add(document.evidence_ref)
+            limits = self._policy.get("packageLimits")
+            if isinstance(limits, Mapping) and limits.get("fullTextEnabled") is not True:
+                raise PipelineError("全文补读未获许可，资料待处理", code="full_text_disabled")
             full_positions = list(range(1, len([part for part in text.splitlines() if part.strip()]) + 1))
             events, _ = one(material=text, mode="full_text", is_excerpt=False, indexes=full_positions, suffix="full")
             self._full_text_used.add(document.evidence_ref)
@@ -1788,6 +1840,53 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
 
     recovered_understanding: Mapping[EvidenceRef, Sequence[EventDraft]] | None = None
     discovery_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
+    screening_enabled = isinstance(profile_payload, Mapping) and profile_payload.get("executionVersion") == "k10-execution-v2"
+    package_by_key: dict[str, Mapping[str, Any]] = {}
+    processing_fields = ("received", "exactDeduplicated", "templateExcluded", "templateDeferred", "templateProtected",
+                         "packages", "lightweightUnderstood", "fullTextRequested", "fullTextCompleted", "pendingVerification", "pendingBudget")
+
+    def package_checkpoint(item: Mapping[str, Any]) -> None:
+        if task_id is None:
+            return
+        if leaseguard is not None:
+            leaseguard()
+        if item.get("stage") == "screening_manifest":
+            result = item.get("result")
+            if not isinstance(result, Mapping):
+                raise PipelineError("资料筛分记录无效", code="checkpoint_invalid")
+            input_hash = sha256(json.dumps({"refs": running_coverage.get("inputDocumentRefs"),
+                "template": profile_payload["discovery"]["screeningTemplate"]}, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest()
+            store.record_screening_run(task_id=task_id, input_manifest_sha256=input_hash, result=result,
+                                       created_at=_text(_now()), db_path=db_path)
+            raw_counts = result.get("counts", {})
+            names = {"received": "input", "exactDeduplicated": "exactDuplicates", "templateExcluded": "exclude",
+                     "templateDeferred": "defer", "templateProtected": "protect", "packages": "packages"}
+            running_coverage["processingCounts"] = {key: int(raw_counts.get(names.get(key, key), 0)) for key in processing_fields}
+            store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
+            return
+        package_id = item.get("packageId")
+        if isinstance(package_id, str):
+            refs = _refs(item.get("memberRefs"))
+            frozen = {document.evidence_ref for document in documents}
+            if any(ref not in frozen for ref in refs) or not isinstance(item.get("memberHash"), str):
+                raise PipelineError("资料包引用不在冻结输入", code="checkpoint_input_mismatch")
+            package_by_key[f"{package_id}@1"] = item
+            if item.get("stage") == "understand" and item.get("state") == "completed":
+                counts = running_coverage.get("processingCounts")
+                if isinstance(counts, dict):
+                    counts["lightweightUnderstood"] += 1
+                    counts["fullTextRequested"] += int(item.get("fullTextRequested") is True)
+                    counts["fullTextCompleted"] += int(item.get("fullTextUsed") is True)
+                    running_coverage["factCacheHits"] = int(getattr(model, "fact_cache_hits", 0))
+                    store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
+        elif item.get("stage") == "priority":
+            digest = sha256(json.dumps(item, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            store.record_execution_checkpoint(task_id=task_id, item_kind="event", item_key=digest,
+                stage="priority", input_sha256=digest, status="completed", attempt_count=0,
+                network_attempt_count=0, repair_attempt_count=0, elapsed_ms=0, input_tokens=None,
+                output_tokens=None, result=item, safe_error_code=None, safe_error_ref=None,
+                updated_at=_text(_now()), db_path=db_path, leaseguard=leaseguard)
     if task_id is not None and execution_profile is not None:
         profile_id, profile_revision, binding_kind = (execution_profile.get("configId"), execution_profile.get("revision"),
                                                       execution_profile.get("bindingKind"))
@@ -1808,16 +1907,17 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 document_id, revision = raw_ref.get("documentId"), raw_ref.get("revision")
                 key = f"{document_id}@{revision}"
                 document = document_by_key.get(key)
-                if document is None:
+                package = package_by_key.get(key)
+                if document is None and package is None:
                     raise PipelineError("发现检查点资料不在冻结输入", code="checkpoint_input_mismatch")
-                _, input_sha = _document_checkpoint_key(document)
+                input_sha = package["memberHash"] if package is not None else _document_checkpoint_key(document)[1]
                 if state in {"completed", "template"}:
                     result = {"events": item.get("events", []), "extraction": item.get("extraction", {}),
                               "filterState": state,
                               "fullTextUsed": item.get("fullTextUsed") is True}
                     persisted_state, error_code = "completed", None
-                elif state == "failed":
-                    result, persisted_state = None, "failed"
+                elif state in {"failed", "pending"}:
+                    result, persisted_state = None, state
                     error_code = item.get("code") if isinstance(item.get("code"), str) else "DISCOVERY_DOCUMENT_FAILED"
                 else:
                     raise PipelineError("发现检查点状态无效", code="checkpoint_invalid")
@@ -1860,6 +1960,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 # budget.  The gateway refuses a missing value rather than guessing.
                 discovery_policy = profile_payload.get("discovery") if isinstance(profile_payload, Mapping) else None
                 gateway_args.update({"task_id": task_id, "leaseguard": leaseguard, "lease_owner": lease_owner,
+                                     "spend_enforced": screening_enabled,
                                      "network_max_attempts": (discovery_policy.get("networkMaxAttempts")
                                                               if isinstance(discovery_policy, Mapping) else None)})
             verifier = verification_gateway if verification_gateway is not None else TavilyEvidenceGateway(**gateway_args)
@@ -1893,11 +1994,19 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                 metadata=metadata, cutoff_at=cutoff_at, phase=kind, leaseguard=discovery_guard,
                                 previous_opportunities=prior_opportunities, understood_by_document=recovered_understanding,
                                 checkpoint=discovery_checkpoint,
+                                require_screening=screening_enabled,
+                                screening_rule_pack=(profile_payload["discovery"]["screeningTemplate"] if screening_enabled else None),
+                                priority_order=(profile_payload["discovery"]["priorityOrder"] if screening_enabled else None),
+                                package_limits=(profile_payload["discovery"]["packageLimits"] if screening_enabled else None),
+                                package_checkpoint=package_checkpoint if screening_enabled else None,
                                 understand_concurrency=(profile_payload["discovery"]["understandConcurrency"]
                                                         if execution_profile is not None else None),
                                 document_batch_size=(profile_payload["discovery"]["documentBatchSize"]
                                                      if execution_profile is not None else None))
             if run.state in {"completed", "partial"}:
+                if screening_enabled:
+                    running_coverage["processingCounts"] = {key: int(run.document_counts.get(key, 0)) for key in processing_fields}
+                    running_coverage["factCacheHits"] = int(getattr(model, "fact_cache_hits", 0))
                 running_coverage = {**running_coverage, "discoveryDraft": freeze_discovery_run(run),
                                     "discoveryState": run.state,
                                     "discoveryIssues": [{"stage": item.stage, "code": item.code,
@@ -1978,6 +2087,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         checkpoint["modelUsage"] = usage
     if run.state == "not_configured":
         return TaskResult("not_configured", "configuration", checkpoint, "发现模型或策略配置未就绪")
+    if screening_enabled and int(run.document_counts.get("pendingBudget", 0)) > 0:
+        return TaskResult("failed", "pending_budget", checkpoint, "本轮额度不足，剩余资料待处理")
     return TaskResult("completed", "partial_coverage" if final_status == "partial" else "discovery_completed", checkpoint)
 
 def _append_unavailable_morning_report(*, context: TaskContext, cutoff: datetime, frozen: Mapping[str, Any],
@@ -2058,6 +2169,8 @@ def _morning_has_time_gap(coverage: Mapping[str, Any]) -> bool:
 
 
 def production_scan_handler(context: TaskContext, *, tushare_token: str | None, parquet_dir: Path, now=_now) -> TaskResult:
+    if store.run_control_status(db_path=context.db_path).get("state") != "open":
+        return TaskResult("failed", "paused", context.checkpoint, "K10 运行已暂停")
     payload=context.task.payload; kind=payload.get("windowKind")
     if kind not in {"evening","morning"}: return TaskResult("not_configured","configuration",error="扫描任务缺少 windowKind")
     frozen=store.read_run_config(config_id=payload.get("configId", ""),revision=payload.get("configRevision",0),db_path=context.db_path) if isinstance(payload.get("configId"),str) and isinstance(payload.get("configRevision"),int) else None
@@ -2070,14 +2183,20 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     context.require_lease()
     started_at = now()
     execution_profile = context.execution_profile
-    if execution_profile is None:
+    execution_payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
+    if (not isinstance(execution_payload, Mapping)
+            or execution_payload.get("executionVersion") != "k10-execution-v2"
+            or not validate_execution_config(execution_payload).ready):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
-                reason="扫描任务缺少冻结执行配置", generated_at=started_at)
-        return TaskResult("not_configured", "execution_configuration", error="扫描任务缺少冻结执行配置")
+                reason="扫描任务缺少获批的筛分与预算配置", generated_at=started_at)
+        return TaskResult("not_configured", "execution_configuration", error="扫描任务缺少获批的筛分与预算配置")
     resume_scan_id = payload.get("resumeScanId")
     resuming = isinstance(resume_scan_id, str)
     resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path)
+    if resolution.provider is not None:
+        bind_provider_execution_spending(provider=resolution.provider, task_id=context.task.task_id,
+                                         execution_profile=execution_profile)
     if resolution.provider is None or (not resuming and not tushare_token):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
@@ -2113,7 +2232,7 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
                                      metadata_resolver=metadata_resolver, task_id=context.task.task_id,
                                      leaseguard=context.require_lease,
                                      network_max_attempts=network_max_attempts,
-                                     lease_owner=context.task.lease_owner)
+                                     lease_owner=context.task.lease_owner, spend_enforced=True)
     historical_loader = make_historical_context_loader(db_path=context.db_path, gateway=verifier, clock=now)
     try:
         result = execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,

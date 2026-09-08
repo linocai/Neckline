@@ -29,6 +29,7 @@ def test_protected_post_requires_token(client):
     assert client.post("/api/v1/devices", json={"token": "x"}).status_code == 401
     assert client.post("/api/v1/settings/providers", json={"name": "x"}).status_code == 401
     assert client.post("/api/v1/k10/company-windows/window-1/selection").status_code == 401
+    assert client.post("/api/v1/k10/operations/pause").status_code == 401
 
 
 def test_protected_put_requires_token(client):

@@ -6,6 +6,7 @@ import pytest
 from neckline.k10 import store
 from neckline.k10.schema import initialize_schema, read_connection
 from neckline.k10.worker import TaskResult, run_once
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 NOW = datetime(2026, 9, 7, 1, 0, tzinfo=timezone.utc)
@@ -15,16 +16,24 @@ NOW = datetime(2026, 9, 7, 1, 0, tzinfo=timezone.utc)
 def task_db(tmp_path):
     path = tmp_path / "worker.sqlite"
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="fixture_worker", changed_at=NOW.isoformat(), changed_by="test", db_path=path)
     return path
 
 
-def enqueue(path, *, budget):
-    return store.enqueue_task(
-        task_id="task-1", kind="analysis", idempotency_key="analysis-1",
+def enqueue(path, *, budget, kind="analysis", bind_execution=True):
+    task = store.enqueue_task(
+        task_id="task-1", kind=kind, idempotency_key=f"{kind}-1",
         input_version="synthetic-config-1", input_cutoff_at=NOW.isoformat(),
         payload={"observationId": "synthetic-observation"}, budget=budget,
         created_at=NOW.isoformat(), db_path=path,
     )
+    if bind_execution:
+        config_id, revision = append_approved_execution_profile(
+            db_path=path, created_at=NOW.isoformat(), config_id="worker-fixture",
+        )
+        store.bind_task_execution(task_id=task.task_id, execution_config_id=config_id, execution_config_revision=revision,
+                                  binding_kind="scheduled", bound_at=NOW.isoformat(), db_path=path)
+    return task.task_id
 
 
 def test_worker_publishes_result_with_frozen_context(task_db):
@@ -44,7 +53,9 @@ def test_worker_publishes_result_with_frozen_context(task_db):
     assert seen == [("synthetic-config-1", NOW.isoformat(), {"observationId": "synthetic-observation"})]
     with read_connection(task_db) as conn:
         checkpoint = conn.execute("SELECT checkpoint_json FROM k10_tasks").fetchone()[0]
-    assert json.loads(checkpoint) == {"analysisId": "analysis-1"}
+    checkpoint_payload = json.loads(checkpoint)
+    assert checkpoint_payload["analysisId"] == "analysis-1"
+    assert checkpoint_payload["executionStartedAt"] == NOW.isoformat()
     assert run_once(db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
                     handlers={"analysis": handler}, clock=lambda: NOW) is None
 
@@ -54,6 +65,9 @@ def test_parent_executes_only_its_named_child_using_the_same_worker_fence(task_d
     store.enqueue_task(task_id="child", kind="morning_review", idempotency_key="child",
                        input_version="frozen", input_cutoff_at=NOW.isoformat(), payload={},
                        budget={"maxAttempts": 1}, created_at=NOW.isoformat(), db_path=task_db)
+    config_id, revision = append_approved_execution_profile(db_path=task_db, created_at=NOW.isoformat(), config_id="worker-child-fixture")
+    store.bind_task_execution(task_id="child", execution_config_id=config_id, execution_config_revision=revision,
+                              binding_kind="scheduled", bound_at=NOW.isoformat(), db_path=task_db)
     seen = []
     def child_handler(context):
         seen.append(context.task.task_id)
@@ -96,13 +110,75 @@ def test_unregistered_task_is_visible_as_unconfigured(task_db):
     assert task.status == "not_configured"
 
 
-def test_crash_recovery_does_not_exceed_approved_attempts(task_db):
+def test_pause_after_claim_never_enters_the_handler(task_db, monkeypatch):
     enqueue(task_db, budget={"maxAttempts": 1})
+    original = store.run_control_status
+    checks = 0
+
+    def control(**kwargs):
+        nonlocal checks
+        checks += 1
+        return original(**kwargs) if checks == 1 else {"state": "closed", "reasonCode": "operator_pause"}
+
+    monkeypatch.setattr(store, "run_control_status", control)
+    task = run_once(
+        db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
+        handlers={"analysis": lambda _: pytest.fail("paused task entered handler")}, clock=lambda: NOW,
+    )
+    assert task is not None and task.status == "failed"
+    with read_connection(task_db) as conn:
+        assert conn.execute("SELECT stage FROM k10_tasks WHERE task_id=?", (task.task_id,)).fetchone()[0] == "paused"
+
+
+def test_pause_after_handler_prevents_retry_scheduling(task_db, monkeypatch):
+    enqueue(task_db, budget={"maxAttempts": 2})
+    original = store.run_control_status
+    checks = 0
+
+    def control(**kwargs):
+        nonlocal checks
+        checks += 1
+        return original(**kwargs) if checks < 3 else {"state": "closed", "reasonCode": "operator_pause"}
+
+    monkeypatch.setattr(store, "run_control_status", control)
+    task = run_once(
+        db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
+        handlers={"analysis": lambda _: TaskResult(
+            "failed", "continuation", retry_at=NOW + timedelta(minutes=1),
+            retry_kind="continuation", safe_error_code="pending_budget",
+        )}, clock=lambda: NOW,
+    )
+    assert task is not None and task.status == "failed"
+    with read_connection(task_db) as conn:
+        assert conn.execute("SELECT stage FROM k10_tasks WHERE task_id=?", (task.task_id,)).fetchone()[0] == "paused"
+        assert conn.execute("SELECT COUNT(*) FROM k10_task_retry_schedules").fetchone()[0] == 0
+
+
+def test_store_retry_write_is_closed_by_durable_pause(task_db):
+    task_id = enqueue(task_db, budget={"maxAttempts": 2})
+    claimed = store.claim_task_by_id(task_id=task_id, worker_id="worker-a", now=NOW,
+                                     lease_for=timedelta(seconds=30), db_path=task_db)
+    assert claimed is not None
+    store.set_run_control(state="closed", reason_code="operator_pause", changed_at=NOW.isoformat(),
+                          changed_by="test", db_path=task_db)
+    assert not store.schedule_task_retry(
+        task_id=task_id, worker_id="worker-a", stage="continuation", checkpoint={},
+        safe_error_code="pending_budget", not_before_at=NOW + timedelta(minutes=1), scheduled_at=NOW,
+        retry_kind="continuation", max_failure_attempts=2, db_path=task_db,
+    )
+    with read_connection(task_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM k10_task_retry_schedules").fetchone()[0] == 0
+
+
+def test_crash_recovery_does_not_exceed_approved_attempts(task_db):
+    # This verifies the worker's generic retry fence without involving a paid
+    # V2 task, whose provider-level retries are metered separately.
+    enqueue(task_db, budget={"maxAttempts": 1}, kind="collect_market_day_fact", bind_execution=False)
     store.claim_tasks(worker_id="crashed-worker", now=NOW, lease_for=timedelta(seconds=1),
                       limit=1, db_path=task_db)
     calls = []
     task = run_once(db_path=task_db, worker_id="recovery-worker", lease_for=timedelta(seconds=30),
-                    handlers={"analysis": lambda _: calls.append(True)},
+                    handlers={"collect_market_day_fact": lambda _: calls.append(True)},
                     clock=lambda: NOW + timedelta(seconds=2))
     assert task.status == "failed"
     assert calls == []

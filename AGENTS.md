@@ -1,5 +1,7 @@
 # Neckline working rules
 
+Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its current role, version, record-budget and release conventions; project-specific production safeguards remain below.
+
 ## Scope
 
 - Neckline is the production A-share application: Swift clients plus the Python service.
@@ -12,28 +14,28 @@
 
 - `App/`: iOS and macOS SwiftUI application.
 - `Backend/`: FastAPI service, jobs, configuration, deployment units, data directory, and Python tests.
-- `archive/`: reserved for temporary artifacts the user explicitly asks to retain. Keep it empty by default;
-  Git history is the archive for retired material.
+- `archive/`: version execution records explicitly linked by PROJECT_PLAN.md, plus user-approved design references. Records hold detailed contracts, evidence and handoffs; retired runtime code stays deleted, with Git history as its archive.
 - `README.md`: operator entry point.
 - `PROJECT_PLAN.md`: the single authoritative plan — current state, settled rulings, observation items, and next work.
 
 ## Working rules
 
+- **User stop ruling (2026-09-08):** K10 worker and evening/morning timers are stopped and disabled because whole-corpus per-document model processing caused unacceptable token usage. Do not restart workers/timers, recover scans, invoke models/search, or repeat full-volume live-provider tests until the user explicitly approves a revised prefilter/call-volume/budget design and authorizes resumption. The user has now authorized local 3.0.5 / Build 37 implementation and offline verification; this does not authorize paid calls or restarting production. PROJECT_PLAN.md records the pause and current authorized work.
+
 - Run backend commands from `Backend/` and app commands from `App/`.
 - Keep the repository root limited to the six documented visible entries.
-- Add current operational facts to `README.md` or `PROJECT_PLAN.md`. Delete superseded detail once its live contract
-  is preserved; do not accumulate release diaries, review logs, migration handoffs, or duplicate plans.
+- Keep current operations in README.md and current control state in PROJECT_PLAN.md. Move detailed version contracts, failures, validation and deployment evidence into the one linked archive version record, following the global control/fact/evidence split. Do not duplicate current plans or grow parallel review diaries.
 - When the user retires a product capability, deletion is the default: remove its producers, consumers, routes, settings, tests, stored artifacts, and compatibility mappings once the migration boundary is verified. Retention requires an explicit user ruling; do not invent a preservation requirement.
 - Treat `Backend/data/`, `.env`, credentials, production databases, and market-data artifacts as local or operational state. Never commit them.
 - Tests must use temporary databases or explicit read-only snapshots. Never let a test fall back to the working database.
-- Native QA must reuse `/tmp/neckline-v3-qa/macos` and `/tmp/neckline-v3-qa/ios`, with at most one running QA instance per platform. Close the previous instance before relaunching and remove superseded QA bundles/build copies after verification; preserve the installed production client. Isolated QA must set `NK_DISABLE_PERSISTENT_CREDENTIALS=1` and use only temporary process credentials.
+- Native QA must reuse `/tmp/neckline-v3-qa/macos` and `/tmp/neckline-v3-qa/ios`, and the existing shared simulator named “主模拟器”; do not create a project-specific simulator. Keep at most one running QA instance per platform. Close the previous instance before relaunching and remove superseded QA bundles/build copies after verification; preserve the installed production client. Isolated QA must set `NK_DISABLE_PERSISTENT_CREDENTIALS=1` and use only temporary process credentials.
 - Native visual acceptance must compare actual populated and empty screens with the approved images in `archive/Neckline_V3_界面参考/`. Adopt their white cards, blue accents, restrained typography and deliberate navigation; successful rendering is not visual acceptance. K10-v1.4 product logic takes precedence over retired functions depicted in the references; pixel matching is not required.
 - Any production deployment or database mutation requires explicit verification of the target and a rollback path.
 - Release readiness checks must verify the returned configuration state before any scan exists, using the explicitly bound runtime config. HTTP 200 alone is insufficient; scan history and arbitrary latest stored revisions must not substitute for the active binding.
 - Deploy and restore must preserve the production root directory's verified owner/group/mode; never inherit private staging directory permissions through synchronization. Readiness probes must validate each endpoint's actual DTO envelope, not assumed shared fields.
 - K10 cross-module acceptance must include actual FastAPI responses produced from an isolated database decoded by the current Swift models, plus populated native screens. Cover morning updates, withdrawn opportunities, overlapping hits, missing-data counts and analysis revisions; hand-written client fixtures and passing backend tests alone cannot prove the user can read the report or the correct result.
 - Scheduled-flow regressions must enter through the real CLI enqueue and worker/handler boundary with deterministic transports. Do not normalize fixture timestamps before that boundary: test equivalent timezone spellings, source delays, uncertain publication times, producer failures and client read failures as separate cases. A passing legacy suite is not evidence that a newly reported scenario is fixed.
-- Discovery throughput changes must be exercised against the actual frozen incident volume with stage counts, real provider timings and resume evidence; a two-document smoke or deterministic transport run alone does not establish overnight readiness. APNs release checks must verify a readable, signable key and durable retry behaviour, not merely nonempty configuration strings.
+- Discovery acceptance must first use the frozen incident volume offline to prove pre-model reduction, no paid calls, resume, budget enforcement and bounded concurrency. Any live-provider validation requires an explicit user-approved sample and cost/call budget; never repeat an unrestricted full-corpus paid test followed by production replay. Report offline performance and real-provider evidence separately. APNs checks verify readable/signable credentials and durable retry behaviour when such execution is authorized.
 - Review-driven repairs must preserve each confirmed reproduction as a regression before closing it. Verify producer → persistence → API → client semantics where applicable, including interruption between durable writes; do not weaken the scenario or its business assertions merely to make the suite pass.
 - Read helpers must not execute DDL. `init_schema()` is a controlled write entry point: API startup, an explicit write command, or a release-migration step against a confirmed, backed-up target. A GET is never a migration trigger.
 - The strategy layer has **no default values**. If the parameter pack is missing or invalid, the report says "今天没跑成 · 参数未配置" and no listing is produced. Never introduce a fallback, a sample value, or a "just for now" number — a default that ships is a strategy change nobody was told about.

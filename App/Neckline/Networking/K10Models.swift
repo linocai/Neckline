@@ -74,18 +74,40 @@ struct K10SafeExecutionFailure: Codable, Identifiable, Equatable {
     let stage: String; let code: String; let ref: String?
     var id: String { "\(stage)#\(code)#\(ref ?? "scan")" }
 }
+struct K10ExecutionRunControl: Codable, Equatable {
+    let state: String; let reasonCode: String; let changedAt: String
+}
+struct K10ExecutionSpendTotals: Codable, Equatable {
+    let calls: Int; let inputTokens: Int; let outputTokens: Int; let totalTokens: Int
+    let fullTextCalls: Int; let retries: Int; let searchRequests: Int; let searchCredits: Int
+}
+struct K10ExecutionBudget: Codable, Equatable {
+    let state: String; let reserved: K10ExecutionSpendTotals?; let occupied: K10ExecutionSpendTotals?
+    let actual: K10ExecutionSpendTotals?; let unknown: K10ExecutionSpendTotals?
+    let remaining: K10ExecutionSpendTotals?; let reservationCount: Int
+}
+struct K10ExecutionProcessingCounts: Codable, Equatable {
+    let received: Int; let exactDeduplicated: Int; let templateExcluded: Int; let templateDeferred: Int
+    let templateProtected: Int; let packages: Int; let lightweightUnderstood: Int
+    let fullTextRequested: Int; let fullTextCompleted: Int; let pendingVerification: Int; let pendingBudget: Int
+}
 struct K10ExecutionProgress: Codable, Equatable {
     let state: String; let stage: String?; let documentCounts: K10ExecutionDocumentCounts; let eventCounts: K10ExecutionEventCounts
     let coverageStatus: String; let nextRetryAt: String?; let safeFailures: [K10SafeExecutionFailure]
     var strategyBinding: [String: K10Value]? = nil
     var executionBinding: [String: K10Value]? = nil
+    var runControl: K10ExecutionRunControl? = nil
+    var processingCounts: K10ExecutionProcessingCounts? = nil
+    var factCacheHits: Int? = nil
+    var budget: K10ExecutionBudget? = nil
 }
 struct K10NotificationReadiness: Codable, Equatable {
     let state: String; let reasonCode: String?; let nextRetryAt: String?; let checkedAt: String
 }
 struct K10OperationsReadiness: Codable, Equatable {
-    let schemaVersion: String; let notificationReadiness: K10NotificationReadiness
+    let schemaVersion: String; let notificationReadiness: K10NotificationReadiness; var runControl: K10ExecutionRunControl
 }
+struct K10DiscoveryPauseResult: Codable, Equatable { let runControl: K10ExecutionRunControl }
 struct K10Scan: Codable, Identifiable, Equatable {
     let schemaVersion: String; let scanId: String; let window: String; let cutoffAt: String; let status: String; let coverageStatus: String
     let coverageGaps: [String]; let sourceCoverage: [K10SourceCoverage]; let createdAt: String; let completedAt: String?

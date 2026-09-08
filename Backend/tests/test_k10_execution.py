@@ -18,6 +18,7 @@ from neckline.k10.model_execution import SemanticValidationError, execute_model_
 from neckline.k10.schema import K10SchemaError, initialize_schema, rollback_schema, schema_version
 from neckline.k10.worker import TaskResult, run_once
 from neckline.llm.base import LLMResult
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 NOW = datetime(2026, 9, 8, 1, tzinfo=timezone.utc)
@@ -40,14 +41,21 @@ def _strategy() -> dict:
 
 def _seed(path: Path) -> tuple[str, int]:
     initialize_schema(path)
-    execution_revision = store.append_execution_config(config_id="execution", payload=_profile(), created_at=NOW.isoformat(), db_path=path)
+    # These are historical execution-ledger tests, not pause-gate tests.  A
+    # synthetic operator explicitly opens the V5 control before exercising the
+    # former B36 recovery behavior.
+    store.set_run_control(state="open", reason_code="fixture_execution", changed_at=NOW.isoformat(),
+                          changed_by="test", db_path=path)
+    execution_id, execution_revision = append_approved_execution_profile(
+        db_path=path, created_at=NOW.isoformat(), config_id="execution",
+    )
     strategy_revision = store.append_run_config(config_id="strategy", payload=_strategy(), created_at=NOW.isoformat(), db_path=path)
     store.enqueue_task(task_id="task-1", kind="evening_scan", idempotency_key="task-1", input_version="strategy-hash",
                        input_cutoff_at=NOW.isoformat(), payload={"windowKind": "evening", "configId": "strategy", "configRevision": strategy_revision},
                        budget={"maxAttempts": 3}, created_at=NOW.isoformat(), db_path=path)
-    store.bind_task_execution(task_id="task-1", execution_config_id="execution", execution_config_revision=execution_revision,
+    store.bind_task_execution(task_id="task-1", execution_config_id=execution_id, execution_config_revision=execution_revision,
                               binding_kind="scheduled", bound_at=NOW.isoformat(), db_path=path)
-    return "execution", execution_revision
+    return execution_id, execution_revision
 
 
 def test_execution_profile_is_strict_and_never_accepts_unknown_reasoning_shape():
@@ -549,6 +557,6 @@ def test_recovery_binds_new_execution_profile_to_the_exact_failed_snapshot(tmp_p
     task = store.get_task(task_id=task_id, db_path=path)
     assert task is not None and task.payload["resumeScanId"] == "failed-scan" and task.payload["sourceCollection"] == "forbidden"
     assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
-    with pytest.raises(K10SchemaError, match="执行恢复记录"):
+    with pytest.raises(K10SchemaError, match="模板或预算记录"):
         rollback_schema(path, target_version=3)
-    assert schema_version(path) == 4
+    assert schema_version(path) == 5

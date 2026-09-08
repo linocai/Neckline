@@ -45,6 +45,7 @@ from .k10_schemas import (
     EvaluationMetricsOut,
     Evidence,
     ExecutionProgressOut,
+    ExecutionRunControlOut,
     HistoricalCaseOut,
     HistoricalCoverageOut,
     JobOut,
@@ -59,6 +60,7 @@ from .k10_schemas import (
     OpportunityListOut,
     OpportunityOut,
     OperationsReadinessOut,
+    DiscoveryPauseOut,
     PageMeta,
     PublicationListOut,
     PublicationOut,
@@ -103,6 +105,16 @@ def _stable_id(prefix: str, *parts: str) -> str:
 
 def _json(value: str | None, default: Any) -> Any:
     return default if not value else json.loads(value)
+
+
+def _run_control_out(value: Mapping[str, Any]) -> ExecutionRunControlOut:
+    """Project the durable switch without exposing an operator identity."""
+    state = "ready" if value.get("state") == "open" else "paused"
+    reason = value.get("reasonCode")
+    changed_at = value.get("changedAt")
+    if not isinstance(reason, str) or not reason or not isinstance(changed_at, str) or not changed_at:
+        raise RuntimeError("K10 运行控制记录不完整")
+    return ExecutionRunControlOut(state=state, reasonCode=reason, changedAt=changed_at)
 
 
 def _unavailable(exc: SchemaUnavailable) -> HTTPException:
@@ -1304,12 +1316,12 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         if execution_config is None and execution_binding_error is None:
             execution_binding_error = "K10_EXECUTION_CONFIG_ID/K10_EXECUTION_CONFIG_REVISION 指向的执行配置修订不存在"
         scopes = []
-        for scope in ("candidate", "analysis", "evaluation"):
+        for scope in ("candidate", "discovery", "analysis", "evaluation"):
             if binding_error is not None:
                 missing = (["K10_CONFIG_ID", "K10_CONFIG_REVISION"]
                            if config_id is None or revision is None else [])
                 errors = [binding_error]
-                if scope == "candidate" and execution_binding_error is not None:
+                if scope in {"candidate", "discovery"} and execution_binding_error is not None:
                     if execution_id is None or execution_revision is None:
                         missing.extend(["K10_EXECUTION_CONFIG_ID", "K10_EXECUTION_CONFIG_REVISION"])
                     errors.append(execution_binding_error)
@@ -1318,7 +1330,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 continue
             result = validate_run_config(config["payload"], scope=scope)
             missing, errors = list(result.missing), list(result.errors)
-            if scope == "candidate":
+            if scope in {"candidate", "discovery"}:
                 if execution_binding_error is not None:
                     if execution_id is None or execution_revision is None:
                         missing.extend(["K10_EXECUTION_CONFIG_ID", "K10_EXECUTION_CONFIG_REVISION"])
@@ -1337,12 +1349,22 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         from neckline.k10.notification_runtime import notification_readiness
 
         readiness = notification_readiness(db_path=db_path())
+        control = store.run_control_status(db_path=db_path())
         return OperationsReadinessOut(notificationReadiness={
             "state": readiness.state,
             "reasonCode": readiness.reason_code,
             "nextRetryAt": readiness.next_retry_at,
             "checkedAt": readiness.checked_at,
-        })
+        }, runControl=_run_control_out(control))
+
+    @router.post("/operations/pause", response_model=DiscoveryPauseOut)
+    def pause_discovery() -> DiscoveryPauseOut:
+        """Explicitly close discovery.  There is intentionally no client resume route."""
+        control = store.set_run_control(
+            state="closed", reason_code="user_paused", changed_at=_now(), changed_by="authenticated_api",
+            db_path=db_path(),
+        )
+        return DiscoveryPauseOut(runControl=_run_control_out(control))
 
     return router
 
@@ -1395,12 +1417,23 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
     progress = store.execution_progress_for_scan(scan_id=str(value["scanId"]), db_path=path)
     # The store deliberately carries taskId for local correlation.  That is
     # not a reader-facing progress field; expose only the safe aggregate DTO.
-    progress_out = (ExecutionProgressOut.model_validate({
-        key: progress[key] for key in (
+    progress_out = None
+    if isinstance(progress, Mapping):
+        progress_payload = {
+            key: progress[key] for key in (
             "state", "stage", "documentCounts", "eventCounts", "coverageStatus", "nextRetryAt",
-            "safeFailures", "strategyBinding", "executionBinding",
+            "safeFailures", "strategyBinding", "executionBinding", "runControl", "processingCounts", "factCacheHits", "budget",
         ) if key in progress
-    }) if isinstance(progress, Mapping) else None)
+        }
+        # The store may retain an internal reason for operators.  HTTP exposes
+        # only the stable aggregate, never that internal bookkeeping detail.
+        budget = progress_payload.get("budget")
+        if isinstance(budget, Mapping):
+            progress_payload["budget"] = {
+                key: budget[key] for key in ("state", "reserved", "occupied", "actual", "unknown", "remaining", "reservationCount")
+                if key in budget and budget[key] is not None
+            }
+        progress_out = ExecutionProgressOut.model_validate(progress_payload)
     return ScanOut(scanId=str(value["scanId"]), window=str(value["windowKind"]), cutoffAt=str(value["cutoffAt"]), status=str(value["status"]),
                    coverageStatus=coverage_status, coverageGaps=[str(item) for item in gaps],
                    sourceCoverage=_source_coverage_outcomes(outcomes, path=path),

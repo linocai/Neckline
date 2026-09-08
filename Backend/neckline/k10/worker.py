@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from neckline.k10 import store
+from neckline.k10.config import validate_execution_config
 from neckline.k10.schema import read_connection, require_schema
 from neckline.k10.types import Task
 
@@ -66,6 +67,14 @@ class TaskContext:
 
 
 TaskHandler = Callable[[TaskContext], TaskResult]
+_PAID_TASK_KINDS = frozenset({"evening_scan", "morning_scan", "analysis", "morning_review"})
+
+
+def _v2_execution_ready(context: TaskContext) -> bool:
+    profile = context.execution_profile
+    payload = profile.get("payload") if isinstance(profile, Mapping) else None
+    return (isinstance(payload, Mapping) and payload.get("executionVersion") == "k10-execution-v2"
+            and validate_execution_config(payload).ready)
 
 
 def _utc_now() -> datetime:
@@ -117,6 +126,11 @@ def run_once(
     """Claim one job; retries never invent a budget or invoke an unknown handler."""
     if lease_for.total_seconds() <= 0:
         raise ValueError("lease_for must be positive")
+    # This gate precedes claim so a disabled timer/worker cannot turn a queued
+    # historical B36 task into a running task which later reaches a provider.
+    control = store.run_control_status(db_path=db_path)
+    if control.get("state") != "open":
+        return None
     if task_id is None:
         claimed = store.claim_tasks(
             worker_id=worker_id, now=clock(), lease_for=lease_for, limit=1, db_path=db_path,
@@ -152,10 +166,18 @@ def run_once(
         handler = handlers.get(task.kind)
         if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
             result = TaskResult("not_configured", "configuration", error="任务重试上限未配置")
+        elif task.kind in _PAID_TASK_KINDS and not _v2_execution_ready(context):
+            result = TaskResult("not_configured", "configuration", context.checkpoint,
+                                "K10 外部调用要求已批准的 V2 执行配置")
         elif context.execution_profile is None and task.attempt_count > maximum:
             result = TaskResult("failed", "attempt_limit", context.checkpoint, "任务已达到重试上限")
         elif handler is None:
             result = TaskResult("not_configured", "configuration", error="任务处理器尚未配置")
+        elif store.run_control_status(db_path=db_path).get("state") != "open":
+            # The task may have been claimed immediately before an operator
+            # closed the durable switch.  Do not enter a handler (which may
+            # still read sources before its provider-level admission gate).
+            result = TaskResult("failed", "paused", context.checkpoint, "K10 运行已暂停")
         else:
             try:
                 if context.execution_profile is not None:
@@ -178,13 +200,21 @@ def run_once(
                 result = TaskResult("failed", "execution", context.checkpoint, "任务执行失败，可查看已完成资料并重试")
         context.require_lease()
         if result.retry_at is not None:
-            scheduled = store.schedule_task_retry(
-                task_id=task.task_id, worker_id=worker_id, stage=result.stage, checkpoint=result.checkpoint,
-                safe_error_code=str(result.safe_error_code), not_before_at=result.retry_at, scheduled_at=clock(),
-                retry_kind=str(result.retry_kind), max_failure_attempts=maximum, db_path=db_path,
-            )
-            if not scheduled:
-                result = TaskResult("failed", "attempt_limit", result.checkpoint, "任务已达到重试上限")
+            if store.run_control_status(db_path=db_path).get("state") != "open":
+                # A pause never discards already-settled handler output, but
+                # it must prevent this task from arranging a future attempt.
+                result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
+            else:
+                scheduled = store.schedule_task_retry(
+                    task_id=task.task_id, worker_id=worker_id, stage=result.stage, checkpoint=result.checkpoint,
+                    safe_error_code=str(result.safe_error_code), not_before_at=result.retry_at, scheduled_at=clock(),
+                    retry_kind=str(result.retry_kind), max_failure_attempts=maximum, db_path=db_path,
+                )
+                if not scheduled:
+                    if store.run_control_status(db_path=db_path).get("state") != "open":
+                        result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
+                    else:
+                        result = TaskResult("failed", "attempt_limit", result.checkpoint, "任务已达到重试上限")
         if result.retry_at is None:
             store.finish_task(
                 task_id=task.task_id, worker_id=worker_id, status=result.status, stage=result.stage,
@@ -204,6 +234,8 @@ def run_worker(
     """Serial dispatch keeps the small service bounded; the caller handles signals."""
     if idle_seconds <= 0:
         raise ValueError("idle_seconds must be positive")
+    if store.run_control_status(db_path=db_path).get("state") != "open":
+        return
     while not stop.is_set():
         try:
             task = run_once(db_path=db_path, worker_id=worker_id, lease_for=lease_for, handlers=handlers)

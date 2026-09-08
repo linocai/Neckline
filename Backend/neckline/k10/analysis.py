@@ -400,9 +400,12 @@ def _usage(result: LLMResult) -> dict[str, Any]:
     }
 
 
-def _call(provider: LLMProvider, messages: list[ChatMessage]) -> tuple[str, str | None, str | None, str | None, Mapping[str, Any]]:
+def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: Mapping[str, Any] | None = None) -> tuple[str, str | None, str | None, str | None, Mapping[str, Any]]:
     try:
-        result: LLMResult = provider.chat(messages, enable_search=False)
+        kwargs: dict[str, Any] = {"enable_search": False}
+        if model_options is not None:
+            kwargs["model_options"] = model_options
+        result: LLMResult = provider.chat(messages, **kwargs)
     except Exception as exc:  # exception text may contain an upstream URL or credential
         return "", None, None, f"模型调用异常：{type(exc).__name__}", {}
     usage = _usage(result)
@@ -415,13 +418,14 @@ def _call(provider: LLMProvider, messages: list[ChatMessage]) -> tuple[str, str 
 
 def run_pro(
     *, context: Mapping[str, Any], cutoff_at: str, provider: LLMProvider, revision: int = 1,
+    model_options: Mapping[str, Any] | None = None,
 ) -> AnalysisArtifact:
     """Run and return only the first role, so a worker can durably checkpoint it before con."""
     observation_id, candidate_id, refs, lineage, evidence, constraints = _context(context, cutoff_at=cutoff_at)
     text, provider_name, model, error, usage = _call(provider, pro_messages(
         observation_id=observation_id, candidate_id=candidate_id, cutoff_at=cutoff_at,
         source_refs=refs, input_lineage=lineage, evidence=evidence, user_constraints=constraints,
-    ))
+    ), model_options=model_options)
     return _artifact(
         observation_id=observation_id, revision=revision, role="pro",
         status="failed" if error else "completed", cutoff_at=cutoff_at, refs=refs, lineage=lineage,
@@ -431,7 +435,7 @@ def run_pro(
 
 def run_con(
     *, context: Mapping[str, Any], cutoff_at: str, provider: LLMProvider,
-    pro: AnalysisArtifact, revision: int | None = None,
+    pro: AnalysisArtifact, revision: int | None = None, model_options: Mapping[str, Any] | None = None,
 ) -> AnalysisArtifact:
     """Run the second role only after a persisted successful pro artifact is supplied."""
     observation_id, candidate_id, refs, lineage, evidence, constraints = _context(context, cutoff_at=cutoff_at)
@@ -449,7 +453,7 @@ def run_con(
         observation_id=observation_id, candidate_id=candidate_id, cutoff_at=cutoff_at,
         source_refs=refs, input_lineage=lineage, evidence=evidence, pro_full_text=pro.full_text,
         user_constraints=constraints,
-    ))
+    ), model_options=model_options)
     return _artifact(
         observation_id=observation_id, revision=target_revision, role="con",
         status="failed" if error else "completed", cutoff_at=cutoff_at, refs=refs, lineage=lineage,

@@ -53,10 +53,21 @@ def configure_execution(*, db_path: Path, config_id: str, file_path: Path, now: 
     revision = store.append_execution_config(config_id=config_id, payload=payload, created_at=now.isoformat(), db_path=db_path)
     return config_id, revision
 
+
+def _approved_v2_execution(*, db_path: Path, config_id: str, revision: int) -> bool:
+    """Check the only execution profile an entry point may bind live work to."""
+    profile = store.read_execution_config(config_id=config_id, revision=revision, db_path=db_path)
+    payload = profile.get("payload") if isinstance(profile, dict) else None
+    return (isinstance(payload, dict) and payload.get("executionVersion") == "k10-execution-v2"
+            and validate_execution_config(payload).ready)
+
 def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str, config_revision: int, now: datetime,
                  bootstrap_cutoff: str | None = None, execution_config_id: str | None = None,
                  execution_config_revision: int | None = None) -> str:
     if kind not in {"evening","morning"}: raise ValueError("kind 必须是 evening 或 morning")
+    control = store.run_control_status(db_path=db_path)
+    if control.get("state") != "open":
+        raise RuntimeError("K10 运行已暂停，拒绝入队")
     calendar_state = official_is_trading_day(trading_day, db_path=db_path)
     if calendar_state is None:
         raise RuntimeError("交易日历缺覆盖，拒绝猜测交易日")
@@ -77,12 +88,11 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
             raise ValueError("bootstrap cutoff 必须早于固定扫描截止")
     if kind != "evening" and bootstrap_cutoff is not None:
         raise ValueError("bootstrap cutoff 仅适用于 evening")
-    if (execution_config_id is None) != (execution_config_revision is None):
-        raise ValueError("执行配置 ID 与 revision 必须同时提供")
-    if execution_config_id is not None and execution_config_revision is not None:
-        profile = store.read_execution_config(config_id=execution_config_id, revision=execution_config_revision, db_path=db_path)
-        if profile is None or not validate_execution_config(profile["payload"]).ready:
-            raise RuntimeError("指定执行配置修订不存在或未就绪")
+    if execution_config_id is None or execution_config_revision is None:
+        raise RuntimeError("正式扫描入队必须显式绑定已批准的 V2 执行配置")
+    if not _approved_v2_execution(db_path=db_path, config_id=execution_config_id,
+                                  revision=execution_config_revision):
+        raise RuntimeError("指定 V2 执行配置修订不存在或未就绪")
     task_id=_id("task",kind,cutoff.isoformat(),config_id,str(config_revision),bootstrap_cutoff or "")
     task_kind=f"{kind}_scan"
     store.enqueue_task(task_id=task_id,kind=task_kind,idempotency_key=f"{task_kind}:{cutoff.isoformat()}:{config_id}:{config_revision}:{bootstrap_cutoff or ''}",
@@ -90,10 +100,9 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
                        payload={"windowKind":kind,"tradingDay":trading_day.isoformat(),"configId":config_id,"configRevision":config_revision,
                                 **({"sourceBootstrapCutoff": bootstrap_cutoff} if bootstrap_cutoff is not None else {})},
                        budget={"maxAttempts":policy["maxAttempts"],"maxSourceRequests":policy["maxSourceRequests"],"costLimit":policy.get("costLimit")},created_at=now.isoformat(),db_path=db_path)
-    if execution_config_id is not None and execution_config_revision is not None:
-        store.bind_task_execution(task_id=task_id, execution_config_id=execution_config_id,
-                                  execution_config_revision=execution_config_revision, binding_kind="scheduled",
-                                  bound_at=now.isoformat(), db_path=db_path)
+    store.bind_task_execution(task_id=task_id, execution_config_id=execution_config_id,
+                              execution_config_revision=execution_config_revision, binding_kind="scheduled",
+                              bound_at=now.isoformat(), db_path=db_path)
     return task_id
 
 
@@ -113,6 +122,9 @@ def recover_scan(
     confirmed_input_sha256: str, now: datetime,
 ) -> str:
     """Create the one controlled recovery task for a failed frozen scan, without recollection."""
+    control = store.run_control_status(db_path=db_path)
+    if control.get("state") != "open":
+        raise RuntimeError("K10 运行已暂停，拒绝恢复")
     scan = store.get_scan(scan_id=scan_id, db_path=db_path)
     if scan is None or scan.get("status") not in {"failed", "not_configured"}:
         raise RuntimeError("只有当前 failed 或 not_configured 的扫描可建立受控恢复")
@@ -126,9 +138,9 @@ def recover_scan(
         raise RuntimeError("冻结资料哈希确认不匹配，拒绝恢复")
     if store.read_run_config(config_id=scan["configId"], revision=scan["configRevision"], db_path=db_path) is None:
         raise RuntimeError("冻结策略配置修订不存在")
-    profile = store.read_execution_config(config_id=execution_config_id, revision=execution_config_revision, db_path=db_path)
-    if profile is None or not validate_execution_config(profile["payload"]).ready:
-        raise RuntimeError("指定执行配置修订不存在或未就绪")
+    if not _approved_v2_execution(db_path=db_path, config_id=execution_config_id,
+                                  revision=execution_config_revision):
+        raise RuntimeError("指定 V2 执行配置修订不存在或未就绪")
     if any(batch.get("scanId") == scan_id for batch in store.list_publication_batches(db_path=db_path)):
         raise RuntimeError("已有正式发布批次的扫描不能建立恢复任务")
     task_id = _id("task", "recovery", scan_id, execution_config_id, str(execution_config_revision), actual_input_sha256)
@@ -190,6 +202,9 @@ def main(argv: list[str] | None=None) -> int:
     # command, owns creation/upgrades of either schema.
     with read_connection(args.db) as connection:
         require_schema(connection)
+    if store.run_control_status(db_path=args.db).get("state") != "open":
+        print(json.dumps({"status": "paused"}, ensure_ascii=False))
+        return 0
     require_notifications_schema(args.db)
     handlers = production_handlers(tushare_token=token, parquet_dir=args.parquet_dir)
     # These two workers only persist/read frozen market facts and fixed company

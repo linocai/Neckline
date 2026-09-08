@@ -145,8 +145,59 @@ class SafeExecutionFailureOut(K10Model):
     ref: str | None = Field(default=None, max_length=320)
 
 
+class ExecutionRunControlOut(K10Model):
+    """Reader-safe projection of the durable discovery switch.
+
+    ``ready`` only means the switch is open.  It is deliberately separate from
+    configuration and budget readiness, so an operator never mistakes a
+    stopped service for an empty scan.
+    """
+    state: Literal["paused", "ready"]
+    reasonCode: str = Field(min_length=1, max_length=120)
+    changedAt: str
+
+
+class ExecutionSpendTotalsOut(K10Model):
+    calls: int = Field(default=0, ge=0)
+    inputTokens: int = Field(default=0, ge=0)
+    outputTokens: int = Field(default=0, ge=0)
+    totalTokens: int = Field(default=0, ge=0)
+    fullTextCalls: int = Field(default=0, ge=0)
+    retries: int = Field(default=0, ge=0)
+    searchRequests: int = Field(default=0, ge=0)
+    searchCredits: int = Field(default=0, ge=0)
+
+
+class ExecutionBudgetOut(K10Model):
+    """Aggregate spend ledger only; never prompts, sources, prices or fees."""
+    state: Literal["available", "exhausted", "notConfigured"]
+    # An unbound profile has no truthful denominator or spend total.  Keep
+    # these absent instead of presenting zeros as an audited budget.
+    reserved: ExecutionSpendTotalsOut | None = None
+    occupied: ExecutionSpendTotalsOut | None = None
+    actual: ExecutionSpendTotalsOut | None = None
+    unknown: ExecutionSpendTotalsOut | None = None
+    remaining: ExecutionSpendTotalsOut | None = None
+    reservationCount: int = Field(default=0, ge=0)
+
+
+class ExecutionProcessingCountsOut(K10Model):
+    """V3.0.5 pre-model work.  Absent on historical scans rather than zeroed."""
+    received: int = Field(default=0, ge=0)
+    exactDeduplicated: int = Field(default=0, ge=0)
+    templateExcluded: int = Field(default=0, ge=0)
+    templateDeferred: int = Field(default=0, ge=0)
+    templateProtected: int = Field(default=0, ge=0)
+    packages: int = Field(default=0, ge=0)
+    lightweightUnderstood: int = Field(default=0, ge=0)
+    fullTextRequested: int = Field(default=0, ge=0)
+    fullTextCompleted: int = Field(default=0, ge=0)
+    pendingVerification: int = Field(default=0, ge=0)
+    pendingBudget: int = Field(default=0, ge=0)
+
+
 class ExecutionProgressOut(K10Model):
-    state: Literal["running", "partial", "completed", "failed", "notConfigured"]
+    state: Literal["running", "partial", "completed", "failed", "notConfigured", "paused", "budgetExhausted"]
     stage: str | None = Field(default=None, max_length=80)
     documentCounts: ExecutionDocumentCountsOut = Field(default_factory=ExecutionDocumentCountsOut)
     eventCounts: ExecutionEventCountsOut = Field(default_factory=ExecutionEventCountsOut)
@@ -155,6 +206,14 @@ class ExecutionProgressOut(K10Model):
     safeFailures: list[SafeExecutionFailureOut] = Field(default_factory=list)
     strategyBinding: dict[str, object] | None = None
     executionBinding: dict[str, object] | None = None
+    # Historical B36 scans lack these V3.0.5 ledgers.  Null is material: a
+    # client must not present it as a measured zero or infer an allow-all run.
+    runControl: ExecutionRunControlOut | None = None
+    processingCounts: ExecutionProcessingCountsOut | None = None
+    # A real cache hit count is only recorded by B37 scans; historical scans
+    # remain absent rather than looking like a measured zero.
+    factCacheHits: int | None = Field(default=None, ge=0)
+    budget: ExecutionBudgetOut | None = None
 
 
 class SourceCoverageOut(K10Model):
@@ -552,7 +611,7 @@ class SourceDocumentPageOut(K10Model):
 
 
 class ConfigurationScopeOut(K10Model):
-    scope: Literal["candidate", "analysis", "evaluation"]
+    scope: Literal["candidate", "analysis", "evaluation", "discovery"]
     state: Literal["configured", "not_configured"]
     missing: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -575,6 +634,16 @@ class NotificationReadinessOut(K10Model):
 class OperationsReadinessOut(K10Model):
     schemaVersion: str = SCHEMA_VERSION
     notificationReadiness: NotificationReadinessOut
+    runControl: ExecutionRunControlOut
+
+
+class DiscoveryPauseOut(K10Model):
+    """Result of the one-way user pause operation.
+
+    This API intentionally has no matching resume command: opening discovery
+    remains an explicit operational action outside the client.
+    """
+    runControl: ExecutionRunControlOut
 
 
 class MorningReportItemOut(K10Model):

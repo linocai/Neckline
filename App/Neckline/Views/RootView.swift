@@ -43,7 +43,10 @@ struct RootView: View {
         VStack(spacing: 0) {
             desktopHeader
             if model.tab == .settings {
-                NavigationStack { SettingsView(model: model, config: config) }
+                NavigationStack {
+                    if qaCoverageRoute { SettingsCoverageScreen(model: model, scans: model.scanSummaries) }
+                    else { SettingsView(model: model, config: config) }
+                }
             } else { page }
         }.frame(minWidth: 920, minHeight: 640)
         #else
@@ -63,8 +66,18 @@ struct RootView: View {
         case .opportunities: OpportunitiesView(model: model)
         case .focus: FocusView(model: model)
         case .performance: PerformanceView(model: model)
-        case .settings: SettingsView(model: model, config: config)
+        case .settings:
+            if qaCoverageRoute { SettingsCoverageScreen(model: model, scans: model.scanSummaries) }
+            else { SettingsView(model: model, config: config) }
         }
+    }
+
+    private var qaCoverageRoute: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["NK_QA_COVERAGE"] == "1"
+        #else
+        false
+        #endif
     }
 
     private var wordmark: some View {

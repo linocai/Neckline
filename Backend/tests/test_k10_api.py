@@ -16,6 +16,7 @@ from neckline.api.k10_schemas import CompanyWindowEvaluationOut, MarketDayOut
 from neckline.k10 import store
 from neckline.k10.schema import initialize_schema
 from neckline.k10.types import OpportunityPublicationInput
+from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 NOW = "2026-09-06T12:00:00+00:00"
@@ -101,11 +102,90 @@ def test_configuration_uses_explicit_ready_binding_before_any_scan_and_never_wri
     assert response.status_code == 200
     body = response.json()
     assert body["configId"] == "current" and body["configRevision"] == 1
-    assert {scope["scope"] for scope in body["scopes"]} == {"candidate", "analysis", "evaluation"}
+    assert {scope["scope"] for scope in body["scopes"]} == {"candidate", "discovery", "analysis", "evaluation"}
     assert all(scope["state"] == "configured" for scope in body["scopes"])
     assert store.list_scans(window_kind=None, db_path=path) == []
     assert sha256(path.read_bytes()).hexdigest() == before
 
+
+def test_operations_exposes_durable_pause_and_client_pause_stays_closed(tmp_path: Path) -> None:
+    path = tmp_path / "operations.sqlite"
+    initialize_schema(path)
+    with _client(path) as client:
+        initial = client.get("/api/v1/k10/operations/readiness")
+        paused = client.post("/api/v1/k10/operations/pause")
+        after = client.get("/api/v1/k10/operations/readiness")
+
+    assert initial.status_code == paused.status_code == after.status_code == 200
+    assert initial.json()["runControl"] == {
+        "state": "paused", "reasonCode": "unconfigured_closed", "changedAt": "1970-01-01T00:00:00+00:00",
+    }
+    assert paused.json()["runControl"]["state"] == "paused"
+    assert paused.json()["runControl"]["reasonCode"] == "user_paused"
+    assert after.json()["runControl"] == paused.json()["runControl"]
+    assert store.run_control_status(db_path=path)["state"] == "closed"
+
+
+
+@pytest.mark.parametrize("scan_status", ["running", "partial"])
+def test_scan_progress_exposes_v305_pause_budget_and_processing_aggregates(tmp_path: Path, scan_status: str) -> None:
+    path = tmp_path / "v305-progress.sqlite"
+    _seed(path)
+    execution_id, execution_revision = append_approved_execution_profile(
+        db_path=path, created_at=NOW, config_id="v305-progress", max_model_calls=1,
+    )
+    store.set_run_control(state="open", reason_code="fixture_authorized", changed_at=NOW,
+                          changed_by="test", db_path=path)
+    store.enqueue_task(
+        task_id="v305-progress-task", kind="evening_scan", idempotency_key="v305-progress-task",
+        input_version="frozen", input_cutoff_at=NOW, payload={"windowKind": "evening"},
+        budget={"maxAttempts": 1}, created_at=NOW, db_path=path,
+    )
+    store.bind_task_execution(
+        task_id="v305-progress-task", execution_config_id=execution_id,
+        execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=NOW, db_path=path,
+    )
+    processing = {
+        "received": 30, "exactDeduplicated": 2, "templateExcluded": 18, "templateDeferred": 3,
+        "templateProtected": 1, "packages": 4, "lightweightUnderstood": 4, "fullTextRequested": 1,
+        "fullTextCompleted": 1, "pendingVerification": 2, "pendingBudget": 1,
+    }
+    store.create_scan(
+        scan_id="v305-progress-scan", window_kind="evening", cutoff_at=NOW, config_id="cfg",
+        config_revision=1, status=scan_status, coverage={"status": "partial", "inputSnapshotFrozen": True,
+        "processingCounts": processing, "factCacheHits": 2}, created_at=NOW,
+        completed_at=NOW if scan_status == "partial" else None, db_path=path,
+    )
+    store.bind_scan_execution(
+        scan_id="v305-progress-scan", task_id="v305-progress-task", execution_config_id=execution_id,
+        execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=NOW, db_path=path,
+    )
+
+    with _client(path) as client:
+        running = client.get("/api/v1/k10/scans/v305-progress-scan")
+        pause = client.post("/api/v1/k10/operations/pause")
+        paused = client.get("/api/v1/k10/scans/v305-progress-scan")
+
+    assert running.status_code == pause.status_code == paused.status_code == 200
+    initial_progress = running.json()["executionProgress"]
+    assert initial_progress["state"] == "budgetExhausted"
+    assert initial_progress["stage"] == "pending_budget"
+    assert initial_progress["runControl"]["state"] == "ready"
+    assert initial_progress["processingCounts"] == processing
+    assert initial_progress["factCacheHits"] == 2
+    # pending budget is visible as a guarded, exhausted aggregate; no raw
+    # prompt, source or provider detail leaves the ledger.
+    assert initial_progress["budget"]["state"] == "exhausted"
+    assert initial_progress["budget"]["remaining"]["calls"] == 1
+    assert set(initial_progress["budget"]) == {
+        "state", "reserved", "occupied", "actual", "unknown", "remaining", "reservationCount",
+    }
+    paused_progress = paused.json()["executionProgress"]
+    assert pause.json()["runControl"]["state"] == "paused"
+    assert paused_progress["state"] == "paused"
+    assert paused_progress["runControl"]["reasonCode"] == "user_paused"
+    assert paused_progress["processingCounts"] == processing
+    assert paused_progress["factCacheHits"] == 2
 
 def test_configuration_uses_bound_revision_not_an_old_scan_or_another_config(tmp_path: Path) -> None:
     path = tmp_path / "configuration.sqlite"

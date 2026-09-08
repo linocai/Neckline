@@ -32,6 +32,7 @@ struct K10CacheContext: Hashable {
     var usage: K10UsageSummary?
     var providers: [K10Provider] = []
     var tavilyKeySet = false
+    var discoveryPauseInFlight = false
     var selectedOpportunity: K10OpportunityDetail?
     var selectedWindow: K10CompanyWindow?
     var toast: String?
@@ -81,7 +82,7 @@ struct K10CacheContext: Hashable {
     }
     func resetForConnectionChange() {
         advanceConnectionGeneration()
-        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; usage = nil; providers = []; tavilyKeySet = false
+        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; usage = nil; providers = []; tavilyKeySet = false; discoveryPauseInFlight = false
         selectedOpportunity = nil; selectedWindow = nil; lastAvailableAt = nil; offline = false; state = .idle; cacheClearer()
     }
     func refresh() async {
@@ -336,6 +337,28 @@ struct K10CacheContext: Hashable {
     }
     func selection(for window: K10CompanyWindow) -> K10SelectionDetail? { selectionDetails.first { $0.companyWindowId == window.companyWindowId } }
     func detail(for window: K10CompanyWindow) -> K10SelectionDetail? { selection(for: window).flatMap { $0.state == "kept" ? $0 : nil } }
+    func pauseDiscovery() async {
+        let generation = connectionGeneration
+        guard let service = serviceFactory() else { toast = "请先配置服务连接"; return }
+        guard !discoveryPauseInFlight else { return }
+        discoveryPauseInFlight = true
+        defer { if isCurrent(generation) { discoveryPauseInFlight = false } }
+        do {
+            let result = try await service.pauseDiscovery()
+            guard isCurrent(generation) else { return }
+            if var readiness = operationsReadiness {
+                readiness.runControl = result.runControl
+                operationsReadiness = readiness
+            }
+            toast = "后续资讯处理已暂停；不会自动恢复"
+            await refresh()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrent(generation) else { return }
+            toast = error.localizedDescription
+        }
+    }
     func refreshAdminSettings() async {
         let generation = connectionGeneration
         guard let config, config.hasToken else { return }

@@ -6,6 +6,7 @@ prompts and exception messages are intentionally kept in process memory only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -311,6 +312,7 @@ def execute_model_operation(
     *, task_id: str, operation: str, item_key: str, input_sha256: str, policy: Mapping[str, Any],
     operation_call: Callable[[], Any], validate: Callable[[Any], Mapping[str, Any] | list[Any]],
     db_path, leaseguard: Callable[[], None] | None = None, repair_call: Callable[[], Any] | None = None,
+    spend_context_factory: Callable[[int, bool], Any] | None = None,
     now: Callable[[], datetime] | None = None, monotonic_clock: Callable[[], float] = monotonic,
 ) -> ModelOperationResult:
     """Execute at most one provider call and durably account for it first.
@@ -322,7 +324,8 @@ def execute_model_operation(
     """
     if operation not in _OPERATIONS or not item_key or not isinstance(input_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", input_sha256):
         raise ValueError("模型执行需要受支持 operation、itemKey 与 SHA-256 输入指纹")
-    if not callable(operation_call) or not callable(validate) or (repair_call is not None and not callable(repair_call)):
+    if (not callable(operation_call) or not callable(validate) or (repair_call is not None and not callable(repair_call))
+            or (spend_context_factory is not None and not callable(spend_context_factory))):
         raise ValueError("模型执行回调无效")
     network_limit, repair_limit = _policy_limits(policy)
     timestamp = (now or (lambda: datetime.now(timezone.utc)))()
@@ -348,8 +351,12 @@ def execute_model_operation(
     started = monotonic_clock()
     provider_input = provider_output = provider_total = None
     try:
-        call = repair_call if reservation.repair_attempt_count > 0 and repair_call is not None else operation_call
-        candidate, provider_input, provider_output, provider_total = _parse_invocation(call())
+        is_repair = reservation.repair_attempt_count > 0 and repair_call is not None
+        call = repair_call if is_repair else operation_call
+        manager = (spend_context_factory(reservation.network_attempt_count, is_repair)
+                   if spend_context_factory is not None else nullcontext())
+        with manager:
+            candidate, provider_input, provider_output, provider_total = _parse_invocation(call())
         normalized = _normal_json(validate(candidate))
     except Exception as exc:
         failure = _classify_error(exc)

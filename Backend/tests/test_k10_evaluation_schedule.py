@@ -25,6 +25,8 @@ def _config() -> dict:
 
 def _seed(path: Path) -> str:
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="fixture_evaluation", changed_at="2026-09-07T09:00:00+08:00",
+                          changed_by="test", db_path=path)
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE trade_cal(exchange TEXT, cal_date TEXT, is_open INTEGER)")
         conn.executemany("INSERT INTO trade_cal VALUES ('SSE', ?, 1)", [("20260906",), ("20260907",), ("20260908",), ("20260909",)])

@@ -32,6 +32,8 @@ from neckline.k10.schema import initialize_schema
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.llm.base import LLMResult
 
+from .k10_v305_fixture import append_approved_execution_profile
+
 
 TZ = "+08:00"
 FIRST_CUTOFF = f"2026-08-28T21:00:00{TZ}"
@@ -170,6 +172,25 @@ def _append_morning_document(path: Path, *, document_id: str, source_key: str, t
     return [{"documentId": document_id, "revision": 1}]
 
 
+def _bind_v305_execution(path: Path, *, task_id: str, bound_at: str) -> None:
+    """Bind each paid fixture task to the test-only approved V2 profile.
+
+    The worker must exercise the same fail-closed V3.0.5 gate as production;
+    fake providers replace only the network seam, never the durable approval
+    or run-control boundary.
+    """
+    config_id, revision = append_approved_execution_profile(
+        # The immutable approval timestamp is fixed.  Later task bindings are
+        # distinct scheduled actions, not attempts to rewrite that approval.
+        db_path=path, created_at=FIRST_CUTOFF, config_id="v302-fixture-execution",
+    )
+    store.bind_task_execution(
+        task_id=task_id, execution_config_id=config_id,
+        execution_config_revision=revision, binding_kind="scheduled",
+        bound_at=bound_at, db_path=path,
+    )
+
+
 def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
     """Run C's production handler once per unique opportunity and retain its report items."""
     outcomes = [
@@ -200,6 +221,7 @@ def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict
         task_id = f"morning-review-{index}"
         store.enqueue_task(task_id=task_id, kind="morning_review", idempotency_key=task_id, input_version="fixture-config",
             input_cutoff_at=MORNING_AT, payload=payload, budget=_config()["taskPolicies"]["morning"], created_at=MORNING_AT, db_path=path)
+        _bind_v305_execution(path, task_id=task_id, bound_at=MORNING_AT)
         provider = _Provider([response])
         resolution = lambda **_: ProviderResolution("configured", provider, "fixture", None)
         with patch("neckline.k10.morning_runtime.resolve_deepseek_v4_pro", resolution):
@@ -228,6 +250,7 @@ def _run_analyses(path: Path, window: dict[str, Any]) -> None:
         outbox_id="fixture-outbox", company_window_id=window["companyWindowId"], idempotency_key="fixture-keep",
         task_input_version="fixture-config", task_input_cutoff_at=FIRST_AVAILABLE, task_payload=payload,
         task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-08-31T09:00:00+08:00", db_path=path)
+    _bind_v305_execution(path, task_id=observed.task_id, bound_at="2026-08-31T09:00:00+08:00")
     resolver = lambda **_: ProviderResolution("configured", _Provider(["第一版正方全文", "第一版反方全文"]), "fixture", None)
     completed = run_once(db_path=path, worker_id="fixture-analysis-1", lease_for=timedelta(minutes=5),
         handlers={"analysis": runtime.production_analysis_handler(provider_resolver=resolver)},
@@ -247,6 +270,7 @@ def _run_analyses(path: Path, window: dict[str, Any]) -> None:
         kind="evidence_update", question=None, source_refs=[{"documentId": "doc-fixture", "revision": 2}], idempotency_key="fixture-update",
         input_cutoff_at="2026-09-04T16:00:00+08:00", task_input_version="fixture-config", task_payload=payload,
         task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-09-04T16:00:00+08:00", db_path=path)
+    _bind_v305_execution(path, task_id=str(request["taskId"]), bound_at="2026-09-04T16:00:00+08:00")
     resolver = lambda **_: ProviderResolution("configured", _Provider(["第二版正方全文", "第二版反方全文"]), "fixture", None)
     completed = run_once(db_path=path, worker_id="fixture-analysis-2", lease_for=timedelta(minutes=5),
         handlers={"analysis": runtime.production_analysis_handler(provider_resolver=resolver)},
@@ -256,8 +280,10 @@ def _run_analyses(path: Path, window: dict[str, Any]) -> None:
 
 
 def build_fixture(path: Path) -> dict[str, str]:
-    """Build a complete temporary Schema 3 database and return stable UI identifiers."""
+    """Build a complete temporary Schema 5 database and return stable UI identifiers."""
     initialize_schema(path); _calendar(path)
+    store.set_run_control(state="open", reason_code="fixture_approved", changed_at=FIRST_CUTOFF,
+                          changed_by="test", db_path=path)
     store.append_run_config(config_id="cfg-fixture", payload=_config(), created_at=FIRST_CUTOFF, db_path=path)
     store.append_document_version(document_id="doc-fixture", source_key="fixture_verification", external_id="fixture-source",
         canonical_url="https://example.invalid/k10-fixture", content_sha256="f" * 64, published_at=FIRST_CUTOFF,
