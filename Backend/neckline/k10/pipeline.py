@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
+from contextlib import contextmanager
 from hashlib import sha256
 import json
 import logging
@@ -32,7 +33,7 @@ from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocum
                         thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows)
 from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
 from .historical_cases import apply_historical_assessments
-from .investigation import InvestigationError, decode_stage_result
+from .investigation import InvestigationError, decode_stage_result, validate_stage_result
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_contracts import Claim, ResearchSnapshot, ResearchStageResult, ResearchContractError
 from .model_execution import JsonRepairError, ModelInvocation, ModelNetworkError, SemanticValidationError, execute_model_operation
@@ -418,7 +419,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         raw = self._json(operation=instruction, payload=payload,
                          model_options=self._model_options("investigation"))
         try:
-            return decode_stage_result(raw, action=action, evidence_packet=evidence_packet)
+            result = decode_stage_result(raw, action=action, evidence_packet=evidence_packet)
+            validate_stage_result(action=action, result=result, evidence_packet=evidence_packet)
+            return result
         except InvestigationError as exc:
             # Only program-known field presence/types; never article text,
             # provider output values, credentials or exception bodies.
@@ -780,6 +783,7 @@ class _CheckpointedDiscoveryModel:
         self._base, self._task_id, self._binding = base, task_id, execution_profile
         self._cutoff_at, self._db_path, self._leaseguard = _text(cutoff_at), db_path, leaseguard
         self._allow_failed_research_resume = allow_failed_research_resume
+        self._research_validators = local()
         self._full_text_used: set[EvidenceRef] = set()
         self._full_text_requested: set[EvidenceRef] = set()
         payload = execution_profile.get("payload")
@@ -876,6 +880,15 @@ class _CheckpointedDiscoveryModel:
             db_path=self._db_path, leaseguard=self._leaseguard,
         )
 
+    @contextmanager
+    def research_validation(self, validator: Callable[[ResearchStageResult], None]):
+        previous = getattr(self._research_validators, "current", None)
+        self._research_validators.current = validator
+        try:
+            yield
+        finally:
+            self._research_validators.current = previous
+
     def full_text_used(self, *, document: DiscoveryDocument) -> bool:
         return document.evidence_ref in self._full_text_used
 
@@ -951,7 +964,11 @@ class _CheckpointedDiscoveryModel:
             if isinstance(self._base, DeepSeekDiscoveryModel):
                 self._base._thread_usage.research_model_options = item.get("runtimeResearchModelOptions")
             try:
-                return invoke(snapshot=snapshot, action=action, evidence_packet=evidence_packet)
+                result = invoke(snapshot=snapshot, action=action, evidence_packet=evidence_packet)
+                validator = getattr(self._research_validators, "current", None)
+                if validator is not None:
+                    validator(result)
+                return result
             finally:
                 if isinstance(self._base, DeepSeekDiscoveryModel):
                     self._base._thread_usage.research_model_options = None
@@ -1014,6 +1031,8 @@ class _CheckpointedDiscoveryModel:
                     errors.append({"field": chain.field_name, "expected": chain.expected,
                                    **({"allowed": list(chain.allowed)} if chain.allowed else {})})
                 chain = chain.__cause__
+            if not errors and isinstance(exc, InvestigationError):
+                errors = [{"field":"result", "expected":exc.code, "constraint":str(exc)}]
             if errors:
                 previous = getattr(self._base._thread_usage, "last", None) or {}
                 self._base._thread_usage.last = {**previous, "validationErrors": errors}

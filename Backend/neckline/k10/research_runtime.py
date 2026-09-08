@@ -7,6 +7,7 @@ claims, attributable excerpts and explicitly admitted additional full texts.
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -21,7 +22,7 @@ from .discovery import (
     SqliteDiscoveryWriter, Verification, reject_uncalibrated_prediction,
 )
 from .historical_cases import apply_historical_assessments
-from .investigation import InvestigationError, advance_research, decode_stage_result, query_path_signature
+from .investigation import InvestigationError, advance_research, decode_stage_result, query_path_signature, validate_stage_result
 from .opportunity_discovery import validate_event_comparison
 from .research_contracts import Claim, FullTextRequest, Question, QueryPath, ResearchSnapshot, ResearchStageResult, validate_company_mapping
 from .research_store import (create_research_snapshot, advance_research_snapshot,
@@ -267,12 +268,29 @@ class _Investigation:
         if extra:
             packet.update(extra)
         digest = _hash({"action": action, "packet": packet})
-        for stage in reversed(self.state["stageResults"]):
-            if stage["action"] == action and stage["inputSha256"] == digest and not stage["result"].get("safeErrorCode"):
-                return decode_stage_result(stage["result"], action=action)
+        while True:
+            stage = next((item for item in reversed(self.state["stageResults"])
+                if item["action"] == action and item["inputSha256"] == digest and not item["result"].get("safeErrorCode")), None)
+            if stage is None:
+                break
+            try:
+                cached = decode_stage_result(stage["result"], action=action)
+                validate_stage_result(action=action, result=cached, evidence_packet=packet)
+                self._validate_result(action, cached, packet)
+            except InvestigationError:
+                if not self.allow_failed_resume:
+                    raise
+                # Preserve the rejected historical derivative. Its replacement
+                # gets a stable append-only identity, so replay cannot collide
+                # with the old action/input uniqueness constraint.
+                digest = _hash({"inputSha256":digest, "supersedesRejectedRevision":stage["revision"]})
+                continue
+            return cached
         self.pending_model_action = {"action": action, "extra": dict(extra or {})}
         try:
-            step = advance_research(model=self.model, snapshot=self.snapshot, action=action, evidence_packet=packet)
+            scope = getattr(self.model, "research_validation", None)
+            with (scope(lambda result: self._validate_result(action, result, packet)) if callable(scope) else nullcontext()):
+                step = advance_research(model=self.model, snapshot=self.snapshot, action=action, evidence_packet=packet)
             self._validate_result(action, step.result, packet)
         except (InvestigationError, ValueError, KeyError, TypeError) as exc:
             reject = getattr(self.model, "reject_research_result", None)

@@ -2902,11 +2902,21 @@ def authorize_discovery_recovery(
         # builds could mark a model result completed before persistence rejected
         # it. Preserve its JSON and usage, but never reuse that poisoned cache.
         from .investigation import decode_stage_result, InvestigationError
+        # The snapshot at the exact comparison write records whether publishing
+        # was allowed then; do not infer it from a later changed research state.
+        forbidden_comparisons = {_json(json.loads(raw)) for (raw,) in conn.execute(
+            "SELECT s.result_json FROM k10_research_stage_results s JOIN k10_research_snapshot_revisions r "
+            "ON r.snapshot_id=s.snapshot_id AND r.revision=s.revision WHERE r.task_id=? "
+            "AND s.action='compare_companies' AND r.research_status NOT IN ('ready_for_comparison','comparison_complete')",
+            (task_id,))}
         for cache_key, stage, raw in conn.execute(
                 "SELECT item_key,stage,result_json FROM k10_execution_item_checkpoints "
                 "WHERE task_id=? AND stage LIKE 'model:investigation_%' AND status='completed'", (task_id,)).fetchall():
             try:
-                decode_stage_result(json.loads(raw), action=stage.removeprefix("model:investigation_"))
+                decoded = decode_stage_result(json.loads(raw), action=stage.removeprefix("model:investigation_"))
+                if (_json(json.loads(raw)) in forbidden_comparisons and any(
+                        item.get("role") in {"primary", "alternative", "tied"} for item in decoded.company_assessments)):
+                    raise ValueError("comparison violated its recorded publication constraint")
             except (InvestigationError, ValueError, TypeError, KeyError):
                 conn.execute("UPDATE k10_execution_item_checkpoints SET status='failed',safe_error_code=?,updated_at=? "
                              "WHERE task_id=? AND item_key=? AND stage=? AND status='completed'",

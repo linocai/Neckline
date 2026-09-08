@@ -145,6 +145,10 @@ def _require_result(action: str, result: ResearchStageResult, packet: Mapping[st
         if status not in RESEARCH_STATUSES - {"comparison_complete"}:
             raise InvestigationError("研究收口状态无效", code="investigation_conclusion_invalid")
     elif action == "compare_companies":
+        if packet.get("publicationAllowed") is False and any(
+                row.get("role") not in {"pending", "excluded"} for row in result.company_assessments):
+            raise InvestigationError("关键缺口未解除，比较不得给出正式推荐", code="investigation_unresolved_ranking") from ResearchContractError(
+                "本次比较只允许待核或排除", field_name="companyAssessments[].role", expected="enum", allowed=("pending", "excluded"))
         codes = {str(code) for code in packet.get("companyCodes", ())}
         seen_codes: set[str] = set()
         for assessment in result.company_assessments:
@@ -155,6 +159,10 @@ def _require_result(action: str, result: ResearchStageResult, packet: Mapping[st
             seen_codes.add(code)
         if seen_codes != codes:
             raise InvestigationError("公司比较遗漏输入公司", code="investigation_company_coverage_invalid")
+
+
+def validate_stage_result(*, action: str, result: ResearchStageResult, evidence_packet: Mapping[str, Any]) -> None:
+    _require_result(action, result, evidence_packet)
 
 
 def query_path_signature(path: QueryPath) -> str:

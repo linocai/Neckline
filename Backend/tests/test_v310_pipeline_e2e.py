@@ -80,7 +80,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
                     title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
-                    action_shape: str | None = None, evidence_location: str | None = None):
+                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -126,8 +126,10 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                 ref = payload["evidencePacket"]["allowedEvidenceRefs"][0]
                 mappings = ([{"companyCode": code, "affectedStage": "送样", "relationEvidence": [ref], "inference": {}, "uncertainty": "传闻待核"}
                              for code in ("300001.SZ", "300002.SZ", "300003.SZ")]
-                            if close_status == "ready_for_comparison" and close_round > 1 else [])
+                            if pending_ranking or (close_status == "ready_for_comparison" and close_round > 1) else [])
                 result_status = "continue_research" if close_status == "ready_for_comparison" and close_round == 1 else close_status
+                if pending_ranking:
+                    result_status = "pending_verification"
                 result = {"action": action, "conclusion": {"researchStatus": result_status,
                           "eventDisposition": "可比较" if mappings else "待核",
                           "companyMappings": mappings, "companyDispositions": [], "materialGaps": ["传闻未核"],
@@ -145,6 +147,10 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                                  "priorityReason": "关系路径", "gap": "待确认", "rankChangeConditions": "公司公告", "twoDayReason": "新增传闻",
                                  "evidenceDisclosure": disclosure})
                 ref = payload["evidencePacket"]["allowedEvidenceRefs"][0]
+                if pending_ranking and (pending_ranking == "pending" or calls.count("research:compare_companies") > 1):
+                    if pending_ranking == "repair":
+                        assert "companyAssessments[].role" in message and "pending|excluded" in message
+                    rows[0] = {**rows[0], "role":"pending", "rank":None}
                 result = {"action": action,
                           "conclusion": {"summary": "供应商称送样仍未获独立确认。", "evidenceRefs": [ref],
                                          "historicalAssessments": []},
@@ -229,7 +235,8 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None):
+         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None):
+    monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
     import sqlite3
@@ -249,7 +256,7 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
                             title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
-                            action_shape=action_shape, evidence_location=evidence_location)
+                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))

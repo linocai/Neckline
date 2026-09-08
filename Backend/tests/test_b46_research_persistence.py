@@ -59,6 +59,7 @@ def test_cli_runtime_repair_keeps_frozen_work_and_revalidates_poisoned_legacy_ca
         return original(self, **kwargs)
     monkeypatch.setattr(pipeline.DeepSeekDiscoveryModel,"_request_json",capture)
     now = RUN_AT + timedelta(hours=3)
+    monkeypatch.setattr(pipeline, "_now", lambda: now)
     done = run_once(db_path=db,worker_id="repair",lease_for=timedelta(minutes=5),
         handlers=pipeline.production_handlers(tushare_token="fixture-token",parquet_dir=tmp_path/"parquet"),clock=lambda:now)
     assert done.status == "completed"

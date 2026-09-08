@@ -53,11 +53,15 @@ def request_spec(*, snapshot: ResearchSnapshot, action: str, evidence_packet: Ma
     for key in ("revision", "executionStatus", "updatedAt", "verificationCutoffAt"):
         prompt_snapshot.pop(key, None)
     shape = _SHAPES[action]
+    instruction = _COMMON + _INSTRUCTIONS[action]
+    if action == "compare_companies" and evidence_packet.get("publicationAllowed") is False:
+        instruction += "本次已有关键调查缺口且 publicationAllowed=false，全部公司只可给 pending 或 excluded、rank=null；不能自行解除上阶段的限制。未核传闻可推荐的通则不代表关键缺口已解决。"
+        shape = {**shape, "companyAssessments":[{**shape["companyAssessments"][0], "role":"pending|excluded", "rank":None}]}
     if action in {"assess_evidence", "close_research"}:
         shape = {**shape, "questions": [{"questionId":"existing question id", "state":"answered|open|blocked",
             "knownEvidence":[{"documentId":"input","revision":1}], "missingEvidence":["remaining material gap"], "resumeCondition":"string|null"}]}
         if action == "assess_evidence":
             shape["claims"] = [{"claimId":"existing claim id", "verificationStatus":"verified|partially_supported|unverified|contradicted", "decisionImpact":"changed assessment"}]
-    return _COMMON + _INSTRUCTIONS[action], {"snapshot":prompt_snapshot,"action":action,"evidencePacket":dict(evidence_packet),"outputContract":shape,"emptyCollectionsAreAllowedOnlyWhenTheStageHasNoApplicableItems":True}
+    return instruction, {"snapshot":prompt_snapshot,"action":action,"evidencePacket":dict(evidence_packet),"outputContract":shape,"emptyCollectionsAreAllowedOnlyWhenTheStageHasNoApplicableItems":True}
 
 __all__ = ["request_spec"]
