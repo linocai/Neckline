@@ -1,13 +1,13 @@
 # Neckline
 
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-08 已发布
-**3.1.0 / 双端 Build 45 / K10-v1.4 / Schema 7**，后端发布集合为 `v3.1.0-b45`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.1.0-b45)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
+**3.1.0 / 双端 Build 46 / K10-v1.4 / Schema 7**，后端发布集合为 `v3.1.0-b46`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.1.0-b46)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
 
 全部标题先由 DeepSeek 理解，经全局去重排序及只减不补的标题终检后，晚间最多深读 80 篇、晨间最多 40 篇。
 入选正文一次提取关键命题，随后按具体缺口使用 Tavily 搜索、审读和必要补读，再完成公司比较。未核传闻允许正常推荐，但必须保留“未核实”、来源和条件化分析。
 
-**Build 45 已恢复原正式任务。** 9 月 8 日 21:00 截止的原始输入保持不变，1,062 标题与 67/67 正文均已完成；23:15 起独立事件以既有 6 路上限进行查证与比较。开关 open、worker active，既有晚晨排程待本轮验收后恢复。
+**Build 46 已恢复原正式任务。** 9 月 8 日 21:00 截止的原始输入保持不变，1,062 标题与 67/67 正文均已完成；23:35 起独立事件以既有 6 路上限进行查证与比较。开关 open、worker active，既有晚晨排程待本轮验收后恢复。
 用户已弃用的 2,472 篇事故批次及关联任务已备份后定点取消，不会补跑。
 原标题协议和正文缺失字段问题均已定位修复，错误原因及每次恢复有记录；当前进度以 PROJECT_PLAN 为准。
 
@@ -98,32 +98,32 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-源码提交 `c814142a443770766299d01c310f1ce7ed5ea912`，不可变标签 `v3.1.0-b45`；后续发布记录提交不移动标签。
+源码提交 `68264e75442dbfe4af275ca6488f594f90bf2a0e`，不可变标签 `v3.1.0-b46`；后续发布记录提交不移动标签。
 Mac 与 iOS 归档均来自该提交，真实来源及严格签名证据见 `manifest.json`。
 服务器为 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 API active+enabled，四范围配置与实际 DTO 通过，未鉴权请求为 401；APNs 密钥可读／可签名且 readiness 就绪，本轮未发送测试推送。
 `/etc/neckline/k10.env` 显式绑定策略 `k10-v1.4-production` 修订 3、执行 `k10-execution-production` 修订 2。
-B45 于 23:15 恢复数据库 run control 为 `open`，worker active+enabled；晚／晨 timer 待本轮验收恢复，行情更新／重试 timer 保持原态。标题 policy `k10-title-triage-v1@1` 已按既有批准配置原样登记；首次启动暴露的 readiness／部署登记缺口见 PROJECT_PLAN。
+B46 于 23:35 恢复数据库 run control 为 `open`，worker active+enabled；晚／晨 timer 待本轮验收恢复，行情更新／重试 timer 保持原态。标题 policy `k10-title-triage-v1@1` 已按既有批准配置原样登记；首次启动暴露的 readiness／部署登记缺口见 PROJECT_PLAN。
 
-Mac 位于 `/Applications/Neckline.app`，Developer ID 严格验签、通用架构和单实例启动通过；安装包确认 Build 45；四范围配置和实际 API 状态通过服务器验收。
+Mac 位于 `/Applications/Neckline.app`，Developer ID 严格验签、通用架构和单实例启动通过；安装包确认 Build 46；四范围配置和实际 API 状态通过服务器验收。
 Mac 尚未公证，网络下载后可能被 Gatekeeper 拦截；严格签名通过不代表公证通过。
 iOS 真机签名归档及工程版本／签名配置已就绪，由用户通过 Xcode 安装，不导出 IPA。
-本地签名归档与包位于 `/Users/linotsai/Lino/releases/Neckline/v3.1.0-b45-20260908/`。
-GitHub 6 个资产下载后与本地逐一校验；后端 tar、wheel 和 runtime manifest 保存在 `/opt/neckline/releases/v3.1.0-b39/`。
+本地签名归档与包位于 `/Users/linotsai/Lino/releases/Neckline/v3.1.0-b46-20260908/`。
+GitHub 6 个资产下载后与本地逐一校验；后端 tar、wheel 和 runtime manifest 保存在 `/opt/neckline/releases/v3.1.0-b46/`。
 
 成功发布恢复集为 `/opt/neckline/data/backups/v3.1.0-b39-predeploy-3/`：原 B36 runtime、旧绑定、迁移前后数据库与回执。
 停下全部写入者后建立基线；真实副本演练和正式 Schema 4→7 迁移均核对 50 个旧表全部旧列／行等价。通知 Schema 保持 2。
 前两次因发布清单的占位文件和 API 暂停状态断言错误而安全回滚；原恢复集 `v3.1.0-b39-predeploy`、`v3.1.0-b39-predeploy-2` 保留。具体证据见 [B39 执行记录](archive/v3.1.0-b39_execution.md)。
 
 - 迁移前数据库 SHA256：`2c5ea97e77ea02c83077e9f30d05fc620973f824a4293e14274344771c4d6dd2`。
-- 迁移后数据库 SHA256：`f4c2c7e6d1ad22daceb45240dd0eb964b852109f4c15407a497ea0d9b2737eb3`。
+- 迁移后数据库 SHA256：`f4c2c7e6d1ad22daceb46240dd0eb964b852109f4c15407a497ea0d9b2737eb3`。
 
 回滚必须先停下所有写入者并保存最新现场；只有确认升级后没有新增业务写入，才可恢复同一恢复集的 runtime、wheel、数据库和绑定。
 API、客户端和行情 timer 已恢复运行，不能直接假定当前库仍等于发布快照；存在新写入时优先前向修复。
 保持 `/opt/neckline` 为 root:root / 0755、数据库为 neckline:neckline / 0600，复核 health、鉴权、配置、完整性与定时器。
-Mac 最近可恢复备份为 `/Users/linotsai/Lino/app_backups/Neckline-v3.1.0-build40-pre-b41-20260908.app`。B45 服务器完整备份位于 `/opt/neckline/data/backups/v3.1.0-b45-predeploy/`；代码部署前后数据库哈希一致。
+Mac 最近可恢复备份为 `/Users/linotsai/Lino/app_backups/Neckline-v3.1.0-build45-pre-b46-20260908.app`。B46 服务器完整备份位于 `/opt/neckline/data/backups/v3.1.0-b46-predeploy/`；代码部署前后数据库哈希一致。
 
 受控恢复只允许对无正式发布批次、已失败且有冻结输入的 scan 执行 `neckline.k10.cli recover-scan`，
-必须提供原引用摘要和相同执行配置。B39 复用原任务，保留标题清单、正文准入、实际用量及成功检查点；不得重新采集、回改策略、换输入或重设时限。未知外呼结果仍阻止盲目重发。
+必须提供原引用摘要和相同执行配置。B39 复用原任务，保留标题清单、正文准入、实际用量及成功检查点；不得重新采集、回改策略、换输入或重设开始时间。B46 可由受控恢复显式记录调查输出空间与执行时限调整：本轮 maxTokens=32768、completionDeadlineSeconds=21600，原执行修订和成功检查点仍保留；未知调用、正文名额及策略不变。未知外呼结果仍阻止盲目重发。
 诊断使用只读 API `GET /api/v1/k10/scans/{scan_id}` 和 `GET /api/v1/k10/operations/readiness`。
 本轮生产恢复任务、只读验收与下一步见 PROJECT_PLAN；含凭据的数据库/备份只留服务器，禁止下载或公开。

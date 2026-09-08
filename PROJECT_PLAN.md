@@ -1,4 +1,4 @@
-# Neckline V3 · 3.1.0 / 双端 Build 45 · K10-v1.4
+# Neckline V3 · 3.1.0 / 双端 Build 46 · K10-v1.4
 
 本文件是工程控制面。详细施工契约见 [archive/v3.1.0-b39_execution.md](archive/v3.1.0-b39_execution.md)；策略行为以 [`whynotme/K10.md`](../whynotme/K10.md) 及用户本轮最新决定为准，生产不得导入研究仓。
 
@@ -8,7 +8,7 @@
 
 ## 稳定技术决定
 
-- 当前为 `3.1.0 / 双端 Build 45 / Schema 7`，策略仍为 `K10-v1.4`；执行配置继续显式绑定 DeepSeek V4 Pro、Tavily、80／40 和无整轮资源总上限。
+- 当前为 `3.1.0 / 双端 Build 46 / Schema 7`，策略仍为 `K10-v1.4`；执行配置继续显式绑定 DeepSeek V4 Pro、Tavily、80／40 和无整轮资源总上限。
 - Schema 7 以既有 source-document versions、external attempts、checkpoints、article admissions 与发布 `comparison_json` 为基础，只新增最小研究快照、问题路径和证据关联；不为每个 Prompt 阶段建立一套表或进程。读 helper 绝不执行 DDL。
 - 研究状态与执行状态分开。`task completed`、`scan partial` 或零正式候选均不得表示“比较完成”或“无机会”；协议、引用、模型或程序错误保留定位与检查点，投影为执行失败。
 - 每个输入公司的比较结果必须是 `primary`、`alternative`、`tied`、`pending` 或 `excluded` 之一；仅前三类组成发布派生集并按既有名额／机会规则发布。`pending`／`excluded` 仍持久化并可查看，不为通过校验而漏公司或硬排。
@@ -19,19 +19,19 @@
 
 ## 当前状态
 
-- **2026-09-08 已发布 3.1.0 / 双端 Build 45 / Schema 7**，不可变标签 `v3.1.0-b45` 指向 `c814142`；[发布资产](https://github.com/linocai/Neckline/releases/tag/v3.1.0-b45)。快修记录沿用当前版本记录。
+- **2026-09-08 已发布 3.1.0 / 双端 Build 46 / Schema 7**，不可变标签 `v3.1.0-b46` 指向 `68264e7`；[发布资产](https://github.com/linocai/Neckline/releases/tag/v3.1.0-b46)。快修记录沿用当前版本记录。
 - 累计发布范围从真实生产 B36（`6017a0c`）覆盖到 B39；生产副本迁移／恢复演练和正式迁移均核对 50 个旧表全部旧列／行等价，新增策略修订 3、执行修订 2。
-- 首轮 task `task_8ee84154911c2463c54880feeefb93a5`（scan `scan_fdd466988114709026e4e922af505ce6`），截止 9 月 8 日 21:00。B45 于 23:15 恢复原任务，保留 17 个成功标题批次、冻结 67 篇名单；67/67 正文已完成，正在按问题查证和公司比较，最终结果待验收。
-- Mac 已换装 `/Applications/Neckline.app` B45 并单实例启动；B44 完整验签恢复副本保留。
+- 首轮 task `task_8ee84154911c2463c54880feeefb93a5`（scan `scan_fdd466988114709026e4e922af505ce6`），截止 9 月 8 日 21:00。B46 于 23:35 恢复原任务，保留 17 个成功标题批次、冻结 67 篇名单；67/67 原正文及 2 篇补读已完成，33 次搜索已保留。B46 修复证据缓存校验与输出截断，调查续跑，最终结果待验收。
+- Mac 已换装 `/Applications/Neckline.app` B46 并单实例启动；B45 完整验签恢复副本保留。
 - 双端签名归档通过；Mac Developer ID 严格验签通过但尚未公证。iOS 真机签名归档及 Xcode 配置就绪，用户自行安装，不生成 IPA。
 - B39 支持正文命题提取、动态查证与完整公司比较；未核传闻带披露推荐，待核／排除保留，执行失败阻止发布。恢复复用已完成调用，未知结果禁止重发。
-- B45 后端 **939 passed**，附加未知调用恢复检查通过；双端签名归档通过。B39 已完成实际 API→Swift 解码和 native 填充／空态验收，本轮没有 Swift 逻辑改动。
+- B46 后端 **944 passed**，附加未知调用恢复检查通过；双端签名归档通过。B39 已完成实际 API→Swift 解码和 native 填充／空态验收，本轮没有 Swift 逻辑改动。
 - 精确失败输入复现：DeepSeek 返回合法 64 行 JSON 数组，旧 transport 仅接受对象而拒绝；离线逐条校验全部合格。B40 仅补明确单数组字段的容器并保留全部领域校验；旧 partial 标错及同任务恢复同时修复。
-- 生产 B45 代码部署前后数据库哈希一致，根目录权限不变；恢复集 `/opt/neckline/data/backups/v3.1.0-b45-predeploy/`。开关 open，worker active+enabled；晚晨 timer 等本轮通过后恢复。
+- 生产 B46 代码部署前后数据库哈希一致，根目录权限不变；恢复集 `/opt/neckline/data/backups/v3.1.0-b46-predeploy/`。开关 open，worker active+enabled；晚晨 timer 等本轮通过后恢复。本轮 runtimeRepair 显式绑定调查 maxTokens=32768、总执行时限 21600 秒；开始时间及 21:00 消息截止不变，新截止为 9 月 9 日 03:49:02 CST。
 
 ## 当前 Plan
 
-B45 修复已部署，原正式任务正在续跑。核对全标题完成→最多 80 篇深读→查证与比较→实际正式报告，并恢复既有晚晨排程。未做独立 review。
+B46 修复已部署，原正式任务正在续跑。核对全标题完成→最多 80 篇深读→查证与比较→实际正式报告，并恢复既有晚晨排程。未做独立 review。
 
 ## 待用户决定
 
@@ -47,4 +47,4 @@ B45 修复已部署，原正式任务正在续跑。核对全标题完成→最�
 - 3.0.5 / Build 37：未发布预算／资料包方案，已替代；见 [archive/v3.0.5-b37_execution.md](archive/v3.0.5-b37_execution.md)。
 - 3.0.6 / Build 38：标题初筛与 80／40 已实现，真实比较中断且未发布；见 [archive/v3.0.6-b38_execution.md](archive/v3.0.6-b38_execution.md)。
 - 3.1.0 / Build 39：已发布，首轮正式试跑在标题阶段失败，21:53 再次保护暂停；见 [archive/v3.1.0-b39_execution.md](archive/v3.1.0-b39_execution.md)。
-- 3.1.0 / Build 40–45：标题容器及跨分段恢复快修已部署，23:15 再续原任务；见同一版本记录。
+- 3.1.0 / Build 40–46：标题容器及跨分段恢复快修已部署，23:35 再续原任务；见同一版本记录。
