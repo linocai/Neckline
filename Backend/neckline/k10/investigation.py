@@ -170,8 +170,20 @@ def query_path_signature(path: QueryPath) -> str:
 
 def decode_stage_result(value: Mapping[str, Any], *, action: str) -> ResearchStageResult:
     """Decode a provider JSON derivative without retaining its original response."""
+    if isinstance(value, Mapping) and set(value) == {"outputContract"} and isinstance(value["outputContract"], Mapping):
+        value = value["outputContract"]
+    required = {"extract_claims": {"claims"}, "plan_gaps": {"questions"}, "plan_queries": {"queryPaths"},
+                "assess_evidence": {"claims", "questions", "evidenceUpdates", "fulltextRequests"},
+                "close_research": {"conclusion"}, "compare_companies": {"conclusion", "companyAssessments"}}
+    permitted = {"claims", "questions", "queryPaths", "evidenceUpdates", "fulltextRequests", "conclusion", "companyAssessments", "safeErrorCode"}
+    if (isinstance(value, Mapping) and "action" not in value and set(value) <= permitted
+            and action in required and (bool(set(value) & required[action]) if action == "assess_evidence" else required[action] <= set(value))):
+        # The caller already fixed the action. Missing routing metadata can be
+        # restored only for an unmistakable stage payload; no evidence is filled.
+        value = {"action": action, **value}
     if not isinstance(value, Mapping) or value.get("action") != action:
-        raise InvestigationError("研究输出 action 无效", code="investigation_action_mismatch")
+        raise InvestigationError("研究输出 action 无效", code="investigation_action_mismatch") from ResearchContractError(
+            "根 action 必须匹配请求", field_name="action", expected="enum", allowed=(action,))
     try:
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))

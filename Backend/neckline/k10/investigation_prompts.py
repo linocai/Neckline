@@ -14,6 +14,7 @@ _COMMON = (
     "输出须精炼，保留决定所需事实与引用，避免在多个字段复述同一长段。assess_evidence 和 close_research 的 claims/questions 是增量更新："
     "只返回实际需要更新的项，未变项省略，集合没有更新则 []。已存在命题若需更新仍完整保留其身份和原文，不得借精简改写事实；"
     "不要重复输出整个输入快照或所有未变证据卡。"
+    "既有 questionId 的 question 原文和 claimIds 必须保持原样，更新状态、证据和缺口；answered 问题已无缺口时 missingEvidence 可为 []。"
 )
 _RUMOR = (
     "未核传闻可以在完整比较后成为 primary、alternative 或 tied 并正常发布，不自动变成 pending。其 evidenceDisclosure 必须明确 verificationStatus=unverified、isRumor=true、"

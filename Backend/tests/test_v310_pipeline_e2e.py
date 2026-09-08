@@ -79,7 +79,8 @@ class _Gateway:
 def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
-                    title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None):
+                    title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
+                    action_shape: str | None = None):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -195,6 +196,17 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                         assert '"expected": "non_empty_string"' in message
                 else:
                     result["events"][0]["claims"][0]["decisionImpact"] = body_impact
+        if action == "plan_gaps" and action_shape:
+            assert '本次根字段 action 必须严格为 "plan_gaps"' in message.split("<untrusted-k10-evidence>", 1)[0]
+            if action_shape == "omitted":
+                result.pop("action")
+            elif action_shape == "wrapped":
+                result = {"outputContract": result}
+            elif action_shape == "wrong_repair":
+                if calls.count("research:plan_gaps") == 1:
+                    result["action"] = "plan_queries"
+                else:
+                    assert '"field": "action"' in message and '"allowed": ["plan_gaps"]' in message
         truncated = action == truncate_action and calls.count("research:" + str(action)) == 1
         if action == truncate_action and calls.count("research:" + str(action)) == 2:
             assert "上次达到输出长度限制" in message
@@ -210,7 +222,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None):
+         truncate_action: str | None = None, action_shape: str | None = None):
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
     import sqlite3
@@ -229,7 +241,8 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
                            bootstrap_cutoff=(evening_cutoff(DAY) - timedelta(hours=2)).isoformat())
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
-                            title_response=title_response, body_impact=body_impact, truncate_action=truncate_action)
+                            title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
+                            action_shape=action_shape)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))

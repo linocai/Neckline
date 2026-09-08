@@ -196,8 +196,9 @@ class Question:
         if any(not isinstance(item, str) or not item.strip() for item in self.company_codes):
             raise ResearchContractError("companyCodes 必须是非空代码组成的列表")
         _refs(self.known_evidence, "knownEvidence")
-        if not self.missing_evidence or any(not isinstance(item, str) or not item for item in self.missing_evidence):
-            raise ResearchContractError("question 必须声明证据缺口")
+        if ((self.state != "answered" and not self.missing_evidence)
+                or any(not isinstance(item, str) or not item for item in self.missing_evidence)):
+            raise ResearchContractError("未解决问题必须声明证据缺口", field_name="missingEvidence", expected="non_empty_string_array")
 
     def to_dict(self) -> dict[str, Any]:
         return {"questionId": self.question_id, "claimIds": list(self.claim_ids), "companyCodes": list(self.company_codes),
