@@ -2672,7 +2672,7 @@ def _execution_started_at(raw: object) -> str | None:
 
 
 def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[str, Any], existing_raw: object | None = None) -> dict[str, Any]:
-    """Carry the task-owned whole-run start across handler checkpoint replacement."""
+    """Carry durable task runtime fields across handler checkpoint replacement."""
     if not isinstance(checkpoint, Mapping):
         raise ValueError("任务 checkpoint 必须是对象")
     existing = existing_raw
@@ -2687,6 +2687,15 @@ def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[st
     merged = dict(checkpoint)
     if started is not None:
         merged["executionStartedAt"] = started
+    # Only authorize_discovery_recovery writes this authority. A handler's
+    # progress result must neither drop it at a slice boundary nor forge/replace
+    # it. All later slices need the same stable failed-stage recovery identity.
+    merged.pop("recoveryAuthorized", None)
+    authorization = parsed.get("recoveryAuthorized") if isinstance(parsed, Mapping) else None
+    if authorization is not None:
+        if not isinstance(authorization, Mapping):
+            raise K10Conflict("任务恢复授权记录无效")
+        merged["recoveryAuthorized"] = dict(authorization)
     return merged
 
 

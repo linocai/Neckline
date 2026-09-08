@@ -1,0 +1,35 @@
+{
+  "releaseSet": "v3.1.0-b40",
+  "commit": "ec137451066603ac41e81f64165268e750cb358e",
+  "backup": "/opt/neckline/data/backups/v3.1.0-b40-predeploy",
+  "startedAt": "2026-09-08T14:12:17.776615+00:00",
+  "status": "completed",
+  "preBackup": {
+    "path": "/opt/neckline/data/backups/v3.1.0-b40-predeploy/neckline-pre.db",
+    "sha256": "a046ade2be5c8896dbf3607df4c52b412f2a39b0181bf428ff6761fbdd27aa9b"
+  },
+  "health": {
+    "status": "ok",
+    "version": "v3.1.0",
+    "releaseSet": "v3.1.0-b40"
+  },
+  "readiness": {
+    "schemaVersion": "k10-api-v2",
+    "notificationReadiness": {
+      "state": "ready",
+      "reasonCode": null,
+      "nextRetryAt": null,
+      "checkedAt": "2026-09-08T14:12:33+00:00"
+    },
+    "runControl": {
+      "state": "paused",
+      "reasonCode": "first_formal_title_contract_failed",
+      "changedAt": "2026-09-08T13:53:00.863849+00:00"
+    }
+  },
+  "postBackup": {
+    "path": "/opt/neckline/data/backups/v3.1.0-b40-predeploy/neckline-post.db",
+    "sha256": "a046ade2be5c8896dbf3607df4c52b412f2a39b0181bf428ff6761fbdd27aa9b"
+  },
+  "completedAt": "2026-09-08T14:12:38.616091+00:00"
+}

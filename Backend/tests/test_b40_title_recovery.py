@@ -129,3 +129,36 @@ def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(t
     with pytest.raises(RuntimeError):
         recover_scan(db_path=db, scan_id=scan_id, execution_config_id="b39-execution", execution_config_revision=1,
                      confirmed_input_sha256=digest, now=RUN_AT)
+
+
+def test_recovery_authorization_survives_real_worker_slice_after_paid_title_checkpoint(tmp_path, monkeypatch):
+    db, task_id, first, _, _ = _run(tmp_path, monkeypatch, title_response="invalid")
+    assert first.status == "failed"
+    scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
+    recover_scan(db_path=db, scan_id=scan_id, execution_config_id="b39-execution", execution_config_revision=1,
+                 confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=db), now=RUN_AT)
+    authorized = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["recoveryAuthorized"]
+    calls = _http_transport(monkeypatch, title_response="array")
+    original = pipeline._CheckpointedDiscoveryModel.run_title_operation
+    yielded = False
+    def boundary(self, **kwargs):
+        nonlocal yielded
+        result = original(self, **kwargs)
+        if kwargs["stage"] == "titleBatch" and not yielded:
+            yielded = True
+            raise pipeline.DiscoverySliceYield()
+        return result
+    monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel, "run_title_operation", boundary)
+    monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
+    handlers = pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet")
+    sliced = run_once(db_path=db, worker_id="slice", lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT)
+    assert sliced.status == "queued" and calls == ["titleBatch"]
+    saved = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
+    assert saved["recoveryAuthorized"] == authorized
+    done = run_once(db_path=db, worker_id="next-slice", lease_for=timedelta(minutes=5), handlers=handlers,
+                    clock=lambda: RUN_AT + timedelta(minutes=1))
+    assert done.status == "completed" and calls.count("titleBatch") == 1
+    final = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
+    assert final["recoveryAuthorized"] == authorized
+    assert final["executionStartedAt"] == saved["executionStartedAt"]
+    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1
