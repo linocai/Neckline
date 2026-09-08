@@ -7,7 +7,7 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 - Neckline is the production A-share application: Swift clients plus the Python service.
 - Strategy research, backtests, evaluation, calibration, and experiment history belong in `/Users/linotsai/Lino/whynotme`.
 - Production code must never import `whynotme`. The research laboratory may depend on stable Neckline runtime contracts in one direction only.
-- Production runs **K10-v1.4 / Neckline 3.1.0 Build 44 / Schema 7**, backend release set **v3.1.0-b44**, since 2026-09-08. K9 and the earlier K8 chains are retired from active production and this worktree; do not reintroduce their runtime code, tables, routes, settings, compatibility shims, or UI placeholders. The explicit offline V3 migration owns the legacy deletion boundary; Git history is the archive.
+- Production runs **K10-v1.4 / Neckline 3.1.0 Build 45 / Schema 7**, backend release set **v3.1.0-b45**, since 2026-09-08. K9 and the earlier K8 chains are retired from active production and this worktree; do not reintroduce their runtime code, tables, routes, settings, compatibility shims, or UI placeholders. The explicit offline V3 migration owns the legacy deletion boundary; Git history is the archive.
 - K10-v1.4 is a pure stock selector. Complete trade plans, buy/sell price confirmation, holding/exit policy and profit settlement are retired, not pending prerequisites. Track every formally published candidate over its fixed D1/D2 window. The approved publication, selection, overlap and evaluation rules live in `PROJECT_PLAN.md`; never infer a new opportunity from a refreshed card or reset its window after a user action.
 
 ## Repository map
@@ -20,7 +20,7 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 
 ## Working rules
 
-- **Current production state (2026-09-08):** The user authorized diagnosis, repair and completion of the September 8 official evening report after B39 title triage failed. B44 includes precise body-field repair and bounded recovery of failed recovery groups, alongside the title and cross-slice fixes; the same frozen task resumed at 23:05; switch open and worker active, timers pending this run's verification. Preserve completed checkpoints and original cutoff; never recover the retired 2,472-article incident batch. See `PROJECT_PLAN.md` for current progress and evidence.
+- **Current production state (2026-09-08):** The user authorized diagnosis, repair and completion of the September 8 official evening report after B39 title triage failed. B45 includes precise body-field repair and bounded recovery of failed recovery groups, alongside the title and cross-slice fixes; the same frozen task resumed at 23:15; switch open and worker active, timers pending this run's verification. Preserve completed checkpoints and original cutoff; never recover the retired 2,472-article incident batch. See `PROJECT_PLAN.md` for current progress and evidence.
 - **Settled 3.1.0 rulings:** Unverified rumors may be compared and formally recommended normally, with an explicit “未核实” label preserved through publication, detail, analysis and history; do not silently require the rumor to become verified first. Other K10 identity, exclusion, comparison and evaluation rules still apply. Do not reserve a separate full-text quota: use the existing 80/40 limit and actual remaining capacity. These user decisions supersede the two pending items in the strategy handoff document.
 
 - Run backend commands from `Backend/` and app commands from `App/`.
