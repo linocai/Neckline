@@ -78,7 +78,8 @@ class _Gateway:
 
 def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
-                    close_status: str = "ready_for_comparison", initial_query_round: int = 0):
+                    close_status: str = "ready_for_comparison", initial_query_round: int = 0,
+                    title_response: str = "object"):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -154,6 +155,11 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
             calls.append("titleBatch")
             result = {"items": [{"i": index, "status": "candidate", "matterKey": "project", "stageKey": "new", "reason": "项目送样"}
                                  for index, _ in enumerate(payload["items"])]}
+            if title_response == "array":
+                result = result["items"]
+            elif title_response == "invalid":
+                return httpx.Response(200, json={"choices": [{"message": {"content": "[broken"}, "finish_reason": "stop"}],
+                                                "usage": {"prompt_tokens": 3, "completion_tokens": 3, "total_tokens": 6}})
         elif isinstance(payload.get("output"), dict) and "kind" in payload["output"]:
             calls.append("classify")
             result = {"kind": "initial", "relatedOpportunityId": None, "reason": "新传闻首次出现",
@@ -184,7 +190,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
-         close_status: str = "ready_for_comparison"):
+         close_status: str = "ready_for_comparison", title_response: str = "object"):
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
     import sqlite3
@@ -202,7 +208,8 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
                            execution_config_id=execution_id, execution_config_revision=execution_revision, now=NOW,
                            bootstrap_cutoff=(evening_cutoff(DAY) - timedelta(hours=2)).isoformat())
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
-                            malformed_close_round=malformed_close_round, close_status=close_status)
+                            malformed_close_round=malformed_close_round, close_status=close_status,
+                            title_response=title_response)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))

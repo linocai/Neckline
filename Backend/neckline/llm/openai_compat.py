@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import logging
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -235,9 +236,13 @@ class OpenAICompatProvider(LLMProvider):
         search_query: Optional[str] = None,
         response_format: Optional[Dict[str, Any]] = None,
         model_options: Optional[Mapping[str, Any]] = None,
+        json_array_key: Optional[str] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
         explicit_options = _model_options(model_options)
+        if json_array_key is not None and (not isinstance(json_array_key, str) or not json_array_key
+                or response_format != {"type": "json_object"}):
+            raise ValueError("array normalization requires an explicit object field and JSON mode")
         if not self.api_key:
             return LLMResult(ok=False, reason="缺少 API key", provider=self.name, model=self.model,
                              error_code="provider_configuration")
@@ -310,16 +315,32 @@ class OpenAICompatProvider(LLMProvider):
                     error_code="response_empty", finish_reason=finish_reason,
                     raw_responses=raw_responses, **_actual_usage(raw_responses),
                 )
+            diagnostics: Dict[str, Any] = {}
             if response_format is not None and response_format.get("type") == "json_object":
+                diagnostics = {"contentLength": len(content), "contentSha256": sha256(content.encode()).hexdigest(),
+                               "finishReason": finish_reason}
                 try:
-                    valid_object = isinstance(json.loads(content), dict)
-                except (ValueError, TypeError):
+                    parsed = json.loads(content)
+                    diagnostics["rootType"] = type(parsed).__name__
+                    # A caller may declare exactly one array-valued output field.
+                    # Restore only that omitted envelope; never infer row fields,
+                    # parse prose/fences, drop rows or bypass domain validation.
+                    if isinstance(parsed, list) and json_array_key is not None:
+                        parsed = {json_array_key: parsed}
+                        content = json.dumps(parsed, ensure_ascii=False)
+                        diagnostics["normalization"] = "single_array_envelope"
+                    valid_object = isinstance(parsed, dict)
+                except json.JSONDecodeError as exc:
+                    diagnostics["syntaxError"] = {"message": exc.msg, "line": exc.lineno,
+                                                  "column": exc.colno, "position": exc.pos}
                     valid_object = False
                 if not valid_object:
+                    logger.warning("JSON protocol rejected: %s", json.dumps(diagnostics, sort_keys=True))
                     # HTTP success is not success of the requested JSON protocol. Keep
                     # the actual paid usage while withholding malformed model material.
                     return LLMResult(ok=False, reason="模型未返回有效 JSON 对象", error_code="response_json_invalid",
                                      finish_reason=finish_reason, provider=self.name, model=self.model,
+                                     json_diagnostics=diagnostics,
                                      raw_responses=raw_responses, **_actual_usage(raw_responses))
             if enable_search and not all_hits:
                 # 开了搜索却一条都没回来属于静默失效，必须留痕。
@@ -331,6 +352,7 @@ class OpenAICompatProvider(LLMProvider):
             return LLMResult(
                 ok=True, content=content, search_hits=all_hits, provider=self.name, model=self.model,
                 raw_responses=raw_responses, finish_reason=finish_reason,
+                json_diagnostics=diagnostics,
                 # 未开搜索时恒 None(没有引擎可言,不冒充"用了某个引擎");开了搜索
                 # 才读 `_search_engine_value()`(P1-7 基线捞的就是这个值)。
                 search_engine=(self._search_engine_value() if enable_search else None),

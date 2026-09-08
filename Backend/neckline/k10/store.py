@@ -2779,6 +2779,16 @@ def retry_task(
     return _task_from_row(row)
 
 
+def is_failed_title_scan(scan: Mapping[str, Any]) -> bool:
+    """Recognize the B39 unpublished execution failure mislabeled as partial."""
+    coverage = scan.get("coverage")
+    return (scan.get("status") == "partial" and isinstance(coverage, Mapping)
+            and coverage.get("executionState") == "title_incomplete"
+            and coverage.get("inputSnapshotFrozen") is True
+            and isinstance(coverage.get("titleFailure"), str)
+            and not isinstance(coverage.get("discoveryDraft"), Mapping))
+
+
 def authorize_discovery_recovery(
     *, scan_id: str, execution_config_id: str, execution_config_revision: int,
     confirmed_input_sha256: str, authorized_at: str, db_path: Path,
@@ -2816,8 +2826,15 @@ def authorize_discovery_recovery(
         (scan_status, coverage_raw, task_id, bound_id, bound_revision, bound_hash,
          task_status, attempt_count, checkpoint_raw, _cutoff, task_bound_id,
          task_bound_revision, task_bound_hash) = row
-        if scan_status not in {"failed", "not_configured"} or task_status not in {"failed", "not_configured"}:
+        try:
+            coverage = json.loads(coverage_raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("扫描覆盖记录无效") from exc
+        title_partial = is_failed_title_scan({"status": scan_status, "coverage": coverage})
+        if (scan_status not in {"failed", "not_configured"} and not title_partial) or task_status not in {"failed", "not_configured"}:
             raise K10Conflict("只有当前失败的冻结扫描及原任务可受控恢复")
+        if conn.execute("SELECT 1 FROM k10_publication_batches WHERE scan_id=?", (scan_id,)).fetchone() is not None:
+            raise K10Conflict("已有正式发布批次不能受控恢复")
         profile = conn.execute(
             "SELECT content_sha256 FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
             (execution_config_id, execution_config_revision),
@@ -2851,7 +2868,12 @@ def authorize_discovery_recovery(
         updated_checkpoint["recoveryAuthorized"] = {
             "scanId": scan_id, "frozenInputSha256": confirmed_input_sha256, "authorizedAt": authorized_at,
             "previousAttemptCount": int(attempt_count), "previousStage": updated_checkpoint.get("stage"),
+            "previousScanStatus": scan_status,
         }
+        if title_partial:
+            # Correct only the legacy title-execution status inside the same
+            # authorized transaction. Inputs, cutoff, attempts and results stay.
+            conn.execute("UPDATE k10_scans SET status='failed' WHERE scan_id=? AND status='partial'", (scan_id,))
         changed = conn.execute(
             "UPDATE k10_tasks SET status='queued',stage='recovery_authorized',checkpoint_json=?,error_text=NULL,"
             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND attempt_count=? "

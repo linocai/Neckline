@@ -64,6 +64,7 @@ class LLMResult:
     # Safe transport/shape diagnostics; never contain response text or credentials.
     error_code: Optional[str] = None
     finish_reason: Optional[str] = None
+    json_diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 def search_coverage_line(hit_count: int) -> str:
@@ -92,6 +93,7 @@ class LLMProvider(ABC):
         search_query: Optional[str] = None,
         response_format: Optional[Dict[str, Any]] = None,
         model_options: Optional[Mapping[str, Any]] = None,
+        json_array_key: Optional[str] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
         """`search_query`(v1.3.4 新增,可选):**显式指定联网搜索的检索词**。

@@ -126,7 +126,7 @@ def recover_scan(
     if control.get("state") != "open":
         raise RuntimeError("K10 运行已暂停，拒绝恢复")
     scan = store.get_scan(scan_id=scan_id, db_path=db_path)
-    if scan is None or scan.get("status") not in {"failed", "not_configured"}:
+    if scan is None or (scan.get("status") not in {"failed", "not_configured"} and not store.is_failed_title_scan(scan)):
         raise RuntimeError("只有当前 failed 或 not_configured 的扫描可建立受控恢复")
     if not isinstance(scan.get("configId"), str) or not isinstance(scan.get("configRevision"), int):
         raise RuntimeError("冻结扫描缺少策略配置绑定")
