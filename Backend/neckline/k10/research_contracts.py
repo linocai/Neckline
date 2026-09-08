@@ -26,22 +26,29 @@ RESEARCH_ACTIONS = frozenset({
 class ResearchContractError(ValueError):
     """A model result or persisted payload violated the investigation contract."""
 
+    def __init__(self, message: str, *, field_name: str | None = None,
+                 expected: str | None = None, allowed: Sequence[str] = ()):
+        super().__init__(message)
+        self.field_name = field_name
+        self.expected = expected
+        self.allowed = tuple(allowed)
+
 
 def _text(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ResearchContractError(f"{field_name} 必须为非空字符串")
+        raise ResearchContractError(f"{field_name} 必须为非空字符串", field_name=field_name, expected="non_empty_string")
     return value
 
 
 def _positive(value: Any, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ResearchContractError(f"{field_name} 必须为正整数")
+        raise ResearchContractError(f"{field_name} 必须为正整数", field_name=field_name, expected="positive_integer")
     return value
 
 
 def _enum(value: Any, allowed: frozenset[str], field_name: str) -> str:
-    if value not in allowed:
-        raise ResearchContractError(f"{field_name} 不在允许范围")
+    if not isinstance(value, str) or value not in allowed:
+        raise ResearchContractError(f"{field_name} 不在允许范围", field_name=field_name, expected="enum", allowed=sorted(allowed))
     return str(value)
 
 

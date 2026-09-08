@@ -157,6 +157,10 @@ class DiscoveryIssue:
             raise ValueError("发现失败状态缺少阶段或错误码")
 
 
+class DiscoveryUnderstandingIncomplete(RuntimeError):
+    """Selected bodies did not all produce a valid, durable understanding."""
+
+
 class DiscoverySliceYield(RuntimeError):
     """Cooperative execution boundary; never a model/data failure."""
 
@@ -892,6 +896,12 @@ def run_discovery(
         if admission_blocked_code is not None:
             # The iterator still owns items that were never offered to the model.
             mark_unadmitted(tuple(documents_iter), code=admission_blocked_code)
+
+    if investigate is not None and (counts["understandFailed"] or counts.get("understandPending", 0)):
+        # A failed selected body is not evidence that there are no events.
+        # Keep all successful document checkpoints, but never start research
+        # or publish the surviving subset as a completed B39 discovery run.
+        raise DiscoveryUnderstandingIncomplete()
 
     def record_pending_event(*, stage: str, code: str, event: EventDraft,
                              company_code: str | None = None) -> None:

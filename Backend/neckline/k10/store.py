@@ -2824,7 +2824,7 @@ def authorize_discovery_recovery(
         row = conn.execute(
             "SELECT s.status,s.coverage_json,b.task_id,b.execution_config_id,b.execution_config_revision,"
             "b.execution_content_sha256,t.status,t.attempt_count,t.checkpoint_json,t.input_cutoff_at,"
-            "tb.execution_config_id,tb.execution_config_revision,tb.execution_content_sha256 "
+            "tb.execution_config_id,tb.execution_config_revision,tb.execution_content_sha256,t.stage "
             "FROM k10_scans s JOIN k10_scan_execution_bindings b ON b.scan_id=s.scan_id "
             "JOIN k10_tasks t ON t.task_id=b.task_id "
             "JOIN k10_task_execution_bindings tb ON tb.task_id=t.task_id WHERE s.scan_id=?",
@@ -2834,14 +2834,17 @@ def authorize_discovery_recovery(
             raise K10Conflict("扫描没有可复用的原任务执行绑定")
         (scan_status, coverage_raw, task_id, bound_id, bound_revision, bound_hash,
          task_status, attempt_count, checkpoint_raw, _cutoff, task_bound_id,
-         task_bound_revision, task_bound_hash) = row
+         task_bound_revision, task_bound_hash, task_stage) = row
         try:
             coverage = json.loads(coverage_raw)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise K10Conflict("扫描覆盖记录无效") from exc
         title_partial = is_failed_title_scan({"status": scan_status, "coverage": coverage})
-        if (scan_status not in {"failed", "not_configured"} and not title_partial) or task_status not in {"failed", "not_configured"}:
+        paused_running = scan_status == "running" and task_status == "failed" and task_stage == "paused"
+        if (scan_status not in {"failed", "not_configured"} and not title_partial and not paused_running) or task_status not in {"failed", "not_configured"}:
             raise K10Conflict("只有当前失败的冻结扫描及原任务可受控恢复")
+        if conn.execute("SELECT 1 FROM k10_external_attempts WHERE task_id=? AND state IN ('started','unknown')", (task_id,)).fetchone() is not None:
+            raise K10Conflict("仍有未结算的外部调用，拒绝恢复")
         if conn.execute("SELECT 1 FROM k10_publication_batches WHERE scan_id=?", (scan_id,)).fetchone() is not None:
             raise K10Conflict("已有正式发布批次不能受控恢复")
         profile = conn.execute(
@@ -2879,10 +2882,10 @@ def authorize_discovery_recovery(
             "previousAttemptCount": int(attempt_count), "previousStage": updated_checkpoint.get("stage"),
             "previousScanStatus": scan_status,
         }
-        if title_partial:
+        if title_partial or paused_running:
             # Correct only the legacy title-execution status inside the same
             # authorized transaction. Inputs, cutoff, attempts and results stay.
-            conn.execute("UPDATE k10_scans SET status='failed' WHERE scan_id=? AND status='partial'", (scan_id,))
+            conn.execute("UPDATE k10_scans SET status='failed' WHERE scan_id=? AND status IN ('partial','running')", (scan_id,))
         changed = conn.execute(
             "UPDATE k10_tasks SET status='queued',stage='recovery_authorized',checkpoint_json=?,error_text=NULL,"
             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND attempt_count=? "

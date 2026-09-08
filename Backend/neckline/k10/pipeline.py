@@ -27,13 +27,13 @@ from . import store
 from .config import validate_execution_config, validate_run_config
 from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryModel, EventComparison, InvestigationOutcome,
                         EvidenceRef, EventDraft, FrozenDiscoveryDraftCompatibilityError, SqliteDiscoveryWriter, Verification,
-                        DiscoveryDeadlineExceeded, DiscoverySliceYield, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
+                        DiscoveryDeadlineExceeded, DiscoverySliceYield, DiscoveryUnderstandingIncomplete, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
                         thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows)
 from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
 from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError, decode_stage_result
 from .investigation_prompts import request_spec as investigation_request_spec
-from .research_contracts import Claim, ResearchSnapshot, ResearchStageResult
+from .research_contracts import Claim, ResearchSnapshot, ResearchStageResult, ResearchContractError
 from .model_execution import JsonRepairError, ModelInvocation, ModelNetworkError, SemanticValidationError, execute_model_operation
 from .metering import bind_provider_execution_spending, provider_spend_context
 from .opportunity_discovery import ComparisonValidationError, validate_classification, validate_event_comparison
@@ -486,6 +486,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             payload["publicationContext"].pop("scanCutoffAt", None)
             payload.pop("knownEvents", None)
             operation += "本阶段只提取这篇入选文章披露时的原始事实，不判断当前价格、投资优先级或两个交易日的表现。引用只能是该文章的真实 documentId 与 revision。"
+            operation += ("claims 的 decisionImpact 必须为非空文字，说明这条命题会影响后续哪项事实核实、公司关联或风险判断；"
+                          "这不是当前价格或投资优先级结论。暂不能确定时明确说明尚缺哪种关联依据，不能填空字符串或 null。"
+                          "claimId、text、decisionImpact、location 均须为非空字符串；枚举只能从示意所列值中选一个。")
         return operation, payload
 
     @staticmethod
@@ -945,6 +948,27 @@ class _CheckpointedDiscoveryModel:
     def _run(self, *, operation: str, stage: str, item_key: str, item: Mapping[str, Any],
              invoke: Callable[[], Any], encode: Callable[[Any], Mapping[str, Any] | list[Any]],
              decode: Callable[[Mapping[str, Any] | list[Any]], Any]) -> Any:
+        def remember_validation(exc: Exception) -> None:
+            if not isinstance(self._base, DeepSeekDiscoveryModel):
+                return
+            chain: BaseException | None = exc
+            errors = []
+            while chain is not None:
+                if isinstance(chain, ResearchContractError) and chain.field_name and chain.expected:
+                    errors.append({"field": chain.field_name, "expected": chain.expected,
+                                   **({"allowed": list(chain.allowed)} if chain.allowed else {})})
+                chain = chain.__cause__
+            if errors:
+                previous = getattr(self._base._thread_usage, "last", None) or {}
+                self._base._thread_usage.last = {**previous, "validationErrors": errors}
+
+        def validate_with_feedback(value):
+            try:
+                return encode(value)
+            except Exception as exc:
+                remember_validation(exc)
+                raise
+
         def metered_invoke() -> Any:
             records = getattr(self._base, "usage_records", None)
             start = len(records) if isinstance(records, list) else 0
@@ -960,6 +984,7 @@ class _CheckpointedDiscoveryModel:
             try:
                 value = invoke()
             except Exception as exc:
+                remember_validation(exc)
                 usage = current_usage()
                 code = getattr(exc, "code", None)
                 safe = code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code) else "model_execution_invalid"
@@ -992,6 +1017,7 @@ class _CheckpointedDiscoveryModel:
             self._base._thread_usage.repair_feedback = {
                 "errorCode": result.safe_error_code if result is not None else "previous_response_invalid",
                 "diagnostics": previous.get("jsonDiagnostics", {}),
+                "validationErrors": previous.get("validationErrors", []),
             }
             try:
                 return metered_invoke()
@@ -1002,7 +1028,7 @@ class _CheckpointedDiscoveryModel:
             result = execute_model_operation(
                 task_id=self._task_id, operation=operation, item_key=item_key,
                 input_sha256=digest, policy=self._policy,
-                operation_call=metered_invoke, repair_call=repair_invoke, validate=encode,
+                operation_call=metered_invoke, repair_call=repair_invoke, validate=validate_with_feedback,
                 db_path=self._db_path, leaseguard=self._leaseguard,
                 spend_context_factory=lambda attempt, repair: provider_spend_context(
                     provider=provider, task_id=self._task_id, stage=spend_stage,
@@ -1091,7 +1117,19 @@ class _CheckpointedDiscoveryModel:
                         self._leaseguard()
                     self.fact_cache_hits += 1
                     return decode(cached["result"])
-            value = self._run(operation="understand", stage="understand", item_key=f"{document.document_id}@{document.revision}:{suffix}",
+            item_key = f"{document.document_id}@{document.revision}:{suffix}"
+            if self._allow_failed_research_resume:
+                digest, _key, prior = self._research_checkpoint(operation="understand", stage="understand",
+                                                               item_key=item_key, item=item)
+                self._reject_unknown_research_checkpoint(prior)
+                code = prior[1] if prior is not None else None
+                if (prior is not None and prior[0] == "failed" and isinstance(code, str)
+                        and ("json" in code or code in {"execution_paused", "investigation_claims_missing"})):
+                    item = {**item, "authorizedSemanticRecoveryOf": digest}
+                    _digest, _key, resumed = self._research_checkpoint(operation="understand", stage="understand",
+                                                                      item_key=item_key, item=item)
+                    self._reject_unknown_research_checkpoint(resumed)
+            value = self._run(operation="understand", stage="understand", item_key=item_key,
                              item=item,
                              invoke=lambda: self._base._json(operation=operation, payload=payload,
                                                                      model_options=self._base._model_options("understand")),
@@ -2407,6 +2445,12 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
         if leaseguard is not None:
             leaseguard()
+    except DiscoveryUnderstandingIncomplete:
+        failure = {**running_coverage, "executionState": "body_incomplete", "bodyFailure": "understanding_incomplete"}
+        finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
+                                status="failed", pipeline_state="body_incomplete", coverage_extra=failure)
+        return TaskResult("failed", "body_incomplete", {"scanId": scan_id, "safeErrorCode": "understanding_incomplete"},
+                          "入选正文理解未完整完成，冻结扫描未发布，可受控恢复")
     except DiscoveryDeadlineExceeded:
         # The deadline belongs to the task, not this slice.  Keep all already
         # completed ledgers readable but never turn an incomplete ranking into a
