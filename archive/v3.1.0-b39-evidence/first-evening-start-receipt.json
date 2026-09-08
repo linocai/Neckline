@@ -1,0 +1,63 @@
+{
+  "authorizedOperation": "first formal 2026-09-08 evening, then existing 21:00/09:00 schedule",
+  "releaseSet": "v3.1.0-b39",
+  "cutoffAt": "2026-09-08T21:00:00+08:00",
+  "startedAt": "2026-09-08T13:48:09.298540+00:00",
+  "preflight": {
+    "configurationScopes": 4,
+    "strategyRevision": 3,
+    "executionRevision": 2,
+    "articleLimits": {
+      "evening": 80,
+      "morning": 40
+    },
+    "apns": "ready",
+    "runControlBefore": "paused"
+  },
+  "baselineTasks": [
+    [
+      "task_6ff897cea3495e25bc13b385f9c4df4c",
+      "cancelled",
+      1
+    ],
+    [
+      "task_98cbf8c6401a29ccfae4a42b12647014",
+      "failed",
+      1
+    ],
+    [
+      "task_b04bbf7808525d32bb317fb2f4388ad0",
+      "cancelled",
+      12
+    ]
+  ],
+  "baselineUsageRows": 2528,
+  "backup": "/opt/neckline/data/backups/v3.1.0-b39-first-evening-20260908/neckline-pre-open.db",
+  "backupSha256": "f4c2c7e6d1ad22daceb45240dd0eb964b852109f4c15407a497ea0d9b2737eb3",
+  "status": "started",
+  "policyRegistration": {
+    "policyId": "k10-title-triage-v1",
+    "policyRevision": 1,
+    "sha256": "b6ad1e294aa142aabda9ecdd9645b559f68fc9714776e8986a91debee1464a9f"
+  },
+  "taskId": "task_8ee84154911c2463c54880feeefb93a5",
+  "units": {
+    "neckline-k10-worker.service": {
+      "MainPID": "241300",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "neckline-k10-evening.timer": {
+      "NextElapseUSecRealtime": "Wed 2026-09-09 21:00:00 CST",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "neckline-k10-morning.timer": {
+      "NextElapseUSecRealtime": "Wed 2026-09-09 09:00:00 CST",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    }
+  },
+  "workerStartedAt": "2026-09-08T13:49:02.172274+00:00",
+  "startupIncident": "Approved title policy content missing from durable registry; registered exact approved content, retried same idempotent enqueue; zero paid calls before worker start."
+}

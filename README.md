@@ -7,9 +7,9 @@ Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI �
 全部标题先由 DeepSeek 理解，经全局去重排序及只减不补的标题终检后，晚间最多深读 80 篇、晨间最多 40 篇。
 入选正文一次提取关键命题，随后按具体缺口使用 Tavily 搜索、审读和必要补读，再完成公司比较。未核传闻允许正常推荐，但必须保留“未核实”、来源和条件化分析。
 
-**生产扫描仍停用。** K10 worker 和晚／晨定时器保持停止并禁用，API 保留读取；发布不等于恢复扫描。
+**首轮正式试跑失败，生产再次暂停。** 用户授权后于 2026-09-08 21:49 启动 21:00 截止的晚报，但标题批次返回不合格 JSON；21:53 关闭开关及 worker／晚晨 timer，防止自动重复。已完成的标题结果保留。
 用户已弃用的 2,472 篇事故批次及关联任务已备份后定点取消，不会补跑。
-B39 已完成本地／离线验收和生产迁移，但尚未进行新的真实模型质量验证；B38 的 37 篇真实试验因比较失败中断，不能充作 B39 的真实效果证据。
+B39 首轮收到 1,063 标题、完成 384 条；9 次模型调用、92,021 tokens，正文和 Tavily 调用均为 0，没有正式报告。具体失败响应未保存，不能猜测解析根因；B38 的比较失败也不能充作 B39 的效果证据。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -103,7 +103,7 @@ Mac 归档来源 `7c52f0a` 的 App 源码树与该发布提交一致，iOS 归�
 服务器为 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 API active+enabled，四范围配置与实际 DTO 通过，未鉴权请求为 401；APNs 密钥可读／可签名且 readiness 就绪，本轮未发送测试推送。
 `/etc/neckline/k10.env` 显式绑定策略 `k10-v1.4-production` 修订 3、执行 `k10-execution-production` 修订 2。
-数据库 run control 为 `closed`，接口投影为 `paused`。worker disabled、MainPID=0；晚／晨 timer inactive+disabled，行情更新／重试 timer 保持 active+enabled。未经明确授权不能恢复付费处理。
+首轮失败后数据库 run control 为 `closed`，接口投影 `paused`；worker 与晚／晨 timer inactive+disabled，行情更新／重试 timer 保持原态。标题 policy `k10-title-triage-v1@1` 已按既有批准配置原样登记；首次启动暴露的 readiness／部署登记缺口见 PROJECT_PLAN。
 
 Mac 位于 `/Applications/Neckline.app`，Developer ID 严格验签、通用架构和单实例启动通过；实际设置页确认 Build 39、Prod、四项已配置及暂停状态。
 Mac 尚未公证，网络下载后可能被 Gatekeeper 拦截；严格签名通过不代表公证通过。

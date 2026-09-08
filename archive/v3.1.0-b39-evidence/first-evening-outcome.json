@@ -1,0 +1,31 @@
+{
+  "finishedAt": "2026-09-08T13:53:01.425287+00:00",
+  "taskId": "task_8ee84154911c2463c54880feeefb93a5",
+  "status": "failed",
+  "stage": "title_incomplete",
+  "safeErrorCode": "response_json_invalid",
+  "publicationCreated": false,
+  "resumedForFirstRun": true,
+  "pausedAfterFailure": true,
+  "newCalls": 9,
+  "newTokens": 92021,
+  "titlesReceived": 1063,
+  "titlesCompleted": 384,
+  "bodyCalls": 0,
+  "tavilySearchCalls": 0,
+  "units": {
+    "neckline-k10-worker.service": {
+      "MainPID": "0",
+      "ActiveState": "inactive",
+      "UnitFileState": "disabled"
+    },
+    "neckline-k10-evening.timer": {
+      "ActiveState": "inactive",
+      "UnitFileState": "disabled"
+    },
+    "neckline-k10-morning.timer": {
+      "ActiveState": "inactive",
+      "UnitFileState": "disabled"
+    }
+  }
+}
