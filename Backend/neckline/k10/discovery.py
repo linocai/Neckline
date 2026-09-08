@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
@@ -674,6 +674,7 @@ def run_discovery(
     selected_source_refs: Sequence[EvidenceRef] | None = None,
     article_limit: int | None = None,
     investigate: InvestigationFunction | None = None,
+    investigation_concurrency: int | None = None,
 ) -> DiscoveryRun:
     """执行可注入发现链；仅晚间可生成最多 30 条新候选。
 
@@ -918,6 +919,37 @@ def run_discovery(
     understood = [event for document in screened_documents
                   for event in understood_by_ref.get(document.evidence_ref, ())]
     merged_events = _merge_same_event_sources(understood)
+    research_results: dict[int, InvestigationOutcome | Exception] = {}
+    if investigate is not None and investigation_concurrency is not None and investigation_concurrency > 1:
+        # Only independent events overlap. Each event retains its sequential
+        # question/evidence/comparison state machine and durable checkpoints.
+        with ThreadPoolExecutor(max_workers=investigation_concurrency) as executor:
+            pending = {}
+            remaining = iter(merged_events)
+            def submit_next() -> bool:
+                event = next(remaining, None)
+                if event is None:
+                    return False
+                if leaseguard is not None:
+                    leaseguard()
+                pending[executor.submit(investigate, event)] = event
+                return True
+            for _ in range(investigation_concurrency):
+                if not submit_next():
+                    break
+            while pending:
+                finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    event = pending.pop(future)
+                    try:
+                        research_results[id(event)] = future.result()
+                    except (DiscoverySliceYield, DiscoveryDeadlineExceeded):
+                        # Context manager drains active responses before yielding;
+                        # no paid result is abandoned by cancelling its thread.
+                        raise
+                    except Exception as exc:
+                        research_results[id(event)] = exc
+                    submit_next()
     event_admission_closed = False
     for event in merged_events:
             events.append(event)  # an understood event remains auditable if later stages fail
@@ -929,7 +961,9 @@ def run_discovery(
                     mappings = ()
                     event_comparison = None
                 else:
-                    researched = investigate(event)
+                    researched = research_results[id(event)] if id(event) in research_results else investigate(event)
+                    if isinstance(researched, Exception):
+                        raise researched
                     if not isinstance(researched, InvestigationOutcome):
                         raise ValueError("研究回调结果无效")
                     verification, mappings, event_comparison = (researched.verification, researched.mappings,

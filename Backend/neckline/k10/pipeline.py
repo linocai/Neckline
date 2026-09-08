@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 import re
 import time
-from threading import local
+from threading import local, RLock
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -995,6 +995,8 @@ class _CheckpointedDiscoveryModel:
                 usage = current_usage()
                 code = getattr(exc, "code", None)
                 safe = code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code) else "model_execution_invalid"
+                if safe == "response_truncated" and operation.startswith("investigation_"):
+                    safe = "investigation_json_output_truncated"
                 error_type = (JsonRepairError if "json" in safe
                               else ModelNetworkError if safe.startswith("provider_") or safe in {"response_empty", "response_filtered"}
                               else SemanticValidationError)
@@ -1026,6 +1028,10 @@ class _CheckpointedDiscoveryModel:
                 "diagnostics": previous.get("jsonDiagnostics", {}),
                 "validationErrors": previous.get("validationErrors", []),
             }
+            if result is not None and result.safe_error_code == "investigation_json_output_truncated":
+                self._base._thread_usage.repair_feedback["requiredCorrection"] = (
+                    "上次达到输出长度限制。此次仅输出本 action 必须的增量变化，省略未变命题和问题，"
+                    "精简重复解释，保留决定依据、真实引用和合法完整 JSON；不得裁掉必要公司或伪造结论。")
             try:
                 return metered_invoke()
             finally:
@@ -2424,17 +2430,31 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     state = "needs_review"
                 return Verification(state, reviewed.summary, reviewed.evidence_refs, bundle.coverage, bundle.eligible_documents)
             document_by_ref = {document.evidence_ref: document for document in documents}
+            research_progress_lock = RLock()
+            research_gateway_lock = RLock()
+            class ResearchGateway:
+                # Tavily's task counters/client are shared. Serialize its short
+                # tool calls while independent model investigations overlap.
+                def fetch(self, **kwargs):
+                    with research_gateway_lock:
+                        return verifier.fetch(**kwargs)
+                def fetch_fulltext(self, **kwargs):
+                    with research_gateway_lock:
+                        return verifier.fetch_fulltext(**kwargs)
+            research_gateway = ResearchGateway()
             def record_snapshot(snapshot_id: str) -> None:
-                snapshot_ids = running_coverage.setdefault("researchSnapshotIds", [])
-                if not isinstance(snapshot_ids, list):
-                    raise PipelineError("研究快照检查点无效", code="investigation_snapshot_checkpoint_invalid")
-                if snapshot_id not in snapshot_ids:
-                    snapshot_ids.append(snapshot_id)
+                with research_progress_lock:
+                    snapshot_ids = running_coverage.setdefault("researchSnapshotIds", [])
+                    if not isinstance(snapshot_ids, list):
+                        raise PipelineError("研究快照检查点无效", code="investigation_snapshot_checkpoint_invalid")
+                    if snapshot_id not in snapshot_ids:
+                        snapshot_ids.append(snapshot_id)
+                    running_coverage["executionState"] = "investigation"
                     store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
             def investigate(event: EventDraft) -> InvestigationOutcome:
-                outcome = _research_outcome(model=model, verifier=verifier, task_id=str(task_id), event=event,
+                outcome = _research_outcome(model=model, verifier=research_gateway, task_id=str(task_id), event=event,
                     documents=document_by_ref, execution_profile=execution_profile or {}, cutoff_at=cutoff_at,
-                    db_path=db_path, created_at=_now(), leaseguard=leaseguard,
+                    db_path=db_path, created_at=_now(), leaseguard=discovery_guard,
                     snapshot_created=record_snapshot, cutoff_inclusive=window.cutoff_inclusive,
                     allow_failed_resume=allow_failed_research_resume)
                 return outcome
@@ -2448,7 +2468,9 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                                         if title_enabled else None),
                                 document_batch_size=(profile_payload["discovery"]["articleLimits"][kind]
                                                      if title_enabled else None),
-                                investigate=investigate if title_enabled else None)
+                                investigate=investigate if title_enabled else None,
+                                investigation_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
+                                                           if title_enabled else None))
             if run.state in {"completed", "partial"}:
                 if title_enabled:
                     running_coverage["factCacheHits"] = int(getattr(model, "fact_cache_hits", 0))

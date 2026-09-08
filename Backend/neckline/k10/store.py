@@ -2558,10 +2558,12 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
         stage = "retired"
     elif retry is not None and str(scan[11]) == "queued":
         stage = "recovery"
+    elif raw_state == "completed":
+        stage = "published"
     elif execution_state in {"title_selection", "title_triage", "title_incomplete"} or pipeline_state == "title_incomplete":
         stage = "title_triage"
-    elif execution_state == "deep_read":
-        stage = "deep_read"
+    elif execution_state in {"deep_read", "investigation"}:
+        stage = execution_state
     elif selection is None and manifest is not None:
         stage = "title_triage"
     elif raw_state == "completed":

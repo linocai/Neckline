@@ -11,6 +11,9 @@ _COMMON = (
     "搜索摘录只支持其完整表达内容；收到搜索或全文不自动升级事实。contentVersionAtCutoff=unconfirmed 时旧发布日期不能证明正文在消息截止前公开，必须说明时间、更新迹象和适用范围。"
     "采购方/供应方、上市公司/子公司、送样/资格/入围/合同/订单/交付阶段必须分开。一个适用原始来源可支持狭窄事实，不强制凑多个独立来源；一个公司错误不否定整个事件。"
     "不得输出交易计划、仓位、买卖价位、收益结算或涨停概率。只输出 JSON，且只输出本 action 的结构。"
+    "输出须精炼，保留决定所需事实与引用，避免在多个字段复述同一长段。assess_evidence 和 close_research 的 claims/questions 是增量更新："
+    "只返回实际需要更新的项，未变项省略，集合没有更新则 []。已存在命题若需更新仍完整保留其身份和原文，不得借精简改写事实；"
+    "不要重复输出整个输入快照或所有未变证据卡。"
 )
 _RUMOR = (
     "未核传闻可以在完整比较后成为 primary、alternative 或 tied 并正常发布，不自动变成 pending。其 evidenceDisclosure 必须明确 verificationStatus=unverified、isRumor=true、"
