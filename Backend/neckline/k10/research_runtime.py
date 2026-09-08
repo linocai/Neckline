@@ -283,7 +283,11 @@ class _Investigation:
         status = None
         if action == "close_research":
             status = step.result.conclusion["researchStatus"]
-        self._record(step.result, digest=digest, research_status=status)
+        persisted = step.result
+        if action == "assess_evidence" and extra and extra.get("fullTextDocuments"):
+            persisted = replace(step.result, conclusion={**(step.result.conclusion or {}),
+                "runtimeReadFulltextRefs": list(extra["admittedFulltextRefs"])})
+        self._record(persisted, digest=digest, research_status=status)
         self.pending_model_action = None
         return step.result
 
@@ -328,21 +332,23 @@ class _Investigation:
             and not stage["result"].get("safeErrorCode")), default=0)
         unassessed = [stage for stage in self.state["stageResults"] if stage["revision"] > last_assessed
                      and (stage["result"].get("conclusion") or {}).get("runtimeEvidence")]
-        if not unassessed:
-            return False
         full_refs, already_read = set(), set()
         for stage in self.state["stageResults"]:
             tool = (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
+            already_read.update(_refs((stage["result"].get("conclusion") or {}).get("runtimeReadFulltextRefs", [])))
             if tool and stage["revision"] <= last_assessed and tool["coverage"].get("operation") == "extract":
+                # Prior builds only passed the time-eligible bodies to the
+                # assessor. Do not falsely count their undated bodies as read.
                 already_read.update(_refs(tool["eligibleDocumentRefs"]))
-        for stage in unassessed:
-            tool = stage["result"]["conclusion"]["runtimeEvidence"]
-            if tool["coverage"].get("operation") == "extract" and tool["coverage"].get("admissionState") == "fulfilled":
-                full_refs.update(_refs(tool["eligibleDocumentRefs"]))
+            if tool and tool["coverage"].get("operation") == "extract" and tool["coverage"].get("admissionState") == "fulfilled":
+                full_refs.update(_refs(tool["documentRefs"]))
+        if not unassessed and not (full_refs - already_read):
+            return False
         full = [self.documents[ref] for ref in sorted(full_refs - already_read, key=lambda item: (item.document_id, item.revision))]
         self._call("assess_evidence", {"admittedFulltextRefs": [_ref(doc) for doc in full],
             "fullTextDocuments": [{**_ref(doc), "text": doc.analysis_text or doc.original_text or "",
                 "publishedAt": doc.published_at, "fetchedAt": doc.fetched_at,
+                "eligibleAtNewsCutoff": doc.evidence_ref in self.allowed,
                 "contentVersionAtCutoff": doc.metadata.get("contentVersionAtCutoff")} for doc in full]})
         return True
 

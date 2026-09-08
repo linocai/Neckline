@@ -9,6 +9,7 @@ from neckline.k10.research_contracts import canonical_company_code, ResearchCont
 from tests.test_v310_pipeline_e2e import _run, _http_transport, RUN_AT
 from tests.test_v310_research_runtime import _runtime, REF
 from neckline.k10.research_contracts import FullTextRequest, ResearchStageResult
+from neckline.k10.discovery import DiscoveryDocument, EvidenceRef
 
 
 def test_unknown_time_search_hit_can_request_fulltext_but_cannot_support_a_claim():
@@ -24,6 +25,26 @@ def test_unknown_time_search_hit_can_request_fulltext_but_cannot_support_a_claim
     assert caught.value.code=='investigation_reference_invalid'
     with pytest.raises(InvestigationError):
         runtime._validate_result('assess_evidence',ResearchStageResult('assess_evidence',fulltext_requests=(request,)),{'allowedEvidenceRefs':[REF]})
+
+
+def test_already_fetched_undated_fulltext_is_really_read_once_without_promoting_eligibility():
+    runtime=_runtime()
+    ref={'documentId':'undated','revision':2}
+    runtime.allowed=set()
+    runtime.documents={EvidenceRef('undated',2):DiscoveryDocument('undated',2,None,RUN_AT.isoformat(),'admitted undated body',None,{})}
+    runtime.state['stageResults']=[{'revision':1,'action':'assess_evidence','result':{'conclusion':{'runtimeEvidence':{
+        'documentRefs':[ref],'eligibleDocumentRefs':[],'coverage':{'operation':'extract','admissionState':'fulfilled'}}}}},
+        {'revision':2,'action':'assess_evidence','result':{}}]
+    calls=[]
+    def call(action, packet):
+        calls.append(packet)
+        runtime.state['stageResults'].append({'revision':3,'action':action,'result':{'conclusion':{'runtimeReadFulltextRefs':packet['admittedFulltextRefs']}}})
+    runtime._call=call
+    assert runtime._assess_due()
+    assert calls[0]['fullTextDocuments'][0]['text']=='admitted undated body'
+    assert calls[0]['fullTextDocuments'][0]['eligibleAtNewsCutoff'] is False
+    assert not runtime._assess_due() and len(calls)==1
+    assert runtime.allowed==set()
 
 
 @pytest.mark.parametrize("code,expected",[("002361","002361.SZ"),("300001","300001.SZ"),("600001","600001.SH"),("688001","688001.SH"),("300001.SH","300001.SH")])
