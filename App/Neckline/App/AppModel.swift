@@ -21,6 +21,7 @@ struct K10CacheContext: Hashable {
     var companyWindows: [K10CompanyWindow] = []
     var selectionDetails: [K10SelectionDetail] = []
     var scanSummaries: [K10Scan] = []
+    var researchAssessments: [String: [K10ResearchAssessment]] = [:]
     var morningReport: K10MorningReport?
     var morningReportLoadError: String?
     var analysisChains: [String: K10AnalysisChain] = [:]
@@ -82,7 +83,7 @@ struct K10CacheContext: Hashable {
     }
     func resetForConnectionChange() {
         advanceConnectionGeneration()
-        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; usage = nil; providers = []; tavilyKeySet = false; discoveryPauseInFlight = false
+        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; researchAssessments = [:]; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; usage = nil; providers = []; tavilyKeySet = false; discoveryPauseInFlight = false
         selectedOpportunity = nil; selectedWindow = nil; lastAvailableAt = nil; offline = false; state = .idle; cacheClearer()
     }
     func refresh() async {
@@ -153,6 +154,12 @@ struct K10CacheContext: Hashable {
             do { newUsage = try await usageTask }
             catch is CancellationError { throw CancellationError() }
             catch { newUsage = nil }
+            var newResearchAssessments: [String: [K10ResearchAssessment]] = [:]
+            for scan in scans where scan.researchSummary != nil {
+                do { newResearchAssessments[scan.scanId] = try await service.researchAssessments(scanID: scan.scanId).items }
+                catch is CancellationError { throw CancellationError() }
+                catch { newResearchAssessments[scan.scanId] = [] }
+            }
             try Task.checkCancellation()
             guard isCurrentRefresh(generation, refresh) else { return }
             let loadedChainIDs = Set(analysisChains.keys)
@@ -165,6 +172,7 @@ struct K10CacheContext: Hashable {
             morningReportLoadError = newMorningReportLoadError
             opportunityDetails = [:]
             scanSummaries = scans
+            researchAssessments = newResearchAssessments
             results = newResults
             configuration = newConfiguration
             operationsReadiness = newOperationsReadiness

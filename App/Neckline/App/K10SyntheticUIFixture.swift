@@ -67,7 +67,12 @@ actor K10SyntheticUIService: K10Servicing {
         rankChangeConditions: "若出现新的直接订单或公司否认，当前排序需要重看。",
         twoDayReason: "只观察固定 D1/D2 的市场事实，不生成交易计划。",
         historicalCases: nil,
-        historicalCoverage: nil
+        historicalCoverage: nil,
+        evidenceDisclosure: K10EvidenceDisclosure(
+            verificationStatus: "unverified", isRumor: true, originStatus: "unknown", originEvidenceRef: nil,
+            unverifiedReasons: ["尚无独立来源核验"],
+            conditionalAnalysis: "仅在正式披露确认时重新评估，不能把传闻当作既成事实。"
+        )
     )
     private static let first = K10Opportunity(
         schemaVersion: "k10-api-v2", opportunityId: "synthetic-opportunity-1", opportunityKey: "synthetic-independent-stage",
@@ -114,12 +119,14 @@ actor K10SyntheticUIService: K10Servicing {
     )
 
     private var actions: [String: WindowAction] = [:]
-    // Debug-only visual QA switch. It is read only when the synthetic service
-    // is already selected, so it cannot affect a production connection.
+    // The app selects this only for the isolated visual-QA service. Ordinary
+    // unit fixtures keep it false unless their case explicitly asks for B39.
+    private let presentsB39State: Bool
     private var presentsEmptyState: Bool { ProcessInfo.processInfo.environment["NK_QA_EMPTY"] == "1" }
-    private var presentsB38State: Bool { ProcessInfo.processInfo.environment["NK_QA_B38_STATE"] == "1" }
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.6 Build 38") }
+    init(presentsB39State: Bool = false) { self.presentsB39State = presentsB39State }
+
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.1.0 Build 39") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"
@@ -128,7 +135,7 @@ actor K10SyntheticUIService: K10Servicing {
             pagination: "single_page", limitations: ["合成数据"], pagesFetched: 1, pagesExpected: 1, complete: true,
             errors: [], state: "completed", windowStartAt: nil, windowCutoffAt: cutoff, successWatermark: cutoff, gaps: []
         )
-        let progress = presentsB38State && window == "evening" ? K10ExecutionProgress(
+        let progress = presentsB39State && window == "evening" ? K10ExecutionProgress(
             state: "paused", stage: "awaiting_verification",
             documentCounts: K10ExecutionDocumentCounts(received: 30, deduplicated: 28, templateSkipped: 0, understood: 30, fullText: 4, failedPending: 0),
             eventCounts: K10ExecutionEventCounts(verified: 2, compared: 1, publishable: nil), coverageStatus: "partial",
@@ -139,8 +146,37 @@ actor K10SyntheticUIService: K10Servicing {
             attemptCounts: K10ExecutionAttemptCounts(started: 8, succeeded: 7, failed: 0, unknown: 1),
             factCacheHits: 2,
         ) : nil
+        let research = presentsB39State && window == "evening" ? K10ResearchSummary(
+            scanId: "synthetic-\(window)-scan", taskId: "synthetic-investigation-task", eventCount: 2,
+            questionCounts: K10ResearchQuestionCounts(open: 1, answered: 3, blocked: 1, abandoned: 0),
+            companyCounts: K10ResearchCompanyCounts(primary: 1, alternative: 1, tied: 0, pending: 1, excluded: 1, comparable: 2),
+            researchStatusCounts: ["comparison_complete": 1, "pending_verification": 1],
+            executionStatusCounts: ["failed": 1, "ok": 1], comparisonComplete: false, executionFailed: true,
+            safeFailureCounts: ["research_incomplete": 1]
+        ) : nil
         return K10Scan(schemaVersion: "k10-api-v2", scanId: "synthetic-\(window)-scan", window: window, cutoffAt: cutoff,
-                       status: "completed", coverageStatus: "complete", coverageGaps: [], sourceCoverage: presentsB38State ? [] : [coverage], createdAt: cutoff, completedAt: cutoff, executionProgress: progress)
+                       status: "completed", coverageStatus: "complete", coverageGaps: [], sourceCoverage: presentsB39State ? [] : [coverage], createdAt: cutoff, completedAt: cutoff, executionProgress: progress, researchSummary: research)
+    }
+
+    func researchSummary(scanID: String) async throws -> K10ResearchSummary {
+        guard presentsB39State, scanID == "synthetic-evening-scan" else {
+            throw K10APIError.notFound("该扫描没有 B39 研究摘要")
+        }
+        let scan = try await latestScan(window: "evening")
+        guard let summary = scan.researchSummary else { throw K10APIError.notFound("该扫描没有 B39 研究摘要") }
+        return summary
+    }
+
+    func researchAssessments(scanID: String) async throws -> K10ResearchAssessmentList {
+        guard presentsB39State, scanID == "synthetic-evening-scan" else {
+            return K10ResearchAssessmentList(schemaVersion: "k10-api-v2", scanId: scanID, items: [])
+        }
+        let disclosure = Self.comparison.evidenceDisclosure!
+        return K10ResearchAssessmentList(schemaVersion: "k10-api-v2", scanId: scanID, items: [
+            K10ResearchAssessment(companyCode: "300001.SZ", role: "primary", rank: 1, summary: "传闻映射到合成科技，仍需正式披露确认。", priorityReason: "现有资料直接指向该公司", gap: "缺独立来源", rankChangeConditions: "正式披露确认或公司否认", twoDayReason: "只观察固定 D1/D2 市场事实", evidenceDisclosure: disclosure, snapshotId: "synthetic-snapshot", snapshotRevision: 2, eventId: "synthetic-event-a", eventRevision: 1, researchStatus: "comparison_complete", executionStatus: "failed", safeErrorCode: "comparison_interrupted"),
+            K10ResearchAssessment(companyCode: "300003.SZ", role: "pending", rank: nil, summary: "竞争对象的直接关系尚未核实。", priorityReason: "存在关联线索", gap: "关键竞争信息缺失", rankChangeConditions: "补齐反证或确认关系", twoDayReason: "待核前不作排序", evidenceDisclosure: disclosure, snapshotId: "synthetic-snapshot", snapshotRevision: 2, eventId: "synthetic-event-a", eventRevision: 1, researchStatus: "pending_verification", executionStatus: "failed", safeErrorCode: "comparison_interrupted"),
+            K10ResearchAssessment(companyCode: "300004.SZ", role: "excluded", rank: nil, summary: "现有材料不能建立与本轮事件的可比关系。", priorityReason: "已完成范围核对", gap: "与事件无直接关联", rankChangeConditions: "出现可核的直接关联", twoDayReason: "不进入本轮排序", evidenceDisclosure: disclosure, snapshotId: "synthetic-snapshot", snapshotRevision: 2, eventId: "synthetic-event-a", eventRevision: 1, researchStatus: "comparison_complete", executionStatus: "failed", safeErrorCode: "comparison_interrupted"),
+        ])
     }
 
     func publications() async throws -> [K10Publication] {
@@ -219,7 +255,7 @@ actor K10SyntheticUIService: K10Servicing {
         guard action.hasAnalysis else { return [] }
         let lineage = K10AnalysisLineage(
             candidateId: "synthetic-evening-candidate", event: K10AnalysisEventLineage(eventId: Self.first.eventId, revision: Self.first.eventRevision),
-            mappingIds: ["synthetic-mapping"], documentVersions: [Self.source, Self.tavilyExcerpt], inputCutoffAt: "2026-09-06T21:00:00+08:00"
+            mappingIds: ["synthetic-mapping"], documentVersions: [Self.source, Self.tavilyExcerpt], inputCutoffAt: "2026-09-06T21:00:00+08:00", evidenceDisclosure: Self.comparison.evidenceDisclosure
         )
         let pro = K10Analysis(
             analysisId: "synthetic-pro", observationId: "synthetic-evening-observation", revision: 1, role: "pro", status: "completed",

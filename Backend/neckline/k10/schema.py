@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class K10SchemaError(RuntimeError):
@@ -616,6 +616,139 @@ CREATE TABLE k10_discovery_retirements (
 );
 """
 
+
+# V7 persists the evidence-bounded investigation independently of the task
+# checkpoint stream.  Snapshot revisions are append-only: a retry can prove it
+# is replaying the same semantic input, and a GET can reconstruct the latest
+# result without writing or reinterpreting historical K10 records.
+_V7 = r"""
+CREATE TABLE k10_research_snapshot_revisions (
+  snapshot_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  task_id TEXT NOT NULL REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  event_id TEXT NOT NULL,
+  event_revision INTEGER NOT NULL CHECK(event_revision >= 1),
+  news_cutoff_at TEXT NOT NULL,
+  verification_cutoff_at TEXT NOT NULL,
+  context_sha256 TEXT NOT NULL,
+  prompt_contract_revision TEXT NOT NULL,
+  model_parameters_sha256 TEXT NOT NULL,
+  research_status TEXT NOT NULL CHECK(research_status IN ('ready_for_comparison','continue_research','pending_verification','abandon_recommendation','background_only','comparison_complete')),
+  execution_status TEXT NOT NULL CHECK(execution_status IN ('ok','paused','failed')),
+  snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, revision),
+  FOREIGN KEY(event_id, event_revision) REFERENCES k10_event_revisions(event_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_snapshots_task_latest
+  ON k10_research_snapshot_revisions(task_id, snapshot_id, revision DESC);
+CREATE UNIQUE INDEX idx_k10_research_snapshot_input_identity
+  ON k10_research_snapshot_revisions(task_id,event_id,event_revision,context_sha256,prompt_contract_revision,model_parameters_sha256)
+  WHERE revision=1;
+
+CREATE TABLE k10_research_stage_results (
+  snapshot_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 2),
+  action TEXT NOT NULL CHECK(action IN ('extract_claims','plan_gaps','plan_queries','assess_evidence','close_research','compare_companies')),
+  input_sha256 TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  safe_error_code TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, revision),
+  UNIQUE(snapshot_id, action, input_sha256),
+  FOREIGN KEY(snapshot_id, revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT
+);
+
+CREATE TABLE k10_research_claims (
+  snapshot_id TEXT NOT NULL,
+  snapshot_revision INTEGER NOT NULL CHECK(snapshot_revision >= 2),
+  claim_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  document_revision INTEGER NOT NULL CHECK(document_revision >= 1),
+  claim_kind TEXT NOT NULL CHECK(claim_kind IN ('factual_assertion','forecast','opinion','promotion','rumor')),
+  novelty TEXT NOT NULL CHECK(novelty IN ('new_fact','new_stage','background','republication','uncertain')),
+  verification_status TEXT NOT NULL CHECK(verification_status IN ('verified','partially_supported','unverified','contradicted')),
+  claim_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, snapshot_revision, claim_id),
+  FOREIGN KEY(snapshot_id, snapshot_revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY(document_id, document_revision) REFERENCES k10_source_document_versions(document_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_claims_latest ON k10_research_claims(snapshot_id, claim_id, snapshot_revision DESC);
+
+CREATE TABLE k10_research_evidence_links (
+  snapshot_id TEXT NOT NULL,
+  snapshot_revision INTEGER NOT NULL CHECK(snapshot_revision >= 2),
+  claim_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  document_revision INTEGER NOT NULL CHECK(document_revision >= 1),
+  relation TEXT NOT NULL CHECK(relation IN ('supports','partially_supports','contradicts','duplicate','irrelevant','conflicts')),
+  location TEXT NOT NULL,
+  applicability_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, snapshot_revision, claim_id, document_id, document_revision),
+  FOREIGN KEY(snapshot_id, snapshot_revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY(document_id, document_revision) REFERENCES k10_source_document_versions(document_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_evidence_claim ON k10_research_evidence_links(snapshot_id, claim_id, snapshot_revision DESC);
+
+CREATE TABLE k10_research_questions (
+  snapshot_id TEXT NOT NULL,
+  snapshot_revision INTEGER NOT NULL CHECK(snapshot_revision >= 2),
+  question_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('open','answered','blocked','abandoned')),
+  question_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, snapshot_revision, question_id),
+  FOREIGN KEY(snapshot_id, snapshot_revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_questions_latest ON k10_research_questions(snapshot_id, question_id, snapshot_revision DESC);
+
+CREATE TABLE k10_research_query_paths (
+  snapshot_id TEXT NOT NULL,
+  snapshot_revision INTEGER NOT NULL CHECK(snapshot_revision >= 2),
+  path_id TEXT NOT NULL,
+  question_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('planned','searched','no_result','blocked')),
+  path_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, snapshot_revision, path_id),
+  FOREIGN KEY(snapshot_id, snapshot_revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_paths_latest ON k10_research_query_paths(snapshot_id, path_id, snapshot_revision DESC);
+
+CREATE TABLE k10_research_fulltext_requests (
+  snapshot_id TEXT NOT NULL,
+  snapshot_revision INTEGER NOT NULL CHECK(snapshot_revision >= 2),
+  request_id TEXT NOT NULL,
+  question_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  document_revision INTEGER NOT NULL CHECK(document_revision >= 1),
+  state TEXT NOT NULL CHECK(state IN ('requested','admitted','rejected','fulfilled')),
+  request_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, snapshot_revision, request_id),
+  FOREIGN KEY(snapshot_id, snapshot_revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY(document_id, document_revision) REFERENCES k10_source_document_versions(document_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_fulltext_latest ON k10_research_fulltext_requests(snapshot_id, request_id, snapshot_revision DESC);
+
+CREATE TABLE k10_research_company_assessments (
+  snapshot_id TEXT NOT NULL,
+  snapshot_revision INTEGER NOT NULL CHECK(snapshot_revision >= 2),
+  company_code TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('primary','alternative','tied','pending','excluded')),
+  rank INTEGER CHECK(rank IS NULL OR rank >= 1),
+  disclosure_json TEXT NOT NULL,
+  assessment_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, snapshot_revision, company_code),
+  FOREIGN KEY(snapshot_id, snapshot_revision) REFERENCES k10_research_snapshot_revisions(snapshot_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_assessments_latest ON k10_research_company_assessments(snapshot_id, company_code, snapshot_revision DESC);
+"""
+
 _DROP_V1 = (
     # Delete dependency children first.  This path is exercised only after a verified backup,
     # but must still work on a populated V1.4 database with foreign keys enabled.
@@ -745,8 +878,13 @@ def initialize_schema(db_path: Path) -> int:
         elif version == 5:
             _apply_v6(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
+        elif version == 6:
+            pass
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
+        if _version(conn) == 6:
+            _apply_v7(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (7,?)", (_now(),))
     return SCHEMA_VERSION
 
 
@@ -791,6 +929,13 @@ def _apply_v6(conn: sqlite3.Connection) -> None:
     for table in ("k10_screening_runs", "k10_task_execution_spend_reservations", "k10_screening_template_revisions"):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
     for statement in _V6.split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+
+
+def _apply_v7(conn: sqlite3.Connection) -> None:
+    for statement in _V7.split(";"):
         statement = statement.strip()
         if statement:
             conn.execute(statement)
@@ -938,12 +1083,35 @@ def _downgrade_v6(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
+def _downgrade_v7(conn: sqlite3.Connection) -> None:
+    """Only an unused investigation schema can be rehearsal-downgraded.
+
+    Research snapshots contain the exact evidence history needed to explain a
+    recommendation.  A populated production database must restore its verified
+    backup instead of deleting that history through a convenience rollback.
+    """
+    tables = (
+        "k10_research_snapshot_revisions", "k10_research_stage_results", "k10_research_claims",
+        "k10_research_evidence_links", "k10_research_questions", "k10_research_query_paths",
+        "k10_research_fulltext_requests", "k10_research_company_assessments",
+    )
+    for table in tables:
+        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+            raise K10SchemaError("schema 7 含调查证据记录，须恢复已核备份，不能降级丢失数据")
+    for table in reversed(tables):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
 def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
     """仅用于演练/受控回滚；调用方必须先完成备份验证。"""
     if target_version not in {0, 2, 3}:
         raise ValueError("当前 K10 仅支持回滚到 schema 0、2 或 3")
     with write_connection(db_path) as conn:
         version = _version(conn)
+        if version == 7:
+            _downgrade_v7(conn)
+            conn.execute("DELETE FROM k10_schema_migrations WHERE version=7")
+            version = 6
         if version == 6:
             _downgrade_v6(conn)
             conn.execute("DELETE FROM k10_schema_migrations WHERE version=6")

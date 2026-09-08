@@ -21,7 +21,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from neckline.k10 import SchemaUnavailable, validate_execution_config, validate_run_config
-from neckline.k10 import store
+from neckline.k10 import research_store, store
 from neckline.k10.market_context import MarketContextError, collect_market_context
 from neckline.k10.evaluation import EvaluationInputError, evaluate_company_window, evaluation_state
 from neckline.k10.schema import read_connection, require_schema
@@ -44,6 +44,7 @@ from .k10_schemas import (
     ConfigurationScopeOut,
     EvaluationMetricsOut,
     Evidence,
+    EvidenceDisclosureOut,
     ExecutionProgressOut,
     ExecutionRunControlOut,
     HistoricalCaseOut,
@@ -68,6 +69,9 @@ from .k10_schemas import (
     ResultsOut,
     ResultsCohortOut,
     ResultsEventGroupOut,
+    ResearchAssessmentListOut,
+    ResearchAssessmentOut,
+    ResearchSummaryOut,
     SCHEMA_VERSION,
     ScanOut,
     SourceCoverageOut,
@@ -278,6 +282,64 @@ def _evidence(value: Mapping[str, Any], documents: Mapping[tuple[str, int], Mapp
                     relation=value.get("relation"), uncertainty=value.get("uncertainty"))
 
 
+def _evidence_disclosure(value: Any, documents: Mapping[tuple[str, int], Mapping[str, Any]] | None = None) -> EvidenceDisclosureOut | None:
+    """Project B39's frozen disclosure without inventing a historical state.
+
+    Earlier published records have no disclosure object.  Returning ``None``
+    preserves that material absence; it must never be rendered as verified.
+    Invalid B39 producer data is rejected before publication, so this reader
+    only projects a complete, persisted disclosure.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    status = value.get("verificationStatus")
+    rumor = value.get("isRumor")
+    origin_status = value.get("originStatus")
+    reasons = value.get("unverifiedReasons")
+    conditional = value.get("conditionalAnalysis")
+    if (status not in {"verified", "partially_supported", "unverified", "contradicted"}
+            or not isinstance(rumor, bool) or origin_status not in {"identified", "unknown"}
+            or not isinstance(reasons, list) or any(not isinstance(item, str) or not item.strip() for item in reasons)
+            or (conditional is not None and (not isinstance(conditional, str) or not conditional.strip()))):
+        return None
+    origin = value.get("originEvidenceRef")
+    if origin_status == "identified":
+        if not isinstance(origin, Mapping):
+            return None
+        origin_ref = _hydrate_source_ref(origin, documents or {})
+    elif origin is not None:
+        return None
+    else:
+        origin_ref = None
+    if (status == "unverified" and not reasons) or (rumor and not conditional):
+        return None
+    return EvidenceDisclosureOut(verificationStatus=status, isRumor=rumor, originStatus=origin_status,
+                                 originEvidenceRef=origin_ref, unverifiedReasons=reasons,
+                                 conditionalAnalysis=conditional)
+
+
+def _research_assessment(value: Mapping[str, Any]) -> ResearchAssessmentOut:
+    """Whitelist the complete B39 company set without exposing research input.
+
+    The storage contract has already validated the assessment.  A missing or
+    malformed disclosure is nevertheless a server-side contract failure rather
+    than a reason to silently turn the company into a verified recommendation.
+    """
+    disclosure = _evidence_disclosure(value.get("evidenceDisclosure"))
+    if disclosure is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail={"reason": "research_disclosure_invalid", "message": "研究披露记录无效"})
+    return ResearchAssessmentOut(
+        companyCode=str(value["companyCode"]), role=str(value["role"]), rank=value.get("rank"),
+        summary=str(value["summary"]), priorityReason=str(value["priorityReason"]), gap=str(value["gap"]),
+        rankChangeConditions=str(value["rankChangeConditions"]), twoDayReason=str(value["twoDayReason"]),
+        evidenceDisclosure=disclosure, snapshotId=str(value["snapshotId"]), snapshotRevision=int(value["snapshotRevision"]),
+        eventId=str(value["eventId"]), eventRevision=int(value["eventRevision"]),
+        researchStatus=str(value["researchStatus"]), executionStatus=str(value["executionStatus"]),
+        safeErrorCode=value.get("safeErrorCode"),
+    )
+
+
 def _comparison(value: Any, documents: Mapping[tuple[str, int], Mapping[str, Any]] | None = None) -> CandidateComparison:
     payload = value if isinstance(value, Mapping) else {}
     differences = payload.get("differences") if isinstance(payload.get("differences"), Mapping) else {}
@@ -338,7 +400,9 @@ def _comparison(value: Any, documents: Mapping[tuple[str, int], Mapping[str, Any
                                rankChangeConditions=differences.get("rankChangeConditions"),
                                twoDayReason=differences.get("twoDayReason"),
                                classification=classification,
-                               historicalCases=history, historicalCoverage=coverage)
+                               historicalCases=history, historicalCoverage=coverage,
+                               evidenceDisclosure=_evidence_disclosure(
+                                   payload.get("evidenceDisclosure") or differences.get("evidenceDisclosure"), documents))
 
 
 def _common_facts(value: Any) -> list[CommonFactOut]:
@@ -580,7 +644,11 @@ def _analyses(conn: Any, observation_id: str) -> list[AnalysisArtifactOut]:
         lineage, content = _json(row[4], {}), _json(row[5], {})
         if isinstance(content, Mapping): references.extend(item for item in content.get("sourceRefs", []) if isinstance(item, Mapping))
         raw = content.get("inputLineage", lineage) if isinstance(content, Mapping) else lineage
-        if isinstance(raw, Mapping): references.extend(item for item in raw.get("documentVersions", []) if isinstance(item, Mapping))
+        if isinstance(raw, Mapping):
+            references.extend(item for item in raw.get("documentVersions", []) if isinstance(item, Mapping))
+            disclosure = raw.get("evidenceDisclosure")
+            if isinstance(disclosure, Mapping) and isinstance(disclosure.get("originEvidenceRef"), Mapping):
+                references.append(disclosure["originEvidenceRef"])
     documents = _document_reference_map(conn, references)
     values: list[AnalysisArtifactOut] = []
     for row in rows:
@@ -600,7 +668,8 @@ def _analyses(conn: Any, observation_id: str) -> list[AnalysisArtifactOut]:
                 marketContext=raw_lineage.get("marketContext") if isinstance(raw_lineage.get("marketContext"), Mapping) else None,
                 proAnalysis=raw_lineage.get("proAnalysis") if isinstance(raw_lineage.get("proAnalysis"), Mapping) else None,
                 chain=raw_lineage.get("chain") if isinstance(raw_lineage.get("chain"), Mapping) else None,
-                historicalContext=raw_lineage.get("historicalContext") if isinstance(raw_lineage.get("historicalContext"), Mapping) else None),
+                historicalContext=raw_lineage.get("historicalContext") if isinstance(raw_lineage.get("historicalContext"), Mapping) else None,
+                evidenceDisclosure=_evidence_disclosure(raw_lineage.get("evidenceDisclosure"), documents)),
             fullText=content.get("fullText") if isinstance(content, Mapping) else None,
             provider=content.get("provider") if isinstance(content, Mapping) else None,
             model=content.get("model") if isinstance(content, Mapping) else None,
@@ -933,6 +1002,7 @@ def _morning_report(value: Mapping[str, Any], path: Path) -> MorningReportOut:
                     coverageGaps=list(item_coverage.get("gaps", item_coverage.get("coverageGaps", []))),
                     sourceRefs=[_hydrate_source_ref(ref, documents) for ref in refs],
                     independentVerificationRefs=[_hydrate_source_ref(ref, documents) for ref in independent],
+                    evidenceDisclosure=_evidence_disclosure(content.get("evidenceDisclosure"), documents),
                     lifecycleEventId=content.get("lifecycleEventId"), deadlineAt=window.get("d2CloseAt"),
                     createdAt=row.get("createdAt", value["createdAt"])))
     return MorningReportOut(reportId=value["reportId"], scanId=value["scanId"], revision=value["revision"],
@@ -1032,6 +1102,27 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         if value is None:
             raise _not_found("K10 扫描不存在")
         return _scan(value, store.list_publication_batches(db_path=path), path=path)
+
+    @router.get("/scans/{scan_id}/research-summary", response_model=ResearchSummaryOut)
+    def scan_research_summary(scan_id: str) -> ResearchSummaryOut:
+        path = db_path()
+        if store.get_scan(scan_id=scan_id, db_path=path) is None:
+            raise _not_found("K10 扫描不存在")
+        summary = research_store.research_summary_for_scan(scan_id=scan_id, db_path=path)
+        if summary is None:
+            # This is an explicit historical absence, not an empty completed
+            # investigation.  The caller can also see `researchSummary: null`
+            # on the scan itself.
+            raise _not_found("该扫描没有 B39 研究摘要")
+        return ResearchSummaryOut.model_validate(summary)
+
+    @router.get("/scans/{scan_id}/assessments", response_model=ResearchAssessmentListOut)
+    def scan_research_assessments(scan_id: str) -> ResearchAssessmentListOut:
+        path = db_path()
+        if store.get_scan(scan_id=scan_id, db_path=path) is None:
+            raise _not_found("K10 扫描不存在")
+        items = research_store.list_research_assessments(scan_id=scan_id, db_path=path)
+        return ResearchAssessmentListOut(scanId=scan_id, items=[_research_assessment(item) for item in items])
 
     @router.get("/morning-reports/latest", response_model=MorningReportOut)
     def latest_morning_report() -> MorningReportOut:
@@ -1415,6 +1506,7 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
         coverage_status = "partial"
     publication = next((item for item in publications if item["scanId"] == value["scanId"]), None)
     progress = store.execution_progress_for_scan(scan_id=str(value["scanId"]), db_path=path)
+    research_summary = research_store.research_summary_for_scan(scan_id=str(value["scanId"]), db_path=path)
     # The store deliberately carries taskId for local correlation.  That is
     # not a reader-facing progress field; expose only the safe aggregate DTO.
     progress_out = None
@@ -1426,6 +1518,8 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
             "attemptCounts", "factCacheHits",
         ) if key in progress
         }
+        if research_summary is not None:
+            progress_payload["researchSummary"] = research_summary
         # The store keeps exact usage for reconciliation.  HTTP projects only
         # safe outcome counts; it never turns tokens, calls or money into a
         # user-facing quota.
@@ -1443,7 +1537,8 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
                    publicationBatchId=publication["batchId"] if publication else None,
                    availableAt=publication["availableAt"] if publication else None, configId=value.get("configId"),
                    configRevision=value.get("configRevision"), createdAt=str(value["createdAt"]), completedAt=value.get("completedAt"),
-                   executionProgress=progress_out)
+                   executionProgress=progress_out,
+                   researchSummary=ResearchSummaryOut.model_validate(research_summary) if research_summary is not None else None)
 
 
 def _company_window(value: Mapping[str, Any], company_name: str | None, opportunities: list[OpportunityOut], samples: list[PublicationSampleOut],

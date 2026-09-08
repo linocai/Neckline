@@ -56,20 +56,29 @@ class VerificationCheckpointStore:
     @staticmethod
     def input_sha256(*, canonical_key: str, stage_key: str, event_state: str, headline: str,
                      event_kind: str, facts: Mapping[str, Any], source_refs: list[Mapping[str, Any]],
-                     cutoff_at: str, cutoff_inclusive: bool) -> str:
+                     cutoff_at: str, cutoff_inclusive: bool, investigation_path: Mapping[str, Any] | None = None) -> str:
         value = {
             "canonicalKey": canonical_key, "stageKey": stage_key, "eventState": event_state,
             "headline": headline, "eventKind": event_kind, "facts": facts,
             "sourceRefs": source_refs, "cutoffAt": cutoff_at, "cutoffInclusive": cutoff_inclusive,
         }
+        if investigation_path is not None:
+            value["investigationPath"] = dict(investigation_path)
         return sha256(_json(value).encode("utf-8")).hexdigest()
 
     @staticmethod
-    def item_key(*, canonical_key: str, stage_key: str, event_state: str) -> str:
+    def item_key(*, canonical_key: str, stage_key: str, event_state: str,
+                 question_id: str | None = None, path_id: str | None = None,
+                 operation: str = "search") -> str:
         # K10 identifies distinct event development by canonical key, stage and
         # state.  A later material stage must have its own evidence request;
         # changed frozen input for that same identity still cannot replace it.
-        identity = _json({"canonicalKey": canonical_key, "stageKey": stage_key, "eventState": event_state})
+        parts = {"canonicalKey": canonical_key, "stageKey": stage_key, "eventState": event_state}
+        if question_id is not None or path_id is not None:
+            if not question_id or not path_id:
+                raise VerificationCheckpointError("question_path_identity_missing")
+            parts.update({"questionId": question_id, "pathId": path_id, "operation": operation})
+        identity = _json(parts)
         return "tavily:" + sha256(identity.encode("utf-8")).hexdigest()[:32]
 
     def attempt_snapshot(self) -> tuple[int, int]:

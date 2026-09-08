@@ -24,6 +24,7 @@ from .opportunity_discovery import (
     NEW_KINDS,
     normalize_catalyst_stage,
     validate_classification,
+    validate_evidence_disclosure,
     validate_event_comparison,
 )
 
@@ -228,6 +229,11 @@ class CandidateComparison:
     # stored independently on DiscoveryCandidate and publication_samples.
     rank_namespace: str | None = None
     event_rank: int | None = None
+    # B39 provenance is deliberately outside ``differences``. Differences are
+    # the editorial comparison contract; the immutable research snapshot is a
+    # separate bridge required by the publication/store validator.
+    research_snapshot_id: str | None = None
+    research_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +243,18 @@ class EventComparison:
     summary: str
     candidates: Mapping[str, CandidateComparison]
     evidence_refs: tuple[EvidenceRef, ...]
+
+
+@dataclass(frozen=True)
+class InvestigationOutcome:
+    """The complete B39 research result consumed by discovery classification."""
+    verification: Verification
+    mappings: tuple[CompanyMappingDraft, ...]
+    comparison: EventComparison
+    snapshot_id: str
+
+
+InvestigationFunction = Callable[[EventDraft], InvestigationOutcome]
 
 
 class DiscoveryModel(Protocol):
@@ -484,6 +502,34 @@ def _merge_same_event_sources(events: Sequence[EventDraft]) -> tuple[EventDraft,
             }
             for event in group
         ]
+        # B39 derives these claims during the one permitted read of each body.
+        # Preserve that derivative when supporting reports merge into one event;
+        # dropping it would tempt the research coordinator to read every source
+        # again. A source-local model identifier may repeat across documents, so
+        # namespace only collisions while retaining every source locator.
+        claims: list[dict[str, Any]] = []
+        seen_claim_ids: set[str] = set()
+        for event in group:
+            raw_claims = event.facts.get("researchClaims")
+            if not isinstance(raw_claims, list):
+                continue
+            for raw_claim in raw_claims:
+                if not isinstance(raw_claim, Mapping):
+                    continue
+                claim = dict(raw_claim)
+                claim_id = claim.get("claimId")
+                if not isinstance(claim_id, str) or not claim_id.strip():
+                    continue
+                if claim_id in seen_claim_ids:
+                    source = claim.get("sourceRef")
+                    if isinstance(source, Mapping) and isinstance(source.get("documentId"), str) and isinstance(source.get("revision"), int):
+                        claim["claimId"] = f"{claim_id}@{source['documentId']}:{source['revision']}"
+                    else:
+                        claim["claimId"] = f"{claim_id}@{len(claims) + 1}"
+                while claim["claimId"] in seen_claim_ids:
+                    claim["claimId"] = f"{claim['claimId']}~{len(claims) + 1}"
+                seen_claim_ids.add(claim["claimId"])
+                claims.append(claim)
         headlines = tuple(dict.fromkeys(event.headline for event in group if event.headline))
         merged.append(EventDraft(
             canonical_key=first.canonical_key,
@@ -491,7 +537,7 @@ def _merge_same_event_sources(events: Sequence[EventDraft]) -> tuple[EventDraft,
             event_state=first.event_state,
             headline="；".join(headlines),
             event_kind=first.event_kind,
-            facts={**_merged_top_level_labels(group), "sourceFacts": source_facts},
+            facts={**_merged_top_level_labels(group), "sourceFacts": source_facts, "researchClaims": claims},
             source_refs=refs,
         ))
     return tuple(merged)
@@ -623,6 +669,7 @@ def run_discovery(
     document_batch_size: int | None = None,
     selected_source_refs: Sequence[EvidenceRef] | None = None,
     article_limit: int | None = None,
+    investigate: InvestigationFunction | None = None,
 ) -> DiscoveryRun:
     """执行可注入发现链；仅晚间可生成最多 30 条新候选。
 
@@ -867,7 +914,16 @@ def run_discovery(
             try:
                 if leaseguard is not None:
                     leaseguard()
-                verification = verify(event)
+                if investigate is None:
+                    verification = verify(event)
+                    mappings = ()
+                    event_comparison = None
+                else:
+                    researched = investigate(event)
+                    if not isinstance(researched, InvestigationOutcome):
+                        raise ValueError("研究回调结果无效")
+                    verification, mappings, event_comparison = (researched.verification, researched.mappings,
+                                                                  researched.comparison)
                 available.update(document.evidence_ref for document in verification.documents)
                 _validate_refs(verification.evidence_refs, available, label="重点核验")
                 coverage_state = verification.coverage.get("state") if isinstance(verification.coverage, Mapping) else None
@@ -882,9 +938,10 @@ def run_discovery(
                         checkpoint({"stage": issue.stage, "state": "pending", "code": issue.code,
                                     "canonicalKey": event.canonical_key})
                     continue
-                if leaseguard is not None:
-                    leaseguard()
-                mappings = tuple(model.map_companies(event=event, verification=verification))
+                if investigate is None:
+                    if leaseguard is not None:
+                        leaseguard()
+                    mappings = tuple(model.map_companies(event=event, verification=verification))
             except Exception as exc:
                 if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
                     raise
@@ -905,13 +962,14 @@ def run_discovery(
                 continue
             if len({mapping.company_code for mapping in mappings}) != len(mappings):
                 raise ValueError("同一事件的公司映射不得重复")
-            comparer = getattr(model, "compare_event", None)
-            if not callable(comparer):
-                raise ValueError("发现模型缺少同事件整体公司比较")
-            if leaseguard is not None:
-                leaseguard()
             try:
-                event_comparison = comparer(event=event, verification=verification, mappings=mappings)
+                if event_comparison is None:
+                    comparer = getattr(model, "compare_event", None)
+                    if not callable(comparer):
+                        raise ValueError("发现模型缺少同事件整体公司比较")
+                    if leaseguard is not None:
+                        leaseguard()
+                    event_comparison = comparer(event=event, verification=verification, mappings=mappings)
                 _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
             except Exception as exc:
                 if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
@@ -997,7 +1055,18 @@ def run_discovery(
                         checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
                                     "canonicalKey": event.canonical_key, "companyCode": mapping.company_code})
                     continue
-                if decision["kind"] in NEW_KINDS and verification.state != "verified":
+                disclosure = (comparison.differences.get("evidenceDisclosure")
+                              if isinstance(comparison.differences, Mapping) else None)
+                completed_research_disclosure = False
+                if (isinstance(disclosure, Mapping) and comparison.differences.get("role") in {"primary", "alternative", "tied"}
+                        and isinstance(verification.coverage, Mapping) and isinstance(verification.coverage.get("researchSnapshotId"), str)
+                        and verification.state != "contradicted"):
+                    try:
+                        validate_evidence_disclosure(disclosure)
+                        completed_research_disclosure = True
+                    except ComparisonValidationError:
+                        pass
+                if decision["kind"] in NEW_KINDS and verification.state != "verified" and not completed_research_disclosure:
                     # A model cannot promote a source document into a formal opportunity by
                     # calling it ``initial``/``material_stage``/``independent`` while the
                     # independent check is still unresolved or has found contrary evidence.
@@ -1179,6 +1248,11 @@ class SqliteDiscoveryWriter:
             comparison["eventRank"] = candidate.comparison.event_rank
         if candidate.comparison.market_context is not None:
             comparison["marketContext"] = dict(candidate.comparison.market_context)
+        if (candidate.comparison.research_snapshot_id is None) != (candidate.comparison.research_revision is None):
+            raise ValueError("研究比较桥接必须同时包含快照与修订")
+        if candidate.comparison.research_snapshot_id is not None:
+            comparison["researchSnapshotId"] = candidate.comparison.research_snapshot_id
+            comparison["researchRevision"] = candidate.comparison.research_revision
         create_candidate(
             candidate_id=identity, scan_id=self._scan_id, event_id=event.event_id, event_revision=event.revision,
             company_code=candidate.mapping.company_code, comparison=comparison,
@@ -1291,6 +1365,8 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
                 "rankNamespace": candidate.comparison.rank_namespace,
                 "eventRank": candidate.comparison.event_rank,
                 "marketContext": candidate.comparison.market_context,
+                "researchSnapshotId": candidate.comparison.research_snapshot_id,
+                "researchRevision": candidate.comparison.research_revision,
                 **historical_context},
                 "opportunity": dict(candidate.opportunity),
                 "eligibility": {"state": candidate.eligibility.state, "reason": candidate.eligibility.reason}}
@@ -1368,6 +1444,13 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
                 raise ValueError("冻结发现结果清单排序无效")
             if not isinstance(eligibility.get("state"), str) or (eligibility.get("reason") is not None and not isinstance(eligibility.get("reason"), str)):
                 raise ValueError("冻结发现结果资格无效")
+            snapshot_id, research_revision = comparison.get("researchSnapshotId"), comparison.get("researchRevision")
+            if (snapshot_id is None) != (research_revision is None):
+                raise ValueError("冻结发现结果研究桥接无效")
+            if snapshot_id is not None and (not isinstance(snapshot_id, str) or not snapshot_id
+                                           or isinstance(research_revision, bool) or not isinstance(research_revision, int)
+                                           or research_revision < 1):
+                raise ValueError("冻结发现结果研究桥接无效")
             event = events[index]
             items.append(DiscoveryCandidate(event, verifications[index].verification,
                 CompanyMappingDraft(mapping["companyCode"], mapping["affectedStage"], _refs_from_payload(mapping.get("relationEvidence")),
@@ -1375,7 +1458,7 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
                 CandidateComparison(comparison["summary"], dict(comparison["differences"]),
                                     _refs_from_payload(comparison.get("evidenceRefs")), rank, comparison.get("marketContext"),
                                     tuple(historical_context["historicalCases"]), historical_context["historicalCoverage"],
-                                    comparison.get("rankNamespace"), comparison.get("eventRank")),
+                                    comparison.get("rankNamespace"), comparison.get("eventRank"), snapshot_id, research_revision),
                 Eligibility(eligibility["state"], eligibility["reason"]), dict(row["opportunity"]), display_rank))
         return tuple(items)
     selected, deferred, pending, excluded = candidates("candidates"), candidates("deferred"), candidates("metadataPending"), candidates("excluded")

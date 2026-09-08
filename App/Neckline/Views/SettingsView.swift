@@ -71,6 +71,9 @@ struct ScanCoverageSummary: View {
                                 if let progress = scan.executionProgress {
                                     ExecutionProgressCard(progress: progress)
                                 }
+                                if let research = scan.researchSummary ?? scan.executionProgress?.researchSummary {
+                                    ResearchSummaryCard(summary: research, assessments: model.researchAssessments[scan.scanId] ?? [], model: model)
+                                }
                                 if !scan.coverageGaps.isEmpty {
                                     Label(scan.coverageGaps.joined(separator: "、"), systemImage: "exclamationmark.triangle.fill")
                                         .font(NKFont.caption)
@@ -482,6 +485,73 @@ private struct ExecutionProgressCard: View {
         let coverage = progress.coverageStatus == "partial" ? "存在待处理缺口" : (progress.titleCounts == nil ? "资料处理完成" : "标题处理完成")
         return "\(k10ExecutionStageText(progress.stage ?? "pending")) · \(coverage)"
     }
+}
+
+private struct ResearchSummaryCard: View {
+    let summary: K10ResearchSummary
+    let assessments: [K10ResearchAssessment]
+    @Bindable var model: AppModel
+    @State private var showsAssessments = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("命题调查").font(NKFont.callout.weight(.semibold))
+                Spacer()
+                Text(stateText).font(NKFont.caption.weight(.medium)).foregroundStyle(tint)
+            }
+            Text("事件 \(summary.eventCount) · 问题已答 \(summary.questionCounts.answered) · 待答 \(summary.questionCounts.open + summary.questionCounts.blocked)")
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+            Text("可比较 \(summary.companyCounts.comparable) · 待核 \(summary.companyCounts.pending) · 排除 \(summary.companyCounts.excluded)")
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+            if summary.executionFailed {
+                Text("执行失败，比较未完成。已保留可复用资料与安全错误定位。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            } else if !summary.comparisonComplete {
+                Text("公司比较仍未完成；不会把当前覆盖或空候选解释为无机会。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
+            if !summary.safeFailureCounts.isEmpty {
+                Text("安全错误：\(summary.safeFailureCounts.keys.sorted().joined(separator: "、"))")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
+            if !assessments.isEmpty {
+                Button { showsAssessments.toggle() } label: {
+                    Label(showsAssessments ? "收起全部公司比较" : "查看全部公司比较（\(assessments.count)）", systemImage: showsAssessments ? "chevron.up" : "chevron.down")
+                        .font(NKFont.caption.weight(.medium)).foregroundStyle(NK.accent)
+                }
+                .buttonStyle(.plain)
+                if showsAssessments {
+                    ForEach(assessments) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(item.companyCode).font(NKFont.callout.weight(.semibold))
+                                Text(k10CategoryText(item.role)).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                Spacer()
+                                if let rank = item.rank { Text("事件内第 \(rank) 位").font(NKFont.caption).foregroundStyle(NK.textSecondary) }
+                            }
+                            Text(item.summary).font(NKFont.caption)
+                            if let safeErrorCode = item.safeErrorCode {
+                                Text("执行定位：\(safeErrorCode)").font(NKFont.caption).foregroundStyle(NK.amber)
+                            }
+                            EvidenceDisclosureBlock(disclosure: item.evidenceDisclosure, model: model)
+                        }
+                        .padding(8)
+                        .background(NK.pageBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                    }
+                }
+            }
+        }
+        .padding(9)
+        .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+    }
+
+    private var stateText: String {
+        if summary.executionFailed { return "执行失败" }
+        return summary.comparisonComplete ? "比较完成" : "比较未完成"
+    }
+
+    private var tint: Color { summary.executionFailed || !summary.comparisonComplete ? NK.amber : NK.accent }
 }
 
 private struct SettingsConfigurationRows: View {

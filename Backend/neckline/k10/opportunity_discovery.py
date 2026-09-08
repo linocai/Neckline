@@ -10,6 +10,10 @@ from typing import Any, Mapping, Sequence
 
 NEW_KINDS = frozenset({"initial", "material_stage", "independent"})
 UPDATE_KINDS = frozenset({"continuation", "needs_review", "invalidated"})
+PUBLISHABLE_ROLES = frozenset({"primary", "alternative", "tied"})
+NONPUBLISHABLE_ROLES = frozenset({"pending", "excluded"})
+COMPARISON_ROLES = PUBLISHABLE_ROLES | NONPUBLISHABLE_ROLES
+VERIFICATION_STATUSES = frozenset({"verified", "partially_supported", "unverified", "contradicted"})
 
 
 class ComparisonValidationError(ValueError):
@@ -31,16 +35,89 @@ def normalize_catalyst_stage(stage_key: str) -> str:
     return normalized
 
 
-def validate_comparison(comparison: Mapping[str, Any]) -> None:
-    if comparison.get("role") not in {"primary", "alternative", "tied"}:
-        raise ComparisonValidationError("公司比较必须明确主推、备选或并列", code="compare_company_role_invalid")
+def validate_evidence_disclosure(disclosure: Mapping[str, Any]) -> None:
+    """Validate the explicit publication truth boundary for verified and rumor cases."""
+    if not isinstance(disclosure, Mapping):
+        raise ComparisonValidationError("证据披露必须是对象", code="evidence_disclosure_invalid")
+    required_fields = {"verificationStatus", "isRumor", "originStatus", "originEvidenceRef", "unverifiedReasons", "conditionalAnalysis"}
+    if set(disclosure) != required_fields:
+        raise ComparisonValidationError("证据披露字段不完整", code="evidence_disclosure_invalid")
+    status, rumor, origin = (disclosure.get("verificationStatus"), disclosure.get("isRumor"),
+                             disclosure.get("originStatus"))
+    if status not in VERIFICATION_STATUSES or not isinstance(rumor, bool) or origin not in {"identified", "unknown"}:
+        raise ComparisonValidationError("证据披露状态无效", code="evidence_disclosure_invalid")
+    if rumor and status == "verified":
+        raise ComparisonValidationError("传闻不能标记为已核实", code="evidence_disclosure_invalid")
+    origin_ref = disclosure.get("originEvidenceRef")
+    if origin == "identified":
+        if (not isinstance(origin_ref, Mapping) or not isinstance(origin_ref.get("documentId"), str)
+                or not origin_ref["documentId"] or isinstance(origin_ref.get("revision"), bool)
+                or not isinstance(origin_ref.get("revision"), int) or origin_ref["revision"] < 1):
+            raise ComparisonValidationError("已知源头必须有真实来源版本", code="evidence_disclosure_invalid")
+    elif origin_ref is not None:
+        raise ComparisonValidationError("未知源头不能伪造来源版本", code="evidence_disclosure_invalid")
+    reasons = disclosure.get("unverifiedReasons")
+    if status == "unverified":
+        if (not isinstance(reasons, list) or not reasons
+                or any(not isinstance(reason, str) or not reason.strip() for reason in reasons)):
+            raise ComparisonValidationError("未核实披露必须说明未证实环节", code="evidence_disclosure_invalid")
+    elif reasons not in (None, []):
+        if not isinstance(reasons, list) or any(not isinstance(reason, str) or not reason.strip() for reason in reasons):
+            raise ComparisonValidationError("未核实说明无效", code="evidence_disclosure_invalid")
+    conditional = disclosure.get("conditionalAnalysis")
+    if rumor and (not isinstance(conditional, str) or not conditional.strip()):
+        raise ComparisonValidationError("传闻必须有条件化分析", code="evidence_disclosure_invalid")
+    if not rumor and conditional is not None and (not isinstance(conditional, str) or not conditional.strip()):
+        raise ComparisonValidationError("条件化分析无效", code="evidence_disclosure_invalid")
+
+
+def validate_comparison(comparison: Mapping[str, Any], *, require_evidence_disclosure: bool = False) -> None:
+    role = comparison.get("role")
+    if role not in COMPARISON_ROLES:
+        raise ComparisonValidationError("公司比较必须声明发布、待核或排除角色", code="compare_company_role_invalid")
     for key in ("priorityReason", "gap", "rankChangeConditions", "twoDayReason"):
         if not isinstance(comparison.get(key), str) or not comparison[key].strip():
             raise ComparisonValidationError(f"公司比较缺少 {key}", code="compare_company_coverage_invalid")
+    disclosure = comparison.get("evidenceDisclosure")
+    if disclosure is None:
+        disclosure = comparison.get("differences", {}).get("evidenceDisclosure") if isinstance(comparison.get("differences"), Mapping) else None
+    if disclosure is None and require_evidence_disclosure:
+        raise ComparisonValidationError("公司比较缺少证据披露", code="evidence_disclosure_invalid")
+    if disclosure is not None:
+        if not isinstance(disclosure, Mapping):
+            raise ComparisonValidationError("证据披露必须是对象", code="evidence_disclosure_invalid")
+        validate_evidence_disclosure(disclosure)
+
+
+def publishable_assessments(comparisons: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive, never mutate, the formal-candidate subset from a full comparison.
+
+    The persisted B39 assessment is a flat typed record; the established
+    candidate history stores the same comparison fields below ``differences``.
+    Supporting both shapes keeps the projection single-purpose while leaving
+    historical JSON untouched.
+    """
+    if not isinstance(comparisons, Mapping):
+        raise ComparisonValidationError("公司比较必须是对象", code="compare_company_coverage_invalid")
+
+    def role_of(value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return None
+        direct = value.get("role")
+        if direct is not None:
+            return direct
+        differences = value.get("differences")
+        return differences.get("role") if isinstance(differences, Mapping) else None
+
+    return {
+        str(company_code): value for company_code, value in comparisons.items()
+        if role_of(value) in PUBLISHABLE_ROLES
+    }
 
 
 def validate_event_comparison(
     *, summary: Any, comparisons: Mapping[str, Any], company_codes: Sequence[str],
+    require_evidence_disclosure: bool = False,
 ) -> None:
     """Validate one coherent ordering for every company mapped to an event.
 
@@ -67,13 +144,17 @@ def validate_event_comparison(
         differences = item.get("differences")
         if not isinstance(differences, Mapping):
             raise ComparisonValidationError("事件比较缺少公司差异", code="compare_company_coverage_invalid")
-        validate_comparison(differences)
-        rank = item.get("rank")
-        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
-            raise ComparisonValidationError("事件比较排序必须为正整数", code="compare_company_ranking_invalid")
+        validate_comparison(differences, require_evidence_disclosure=require_evidence_disclosure)
         roles[company_code] = str(differences["role"])
-        ranks[company_code] = rank
+        rank = item.get("rank")
+        if roles[company_code] in PUBLISHABLE_ROLES:
+            if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+                raise ComparisonValidationError("可发布公司排序必须为正整数", code="compare_company_ranking_invalid")
+            ranks[company_code] = rank
+        elif rank is not None:
+            raise ComparisonValidationError("pending 或 excluded 不得有发布排序", code="compare_company_ranking_invalid")
 
+    publishable = [code for code in expected if roles[code] in PUBLISHABLE_ROLES]
     primary = [code for code in expected if roles[code] == "primary"]
     alternatives = [code for code in expected if roles[code] == "alternative"]
     tied = [code for code in expected if roles[code] == "tied"]
@@ -84,14 +165,14 @@ def validate_event_comparison(
     if tied and len({ranks[code] for code in tied}) != 1:
         raise ComparisonValidationError("差异不足的并列公司必须共享同一名次", code="compare_company_ranking_invalid")
     for rank in set(ranks.values()):
-        role_set = {roles[code] for code in expected if ranks[code] == rank}
+        role_set = {roles[code] for code in publishable if ranks[code] == rank}
         if "tied" in role_set and len(role_set) != 1:
             raise ComparisonValidationError("并列名次不得与主推或备选混用", code="compare_company_ranking_invalid")
         if "tied" not in role_set and len(role_set) != 1:
             raise ComparisonValidationError("同一事件排序角色不一致", code="compare_company_role_invalid")
-        if "tied" not in role_set and sum(ranks[code] == rank for code in expected) != 1:
+        if "tied" not in role_set and sum(ranks[code] == rank for code in publishable) != 1:
             raise ComparisonValidationError("非并列名次只能对应一家公司", code="compare_company_ranking_invalid")
-    if set(ranks.values()) != set(range(1, max(ranks.values()) + 1)):
+    if ranks and set(ranks.values()) != set(range(1, max(ranks.values()) + 1)):
         raise ComparisonValidationError("事件比较名次必须连续", code="compare_company_ranking_invalid")
 
 

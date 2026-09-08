@@ -11,9 +11,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 from neckline.api import k10 as k10_api
-from neckline.api.k10 import _metrics, _source_ref, create_router
+from neckline.api.k10 import _comparison, _metrics, _source_ref, create_router
 from neckline.api.k10_schemas import CompanyWindowEvaluationOut, MarketDayOut
-from neckline.k10 import store
+from neckline.k10 import research_store, store
+from neckline.k10.research_contracts import ResearchSnapshot, ResearchStageResult
 from neckline.k10.schema import initialize_schema
 from neckline.k10.types import OpportunityPublicationInput
 
@@ -56,7 +57,7 @@ def _execution_config() -> dict:
     )
     options = {
         stage: {"maxTokens": 64, "thinking": {"type": "disabled"}}
-        for stage in ("titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize", "morning", "analysisPro", "analysisCon")
+        for stage in ("titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize", "morning", "analysisPro", "analysisCon", "investigation")
     }
     return {
         "executionVersion": "k10-execution-v3",
@@ -68,6 +69,7 @@ def _execution_config() -> dict:
             "titleBatchSize": 8, "titleTriageConcurrency": 1, "deepReadConcurrency": 1,
             "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0, "retryBackoffSeconds": [1],
             "taskSliceSeconds": 30, "completionDeadlineSeconds": 60, "continuationDelaySeconds": 1,
+            "investigationPromptContractRevision": "k10-investigation-v1",
             "modelOptions": options,
         },
     }
@@ -135,6 +137,97 @@ def _seed(path: Path) -> str:
         OpportunityPublicationInput(candidate_id="cand-2", company_code="300002.SZ", event_id="event-1", event_revision=1, opportunity_key="300002:initial", catalyst_stage="initial", category="alternative", comparison=alternate, evidence_refs=tuple(refs), source_marker="evening"),
     ], db_path=path, clock=lambda: datetime(2026, 9, 6, 20, tzinfo=timezone.utc))
     return batch.batch_id
+
+
+def test_b39_evidence_disclosure_preserves_unverified_rumor_and_legacy_absence() -> None:
+    disclosure = {
+        "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown",
+        "originEvidenceRef": None, "unverifiedReasons": ["尚无独立来源核验"],
+        "conditionalAnalysis": "仅在后续披露确认时重新评估。",
+    }
+    comparison = _comparison({"summary": "传闻影响待核", "differences": {"evidenceDisclosure": disclosure}})
+    assert comparison.evidenceDisclosure is not None
+    assert comparison.evidenceDisclosure.verificationStatus == "unverified"
+    assert comparison.evidenceDisclosure.isRumor is True
+    assert comparison.evidenceDisclosure.originStatus == "unknown"
+    assert comparison.evidenceDisclosure.unverifiedReasons == ["尚无独立来源核验"]
+
+    # B36/B38 had no disclosure contract.  Null preserves that historical
+    # absence and never lets a client infer a verified status.
+    assert _comparison({"summary": "旧比较", "differences": {}}).evidenceDisclosure is None
+    assert _comparison({"differences": {"evidenceDisclosure": {
+        "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown",
+        "unverifiedReasons": [], "conditionalAnalysis": "条件说明",
+    }}}).evidenceDisclosure is None
+
+
+def test_b39_historical_scan_keeps_research_absence_distinct_from_verified(tmp_path: Path) -> None:
+    path = tmp_path / "historical-research-absence.sqlite"
+    _seed(path)
+    with _client(path) as client:
+        scan = client.get("/api/v1/k10/scans/scan-1")
+        summary = client.get("/api/v1/k10/scans/scan-1/research-summary")
+        assessments = client.get("/api/v1/k10/scans/scan-1/assessments")
+    assert scan.status_code == assessments.status_code == 200
+    assert scan.json()["researchSummary"] is None
+    assert summary.status_code == 404
+    assert assessments.json() == {"schemaVersion": "k10-api-v2", "scanId": "scan-1", "items": []}
+
+
+def test_b39_research_summary_and_complete_assessments_are_safe_and_additive(tmp_path: Path) -> None:
+    path = tmp_path / "b39-research-api.sqlite"
+    _seed(path)
+    store.enqueue_task(task_id="b39-research-task", kind="evening_scan", idempotency_key="b39-research-task",
+                       input_version="frozen", input_cutoff_at=NOW, payload={"windowKind": "evening"},
+                       budget={"maxAttempts": 1}, created_at=NOW, db_path=path)
+    execution_id, execution_revision = _append_bound_v3_execution(path, task_id="b39-research-task")
+    store.bind_scan_execution(scan_id="scan-1", task_id="b39-research-task", execution_config_id=execution_id,
+                              execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=NOW, db_path=path)
+    snapshot = ResearchSnapshot(
+        snapshot_id="snapshot-1", task_id="b39-research-task", event_id="event-1", event_revision=1,
+        news_cutoff_at=NOW, verification_cutoff_at=NOW, context_sha256="d" * 64,
+        prompt_contract_revision="investigation-v1", model_parameters_sha256="e" * 64,
+        research_status="ready_for_comparison", execution_status="ok", revision=1, created_at=NOW, updated_at=NOW,
+    )
+    research_store.create_research_snapshot(snapshot=snapshot, db_path=path)
+    research_store.advance_research_snapshot(
+        snapshot_id=snapshot.snapshot_id, expected_revision=1, research_status="comparison_complete", execution_status="failed",
+        input_sha256="f" * 64, updated_at=NOW, db_path=path,
+        stage_result=ResearchStageResult(action="compare_companies", safe_error_code="comparison_interrupted", company_assessments=(
+            {"companyCode": "300001.SZ", "role": "primary", "rank": 1, "summary": "传闻映射待核",
+             "priorityReason": "现有说法直接指向公司", "gap": "缺独立来源", "rankChangeConditions": "正式披露确认",
+             "twoDayReason": "只作消息观察", "evidenceDisclosure": {
+                "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown", "originEvidenceRef": None,
+                "unverifiedReasons": ["尚无独立来源核验"], "conditionalAnalysis": "仅在正式披露确认时重新评估。",
+             }},
+            {"companyCode": "300002.SZ", "role": "pending", "rank": None, "summary": "竞争对象仍待核",
+             "priorityReason": "存在关联线索", "gap": "关键竞争信息缺失", "rankChangeConditions": "补齐反证或确认关系",
+             "twoDayReason": "待核前不作排序", "evidenceDisclosure": {
+                "verificationStatus": "partially_supported", "isRumor": False, "originStatus": "identified",
+                "originEvidenceRef": {"documentId": "doc-1", "revision": 1}, "unverifiedReasons": [], "conditionalAnalysis": None,
+             }},
+        )),
+    )
+
+    with _client(path) as client:
+        scan = client.get("/api/v1/k10/scans/scan-1")
+        summary = client.get("/api/v1/k10/scans/scan-1/research-summary")
+        assessments = client.get("/api/v1/k10/scans/scan-1/assessments")
+
+    assert scan.status_code == summary.status_code == assessments.status_code == 200
+    body = scan.json()["researchSummary"]
+    assert body["comparisonComplete"] is True and body["executionFailed"] is True
+    assert body["safeFailureCounts"] == {"comparison_interrupted": 1}
+    assert body["companyCounts"] == {"primary": 1, "alternative": 0, "tied": 0, "pending": 1, "excluded": 0, "comparable": 1}
+    assert summary.json() == body
+    assert {item["role"] for item in assessments.json()["items"]} == {"primary", "pending"}
+    primary = next(item for item in assessments.json()["items"] if item["role"] == "primary")
+    assert primary["evidenceDisclosure"]["verificationStatus"] == "unverified"
+    assert primary["evidenceDisclosure"]["isRumor"] is True
+    assert primary["evidenceDisclosure"]["originStatus"] == "unknown"
+    assert primary["safeErrorCode"] == "comparison_interrupted"
+    assert "prompt" not in json.dumps(assessments.json()).lower()
+    assert "https://" not in json.dumps(assessments.json())
 
 
 def test_get_on_missing_schema_is_503_and_never_creates_a_database(tmp_path: Path) -> None:
@@ -365,8 +458,9 @@ def test_publications_project_company_cards_and_multifield_wire_contract(tmp_pat
     assert compared["cand-2"] == {"summary": "比较", "rationale": None, "rank": 2,
                                      "priorityReason": "受益较弱", "gap": "订单兑现较慢",
                                      "rankChangeConditions": "订单超预期", "twoDayReason": "催化尚可",
-                                     "eventRank": None, "rankNamespace": None,
-                                     "classification": {"kind": "initial", "reason": "首发", "newFacts": "新增披露",
+                                         "eventRank": None, "rankNamespace": None,
+                                         "evidenceDisclosure": None,
+                                         "classification": {"kind": "initial", "reason": "首发", "newFacts": "新增披露",
                                                         "changedJudgment": None, "twoDayReason": "两日可核",
                                                         "relatedOpportunityId": None},
                                      "historicalCases": [], "historicalCoverage": None}

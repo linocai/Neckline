@@ -143,6 +143,21 @@ def recover_scan(
         raise RuntimeError("指定 V3 执行配置修订不存在或未就绪")
     if any(batch.get("scanId") == scan_id for batch in store.list_publication_batches(db_path=db_path)):
         raise RuntimeError("已有正式发布批次的扫描不能建立恢复任务")
+    # B39 keeps title audit, actual article admissions, model checkpoints and
+    # research snapshots on the original task. Requeue that exact task after a
+    # confirmed frozen-input authorization; a replacement task would reset the
+    # 80/40 boundary and could repeat already successful paid work.
+    progress = store.execution_progress_for_scan(scan_id=scan_id, db_path=db_path)
+    if isinstance(progress, dict) and isinstance(progress.get("taskId"), str):
+        try:
+            task = store.authorize_discovery_recovery(
+                scan_id=scan_id, execution_config_id=execution_config_id,
+                execution_config_revision=execution_config_revision,
+                confirmed_input_sha256=actual_input_sha256, authorized_at=now.isoformat(), db_path=db_path,
+            )
+        except store.K10Conflict as exc:
+            raise RuntimeError(str(exc)) from exc
+        return task.task_id
     task_id = _id("task", "recovery", scan_id, execution_config_id, str(execution_config_revision), actual_input_sha256)
     task_kind = f"{scan['windowKind']}_scan"
     policy = store.read_run_config(config_id=scan["configId"], revision=scan["configRevision"], db_path=db_path)["payload"]["taskPolicies"]["discovery"]

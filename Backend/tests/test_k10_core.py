@@ -20,11 +20,11 @@ def test_k10_schema_is_explicit_idempotent_and_rolls_back_without_touching_share
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE shared_fixture(value TEXT)")
 
-    assert initialize_schema(path) == 6
+    assert initialize_schema(path) == 7
     first = _k10_tables(path)
     assert "k10_schema_migrations" in first
     assert "k10_tasks" in first
-    assert initialize_schema(path) == 6
+    assert initialize_schema(path) == 7
     assert _k10_tables(path) == first
 
     assert rollback_schema(path) == 0
@@ -62,5 +62,5 @@ def test_failed_migration_leaves_no_partial_k10_schema_and_can_retry(tmp_path, m
     assert _k10_tables(path) == set()
 
     monkeypatch.setattr(schema, "_apply_v1", real_apply)
-    assert initialize_schema(path) == 6
+    assert initialize_schema(path) == 7
     assert "k10_tasks" in _k10_tables(path)

@@ -179,6 +179,7 @@ class MorningUpdate:
     independent_verification_refs: tuple[Mapping[str, Any], ...]
     summary: str
     requires_review: bool
+    evidence_disclosure: Mapping[str, Any] | None = None
 
     @property
     def automatic_debate_started(self) -> bool:
@@ -186,7 +187,7 @@ class MorningUpdate:
         return False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "cutoffAt": self.cutoff_at,
             "candidateId": self.candidate_id,
             "observationId": self.observation_id,
@@ -200,6 +201,9 @@ class MorningUpdate:
             "requiresReview": self.requires_review,
             "automaticDebateStarted": False,
         }
+        if self.evidence_disclosure is not None:
+            result["evidenceDisclosure"] = dict(self.evidence_disclosure)
+        return result
 
 
 def _utc_now() -> str:
@@ -239,7 +243,7 @@ def build_morning_update(
     *, cutoff_at: str, candidate_id: str, observation_id: str | None,
     reason_status: str, source_status: str, observation_status: str,
     material_contrary_evidence: Sequence[Mapping[str, Any]], source_refs: Sequence[Mapping[str, Any]],
-    summary: str,
+    summary: str, evidence_disclosure: Mapping[str, Any] | None = None,
     independent_verification_refs: Sequence[Mapping[str, Any]] = (),
 ) -> MorningUpdate:
     """Create one immutable morning record for either an observed or unselected candidate."""
@@ -272,12 +276,21 @@ def build_morning_update(
     # explicitly named second set may be carried forward as independent verification.
     independent = _refs(independent_verification_refs, required=False)
     all_refs = _refs([*source_refs, *independent], required=True)
+    if evidence_disclosure is not None:
+        # Keep this immutable user-facing projection valid without coupling the
+        # morning product model to research persistence internals.
+        from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
+        try:
+            validate_evidence_disclosure(evidence_disclosure)
+        except ComparisonValidationError as exc:
+            raise MorningUpdateError("晨间更新的冻结证据披露无效") from exc
     return MorningUpdate(
         cutoff_at=cutoff_at.strip(), candidate_id=candidate_id, observation_id=observation_id,
         reason_status=reason_status, source_status=source_status, observation_status=observation_status,
         material_contrary_evidence=contrary, source_refs=all_refs,
         independent_verification_refs=independent,
         summary=summary.strip(), requires_review=requires_review,
+        evidence_disclosure=None if evidence_disclosure is None else dict(evidence_disclosure),
     )
 
 

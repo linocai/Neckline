@@ -44,10 +44,16 @@ struct K10SourceReference: Codable, Identifiable, Equatable {
     var id: String { "\(factId ?? documentId ?? url ?? sourceKey ?? title ?? "source")#\(revision.map(String.init) ?? "unversioned")#\(tradeDate ?? publishedAt ?? fetchedAt ?? "undated")" }
 }
 struct K10Evidence: Codable, Identifiable, Equatable { let sourceRef: K10SourceReference; let claim: String; let relation: String?; let uncertainty: String?; var id: String { "\(sourceRef.id)#\(claim)" } }
+/// Optional only because B36/B38 history predates the B39 disclosure contract.
+/// Missing is an unknown historical state, never an inferred verified result.
+struct K10EvidenceDisclosure: Codable, Equatable {
+    let verificationStatus: String; let isRumor: Bool; let originStatus: String
+    let originEvidenceRef: K10SourceReference?; let unverifiedReasons: [String]; let conditionalAnalysis: String?
+}
 struct K10HistoricalCase: Codable, Identifiable, Equatable { let caseId: String; let outcome: String; let summary: String; let observedAt: String?; let eventTime: String?; let companyCode: String?; let stage: String?; let sourceRefs: [K10SourceReference]; let marketFacts: [K10SourceReference]; let outcomeFacts: [String: K10Value]?; var id: String { caseId } }
 struct K10HistoricalCoverage: Codable, Equatable { let state: String; let requestedOutcomes: [String]; let presentOutcomes: [String]; let missingOutcomes: [String]; let reason: String?; let sourceRefs: [K10SourceReference] }
 struct K10OpportunityClassification: Codable, Equatable { let kind: String; let reason: String; let newFacts: String; let changedJudgment: String?; let twoDayReason: String; let relatedOpportunityId: String? }
-struct K10Comparison: Codable, Equatable { let summary: String?; let rationale: String?; let rank: Int?; let priorityReason: String?; let gap: String?; let rankChangeConditions: String?; let twoDayReason: String?; var classification: K10OpportunityClassification? = nil; let historicalCases: [K10HistoricalCase]?; let historicalCoverage: K10HistoricalCoverage?; var eventRank: Int? = nil; var rankNamespace: String? = nil }
+struct K10Comparison: Codable, Equatable { let summary: String?; let rationale: String?; let rank: Int?; let priorityReason: String?; let gap: String?; let rankChangeConditions: String?; let twoDayReason: String?; var classification: K10OpportunityClassification? = nil; let historicalCases: [K10HistoricalCase]?; let historicalCoverage: K10HistoricalCoverage?; var eventRank: Int? = nil; var rankNamespace: String? = nil; var evidenceDisclosure: K10EvidenceDisclosure? = nil }
 struct K10CommonFact: Codable, Identifiable, Equatable { let key: String; let text: String; var id: String { key } }
 
 struct K10SourceCoverage: Codable, Identifiable, Equatable {
@@ -98,7 +104,23 @@ struct K10ExecutionProgress: Codable, Equatable {
     var articleCounts: K10ExecutionArticleCounts? = nil
     var attemptCounts: K10ExecutionAttemptCounts? = nil
     var factCacheHits: Int? = nil
+    var researchSummary: K10ResearchSummary? = nil
 }
+struct K10ResearchQuestionCounts: Codable, Equatable { let open: Int; let answered: Int; let blocked: Int; let abandoned: Int }
+struct K10ResearchCompanyCounts: Codable, Equatable { let primary: Int; let alternative: Int; let tied: Int; let pending: Int; let excluded: Int; let comparable: Int }
+struct K10ResearchSummary: Codable, Equatable {
+    let scanId: String; let taskId: String; let eventCount: Int; let questionCounts: K10ResearchQuestionCounts
+    let companyCounts: K10ResearchCompanyCounts; let researchStatusCounts: [String: Int]; let executionStatusCounts: [String: Int]
+    let comparisonComplete: Bool; let executionFailed: Bool; let safeFailureCounts: [String: Int]
+}
+struct K10ResearchAssessment: Codable, Identifiable, Equatable {
+    let companyCode: String; let role: String; let rank: Int?; let summary: String; let priorityReason: String; let gap: String
+    let rankChangeConditions: String; let twoDayReason: String; let evidenceDisclosure: K10EvidenceDisclosure
+    let snapshotId: String; let snapshotRevision: Int; let eventId: String; let eventRevision: Int; let researchStatus: String; let executionStatus: String
+    let safeErrorCode: String?
+    var id: String { "\(snapshotId)#\(snapshotRevision)#\(companyCode)" }
+}
+struct K10ResearchAssessmentList: Codable, Equatable { let schemaVersion: String; let scanId: String; let items: [K10ResearchAssessment] }
 struct K10NotificationReadiness: Codable, Equatable {
     let state: String; let reasonCode: String?; let nextRetryAt: String?; let checkedAt: String
 }
@@ -111,6 +133,7 @@ struct K10Scan: Codable, Identifiable, Equatable {
     let coverageGaps: [String]; let sourceCoverage: [K10SourceCoverage]; let createdAt: String; let completedAt: String?
     var sourceReplay: K10SourceReplay? = nil
     var executionProgress: K10ExecutionProgress? = nil
+    var researchSummary: K10ResearchSummary? = nil
     var id: String { scanId }
 }
 
@@ -157,7 +180,7 @@ struct K10SelectionRequest: Codable { let action: String; let idempotencyKey: St
 struct K10SelectionAction: Codable, Equatable { let schemaVersion: String; let actionId: String; let companyWindowId: String; let representativeCandidateId: String?; let state: String; let lastActionAt: String?; let postFreeze: Bool?; let observationId: String?; let analysisJobId: String?; let replayed: Bool }
 
 struct K10AnalysisEventLineage: Codable, Equatable { let eventId: String; let revision: Int }
-struct K10AnalysisLineage: Codable, Equatable { let candidateId: String?; let event: K10AnalysisEventLineage?; let mappingIds: [String]; let documentVersions: [K10SourceReference]; let inputCutoffAt: String? }
+struct K10AnalysisLineage: Codable, Equatable { let candidateId: String?; let event: K10AnalysisEventLineage?; let mappingIds: [String]; let documentVersions: [K10SourceReference]; let inputCutoffAt: String?; var evidenceDisclosure: K10EvidenceDisclosure? = nil }
 struct K10ModelCost: Codable, Equatable { let amount: Double?; let currency: String?; let pricingVersion: String?; let status: String? }
 struct K10ModelUsage: Codable, Equatable { let inputTokens: Int?; let outputTokens: Int?; let totalTokens: Int?; let cacheTokens: Int?; let usageUnavailable: Bool?; let cacheUsageUnavailable: Bool?; let cost: K10ModelCost? }
 struct K10Analysis: Codable, Identifiable, Equatable {
@@ -173,7 +196,7 @@ struct K10SelectionDetail: Codable, Identifiable, Equatable {
 }
 struct K10SelectionList: Codable { let items: [K10SelectionDetail]; let page: K10Page }
 
-struct K10MorningReportItem: Codable, Identifiable, Equatable { let itemId: String; let reportId: String; let scanId: String; let companyWindowId: String?; let opportunityId: String?; let companyCode: String?; let companyName: String?; let displayRank: Int?; let selectionState: String?; let lifecycle: String?; let section: String; let priority: Int; let summary: String; let coverage: [String: K10Value]; let coverageStatus: String; let coverageGaps: [String]; let sourceRefs: [K10SourceReference]; let independentVerificationRefs: [K10SourceReference]; let lifecycleEventId: String?; let deadlineAt: String?; let createdAt: String; var id: String { itemId } }
+struct K10MorningReportItem: Codable, Identifiable, Equatable { let itemId: String; let reportId: String; let scanId: String; let companyWindowId: String?; let opportunityId: String?; let companyCode: String?; let companyName: String?; let displayRank: Int?; let selectionState: String?; let lifecycle: String?; let section: String; let priority: Int; let summary: String; let coverage: [String: K10Value]; let coverageStatus: String; let coverageGaps: [String]; let sourceRefs: [K10SourceReference]; let independentVerificationRefs: [K10SourceReference]; var evidenceDisclosure: K10EvidenceDisclosure? = nil; let lifecycleEventId: String?; let deadlineAt: String?; let createdAt: String; var id: String { itemId } }
 struct K10MorningReport: Codable, Identifiable, Equatable { let schemaVersion: String; let reportId: String; let scanId: String; let revision: Int; let cutoffAt: String; let createdAt: String; let status: String; let coverage: [String: K10Value]; let coverageStatus: String; let coverageGaps: [String]; let items: [K10MorningReportItem]; var id: String { reportId } }
 struct K10MorningReportList: Codable { let items: [K10MorningReport]; let page: K10Page }
 

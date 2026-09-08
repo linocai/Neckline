@@ -70,6 +70,55 @@ TaskHandler = Callable[[TaskContext], TaskResult]
 _PAID_TASK_KINDS = frozenset({"evening_scan", "morning_scan", "analysis", "morning_review"})
 
 
+def _research_snapshot_ids(checkpoint: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read the explicit B39 research links without guessing from task input."""
+    values: list[Any] = []
+    single = checkpoint.get("researchSnapshotId")
+    if single is not None:
+        values.append(single)
+    multiple = checkpoint.get("researchSnapshotIds")
+    if multiple is not None:
+        if not isinstance(multiple, list):
+            raise ValueError("研究快照引用无效")
+        values.extend(multiple)
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("研究快照引用无效")
+    if len(set(values)) != len(values):
+        raise ValueError("研究快照引用重复")
+    return tuple(values)
+
+
+def _truthful_terminal_result(result: TaskResult, *, db_path: Path) -> TaskResult:
+    """Do not let a completed task overwrite an explicitly failed B39 snapshot.
+
+    A handler is responsible for emitting the durable snapshot link.  Once it
+    does, this final worker fence treats a missing, paused, or failed snapshot
+    as a terminal failure before task completion and notification dispatch.
+    Older tasks without a research link remain readable historical work.
+    """
+    if result.status != "completed":
+        return result
+    required = result.checkpoint.get("researchRequired")
+    if required is not None and not isinstance(required, bool):
+        return TaskResult("failed", "research_state", result.checkpoint, "研究状态标记无效，比较未完成")
+    try:
+        snapshot_ids = _research_snapshot_ids(result.checkpoint)
+    except ValueError:
+        return TaskResult("failed", "research_state", result.checkpoint, "研究快照引用无效，比较未完成")
+    if required and not snapshot_ids:
+        return TaskResult("failed", "research_state", result.checkpoint, "研究快照缺失，比较未完成")
+    if not snapshot_ids:
+        return result
+    try:
+        from .research_store import read_research_snapshot
+        snapshots = [read_research_snapshot(snapshot_id=item, db_path=db_path) for item in snapshot_ids]
+    except Exception:
+        return TaskResult("failed", "research_state", result.checkpoint, "研究状态不可读取，比较未完成")
+    if any(snapshot is None or snapshot.execution_status != "ok" for snapshot in snapshots):
+        return TaskResult("failed", "research_state", result.checkpoint, "研究执行失败，比较未完成")
+    return result
+
+
 def _v3_execution_ready(context: TaskContext) -> bool:
     profile = context.execution_profile
     payload = profile.get("payload") if isinstance(profile, Mapping) else None
@@ -202,6 +251,7 @@ def run_once(
                 result = handler(context)
                 if not isinstance(result, TaskResult):
                     raise TypeError("K10 handler must return TaskResult")
+                result = _truthful_terminal_result(result, db_path=db_path)
             except store.K10Conflict:
                 raise
             except Exception as exc:

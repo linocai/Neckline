@@ -304,6 +304,9 @@ private struct MorningReportRow: View {
                 Text(item.coverageStatus == "complete" ? "已核" : "待核").font(NKFont.caption).foregroundStyle(item.coverageStatus == "complete" ? NK.accent : NK.amber)
             }
             Text(item.summary).font(NKFont.callout)
+            if let disclosure = item.evidenceDisclosure {
+                EvidenceDisclosureBlock(disclosure: disclosure, model: model)
+            }
             Text("完成 \(k10DisplayTime(item.createdAt)) · \(item.coverageStatus == "complete" ? "可核" : "等待核验") · \(deadlineText)")
                 .font(NKFont.caption).foregroundStyle(NK.textSecondary)
             if !item.coverageGaps.isEmpty { Text("缺口：\(item.coverageGaps.map(k10CoverageGapText).joined(separator: "、"))").font(NKFont.caption).foregroundStyle(NK.amber) }
@@ -646,6 +649,9 @@ struct ComparisonBlock: View {
             }
             if let summary = sample.comparison.summary {
                 Text(summary).font(NKFont.callout)
+            }
+            if let disclosure = sample.comparison.evidenceDisclosure {
+                EvidenceDisclosureBlock(disclosure: disclosure, model: model)
             }
             ComparisonDetails(comparison: sample.comparison, model: model)
             if all.count > 1 {

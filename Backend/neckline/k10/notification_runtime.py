@@ -139,11 +139,14 @@ def create_notification_maintenance(
     delivery_config: NotificationDeliveryConfig | None = None,
 ) -> Callable[[], None]:
     """Assemble actual APNs only in the explicitly started worker process."""
-    def sender(*, token, title, body, kind, deep_link, collapse_id):
+    def sender(*, token, title, body, kind, deep_link, evidence_disclosure, collapse_id):
         if not push_kind_enabled(kind, db_path=db_path):
             return DeliveryResult(ok=True)  # A disabled preference is terminal, not delayed delivery.
+        custom = {"kind": kind, **deep_link}
+        if evidence_disclosure is not None:
+            custom["evidenceDisclosure"] = dict(evidence_disclosure)
         result = send_push(token, title, body, category=notify_kinds.category_of(kind),
-                           thread_id="neckline-k10", custom={"kind": kind, **deep_link}, collapse_id=collapse_id)
+                           thread_id="neckline-k10", custom=custom, collapse_id=collapse_id)
         return DeliveryResult(ok=result.ok, reason=result.reason,
                               configuration_unavailable=result.reason in {
                                   "apns_credentials_missing", "apns_key_unreadable", "apns_key_invalid",

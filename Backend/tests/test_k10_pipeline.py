@@ -1194,7 +1194,12 @@ def test_full_text_route_marks_the_final_document_coarse_checkpoint(tmp_path):
             self.prompts.append(messages[-1].content)
             payload = {"events": [{"canonicalKey": "full-event", "stageKey": "initial", "eventState": "confirmed",
                                     "headline": "全文事件", "eventKind": "disclosure", "facts": {},
-                                    "sourceRefs": [{"documentId": "full-doc", "revision": 1}]}], "needsFullText": False}
+                                    "sourceRefs": [{"documentId": "full-doc", "revision": 1}],
+                                    "claims": [{"claimId": "full-claim", "text": "正文披露", "kind": "factual_assertion",
+                                                "novelty": "new_fact", "speaker": None, "subject": "项目", "object": None,
+                                                "action": "披露", "stageOrCondition": None, "timeText": None,
+                                                "verificationStatus": "unverified", "decisionImpact": "影响阶段判断",
+                                                "sourceRef": {"documentId": "full-doc", "revision": 1}, "location": "paragraph:1"}]}], "needsFullText": False}
             return LLMResult(ok=True, content=json.dumps(payload), provider="fixture", model="deepseek-v4-pro",
                              prompt_tokens=5, completion_tokens=4, total_tokens=9, usage_unavailable=False)
 
@@ -1251,7 +1256,7 @@ def test_recovered_understanding_registers_prepared_source_before_event_verify(t
                                         cutoff_at=CUTOFF, db_path=path, leaseguard=None)
     document = DiscoveryDocument("recovered-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(),
                                  "<article>已提纯事实</article>", None, {"sourceKey": "fixture-source", "title": "恢复资料"})
-    event = EventDraft("recovered-event", "initial", "confirmed", "恢复事件", "disclosure", {},
+    event = EventDraft("recovered-event", "initial", "confirmed", "恢复事件", "disclosure", {"researchClaims": []},
                        (EvidenceRef("recovered-doc", 1),))
     verification_document = DiscoveryDocument("verify-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "独立核验事实", None, {})
     def verify(recovered):
@@ -1264,7 +1269,9 @@ def test_recovered_understanding_registers_prepared_source_before_event_verify(t
     with store.read_connection(path) as conn:
         failures = conn.execute("SELECT safe_error_code FROM k10_execution_item_checkpoints WHERE task_id='task-recovered-event'").fetchall()
     assert run.state == "completed" and provider.calls == 2, (run.state, run.issues, provider.calls, failures)
-    assert "已提纯事实" in provider.prompts[0]
+    # B39 reuses the typed fact derivative and locator excerpt only. A resumed
+    # verify request must not resend the original article body.
+    assert "已提纯事实" not in provider.prompts[0]
     verify_rows = store.completed_execution_items(task_id="task-recovered-event", item_kind="event", stage="model:verify", db_path=path)
     assert len(verify_rows) == 1 and verify_rows[0]["networkAttemptCount"] == 1
 

@@ -28,7 +28,7 @@ _DEEPSEEK_V4_PRO = "deepseek-v4-pro"
 _ROUTE_REQUIRED_BY_SCOPE = {"discovery": "discovery", "analysis": "analysis", "morning": "morning"}
 _V3_MODEL_STAGES = (
     "titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize",
-    "morning", "analysisPro", "analysisCon",
+    "morning", "analysisPro", "analysisCon", "investigation",
 )
 
 
@@ -215,12 +215,16 @@ def validate_execution_config(payload: Mapping[str, Any] | None) -> Configuratio
     "model", "titleTriagePolicy", "articleLimits", "titleBatchSize", "titleTriageConcurrency",
         "deepReadConcurrency", "networkMaxAttempts", "jsonRepairMaxAttempts", "retryBackoffSeconds",
         "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions",
+        "investigationPromptContractRevision",
     }
     if not isinstance(discovery, Mapping) or set(discovery) != expected:
         errors.append("discovery 必须精确声明标题 policy、80/40 正文限额和单请求执行边界")
         return ConfigurationStatus("not_configured", missing, tuple(errors))
     if discovery.get("model") != _DEEPSEEK_V4_PRO:
         errors.append("discovery.model 必须精确为 deepseek-v4-pro")
+    revision = discovery.get("investigationPromptContractRevision")
+    if not isinstance(revision, str) or not revision.strip():
+        errors.append("discovery.investigationPromptContractRevision 必须显式声明")
     policy = discovery.get("titleTriagePolicy")
     policy_expected = {"policyId", "revision", "contentSha256", "approvalState", "content"}
     if not isinstance(policy, Mapping) or set(policy) != policy_expected:

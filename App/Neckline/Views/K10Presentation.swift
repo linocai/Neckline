@@ -12,7 +12,7 @@ func k10StatusText(_ value: String) -> String { [
     "keep":"留下", "kept":"已留下", "skip":"明确略过", "skipped":"已略过", "restore":"找回", "withdraw":"取消关注", "unhandled":"未处理", "selected":"留下", "active":"进行中",
     "queued":"等待中", "running":"执行中", "configured":"已配置", "completed":"已完成", "failed":"失败", "not_configured":"未配置", "notConfigured":"未配置", "ready":"已就绪", "paused":"已暂停", "retired":"已停用", "blocked":"待配置", "pending":"未到期", "due":"已到期·待核", "incomplete":"资料不完整", "suspended":"停牌", "data_gap":"行情缺数", "anomaly":"行情异常", "complete":"完整", "partial":"部分完成", "unavailable":"暂不可用", "verified":"已核验", "conflict":"数值冲突", "single_source":"单一来源", "field_unavailable":"字段待核", "morning":"晨间首发", "evening":"晚间首发", "late":"迟到", "alternative":"备选", "tied":"并列", "primary_recommendation":"主推"
 ][value] ?? value }
-func k10CategoryText(_ value: String) -> String { ["primary":"主推", "alternative":"备选", "tied":"并列"][value] ?? k10StatusText(value) }
+func k10CategoryText(_ value: String) -> String { ["primary":"主推", "alternative":"备选", "tied":"并列", "pending":"待核", "excluded":"排除"][value] ?? k10StatusText(value) }
 func k10SourceText(_ key: String) -> String { ["tushare-major-news":"TuShare 重要资讯", "tavily-object-review":"Tavily 定向核验", "market_snapshot":"行情快照", "synthetic":"合成来源（仅验收）"][key] ?? key }
 func k10PublishedPrecisionText(_ value: String) -> String { ["exact":"精确到时刻", "date":"仅日期", "unknown":"日期精度待核"][value] ?? "日期精度待核" }
 func k10PublicationMarkerText(_ value: String?) -> String { ["evening":"晚间", "morning":"晨间"][value ?? ""] ?? "来源待核" }

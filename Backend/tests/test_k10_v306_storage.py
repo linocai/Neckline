@@ -18,7 +18,7 @@ NOW = datetime(2026, 9, 8, 6, tzinfo=timezone.utc).isoformat()
 
 
 def _task(path, task_id: str = "task") -> tuple[str, int]:
-    assert initialize_schema(path) == 6
+    assert initialize_schema(path) == 7
     config_id, revision = append_approved_execution_profile(db_path=path, created_at=NOW)
     store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id, input_version="frozen",
                        input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)
@@ -165,7 +165,7 @@ def test_v306_progress_uses_durable_title_and_tavily_records_not_coverage_guesse
 
 def test_v306_schema_has_no_unpublished_budget_tables(tmp_path):
     path = tmp_path / "schema.sqlite"
-    assert initialize_schema(path) == 6 == schema_version(path)
+    assert initialize_schema(path) == 7 == schema_version(path)
     with sqlite3.connect(path) as conn:
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"k10_title_triage_policy_revisions", "k10_title_triage_manifests", "k10_title_triage_items",
@@ -189,7 +189,7 @@ def test_v306_forwards_schema_four_and_removes_unreleased_schema_five_tables(tmp
         conn.execute("CREATE TABLE k10_task_execution_spend_reservations(id TEXT)")
         conn.execute("CREATE TABLE k10_screening_runs(id TEXT)")
         conn.execute("INSERT INTO k10_schema_migrations VALUES(5,?)", (NOW,))
-    assert initialize_schema(path) == 6
+    assert initialize_schema(path) == 7
     with sqlite3.connect(path) as conn:
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert not {"k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs"} & names

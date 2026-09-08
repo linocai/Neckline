@@ -288,6 +288,35 @@ class HistoricalCaseLoader:
         coverage["directedDocuments"] = len(cases)
         return cases, coverage
 
+    def load_local(self, *, event: EventDraft, mappings: Sequence[CompanyMappingDraft], as_of: datetime) -> dict[str, Any]:
+        """Reuse only already-persisted cases; never perform a public search.
+
+        B39 lets the investigator request any additional historical source with
+        an explicit question/path. Comparison context itself is read-only.
+        """
+        if as_of.tzinfo is None:
+            raise ValueError("历史案例 asOf 必须带时区")
+        cases = self._local_cases(event=event, as_of=as_of)
+        requested = ["success", "flat", "failure"]
+        present = sorted({str(item["outcome"]) for item in cases if item["outcome"] in requested})
+        missing = [outcome for outcome in requested if outcome not in present]
+        refs: list[dict[str, Any]] = []
+        seen_refs: set[tuple[str, int]] = set()
+        for item in cases:
+            for ref in item["sourceRefs"]:
+                key = (str(ref["documentId"]), int(ref["revision"]))
+                if key not in seen_refs:
+                    seen_refs.add(key)
+                    refs.append(dict(ref))
+        status = "complete" if cases and not missing else ("partial" if cases else "unavailable")
+        reason = "all_requested_outcomes_covered" if status == "complete" else (
+            "historical_cases_found_but_requested_outcomes_missing" if cases else "historical_evidence_requires_investigation_path"
+        )
+        return freeze_historical_context({"historicalCases": cases, "historicalCoverage": {
+            "state": status, "requestedOutcomes": requested, "presentOutcomes": present,
+            "missingOutcomes": missing, "reason": reason, "sourceRefs": refs,
+        }})
+
     def load(self, *, event: EventDraft, mappings: Sequence[CompanyMappingDraft], as_of: datetime) -> dict[str, Any]:
         if as_of.tzinfo is None:
             raise ValueError("历史案例 asOf 必须带时区")

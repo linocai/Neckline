@@ -40,7 +40,7 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
             let defaults = UserDefaults(suiteName: suite)!
             defaults.removePersistentDomain(forName: suite)
             _config = StateObject(wrappedValue: AppConfig(defaults: defaults, tokenStore: K10SyntheticTokenStore(), loadPersistentCredentials: false))
-            let service = K10SyntheticUIService()
+            let service = K10SyntheticUIService(presentsB39State: true)
             _model = State(initialValue: AppModel(serviceFactory: { service }))
             return
         }

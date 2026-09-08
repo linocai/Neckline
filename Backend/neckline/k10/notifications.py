@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 from neckline import notify_kinds
@@ -53,6 +53,7 @@ class Notification:
     status: str
     attempt_count: int
     created_at: str
+    evidence_disclosure: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class DeliveryResult:
 class NotificationSender(Protocol):
     def __call__(
         self, *, token: str, title: str, body: str, kind: str,
-        deep_link: Mapping[str, str], collapse_id: str,
+        deep_link: Mapping[str, str], evidence_disclosure: Mapping[str, Any] | None, collapse_id: str,
     ) -> DeliveryResult:
         ...
 
@@ -243,16 +244,71 @@ def _legacy_deep_link_only(payload: Mapping[str, object]) -> bool:
 
 def _stored_deep_link(value: object) -> dict[str, str]:
     try:
-        parsed = json.loads(value) if isinstance(value, str) else {}
+        parsed = json.loads(value) if isinstance(value, str) else value
     except json.JSONDecodeError:
         parsed = {}
     return _deep_link(parsed) if isinstance(parsed, Mapping) else {}
 
 
-def _outbound_message(notification: Notification) -> tuple[str, str]:
+def _stored_evidence_disclosure(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    research = value.get("research")
+    if not isinstance(research, Mapping) or set(research) != {"evidenceDisclosure", "containsUnverified"}:
+        return None
+    disclosure = research.get("evidenceDisclosure")
+    if not isinstance(disclosure, Mapping):
+        return None
+    clean = _evidence_disclosure(payload={}, checkpoint={"evidenceDisclosure": disclosure})
+    if clean is None or not isinstance(research.get("containsUnverified"), bool):
+        return None
+    expected = clean.get("verificationStatus") == "unverified" or bool(clean.get("isRumor"))
+    return clean if research["containsUnverified"] == expected else None
+
+
+def _notification_payload(*, deep_link: Mapping[str, str], evidence_disclosure: Mapping[str, Any] | None) -> dict[str, Any]:
+    result: dict[str, Any] = dict(deep_link)
+    if evidence_disclosure is not None:
+        result["research"] = {
+            "evidenceDisclosure": dict(evidence_disclosure),
+            "containsUnverified": evidence_disclosure.get("verificationStatus") == "unverified" or bool(evidence_disclosure.get("isRumor")),
+        }
+    return result
+
+
+def _evidence_disclosure(*, payload: Mapping[str, Any], checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read only the frozen B39 disclosure projection, never a model body."""
+    candidates: list[Any] = [checkpoint.get("evidenceDisclosure"), payload.get("evidenceDisclosure")]
+    report = checkpoint.get("reportItem")
+    if isinstance(report, Mapping) and isinstance(report.get("content"), Mapping):
+        candidates.append(report["content"].get("evidenceDisclosure"))
+    present = [value for value in candidates if value is not None]
+    if not present:
+        return None
+    if any(not isinstance(value, Mapping) for value in present):
+        return None
+    from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
+    try:
+        for value in present:
+            validate_evidence_disclosure(value)
+    except ComparisonValidationError:
+        return None
+    first = dict(present[0])
+    return first if all(dict(value) == first for value in present) else None
+
+
+def _rumor_notice(evidence_disclosure: Mapping[str, Any] | None) -> str:
+    if evidence_disclosure is None or not evidence_disclosure.get("isRumor"):
+        return ""
+    origin = "来源未知" if evidence_disclosure.get("originStatus") == "unknown" else "来源已记录"
+    return f" 本次包含未核实传闻（{origin}），请查看条件与未证实环节。"
+
+
+def _outbound_message(notification: Notification, *, evidence_disclosure: Mapping[str, Any] | None = None) -> tuple[str, str]:
     """Normalize user-visible B31 analysis rows without rewriting the outbox."""
     if notification.kind == notify_kinds.KIND_K10_ANALYSIS:
-        return _message(notification.kind, terminal_status=notification.terminal_status, stage="")
+        title, body = _message(notification.kind, terminal_status=notification.terminal_status, stage="")
+        return title, body + _rumor_notice(evidence_disclosure)
     return notification.title, notification.body
 
 
@@ -312,28 +368,35 @@ def enqueue_task_notification(
         payload = json.loads(row[4])
         payload = payload if isinstance(payload, Mapping) else {}
         kind = _kind(task_kind=task_kind, terminal_status=terminal_status, payload=payload, requested=notification_kind)
-        title, body = _message(kind, terminal_status=terminal_status, stage=stage)
         checkpoint = json.loads(row[5])
         checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+        disclosure = _evidence_disclosure(payload=payload, checkpoint=checkpoint)
+        title, body = _message(kind, terminal_status=terminal_status, stage=stage)
+        body += _rumor_notice(disclosure)
         deep_link = _deep_link({**payload, **checkpoint})
+        notification_payload = _notification_payload(deep_link=deep_link, evidence_disclosure=disclosure)
         idempotency_key = f"k10-notification:{task_id}:attempt:{task_attempt_count}:{terminal_status}:{kind}"
         existing = conn.execute(
             "SELECT notification_id,task_id,kind,terminal_status,task_attempt_count,title,body,deep_link_json,status,attempt_count,created_at "
             "FROM k10_task_notifications WHERE idempotency_key=?", (idempotency_key,)
         ).fetchone()
         if existing is not None:
-            expected = (task_id, kind, terminal_status, task_attempt_count, title, body, _json(deep_link))
+            expected = (task_id, kind, terminal_status, task_attempt_count, title, body, _json(notification_payload))
             try:
                 stored_payload = json.loads(existing[7])
             except json.JSONDecodeError:
                 raise NotificationConflict("K10 通知幂等键对应深链无效") from None
-            if not isinstance(stored_payload, Mapping) or set(stored_payload) - (_CURRENT_DEEP_LINK_KEYS | _LEGACY_DEEP_LINK_KEYS):
+            if not isinstance(stored_payload, Mapping) or set(stored_payload) - (_CURRENT_DEEP_LINK_KEYS | _LEGACY_DEEP_LINK_KEYS | {"research"}):
                 raise NotificationConflict("K10 通知幂等键对应深链无效")
+            stored_disclosure = _stored_evidence_disclosure(stored_payload)
+            if "research" in stored_payload and stored_disclosure is None:
+                raise NotificationConflict("K10 通知幂等键对应研究披露无效")
             if kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) not in {body, _LEGACY_ANALYSIS_BODY}:
                 raise NotificationConflict("K10 通知幂等键对应内容已变化")
-            stored_link = _stored_deep_link(existing[7])
+            stored_link = _stored_deep_link(stored_payload)
+            stored_notification_payload = _notification_payload(deep_link=stored_link, evidence_disclosure=stored_disclosure)
             actual = (*tuple(existing[1:6]), body if str(existing[2]) == notify_kinds.KIND_K10_ANALYSIS else existing[6],
-                      _json(stored_link))
+                      _json(stored_notification_payload))
             immutable_match = tuple(existing[1:6]) == (task_id, kind, terminal_status, task_attempt_count, title)
             permitted_analysis_body = kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) in {body, _LEGACY_ANALYSIS_BODY}
             matching_current_ids = all(
@@ -348,16 +411,16 @@ def enqueue_task_notification(
             # the task hook.  Dispatch applies the same filter for rows which never
             # receive another terminal hook.
             return Notification(str(existing[0]), task_id, kind, terminal_status, task_attempt_count,
-                                title, body, deep_link, str(existing[8]), int(existing[9]), str(existing[10]))
+                                title, body, deep_link, str(existing[8]), int(existing[9]), str(existing[10]), disclosure)
         notification_id = str(uuid4())
         conn.execute(
             "INSERT INTO k10_task_notifications(notification_id,idempotency_key,task_id,kind,terminal_status,task_attempt_count,title,body,"
             "deep_link_json,status,attempt_count,last_error,lease_owner,lease_until,created_at,updated_at,next_attempt_at,blocked_reason) "
             "VALUES(?,?,?,?,?,?,?,?,?,'queued',0,NULL,NULL,NULL,?,?,?,NULL)",
             (notification_id, idempotency_key, task_id, kind, terminal_status, task_attempt_count, title, body,
-             _json(deep_link), stamp, stamp, stamp),
+             _json(notification_payload), stamp, stamp, stamp),
         )
-    return Notification(notification_id, task_id, kind, terminal_status, task_attempt_count, title, body, deep_link, "queued", 0, stamp)
+    return Notification(notification_id, task_id, kind, terminal_status, task_attempt_count, title, body, deep_link, "queued", 0, stamp, disclosure)
 
 
 def on_task_terminal(**kwargs) -> Notification:
@@ -366,10 +429,12 @@ def on_task_terminal(**kwargs) -> Notification:
 
 
 def _notification(row) -> Notification:
+    raw_payload = json.loads(row[7])
+    raw_payload = raw_payload if isinstance(raw_payload, Mapping) else {}
     return Notification(
         notification_id=str(row[0]), task_id=str(row[1]), kind=str(row[2]), terminal_status=str(row[3]),
-        task_attempt_count=int(row[4]), title=str(row[5]), body=str(row[6]), deep_link=json.loads(row[7]), status=str(row[8]),
-        attempt_count=int(row[9]), created_at=str(row[10]),
+        task_attempt_count=int(row[4]), title=str(row[5]), body=str(row[6]), deep_link=_deep_link(raw_payload), status=str(row[8]),
+        attempt_count=int(row[9]), created_at=str(row[10]), evidence_disclosure=_stored_evidence_disclosure(raw_payload),
     )
 
 
@@ -542,10 +607,12 @@ def dispatch_task_notifications(
                 ).rowcount
                 if owned != 1:
                     raise NotificationConflict("通知租约已失效")
-            title, body = _outbound_message(notification)
+            disclosure = notification.evidence_disclosure
+            title, body = _outbound_message(notification, evidence_disclosure=disclosure)
             try:
                 result = sender(token=token, title=title, body=body, kind=notification.kind,
-                                deep_link=_deep_link(notification.deep_link), collapse_id=notification.notification_id)
+                                deep_link=_deep_link(notification.deep_link), evidence_disclosure=disclosure,
+                                collapse_id=notification.notification_id)
             except Exception:
                 transient_error = True
                 continue

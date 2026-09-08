@@ -46,6 +46,9 @@ struct OpportunitySheet: View {
                                     if let summary = sample.comparison.summary {
                                         Text(summary).font(NKFont.body)
                                     }
+                                    if let disclosure = sample.comparison.evidenceDisclosure {
+                                        EvidenceDisclosureBlock(disclosure: disclosure, model: model)
+                                    }
                                     ComparisonDetails(comparison: sample.comparison, model: model)
                                     EvidenceBlock(evidence: sample.evidence, model: model)
                                 }
@@ -67,6 +70,64 @@ struct OpportunitySheet: View {
                     Button("关闭") { dismiss() }
                 }
             }
+        }
+    }
+}
+
+/// B39 keeps a rumor's original uncertainty visible next to every comparison
+/// that relies on it.  Historical records without this optional contract stay
+/// silent instead of being promoted to "verified" by the client.
+struct EvidenceDisclosureBlock: View {
+    let disclosure: K10EvidenceDisclosure
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: disclosure.isRumor ? "exclamationmark.bubble" : "checkmark.shield")
+                    .foregroundStyle(tint)
+                Text(title).font(NKFont.callout.weight(.semibold))
+                Spacer()
+                Text(statusText).font(NKFont.caption.weight(.medium)).foregroundStyle(tint)
+            }
+            if disclosure.isRumor {
+                Text("这是一项传闻性判断，尚未核实的部分不能当作事实。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
+            Text(disclosure.originStatus == "identified" ? "源头：已识别" : "源头：未知")
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            if let origin = disclosure.originEvidenceRef {
+                SourceReferenceLine(source: origin, model: model)
+            }
+            if !disclosure.unverifiedReasons.isEmpty {
+                Text("待核原因：\(disclosure.unverifiedReasons.joined(separator: "、"))")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
+            if let analysis = disclosure.conditionalAnalysis, !analysis.isEmpty {
+                Text("条件判断：\(analysis)").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+        }
+        .padding(9)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: NKRadius.inner))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var title: String { disclosure.isRumor ? "传闻披露" : "证据披露" }
+
+    private var statusText: String {
+        switch disclosure.verificationStatus {
+        case "verified": "已核验"
+        case "partially_supported": "部分支持"
+        case "contradicted": "存在反证"
+        default: "未核实"
+        }
+    }
+
+    private var tint: Color {
+        switch disclosure.verificationStatus {
+        case "verified": NK.accent
+        case "partially_supported": NK.textSecondary
+        default: NK.amber
         }
     }
 }

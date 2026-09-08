@@ -52,6 +52,21 @@ class Evidence(K10Model):
     uncertainty: str | None = None
 
 
+class EvidenceDisclosureOut(K10Model):
+    """Frozen truth boundary for a B39 assessment or published recommendation.
+
+    This object is optional on its containing historical records.  Its absence
+    means the older record did not carry this contract; it never means
+    ``verified``.
+    """
+    verificationStatus: Literal["verified", "partially_supported", "unverified", "contradicted"]
+    isRumor: bool
+    originStatus: Literal["identified", "unknown"]
+    originEvidenceRef: SourceReference | None = None
+    unverifiedReasons: list[str] = Field(default_factory=list)
+    conditionalAnalysis: str | None = None
+
+
 class HistoricalCaseOut(K10Model):
     caseId: str
     outcome: Literal["success", "flat", "failure", "unclassified"]
@@ -100,6 +115,69 @@ class CandidateComparison(K10Model):
     # a later global ordering pass.
     eventRank: int | None = None
     rankNamespace: str | None = None
+    evidenceDisclosure: EvidenceDisclosureOut | None = None
+
+
+class ResearchAssessmentOut(K10Model):
+    """One B39 comparison assessment, including non-publishable peers.
+
+    The endpoint intentionally returns pending and excluded companies as well
+    as primary/alternative/tied entries, so a reader can see that comparison
+    coverage completed instead of mistaking a filtered recommendation list for
+    the whole company set.
+    """
+    companyCode: str = Field(min_length=1)
+    role: Literal["primary", "alternative", "tied", "pending", "excluded"]
+    rank: int | None = Field(default=None, ge=1)
+    summary: str = Field(min_length=1)
+    priorityReason: str = Field(min_length=1)
+    gap: str = Field(min_length=1)
+    rankChangeConditions: str = Field(min_length=1)
+    twoDayReason: str = Field(min_length=1)
+    evidenceDisclosure: EvidenceDisclosureOut
+    snapshotId: str = Field(min_length=1)
+    snapshotRevision: int = Field(ge=1)
+    eventId: str = Field(min_length=1)
+    eventRevision: int = Field(ge=1)
+    researchStatus: Literal["ready_for_comparison", "continue_research", "pending_verification", "abandon_recommendation", "background_only", "comparison_complete"]
+    executionStatus: Literal["ok", "paused", "failed"]
+    safeErrorCode: str | None = Field(default=None, max_length=120)
+
+
+class ResearchAssessmentListOut(K10Model):
+    schemaVersion: str = SCHEMA_VERSION
+    scanId: str
+    items: list[ResearchAssessmentOut] = Field(default_factory=list)
+
+
+class ResearchQuestionCountsOut(K10Model):
+    open: int = Field(ge=0)
+    answered: int = Field(ge=0)
+    blocked: int = Field(ge=0)
+    abandoned: int = Field(ge=0)
+
+
+class ResearchCompanyCountsOut(K10Model):
+    primary: int = Field(ge=0)
+    alternative: int = Field(ge=0)
+    tied: int = Field(ge=0)
+    pending: int = Field(ge=0)
+    excluded: int = Field(ge=0)
+    comparable: int = Field(ge=0)
+
+
+class ResearchSummaryOut(K10Model):
+    """Safe scan-level B39 research state, calculated only by the store helper."""
+    scanId: str = Field(min_length=1)
+    taskId: str = Field(min_length=1)
+    eventCount: int = Field(ge=0)
+    questionCounts: ResearchQuestionCountsOut
+    companyCounts: ResearchCompanyCountsOut
+    researchStatusCounts: dict[str, int] = Field(default_factory=dict)
+    executionStatusCounts: dict[str, int] = Field(default_factory=dict)
+    safeFailureCounts: dict[str, int] = Field(default_factory=dict)
+    comparisonComplete: bool
+    executionFailed: bool
 
 
 class CommonFactOut(K10Model):
@@ -206,6 +284,7 @@ class ExecutionProgressOut(K10Model):
     articleCounts: ExecutionArticleCountsOut | None = None
     attemptCounts: ExecutionAttemptCountsOut | None = None
     factCacheHits: int | None = Field(default=None, ge=0)
+    researchSummary: ResearchSummaryOut | None = None
 
 
 class SourceCoverageOut(K10Model):
@@ -246,6 +325,9 @@ class ScanOut(K10Model):
     completedAt: str | None = None
     # Historical scans predate item-level checkpoints; absence is not zero.
     executionProgress: ExecutionProgressOut | None = None
+    # B36/B38 records predate proposition investigation.  Absence is material
+    # and is never projected as a verified or completed comparison.
+    researchSummary: ResearchSummaryOut | None = None
 
 
 class PublicationOut(K10Model):
@@ -415,6 +497,9 @@ class AnalysisInputLineage(K10Model):
     proAnalysis: dict[str, object] | None = None
     chain: dict[str, object] | None = None
     historicalContext: dict[str, object] | None = None
+    # Frozen disclosure included in the analysis prompt/context.  It remains
+    # optional for historical analysis revisions.
+    evidenceDisclosure: EvidenceDisclosureOut | None = None
 
 
 class AnalysisArtifactOut(K10Model):
@@ -657,6 +742,8 @@ class MorningReportItemOut(K10Model):
     coverageGaps: list[str] = Field(default_factory=list)
     sourceRefs: list[SourceReference] = Field(default_factory=list)
     independentVerificationRefs: list[SourceReference] = Field(default_factory=list)
+    # Absent on B36/B38 reports that predate frozen B39 disclosure.
+    evidenceDisclosure: EvidenceDisclosureOut | None = None
     lifecycleEventId: str | None = None
     deadlineAt: str | None = None
     createdAt: str

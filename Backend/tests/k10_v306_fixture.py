@@ -16,7 +16,7 @@ def execution_payload(*, policy_id: str = "v306-title-policy") -> tuple[dict, di
     policy_hash = store._hash(policy)
     option = {"maxTokens": 128, "thinking": {"type": "disabled"}}
     stages = ("titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize",
-              "morning", "analysisPro", "analysisCon")
+              "morning", "analysisPro", "analysisCon", "investigation")
     return policy, {
         "executionVersion": "k10-execution-v3",
         "discovery": {
@@ -27,6 +27,7 @@ def execution_payload(*, policy_id: str = "v306-title-policy") -> tuple[dict, di
             "titleBatchSize": 2, "titleTriageConcurrency": 1, "deepReadConcurrency": 1,
             "networkMaxAttempts": 2, "jsonRepairMaxAttempts": 1, "retryBackoffSeconds": [1],
             "taskSliceSeconds": 60, "completionDeadlineSeconds": 7200, "continuationDelaySeconds": 1,
+            "investigationPromptContractRevision": "k10-investigation-v1",
             "modelOptions": {stage: dict(option) for stage in stages},
         },
     }

@@ -27,6 +27,7 @@
     "taskSliceSeconds": 110,
     "completionDeadlineSeconds": 7200,
     "continuationDelaySeconds": 1,
+    "investigationPromptContractRevision": "k10-investigation-v1",
     "modelOptions": {
       "titleBatch": {"maxTokens": 12288, "thinking": {"type": "disabled"}},
       "titleReconcile": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
@@ -36,7 +37,8 @@
       "prioritize": {"maxTokens": 2200, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
       "morning": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
       "analysisPro": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
-      "analysisCon": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"}
+      "analysisCon": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "investigation": {"maxTokens": 8192, "thinking": {"type": "enabled"}, "reasoningEffort": "high"}
     }
   }
 }

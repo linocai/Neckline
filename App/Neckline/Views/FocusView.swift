@@ -505,6 +505,10 @@ struct AnalysisBlock: View {
                 .font(NKFont.caption)
                 .foregroundStyle(NK.textSecondary)
 
+            if let disclosure = analysis.inputLineage.evidenceDisclosure {
+                EvidenceDisclosureBlock(disclosure: disclosure, model: model)
+            }
+
             if analysis.fullText != nil {
                 Text(expanded ? "完整观点" : "正文节选").font(NKFont.headline)
                 K10MarkdownText(markdown: expanded ? (analysis.fullText ?? "") : preview, sourceRefs: analysis.sourceRefs) { source in

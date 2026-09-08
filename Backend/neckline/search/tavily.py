@@ -13,6 +13,7 @@ from neckline.llm.base import SearchHit
 logger = logging.getLogger(__name__)
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,17 @@ class TavilySearchResponse:
                 if hit.content.strip() or hit.title.strip()
             ],
         }
+
+
+@dataclass(frozen=True)
+class TavilyExtractResponse:
+    ok: bool
+    url: str
+    raw_content: Optional[str] = None
+    credits: Optional[int] = None
+    request_id: Optional[str] = None
+    reason: str = "ok"
+    wall_ms: int = 0
 
 
 def _published_date(item: dict) -> str:
@@ -160,5 +172,55 @@ class TavilySearchClient:
             wall_ms=max(0, int((time.monotonic() - started_all) * 1000)),
         )
 
+    def extract(self, url: str, *, transport: Optional[Any] = None) -> TavilyExtractResponse:
+        """Retrieve one already-admitted article, never query-selected chunks.
 
-__all__ = ["TAVILY_SEARCH_URL", "TavilySearchResponse", "TavilySearchClient"]
+        Admission belongs to the K10 gateway.  This transport deliberately
+        sends no query/chunks_per_source: Tavily otherwise returns selected
+        fragments in raw_content, which is not proof of reading the article.
+        The gateway owns retries and records each HTTP attempt separately.
+        """
+        clean_url = (url or "").strip()
+        if not self.api_key:
+            return TavilyExtractResponse(False, clean_url, reason="tavily_api_key_missing")
+        parsed = urlparse(clean_url)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+            return TavilyExtractResponse(False, clean_url, reason="invalid_extract_url")
+        import httpx
+        chosen_transport = transport if transport is not None else self.transport
+        kwargs = {"timeout": self.request_timeout}
+        if chosen_transport is not None:
+            kwargs["transport"] = chosen_transport
+        started = time.monotonic()
+        payload = {"urls": [clean_url], "include_images": False, "include_usage": True, "format": "text"}
+        try:
+            with httpx.Client(**kwargs) as client:
+                response = client.post(TAVILY_EXTRACT_URL, json=payload, headers={
+                    "Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
+                })
+            elapsed = max(0, int((time.monotonic() - started) * 1000))
+            if response.status_code != 200:
+                return TavilyExtractResponse(False, clean_url, reason=f"tavily_http_{response.status_code}", wall_ms=elapsed)
+            body = response.json()
+            if not isinstance(body, dict):
+                return TavilyExtractResponse(False, clean_url, reason="tavily_invalid_response", wall_ms=elapsed)
+            usage = body.get("usage")
+            credits = usage.get("credits") if isinstance(usage, dict) else None
+            if isinstance(credits, bool) or not isinstance(credits, int) or credits < 0:
+                credits = None
+            results = body.get("results")
+            matching = [item for item in results if isinstance(item, dict) and item.get("url") == clean_url] if isinstance(results, list) else []
+            content = matching[0].get("raw_content") if len(matching) == 1 else None
+            content = content.strip() if isinstance(content, str) else None
+            reason = "ok" if content and credits is not None else (
+                "tavily_usage_unavailable" if credits is None else "tavily_fulltext_unavailable"
+            )
+            return TavilyExtractResponse(reason == "ok", clean_url, content or None, credits,
+                str(body.get("request_id") or "") or None, reason, elapsed)
+        except Exception:
+            # Never leak response bodies, authorization headers or provider URLs.
+            return TavilyExtractResponse(False, clean_url, reason="tavily_extract_outcome_unknown",
+                wall_ms=max(0, int((time.monotonic() - started) * 1000)))
+
+
+__all__ = ["TAVILY_SEARCH_URL", "TAVILY_EXTRACT_URL", "TavilyExtractResponse", "TavilySearchResponse", "TavilySearchClient"]

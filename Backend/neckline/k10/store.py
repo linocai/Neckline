@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .schema import read_connection, require_schema, write_connection
 from .config import validate_execution_config
+from .research_contracts import EvidenceDisclosure, ResearchContractError
 from .types import CompanyWindowObservation, DocumentVersion, EventRevision, Observation, OpportunityPublicationInput, PublicationBatch, Task
 
 
@@ -2370,6 +2372,35 @@ def record_execution_checkpoint(
         )
 
 
+def reject_completed_execution_checkpoint(
+    *, task_id: str, item_kind: str, item_key: str, stage: str, input_sha256: str,
+    safe_error_code: str, updated_at: str, db_path: Path,
+    leaseguard: Callable[[], None] | None = None,
+) -> bool:
+    """Downgrade one completed derivative after stricter semantic validation.
+
+    The validated JSON derivative and actual model usage stay in the immutable
+    row for audit. Only its reusable completion state changes, under the same
+    task lease and exact input identity that created it.
+    """
+    if (item_kind not in {"document", "event", "global"} or not item_key or not stage
+            or not input_sha256 or not isinstance(safe_error_code, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", safe_error_code)):
+        raise ValueError("拒绝执行检查点参数无效")
+    if leaseguard is not None:
+        leaseguard()
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        if leaseguard is not None:
+            leaseguard()
+        changed = conn.execute(
+            "UPDATE k10_execution_item_checkpoints SET status='failed',safe_error_code=?,safe_error_ref=?,updated_at=? "
+            "WHERE task_id=? AND item_kind=? AND item_key=? AND stage=? AND input_sha256=? AND status='completed'",
+            (safe_error_code, item_key, updated_at, task_id, item_kind, item_key, stage, input_sha256),
+        ).rowcount
+    return changed == 1
+
+
 def completed_execution_items(*, task_id: str, item_kind: str, stage: str, db_path: Path) -> list[dict[str, Any]]:
     """Read only immutable completed derivatives for a frozen-task resume."""
     with read_connection(db_path) as conn:
@@ -2748,6 +2779,94 @@ def retry_task(
     return _task_from_row(row)
 
 
+def authorize_discovery_recovery(
+    *, scan_id: str, execution_config_id: str, execution_config_revision: int,
+    confirmed_input_sha256: str, authorized_at: str, db_path: Path,
+) -> Task:
+    """Requeue the already-bound failed discovery task against its frozen input.
+
+    A B39 recovery cannot create a fresh task: title triage, actual article
+    admissions, successful provider checkpoints and research snapshots are all
+    task-owned. This atomic transition leaves those rows in place and records
+    the human-confirmed frozen-input digest for the coordinator's one allowed
+    failed-stage resume path.
+    """
+    if (not isinstance(scan_id, str) or not scan_id or not isinstance(execution_config_id, str) or not execution_config_id
+            or isinstance(execution_config_revision, bool) or not isinstance(execution_config_revision, int)
+            or execution_config_revision < 1 or not isinstance(confirmed_input_sha256, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", confirmed_input_sha256)
+            or not isinstance(authorized_at, str) or not authorized_at):
+        raise ValueError("受控恢复参数无效")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        control = conn.execute("SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'").fetchone()
+        if control is None or control[0] != "open":
+            raise K10Conflict("K10 运行已暂停，拒绝恢复")
+        row = conn.execute(
+            "SELECT s.status,s.coverage_json,b.task_id,b.execution_config_id,b.execution_config_revision,"
+            "b.execution_content_sha256,t.status,t.attempt_count,t.checkpoint_json,t.input_cutoff_at,"
+            "tb.execution_config_id,tb.execution_config_revision,tb.execution_content_sha256 "
+            "FROM k10_scans s JOIN k10_scan_execution_bindings b ON b.scan_id=s.scan_id "
+            "JOIN k10_tasks t ON t.task_id=b.task_id "
+            "JOIN k10_task_execution_bindings tb ON tb.task_id=t.task_id WHERE s.scan_id=?",
+            (scan_id,),
+        ).fetchone()
+        if row is None:
+            raise K10Conflict("扫描没有可复用的原任务执行绑定")
+        (scan_status, coverage_raw, task_id, bound_id, bound_revision, bound_hash,
+         task_status, attempt_count, checkpoint_raw, _cutoff, task_bound_id,
+         task_bound_revision, task_bound_hash) = row
+        if scan_status not in {"failed", "not_configured"} or task_status not in {"failed", "not_configured"}:
+            raise K10Conflict("只有当前失败的冻结扫描及原任务可受控恢复")
+        profile = conn.execute(
+            "SELECT content_sha256 FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
+            (execution_config_id, execution_config_revision),
+        ).fetchone()
+        if (profile is None or bound_id != execution_config_id or bound_revision != execution_config_revision
+                or task_bound_id != execution_config_id or task_bound_revision != execution_config_revision
+                or bound_hash != profile[0] or task_bound_hash != profile[0]):
+            raise K10Conflict("受控恢复必须使用原任务完全相同的执行配置")
+        if conn.execute("SELECT 1 FROM k10_discovery_retirements WHERE scan_id=? OR task_id=?", (scan_id, task_id)).fetchone() is not None:
+            raise K10Conflict("用户已弃用该发现任务，禁止恢复")
+        try:
+            coverage = json.loads(coverage_raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("扫描覆盖记录无效") from exc
+        refs = coverage.get("inputDocumentRefs") if isinstance(coverage, Mapping) else None
+        if coverage.get("inputSnapshotFrozen") is not True or not isinstance(refs, list) or not refs:
+            raise K10Conflict("扫描未冻结输入快照，拒绝恢复")
+        actual = hashlib.sha256(json.dumps(refs, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        if actual != confirmed_input_sha256:
+            raise K10Conflict("冻结资料哈希确认不匹配，拒绝恢复")
+        try:
+            checkpoint = json.loads(checkpoint_raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("任务 checkpoint 无效") from exc
+        if not isinstance(checkpoint, Mapping):
+            raise K10Conflict("任务 checkpoint 无效")
+        updated_checkpoint = dict(checkpoint)
+        prior = updated_checkpoint.get("recoveryAuthorized")
+        if prior is not None and not isinstance(prior, Mapping):
+            raise K10Conflict("任务恢复授权记录无效")
+        updated_checkpoint["recoveryAuthorized"] = {
+            "scanId": scan_id, "frozenInputSha256": confirmed_input_sha256, "authorizedAt": authorized_at,
+            "previousAttemptCount": int(attempt_count), "previousStage": updated_checkpoint.get("stage"),
+        }
+        changed = conn.execute(
+            "UPDATE k10_tasks SET status='queued',stage='recovery_authorized',checkpoint_json=?,error_text=NULL,"
+            "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND attempt_count=? "
+            "AND status IN ('failed','not_configured')",
+            (_json(updated_checkpoint), authorized_at, task_id, int(attempt_count)),
+        ).rowcount
+        if changed != 1:
+            raise K10Conflict("任务不是可恢复的当前失败版本")
+        conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
+        task = conn.execute(
+            "SELECT task_id,kind,status,attempt_count,lease_owner,lease_until,payload_json FROM k10_tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+    return _task_from_row(task)
+
+
 
 # --- V1.4 opportunity publication and fixed-window evaluation -----------------
 
@@ -2872,6 +2991,58 @@ def _validate_event_comparison_inputs(values: Sequence["OpportunityPublicationIn
                 raise ValueError("同一事件修订的同 rank 仅允许 tied")
 
 
+def _validate_research_publication_bridge(
+    conn, *, comparison: Mapping[str, Any], evidence_refs: Sequence[Mapping[str, Any]], scan_id: str, event_id: str,
+) -> None:
+    """Validate the additive B39 disclosure/provenance fields on a publication.
+
+    Schema 6 publications legitimately have neither field.  When a research
+    bridge is supplied, however, its disclosure cannot be omitted or detached
+    from a real immutable snapshot revision.
+    """
+    snapshot_id = comparison.get("researchSnapshotId")
+    research_revision = comparison.get("researchRevision")
+    has_bridge = snapshot_id is not None or research_revision is not None
+    differences = comparison.get("differences")
+    disclosure_payload = differences.get("evidenceDisclosure") if isinstance(differences, Mapping) else None
+    bound = conn.execute("SELECT task_id FROM k10_scan_execution_bindings WHERE scan_id=?", (scan_id,)).fetchone()
+    researched_event = False
+    if bound is not None:
+        researched_event = conn.execute(
+            "SELECT 1 FROM k10_research_snapshot_revisions WHERE task_id=? AND event_id=? LIMIT 1",
+            (bound[0], event_id),
+        ).fetchone() is not None
+    if has_bridge:
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip() or isinstance(research_revision, bool) or not isinstance(research_revision, int) or research_revision < 1:
+            raise ValueError("研究快照桥接必须精确包含 researchSnapshotId 与 researchRevision")
+        if disclosure_payload is None:
+            raise ValueError("研究快照桥接不得省略 evidenceDisclosure")
+        snapshot = conn.execute(
+            "SELECT task_id FROM k10_research_snapshot_revisions WHERE snapshot_id=? AND revision=?",
+            (snapshot_id, research_revision),
+        ).fetchone()
+        if snapshot is None:
+            raise K10Conflict("研究快照桥接引用不存在的不可变修订")
+        if bound is not None and snapshot[0] != bound[0]:
+            raise K10Conflict("研究快照桥接不属于当前扫描任务")
+    if disclosure_payload is None:
+        if researched_event:
+            raise ValueError("研究正式发布不得省略 evidenceDisclosure")
+        return
+    try:
+        disclosure = EvidenceDisclosure.from_dict(disclosure_payload).to_dict()
+    except ResearchContractError as exc:
+        raise ValueError("正式推荐 evidenceDisclosure 无效") from exc
+    origin = disclosure["originEvidenceRef"]
+    if origin is not None:
+        key = (origin["documentId"], origin["revision"])
+        available = {(ref.get("documentId"), ref.get("revision")) for ref in evidence_refs if isinstance(ref, Mapping)}
+        if key not in available:
+            raise ValueError("evidenceDisclosure.originEvidenceRef 必须属于正式推荐精确证据引用")
+        if conn.execute("SELECT 1 FROM k10_source_document_versions WHERE document_id=? AND revision=?", key).fetchone() is None:
+            raise K10Conflict("evidenceDisclosure.originEvidenceRef 引用未保存资料版本")
+
+
 def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                           inputs: Sequence["OpportunityPublicationInput"], db_path: Path,
                           clock: "Callable[[], datetime]") -> "PublicationBatch":
@@ -2925,15 +3096,19 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                 raise ValueError("source_marker 必须与首发批次一致")
             comparison = item.comparison
             required_comparison = {"summary", "differences", "evidenceRefs", "rank", "classification"}
-            allowed_comparison = required_comparison | {"marketContext", "historicalCases", "historicalCoverage", "rankNamespace", "eventRank"}
+            allowed_comparison = required_comparison | {
+                "marketContext", "historicalCases", "historicalCoverage", "rankNamespace", "eventRank",
+                "researchSnapshotId", "researchRevision",
+            }
             if not isinstance(comparison, Mapping) or not required_comparison <= set(comparison) or not set(comparison) <= allowed_comparison:
                 raise ValueError("正式推荐缺少完整比较快照")
             differences = comparison["differences"]
             classification = comparison["classification"]
             required_difference = {"role", "priorityReason", "gap", "rankChangeConditions", "twoDayReason"}
+            allowed_difference = required_difference | {"evidenceDisclosure"}
             required_classification = {"kind", "opportunityKey", "reason", "newFacts", "changedJudgment", "twoDayReason", "relatedOpportunityId"}
             if (not isinstance(comparison["summary"], str) or not comparison["summary"].strip() or
-                not isinstance(differences, Mapping) or set(differences) != required_difference or
+                not isinstance(differences, Mapping) or not required_difference <= set(differences) or not set(differences) <= allowed_difference or
                 not isinstance(classification, Mapping) or set(classification) != required_classification or
                 differences.get("role") != item.category or classification.get("opportunityKey") != item.opportunity_key or
                 classification.get("relatedOpportunityId") != item.related_opportunity_id or
@@ -2948,6 +3123,9 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                 (item.display_rank is not None and (isinstance(item.display_rank, bool) or not isinstance(item.display_rank, int) or item.display_rank < 1)) or
                 _json(comparison["evidenceRefs"]) != _json(item.evidence_refs)):
                 raise ValueError("正式推荐比较、分类或精确证据引用不一致")
+            _validate_research_publication_bridge(
+                conn, comparison=comparison, evidence_refs=item.evidence_refs, scan_id=scan_id, event_id=item.event_id,
+            )
             _validate_historical_context(conn, comparison)
             candidate = conn.execute("SELECT event_id,event_revision,company_code FROM k10_candidates WHERE candidate_id=?", (item.candidate_id,)).fetchone()
             if candidate is None or tuple(candidate) != (item.event_id, item.event_revision, item.company_code):
@@ -3365,9 +3543,11 @@ __all__ = [
     "K10Conflict", "append_analysis_revision", "append_candidate_action", "append_company_mapping", "append_company_window_action",
     "append_company_window_evaluation", "append_document_version", "append_market_day_fact",
     "admit_article", "append_execution_config", "append_morning_update", "append_opportunity_update", "append_run_config", "append_source_watermark",
+    "authorize_discovery_recovery",
     "append_title_triage_policy", "begin_external_attempt",
     "append_event_revision", "candidate_state", "claim_task_by_id", "claim_tasks", "create_candidate",
-    "bind_scan_execution", "bind_task_execution", "completed_execution_items", "create_scan", "enqueue_task", "execution_progress_for_scan", "finalize_scan", "finish_task", "freeze_company_window_selection",
+    "bind_scan_execution", "bind_task_execution", "completed_execution_items", "create_scan",
+    "reject_completed_execution_checkpoint", "enqueue_task", "execution_progress_for_scan", "finalize_scan", "finish_task", "freeze_company_window_selection",
     "get_candidate", "get_company_window_selection", "get_observation", "get_opportunity", "get_opportunity_for_candidate", "get_publication_batch", "get_scan",
     "latest_document_version", "latest_event_revision", "latest_market_day_facts", "latest_source_watermark", "list_candidates",
     "list_company_windows", "list_company_window_evaluations", "list_market_day_facts", "list_observations", "list_opportunities", "market_day_fact_id",

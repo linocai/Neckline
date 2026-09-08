@@ -3,6 +3,8 @@ import Foundation
 protocol K10Servicing: Sendable {
     func health() async throws -> K10Health
     func latestScan(window: String) async throws -> K10Scan
+    func researchSummary(scanID: String) async throws -> K10ResearchSummary
+    func researchAssessments(scanID: String) async throws -> K10ResearchAssessmentList
     func publications() async throws -> [K10Publication]
     func companyWindows() async throws -> [K10CompanyWindow]
     func latestMorningReport() async throws -> K10MorningReport?
@@ -23,6 +25,12 @@ protocol K10Servicing: Sendable {
 }
 
 extension K10Servicing {
+    func researchSummary(scanID: String) async throws -> K10ResearchSummary {
+        throw K10APIError.notFound("该扫描没有 B39 研究摘要")
+    }
+    func researchAssessments(scanID: String) async throws -> K10ResearchAssessmentList {
+        K10ResearchAssessmentList(schemaVersion: "k10-api-v2", scanId: scanID, items: [])
+    }
     func latestMorningReport() async throws -> K10MorningReport? { nil }
     func morningReports() async throws -> [K10MorningReport] { [] }
     func analysisChain(companyWindowID: String) async throws -> K10AnalysisChain {
@@ -44,6 +52,8 @@ actor K10APIClient: K10Servicing {
     init(baseURL: URL, token: String, session: URLSession = .shared) { self.baseURL = baseURL; self.token = token; self.session = session }
     func health() async throws -> K10Health { try await get("/api/v1/health", authenticated: false) }
     func latestScan(window: String) async throws -> K10Scan { try await get("/api/v1/k10/scans/latest", query: [URLQueryItem(name: "window", value: window)]) }
+    func researchSummary(scanID: String) async throws -> K10ResearchSummary { try await get("/api/v1/k10/scans/\(scanID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? scanID)/research-summary") }
+    func researchAssessments(scanID: String) async throws -> K10ResearchAssessmentList { try await get("/api/v1/k10/scans/\(scanID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? scanID)/assessments") }
     func publications() async throws -> [K10Publication] { try await allPages(path: "/api/v1/k10/publications", extra: [], as: K10PublicationList.self).items }
     func companyWindows() async throws -> [K10CompanyWindow] { try await allPages(path: "/api/v1/k10/company-windows", extra: [], as: K10CompanyWindowList.self).items }
     func latestMorningReport() async throws -> K10MorningReport? {

@@ -22,6 +22,8 @@ from .schema import require_schema, write_connection
 
 _OPERATIONS = frozenset({
     "titleBatch", "titleReconcile", "understand", "verify", "map", "compare", "classify", "prioritize",
+    "investigation_extract_claims", "investigation_plan_gaps", "investigation_plan_queries",
+    "investigation_assess_evidence", "investigation_close_research", "investigation_compare_companies",
 })
 _JSON_CODES = frozenset({"json_invalid", "json_root_invalid", "response_json_invalid", "response_structure_invalid"})
 _NETWORK_CODES = frozenset({

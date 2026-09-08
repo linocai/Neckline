@@ -119,6 +119,31 @@ final class K10V3Tests: XCTestCase {
         if case .ready = model.state {} else { XCTFail("synthetic model should load") }
     }
 
+    func testSyntheticB39ResearchFixtureKeepsFailurePendingAndRumorDisclosureDistinct() async throws {
+        let service = K10SyntheticUIService(presentsB39State: true)
+        let scan = try await service.latestScan(window: "evening")
+        let summary = try XCTUnwrap(scan.researchSummary)
+        XCTAssertTrue(summary.executionFailed)
+        XCTAssertFalse(summary.comparisonComplete)
+        XCTAssertEqual(summary.companyCounts.pending, 1)
+        let assessments = try await service.researchAssessments(scanID: scan.scanId)
+        XCTAssertEqual(Set(assessments.items.map(\.role)), ["primary", "pending", "excluded"])
+        let disclosure = try XCTUnwrap(assessments.items.first(where: { $0.role == "primary" })?.evidenceDisclosure)
+        XCTAssertEqual(disclosure.verificationStatus, "unverified")
+        XCTAssertTrue(disclosure.isRumor)
+        XCTAssertEqual(disclosure.originStatus, "unknown")
+        XCTAssertFalse(try XCTUnwrap(disclosure.conditionalAnalysis).isEmpty)
+    }
+
+    @MainActor func testAppModelLoadsSyntheticB39SummaryAndAllAssessments() async throws {
+        let service = K10SyntheticUIService(presentsB39State: true)
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let scan = try XCTUnwrap(model.scanSummaries.first(where: { $0.window == "evening" }))
+        XCTAssertTrue(scan.researchSummary?.executionFailed ?? false)
+        XCTAssertEqual(Set(model.researchAssessments[scan.scanId, default: []].map(\.role)), ["primary", "pending", "excluded"])
+    }
+
     @MainActor func testMorningTransportFailurePreservesSameConnectionReportThenRecovers() async throws {
         let service = ControlledK10Service(batchID: "morning-retry")
         let model = AppModel(serviceFactory: { service })
@@ -748,6 +773,29 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(progress.factCacheHits, 2)
     }
 
+    func testV310IsolatedFastAPIResearchSummaryAndAssessmentsDecodeDisclosure() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["NK_V310_API_URL"],
+              let baseURL = URL(string: raw) else {
+            throw XCTSkip("set NK_V310_API_URL to run the isolated B39 FastAPI-to-Swift DTO check")
+        }
+        let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
+        let scan = try await client.latestScan(window: "evening")
+        let embedded = try XCTUnwrap(scan.researchSummary)
+        XCTAssertTrue(embedded.executionFailed)
+        XCTAssertTrue(embedded.comparisonComplete, "研究完成与执行失败是独立状态，界面仍须优先显示比较未完成")
+        XCTAssertEqual(embedded.safeFailureCounts["comparison_interrupted"], 1)
+
+        let summary = try await client.researchSummary(scanID: scan.scanId)
+        XCTAssertEqual(summary, embedded)
+        let assessments = try await client.researchAssessments(scanID: scan.scanId)
+        XCTAssertEqual(Set(assessments.items.map(\.role)), ["primary", "pending", "excluded"])
+        let rumor = try XCTUnwrap(assessments.items.first(where: { $0.role == "primary" })?.evidenceDisclosure)
+        XCTAssertEqual(rumor.verificationStatus, "unverified")
+        XCTAssertTrue(rumor.isRumor)
+        XCTAssertEqual(rumor.originStatus, "unknown")
+        XCTAssertEqual(assessments.items.first(where: { $0.role == "primary" })?.safeErrorCode, "comparison_interrupted")
+    }
+
     func testExecutionProgressAndNotificationReadinessDecodeOnlySafeFields() throws {
         let scanData = Data("""
         {
@@ -786,6 +834,21 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(readiness.notificationReadiness.state, "blocked")
         XCTAssertEqual(readiness.notificationReadiness.reasonCode, "credentials_missing")
         XCTAssertEqual(readiness.runControl.reasonCode, "user_paused")
+    }
+
+    func testB39DisclosureDecodesUnverifiedRumorWithoutPromotingLegacyComparison() throws {
+        let rumor = Data("""
+        {"summary":"待核传闻","rationale":null,"rank":1,"priorityReason":"映射待核","gap":"缺独立来源","rankChangeConditions":"正式披露","twoDayReason":"仅观察","classification":null,"historicalCases":[],"historicalCoverage":null,"eventRank":1,"rankNamespace":"event","evidenceDisclosure":{"verificationStatus":"unverified","isRumor":true,"originStatus":"unknown","originEvidenceRef":null,"unverifiedReasons":["尚无独立来源核验"],"conditionalAnalysis":"仅在正式披露确认时重新评估。"}}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(K10Comparison.self, from: rumor)
+        XCTAssertEqual(decoded.evidenceDisclosure?.verificationStatus, "unverified")
+        XCTAssertEqual(decoded.evidenceDisclosure?.isRumor, true)
+        XCTAssertEqual(decoded.evidenceDisclosure?.unverifiedReasons, ["尚无独立来源核验"])
+
+        let legacy = Data("""
+        {"summary":"历史比较","rationale":null,"rank":1,"priorityReason":"旧理由","gap":null,"rankChangeConditions":null,"twoDayReason":null,"classification":null,"historicalCases":[],"historicalCoverage":null,"eventRank":null,"rankNamespace":null}
+        """.utf8)
+        XCTAssertNil(try JSONDecoder().decode(K10Comparison.self, from: legacy).evidenceDisclosure)
     }
 }
 

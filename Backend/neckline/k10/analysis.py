@@ -17,6 +17,7 @@ from uuid import uuid4
 from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
 
 from .config import validate_run_config
+from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
 from .prompts import PROMPT_VERSION, con_messages, pro_messages
 
 
@@ -244,6 +245,20 @@ def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str,
     documents = context.get("documents")
     if not isinstance(candidate, Mapping) or not isinstance(event, Mapping):
         return context
+    disclosure = candidate.get("evidenceDisclosure")
+    comparison = candidate.get("comparison")
+    if disclosure is None and isinstance(comparison, Mapping):
+        disclosure = comparison.get("evidenceDisclosure")
+        if disclosure is None and isinstance(comparison.get("differences"), Mapping):
+            disclosure = comparison["differences"].get("evidenceDisclosure")
+    if disclosure is not None:
+        if not isinstance(disclosure, Mapping):
+            raise AnalysisInputError("冻结证据披露无效")
+        try:
+            validate_evidence_disclosure(disclosure)
+        except ComparisonValidationError as exc:
+            raise AnalysisInputError("冻结证据披露无效") from exc
+        disclosure = dict(disclosure)
     if context.get("cutoffAt") != cutoff_at:
         raise AnalysisInputError("Observation 资料截止与任务截止不一致")
     if not isinstance(mappings, Sequence) or isinstance(mappings, (str, bytes)):
@@ -287,6 +302,8 @@ def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str,
         *({"kind": "mapping", "mapping": dict(item)} for item in mappings if isinstance(item, Mapping)),
         *({"kind": "document", "document": dict(item)} for item in documents if isinstance(item, Mapping)),
     ]
+    if isinstance(disclosure, Mapping):
+        evidence.append({"kind": "evidence_disclosure", "evidenceDisclosure": dict(disclosure)})
     market = context.get("marketContext")
     if isinstance(market, Mapping):
         market_copy = dict(market)
@@ -311,6 +328,7 @@ def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str,
         "documentVersions": versions,
         "frozenEvidenceRefs": [dict(item) for item in frozen_refs if isinstance(item, Mapping)],
         "inputCutoffAt": cutoff_at,
+        **({"evidenceDisclosure": dict(disclosure)} if isinstance(disclosure, Mapping) else {}),
         **({"marketContext": market_copy} if isinstance(market, Mapping) else {}),
         **({"publicationContext": publication_copy} if isinstance(publication, Mapping) else {}),
         **({"chain": dict(request_chain)} if isinstance(request_chain, Mapping) else {}),
