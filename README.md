@@ -7,7 +7,7 @@ Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI �
 全部标题先由 DeepSeek 理解，经全局去重排序及只减不补的标题终检后，晚间最多深读 80 篇、晨间最多 40 篇。
 入选正文一次提取关键命题，随后按具体缺口使用 Tavily 搜索、审读和必要补读，再完成公司比较。未核传闻允许正常推荐，但必须保留“未核实”、来源和条件化分析。
 
-**Build 53 已恢复原正式任务。** 9 月 8 日 21:00 截止保持不变，1062 标题、67 原正文及 13 补读完成；9 月 9 日 02:02 66 个事件调查已完成，继续分类、排序和报告发布。开关 open、worker active，晚晨排程待最终报告验收；尚未正式发布候选。
+**首份正式晚报已发布，排程已恢复。** 9 月 8 日 21:00 截止的晚报于 9 月 9 日 02:22 完成；1062 个标题初筛、67 篇原正文＋13 篇补读、66 个事件执行完成，正式发布 2 家。D1=9 月 9 日、D2=9 月 10 日，当前均未处理。既有早报 09:00、晚报 21:00 定时启动。
 用户已弃用的 2,472 篇事故批次及关联任务已备份后定点取消，不会补跑。
 原标题协议和正文缺失字段问题均已定位修复，错误原因及每次恢复有记录；当前进度以 PROJECT_PLAN 为准。
 
@@ -103,7 +103,7 @@ Mac 与 iOS 归档均来自该提交，真实来源及严格签名证据见 `man
 服务器为 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 API active+enabled，四范围配置与实际 DTO 通过，未鉴权请求为 401；APNs 密钥可读／可签名且 readiness 就绪，本轮未发送测试推送。
 `/etc/neckline/k10.env` 显式绑定策略 `k10-v1.4-production` 修订 3、执行 `k10-execution-production` 修订 4。
-B53 于 9 月 9 日 02:02 恢复原任务，控制 open、worker active+enabled；晚晨 timer 待最终报告验收，行情 timer 保持原态。未来排程绑定 `k10-execution-production@4`；原任务仍用修订 2＋显式 runtimeRepair。
+9 月 9 日 02:22 正式报告发布并通过实际 API→Swift 检查，02:22:59 恢复既有早晚 timer；控制 open、worker 与两个 timer 均 active+enabled，行情 timer 保持原态。未来任务绑定 `k10-execution-production@4`；已完成首轮任务仍保留修订 2＋显式 runtimeRepair，不重新执行。
 
 Mac 位于 `/Applications/Neckline.app`，Developer ID 严格验签、通用架构和单实例启动通过；安装包确认 Build 53；四范围配置和实际 API 状态通过服务器验收。
 Mac 尚未公证，网络下载后可能被 Gatekeeper 拦截；严格签名通过不代表公证通过。
