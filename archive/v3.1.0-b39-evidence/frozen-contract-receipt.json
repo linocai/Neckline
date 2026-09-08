@@ -1,0 +1,18 @@
+{
+  "kind": "historical-input contract regression, not new semantic/provider validation",
+  "titleAudit": 1431,
+  "exactDuplicates": 1,
+  "titleOnlyInputs": 1430,
+  "frozenArticles": 37,
+  "distinctSelectedMatters": 37,
+  "articleLimit": 40,
+  "availableAdditionalFulltexts": 3,
+  "beforeFrozenBodyAdmissions": 0,
+  "completedBodies": 37,
+  "readableBodyBytes": 129207,
+  "downstreamRepeatedBodyRejections": 148,
+  "paidCalls": 0,
+  "productionWrites": 0,
+  "selectionSha256": "8fba20413500bcb458f6d62b510c63b5ea22929f91beceb412425ad42e07564c",
+  "elapsedSeconds": 1.403
+}

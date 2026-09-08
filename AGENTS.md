@@ -20,7 +20,8 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 
 ## Working rules
 
-- **User stop ruling (2026-09-08):** K10 worker and evening/morning timers remain stopped and disabled after whole-corpus per-document processing caused unacceptable usage. The user has authorized 3.0.6 / Build 38 local implementation and one isolated latest-window validation of the approved all-title triage plus 80/40 article-deep-read design. That validation may not restart a production worker/timer, recover the abandoned incident scan, write the production database, or become a full-corpus paid replay. `PROJECT_PLAN.md` records the current boundary.
+- **User stop ruling (2026-09-08):** K10 worker and evening/morning timers remain stopped and disabled after whole-corpus per-document processing caused unacceptable usage. The user now authorizes the 3.1.0 / Build 39 implementation workflow for the updated K10 investigation specification. The completed B38 isolated validation is not permission for another unrestricted paid replay. Do not restart production workers/timers, recover the abandoned incident scan, or treat this implementation request as a production deployment. `PROJECT_PLAN.md` records the current verification boundary.
+- **Settled 3.1.0 rulings:** Unverified rumors may be compared and formally recommended normally, with an explicit “未核实” label preserved through publication, detail, analysis and history; do not silently require the rumor to become verified first. Other K10 identity, exclusion, comparison and evaluation rules still apply. Do not reserve a separate full-text quota: use the existing 80/40 limit and actual remaining capacity. These user decisions supersede the two pending items in the strategy handoff document.
 
 - Run backend commands from `Backend/` and app commands from `App/`.
 - Keep the repository root limited to the six documented visible entries.
