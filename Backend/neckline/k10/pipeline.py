@@ -2644,7 +2644,10 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
         scan = store.get_scan(scan_id=expected_scan_id, db_path=context.db_path)
         progress = store.execution_progress_for_scan(scan_id=expected_scan_id, db_path=context.db_path)
         coverage = scan.get("coverage") if isinstance(scan, Mapping) and isinstance(scan.get("coverage"), Mapping) else {}
-        if (not isinstance(scan, Mapping) or scan.get("status") not in {"failed", "not_configured"}
+        # Authorization persists for the task, including its ordinary slices
+        # after reopen. A completed scan is handled by execute_scan's existing
+        # idempotent completion path, never as a fresh publication.
+        if (not isinstance(scan, Mapping) or scan.get("status") not in {"failed", "not_configured", "running", "completed"}
                 or coverage.get("inputSnapshotFrozen") is not True
                 or frozen_hash != _frozen_input_sha256(coverage)
                 or not isinstance(progress, Mapping) or progress.get("taskId") != context.task.task_id):
