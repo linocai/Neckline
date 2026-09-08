@@ -108,6 +108,12 @@ def _assert_packet_boundary(*, action: str, packet: Mapping[str, Any]) -> None:
                 raise InvestigationError("全文未获准入", code="investigation_fulltext_unadmitted")
 
 
+def fulltext_capacity_exhausted(packet: Mapping[str, Any]) -> bool:
+    """Only a durable, actual admission denial can declare capacity exhausted."""
+    return any(isinstance(item, Mapping) and (item.get("coverage") or {}).get("reason") == "article_limit_reached"
+               for item in packet.get("toolOutcomes", ()))
+
+
 def _require_result(action: str, result: ResearchStageResult, packet: Mapping[str, Any]) -> None:
     if not isinstance(result, ResearchStageResult):
         raise InvestigationError("研究模型返回未通过 typed contract", code="investigation_result_invalid")
@@ -115,6 +121,10 @@ def _require_result(action: str, result: ResearchStageResult, packet: Mapping[st
         raise InvestigationError("研究模型返回了错误阶段", code="investigation_action_mismatch")
     if result.safe_error_code:
         raise InvestigationError("研究阶段执行失败", code=result.safe_error_code)
+    if result.fulltext_requests and fulltext_capacity_exhausted(packet):
+        raise InvestigationError("正文名额已用尽，不得继续申请全文", code="investigation_fulltext_capacity_exhausted") from ResearchContractError(
+            "已确认 article_limit_reached，基于现有证据收口或只规划有效摘录查证；全文申请必须为空。",
+            field_name="fulltextRequests", expected="empty_array_when_article_limit_reached")
     allowed = _packet_refs(packet)
     if action == "extract_claims":
         seen: set[str] = set()

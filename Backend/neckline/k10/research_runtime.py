@@ -340,7 +340,10 @@ class _Investigation:
             bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
                 request=request, cutoff_at=self.cutoff, cutoff_inclusive=self.cutoff_inclusive)
             self._tool(bundle, request=request)
-            self._assess_due()
+            # A denied admission returned no evidence to read. Batch such
+            # outcomes and let closure see the real resource constraint.
+            if bundle.documents:
+                self._assess_due()
             did_work = True
 
     def _assess_due(self) -> bool:
@@ -360,6 +363,7 @@ class _Investigation:
                 already_read.update(_refs(tool["eligibleDocumentRefs"]))
             if tool and tool["coverage"].get("operation") == "extract" and tool["coverage"].get("admissionState") == "fulfilled":
                 full_refs.update(_refs(tool["documentRefs"]))
+        unassessed = [stage for stage in unassessed if not self._denied_fulltext(stage)]
         if not unassessed and not (full_refs - already_read):
             return False
         full = [self.documents[ref] for ref in sorted(full_refs - already_read, key=lambda item: (item.document_id, item.revision))]
@@ -369,6 +373,26 @@ class _Investigation:
                 "eligibleAtNewsCutoff": doc.evidence_ref in self.allowed,
                 "contentVersionAtCutoff": doc.metadata.get("contentVersionAtCutoff")} for doc in full]})
         return True
+
+    @staticmethod
+    def _denied_fulltext(stage: Mapping[str, Any]) -> bool:
+        tool = (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
+        return bool(tool and not tool.get("documentRefs")
+                    and tool.get("coverage", {}).get("operation") == "extract"
+                    and tool.get("coverage", {}).get("admissionState") == "rejected")
+
+    def _close_due(self) -> bool:
+        # Resume the durable phase, including an interruption immediately AFTER
+        # an assessment write. Runtime pause/resume records are not closures.
+        reviewed = max((stage["revision"] for stage in self.state["stageResults"]
+            if not stage["result"].get("safeErrorCode") and (
+                (stage["action"] == "assess_evidence" and not
+                 (stage["result"].get("conclusion") or {}).get("runtimeEvidence"))
+                or self._denied_fulltext(stage))), default=0)
+        closed = max((stage["revision"] for stage in self.state["stageResults"]
+            if stage["action"] == "close_research" and not stage["result"].get("safeErrorCode")
+            and "companyMappings" in (stage["result"].get("conclusion") or {})), default=0)
+        return reviewed > closed
 
     def _pending(self, reason: str) -> Mapping[str, Any]:
         questions = tuple(replace(Question.from_dict(item), state="blocked", resume_condition=reason)
@@ -505,7 +529,8 @@ class _Investigation:
                         conclusion = saved_close
                         break
                 self._guard()
-                if self._assess_due():
+                assessed = self._assess_due()
+                if assessed or self._close_due():
                     self._fulltexts()
                     closed = self._close()
                     if closed.conclusion["researchStatus"] != "continue_research":
