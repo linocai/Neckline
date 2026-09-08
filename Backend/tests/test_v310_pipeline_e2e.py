@@ -181,7 +181,13 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                                                 "sourceRef": source_ref, "location": "paragraph:1"}]}],
                       "needsFullText": False}
             if body_impact is not None:
-                if body_impact == "repair":
+                if body_impact == "repair_facts":
+                    if "上次输出未通过校验" not in message:
+                        result["events"][0]["facts"] = None
+                    else:
+                        assert '"field": "events[].facts"' in message
+                        assert '"expected": "object"' in message
+                elif body_impact == "repair":
                     if "上次输出未通过校验" not in message:
                         result["events"][0]["claims"][0]["decisionImpact"] = ""
                     else:

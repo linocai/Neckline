@@ -269,6 +269,9 @@ def _reserve(
         prior_input, prior_output = (row[5], row[6]) if row is not None else (None, None)
         previous_code = str(row[8]) if row is not None and isinstance(row[8], str) else None
         is_json_retry = previous_code is not None and (previous_code in _JSON_CODES or "json" in previous_code)
+        if is_json_retry and (prior_repairs >= repair_limit or prior_network >= network_limit):
+            return _Reservation("failed", prior_attempts, prior_network, prior_repairs, prior_elapsed, prior_input, prior_output,
+                                "model_json_repair_exhausted")
         if prior_network >= network_limit:
             return _Reservation("failed", prior_attempts, prior_network, prior_repairs, prior_elapsed, prior_input, prior_output,
                                 "model_network_attempts_exhausted")

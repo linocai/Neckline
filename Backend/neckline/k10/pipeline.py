@@ -489,6 +489,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             operation += ("claims 的 decisionImpact 必须为非空文字，说明这条命题会影响后续哪项事实核实、公司关联或风险判断；"
                           "这不是当前价格或投资优先级结论。暂不能确定时明确说明尚缺哪种关联依据，不能填空字符串或 null。"
                           "claimId、text、decisionImpact、location 均须为非空字符串；枚举只能从示意所列值中选一个。")
+            operation += ("每个事件必须包含 canonicalKey、stageKey、eventState、headline、eventKind 非空字符串及 facts 对象。"
+                          "facts 放该事件的当前事实和背景，不能为 null，不能因 claims 已列事实而省略 facts；没有额外事实时可用空对象。")
         return operation, payload
 
     @staticmethod
@@ -504,8 +506,13 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             if not isinstance(row, Mapping):
                 raise PipelineError("events 项必须是对象", code="understand_json_contract_invalid")
             required = ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")
-            if any(not isinstance(row.get(key), str) or not row[key].strip() for key in required) or not isinstance(row.get("facts"), Mapping):
-                raise PipelineError("事件结构不完整", code="understand_json_contract_invalid")
+            for key in required:
+                if not isinstance(row.get(key), str) or not row[key].strip():
+                    raise PipelineError("事件字段无效", code="understand_json_contract_invalid") from ResearchContractError(
+                        "事件字段必须为非空字符串", field_name=f"events[].{key}", expected="non_empty_string")
+            if not isinstance(row.get("facts"), Mapping):
+                raise PipelineError("事件 facts 必须为对象", code="understand_json_facts_invalid") from ResearchContractError(
+                    "事件 facts 必须为对象", field_name="events[].facts", expected="object")
             if require_claims and "claims" not in row:
                 # B39 has already paid to read this body.  Treat a missing typed
                 # derivative as a protocol failure; never send the body through
@@ -773,7 +780,7 @@ class _CheckpointedDiscoveryModel:
         ).hexdigest()
         with read_connection(self._db_path) as conn:
             row = conn.execute(
-                "SELECT status,safe_error_code FROM k10_execution_item_checkpoints "
+                "SELECT status,safe_error_code,updated_at FROM k10_execution_item_checkpoints "
                 "WHERE task_id=? AND item_key=? AND stage=?",
                 (self._task_id, ledger_key, f"model:{operation}"),
             ).fetchone()
@@ -1129,6 +1136,18 @@ class _CheckpointedDiscoveryModel:
                     _digest, _key, resumed = self._research_checkpoint(operation="understand", stage="understand",
                                                                       item_key=item_key, item=item)
                     self._reject_unknown_research_checkpoint(resumed)
+                    # A second explicit recovery may repair an already exhausted
+                    # recovery group. Follow its immutable chain, reusing any
+                    # completed group; never create more groups within one grant.
+                    authorization = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
+                    authorized_failures = authorization.get("failedModelInputSha256", [])
+                    while (resumed is not None and resumed[0] == "failed" and isinstance(resumed[1], str)
+                           and ("json" in resumed[1] or resumed[1] in {"execution_paused", "investigation_claims_missing"})
+                           and _digest in authorized_failures):
+                        item = {**item, "authorizedSemanticRecoveryOf": _digest}
+                        _digest, _key, resumed = self._research_checkpoint(operation="understand", stage="understand",
+                                                                          item_key=item_key, item=item)
+                        self._reject_unknown_research_checkpoint(resumed)
             value = self._run(operation="understand", stage="understand", item_key=item_key,
                              item=item,
                              invoke=lambda: self._base._json(operation=operation, payload=payload,

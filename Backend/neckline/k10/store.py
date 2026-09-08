@@ -2881,6 +2881,9 @@ def authorize_discovery_recovery(
             "scanId": scan_id, "frozenInputSha256": confirmed_input_sha256, "authorizedAt": authorized_at,
             "previousAttemptCount": int(attempt_count), "previousStage": updated_checkpoint.get("stage"),
             "previousScanStatus": scan_status,
+            "failedModelInputSha256": [r[0] for r in conn.execute(
+                "SELECT DISTINCT input_sha256 FROM k10_execution_item_checkpoints "
+                "WHERE task_id=? AND stage LIKE 'model:%' AND status='failed' ORDER BY input_sha256", (task_id,))],
         }
         if title_partial or paused_running:
             # Correct only the legacy title-execution status inside the same
