@@ -1,11 +1,11 @@
 # Neckline
 
-Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-07 已发布
-**3.0.4 / 双端 Build 35 / K10-v1.4 / Schema 3**，后端发布集合为 `v3.0.4-b35`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.4-b35)；Mac 已换装并启动，iOS development IPA 由用户自行安装。
+Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-08 已发布
+**3.0.4 / 双端 Build 36 / K10-v1.4 / Schema 4**，后端发布集合为 `v3.0.4-b36`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.4-b36)；Mac 已换装并启动，iOS development IPA 由用户自行安装。
 
-本次合并未单独发布的 Build 34 修复，完成 K10 一致性复核确认的 11 项问题：扫描中断恢复、历史来源去重、
-冻结评价配置门禁、事件内排序、模型输出校验、缺数和重叠统计，以及来源时间质量与晨报反证阅读链。
+Build 36 修复昨晚大批量扫描被单条模型异常中断的问题：HTML 正文提纯、有界并行理解、逐项检查点、分片续跑、
+有限重试和实际进度。冻结输入恢复不重新采集；缺证据或异常资料如实标为部分覆盖。推送增加可签名检查、阻塞和持久退避。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -47,16 +47,21 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 `deepseek-v4-pro`，费用上限明确为空；超时、重试和请求数是明文工程限制，不是选股阈值。
 缺配置时显示未配置；记录实际 token，用量缺失或费用口径未核实则明确不可用，不估算充作实付。
 
-TuShare 长篇通讯已核验可用，但响应会截断，适配器拆窗补取并报告缺口。快讯、全量公告权限未开通；
-2026-09-06 22:06 CST 已用服务器现有密钥分别实测 DeepSeek V4 Pro 和 Tavily Basic，均 HTTP 200；
-Tavily 返回 5 条结果、用量 1 积分，剩余额度未查询。Tavily 只用于重点核验，不冒充全市场源。
-随后完成两篇真实通讯的小样本联调：TuShare → DeepSeek 理解 → Tavily 核验 → 公司比较 → 机会卡 → 留下 → 正反分析。
-广生堂形成 1 张隔离卡片，欣旺达保留待核，不生成窗口或成绩。最终正反实际请求均已包含 TuShare 原文、
-Tavily 核验资料及 11 项行情引用；反方实际请求中的正方全文与存储哈希一致。
-Tavily 使用 general 查询，并只凭来源字段或原文明确发布时间判断 cutoff；迟到或日期未知资料不冒充已核证据。
-这不是全市场覆盖或策略有效性验证，整晚规模的覆盖、耗时和真实推送仍待检查。模型/搜索密钥由 App 设置写入服务器，读取接口不回显。
-首轮扫描定于 **2026-09-07 21:00 CST**，首轮晨扫为 **2026-09-08 09:00 CST**。
-首轮补取起点显式设为 2026-09-04 21:00；成功来源水位建立后优先使用真实水位，部署没有提前入队。
+TuShare 长篇通讯为当前采集源，适配器拆窗补取并报告缺口；快讯、全量公告权限未开通。
+Tavily 用于重点核验，不冒充全市场来源，只凭来源字段或原文明示时间判断 cutoff，日期未知或迟到资料不冒充已核证据。
+DeepSeek V4 Pro 与 Tavily 均已完成真实全量链路验证；2026-09-08 对昨晚冻结的 2472 篇资料隔离恢复，
+2452 篇理解成功、20 篇异常隔离，最终 1 家正式测试候选，明确为 partial。128 次搜索达到原定上限，
+其余未核事件保留待核；这不是全市场覆盖或策略有效性验证。模型/搜索密钥由 App 设置写入服务器，读取不回显。
+
+执行配置独立于策略，当前 `k10-execution-production` 修订 1：理解并发 12、排队容量 24、每片 110 秒、
+正常继续间隔 1 秒、首次执行起总时限 7200 秒，网络最多 2 次、JSON 修复最多 1 次。逐项保存已校验结果和实际用量，
+重启不清空成功结果或重置总时限；配置见 [k10-execution-v1.json](Backend/neckline/config/k10-execution-v1.json)。
+通知退避配置见 [notification-delivery-v1.json](Backend/neckline/config/notification-delivery-v1.json)。
+设置页显示执行阶段、资料/事件计数、部分覆盖和安全错误码；通知就绪状态独立于候选配置。
+
+首轮冻结资料截止 2026-09-07 21:00，补取起点 2026-09-04 21:00；来源成功水位已经保存。
+原夜扫失败与 9/8 晨报失败均保留历史，不改成假成功。9/8 11:43 已创建夜扫受控恢复任务，
+只使用原 2472 篇冻结资料，禁止重新采集或推进水位。补跑实际结果和进度见 PROJECT_PLAN；隔离测试结果不进入生产。
 
 生产配置修订 2 包含每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
 用于有界回补晚到资料，记录实际回查范围和缺口。它不是无限历史覆盖，也不允许把新取得的资料回填为旧推荐。
@@ -92,33 +97,35 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-源码提交 `15628894046762fa0b2085964af91efc7e76e612`，不可变标签 `v3.0.4-b35`；后续发布记录提交不移动标签。
-已核验服务器 `ser657204219523`（`114.66.2.205`）、`/opt/neckline/data/neckline.db` 与公网
-`https://nk.linotsai.top`。API/worker 均正常，重启计数和发布后警告为 0，未鉴权请求返回 401。
-三个配置范围均已配置，`/etc/neckline/k10.env` 绑定 `k10-v1.4-production` 修订 2；密钥与设备保留。
-晚/晨 timer 为 21:00 / 09:00，行情更新 18:30、19:30 / 20:30 有界重试。K9 无活动运行链。
+源码提交 `6017a0c36bf1bbc6e842ef512ca66a29b7e7f607`，不可变标签 `v3.0.4-b36`；后续发布记录提交不移动标签。
+双端签名归档来源为 `c6e91795617d778503820377f6d843587fccc36c`，其 App 源码树与发布提交完全相同，manifest 保留真实归档来源。
+已核验服务器 `ser657204219523`（`114.66.2.205`）、`/opt/neckline/data/neckline.db`、公网 `https://nk.linotsai.top`。
+API/worker 正常，发布后无警告，未鉴权请求为 401；三范围配置与实际 DTO 通过，K8/K9 无活动链。
+`/etc/neckline/k10.env` 同时绑定策略 `k10-v1.4-production` 修订 2、执行 `k10-execution-production` 修订 1。
+晚/晨 timer 为 21:00 / 09:00，行情更新 18:30、19:30 / 20:30 有界重试；下次晚扫为 2026-09-08 21:00。
 
-Mac 严格验签通过，为 arm64/x86_64 通用架构；正式运行位置 `/Applications/Neckline.app`，仅一个实例。
-设置页已实际核验生产连接、3.0.4 / Build 35 和三个配置范围。iOS development IPA 位于
-`/Users/linotsai/Downloads/Neckline-v3.0.4-b35-iOS-development.ipa`，由用户安装。
-GitHub 六个文件的 SHA256 与本地逐一一致；后端归档、wheel 和 manifest 保存在
-`/opt/neckline/releases/v3.0.4-b35/`。
+APNs 对应私钥从受控历史部署备份恢复，保持 neckline / 0600，实际签名和 readiness 通过。
+此前积压的两条通知在 11:42 均有两份设备投递台账；这证明服务端发送成功，不等于用户已阅读。
+历史失败尝试次数保留，不清零掩盖事故；恢复后无重复无效发送或待重试积压。
 
-本次备份：`/opt/neckline/data/backups/v3.0.4-b35-predeploy-20260907/`。其中 `receipt.json`、
-`runtime.tar.gz`、旧配置绑定及部署前后 SQLite 副本构成恢复集；备份哈希已复验。先在服务器真实数据库的
-隔离副本演练配置追加，再部署；Schema 3 不变，全部既有表和记录逐行保持一致，仅追加配置修订 2。
-数据库 SHA256：
+Mac 位于 `/Applications/Neckline.app`，严格验签、通用架构及单实例启动通过，实际设置页确认 Build 36、Prod、三范围配置和推送就绪。
+iOS 包为 `/Users/linotsai/Downloads/Neckline-v3.0.4-b36-iOS-development.ipa`，由用户安装。
+GitHub 六文件下载后 SHA256 与本地逐一一致；后端归档、wheel 和 manifest 保存在 `/opt/neckline/releases/v3.0.4-b36/`。
+QA 临时客户端与 API 已退出，过期编译产物释放约 714 MiB；正式包、截图和验证日志保留。
 
-- `neckline-pre.db`：`48b9e3ecacd9be6dde5031fe60104c93bbff757ee0026cd54ed9d2d771da3f88`
-- `neckline-post.db`：`eb19ebeb0ce932569afc6166b9e1fba7898cb4790b9d85fb815d39ea21c96a0b`
+本次恢复集位于 `/opt/neckline/data/backups/v3.0.4-b36-predeploy/`：`receipt.json`、B35 runtime、旧绑定/部署单元及迁移前后数据库。
+停止全部写入者后才建立唯一基线；真实副本演练和正式迁移均核对 45 个旧表的全部旧列/行等价。
+追加 Schema 4、通知 Schema 2 与执行配置修订 1，策略修订 2 和原任务/2472 篇资料保留。
 
-撤回 B35 时先确认目标、备份现场并停止四个 timer 和 API/worker/入队/行情 service。恢复上述 runtime、
-已验哈希的 B33 wheel 和配置绑定修订 1，保持 `/opt/neckline` 的 `root:root / 0755` 以及原配置权限。
-本轮无 schema 迁移，优先保留业务数据库及未绑定的追加修订，不用旧快照覆盖新业务。恢复后核对 health、
-鉴权、三范围配置、完整性及定时器。Mac 对应恢复
-`/Users/linotsai/Lino/app_backups/Neckline-v3.0.2-build33-pre-v304-20260907.app`。
+- `neckline-pre.db` SHA256：`e2c6e4f8b17bc95a80121784dc0049a6fb2fd61743439a3142caf1d01b750c7d`
+- `neckline-post-migration.db` SHA256：`4347d00aa59e3f68db2523f1898ee9a5faddbe7f5de25ea767a641491173cf3e`
 
-更早的 B33 迁移与 K9 灾难恢复备份分别保留在
-`/opt/neckline/data/backups/v3.0.2-b33-predeploy-20260907-r2/` 和
-`/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907/`；各自 receipt 固定其版本、哈希和恢复配套，
-不能与 B35 的运行文件混搭，也不得下载或公开含凭据的备份。
+新 worker 已开始业务写入，现阶段故障只能先备份现场再前向修复，不能用迁移前快照覆盖新增任务、候选或成绩。
+仅在 B36 业务写入前，受控部署助手才允许恢复同一恢复集的 B35 runtime、wheel、数据库和配置；该时点已过。
+任何修复保持 `/opt/neckline` 为 root:root / 0755、数据库为 neckline，并复核 health、鉴权、配置、完整性与定时器。
+Mac 可恢复副本为 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.4-build35-pre-b36-20260908.app`。
+
+受控恢复只允许对无正式发布批次、已失败且有冻结输入的 scan 执行一次 `neckline.k10.cli recover-scan`，
+必须提供原引用摘要和显式执行配置。已恢复任务不得重复建单、回改策略、换输入或重设时限。
+诊断使用只读 API `GET /api/v1/k10/scans/{scan_id}` 和 `GET /api/v1/k10/operations/readiness`。
+本轮生产恢复任务、只读验收与下一步见 PROJECT_PLAN；含凭据的数据库/备份只留服务器，禁止下载或公开。
