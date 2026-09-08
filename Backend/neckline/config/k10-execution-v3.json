@@ -32,12 +32,12 @@
       "titleBatch": {"maxTokens": 12288, "thinking": {"type": "disabled"}},
       "titleReconcile": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
       "understand": {"maxTokens": 8192, "thinking": {"type": "disabled"}},
-      "verify": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
-      "companyComparison": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
-      "prioritize": {"maxTokens": 2200, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
-      "morning": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
-      "analysisPro": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
-      "analysisCon": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "verify": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "companyComparison": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "prioritize": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "morning": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "analysisPro": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "analysisCon": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
       "investigation": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"}
     }
   }

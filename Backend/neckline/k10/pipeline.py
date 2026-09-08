@@ -398,6 +398,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         repair = getattr(self._thread_usage, "research_model_options", None)
         if stage == "investigation" and isinstance(repair, Mapping):
             return dict(repair)
+        finalization = getattr(self._thread_usage, "finalization_model_options", None)
+        if isinstance(finalization, Mapping) and isinstance(finalization.get(stage), Mapping):
+            return dict(finalization[stage])
         if self._execution_policy is None:
             raise PipelineError("发现执行包未绑定", code="execution_policy_missing")
         options = self._execution_policy["modelOptions"]
@@ -1024,7 +1027,26 @@ class _CheckpointedDiscoveryModel:
         if operation in {"verify", "map", "compare", "classify", "prioritize"}:
             item, _digest, _key, _row = self._recovery_target(
                 operation=operation, stage=stage, item_key=item_key, item=item,
-                eligible=lambda code: code == "execution_paused" or "json" in code)
+                eligible=lambda code: code in {"execution_paused", "response_truncated"} or "json" in code)
+        if operation in {"classify", "prioritize"} and (_row is None or _row[0] != "completed"):
+            repair = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("runtimeRepair")
+            if repair is not None and repair.get("finalizationModelOptions") is not None:
+                if repair.get("originalExecutionContentSha256") != self._binding.get("contentSha256"):
+                    raise PipelineError("收尾运行修复绑定不匹配", code="execution_repair_binding_invalid")
+                item = {**item, "runtimeFinalizationModelOptions": dict(repair["finalizationModelOptions"])}
+                item, _digest, _key, _row = self._recovery_target(
+                    operation=operation, stage=stage, item_key=item_key, item=item,
+                    eligible=lambda code: code in {"execution_paused", "response_truncated"} or "json" in code)
+
+        def invoke_bound_finalization():
+            if isinstance(self._base, DeepSeekDiscoveryModel):
+                self._base._thread_usage.finalization_model_options = item.get("runtimeFinalizationModelOptions")
+            try:
+                return invoke()
+            finally:
+                if isinstance(self._base, DeepSeekDiscoveryModel):
+                    self._base._thread_usage.finalization_model_options = None
+
         def remember_validation(exc: Exception) -> None:
             if not isinstance(self._base, DeepSeekDiscoveryModel):
                 return
@@ -1061,7 +1083,7 @@ class _CheckpointedDiscoveryModel:
                 added = records[start:] if isinstance(records, list) else []
                 return added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
             try:
-                value = invoke()
+                value = invoke_bound_finalization()
             except Exception as exc:
                 remember_validation(exc)
                 usage = current_usage()

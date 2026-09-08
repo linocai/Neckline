@@ -80,7 +80,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
                     title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
-                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None):
+                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -220,7 +220,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     result["action"] = "plan_queries"
                 else:
                     assert '"field": "action"' in message and '"allowed": ["plan_gaps"]' in message
-        truncated = action == truncate_action and calls.count("research:" + str(action)) == 1
+        truncated = (action == truncate_action and calls.count("research:" + str(action)) == 1) or (finalization_truncate is not None and calls[-1] == finalization_truncate and calls.count(finalization_truncate) == 1)
         if action == truncate_action and calls.count("research:" + str(action)) == 2:
             assert "上次达到输出长度限制" in message
             assert "增量变化" in message
@@ -235,7 +235,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None):
+         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None):
     monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
@@ -256,7 +256,7 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
                             title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
-                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking)
+                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))

@@ -2807,6 +2807,7 @@ def authorize_discovery_recovery(
     *, scan_id: str, execution_config_id: str, execution_config_revision: int,
     confirmed_input_sha256: str, authorized_at: str, db_path: Path,
     research_max_tokens: int | None = None, completion_deadline_seconds: int | None = None,
+    finalization_max_tokens: int | None = None,
 ) -> Task:
     """Requeue the already-bound failed discovery task against its frozen input.
 
@@ -2880,7 +2881,7 @@ def authorize_discovery_recovery(
         if not isinstance(checkpoint, Mapping):
             raise K10Conflict("任务 checkpoint 无效")
         updated_checkpoint = dict(checkpoint)
-        if research_max_tokens is not None or completion_deadline_seconds is not None:
+        if research_max_tokens is not None or completion_deadline_seconds is not None or finalization_max_tokens is not None:
             original = json.loads(conn.execute(
                 "SELECT payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
                 (bound_id, bound_revision)).fetchone()[0])["discovery"]
@@ -2890,6 +2891,13 @@ def authorize_discovery_recovery(
                         or research_max_tokens < original["modelOptions"]["investigation"]["maxTokens"]):
                     raise ValueError("研究输出空间修复必须是明确且不小于原值的整数")
                 repair["researchModelOptions"] = {**original["modelOptions"]["investigation"], "maxTokens": research_max_tokens}
+            if finalization_max_tokens is not None:
+                stages = ("companyComparison", "prioritize")
+                if (isinstance(finalization_max_tokens, bool) or not isinstance(finalization_max_tokens, int)
+                        or any(finalization_max_tokens < original["modelOptions"][stage]["maxTokens"] for stage in stages)):
+                    raise ValueError("收尾输出空间修复必须是明确且不小于原值的整数")
+                repair["finalizationModelOptions"] = {
+                    stage: {**original["modelOptions"][stage], "maxTokens": finalization_max_tokens} for stage in stages}
             if completion_deadline_seconds is not None:
                 if (isinstance(completion_deadline_seconds, bool) or not isinstance(completion_deadline_seconds, int)
                         or completion_deadline_seconds < original["completionDeadlineSeconds"]):
