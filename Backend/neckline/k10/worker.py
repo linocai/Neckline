@@ -141,12 +141,20 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _execution_deadline(*, profile: Mapping[str, Any], started_at: datetime) -> datetime:
+def _execution_deadline(*, profile: Mapping[str, Any], started_at: datetime,
+                        runtime_repair: Mapping[str, Any] | None = None) -> datetime:
     payload = profile.get("payload")
     discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
     seconds = discovery.get("completionDeadlineSeconds") if isinstance(discovery, Mapping) else None
     if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1:
         raise ValueError("执行配置缺少 completionDeadlineSeconds")
+    if runtime_repair is not None:
+        if runtime_repair.get("originalExecutionContentSha256") != profile.get("contentSha256"):
+            raise ValueError("恢复时限的原始配置绑定不匹配")
+        extension = runtime_repair.get("completionDeadlineSeconds", seconds)
+        if isinstance(extension, bool) or not isinstance(extension, int) or extension < seconds:
+            raise ValueError("恢复时限无效")
+        seconds = extension
     return started_at + timedelta(seconds=seconds)
 
 
@@ -247,6 +255,7 @@ def run_once(
                     started_at = datetime.fromisoformat(started_text)
                     context = replace(context, execution_started_at=started_at,
                                       execution_deadline_at=_execution_deadline(profile=context.execution_profile,
+                                                                               runtime_repair=context.checkpoint.get("runtimeRepair"),
                                                                                started_at=started_at))
                 result = handler(context)
                 if not isinstance(result, TaskResult):

@@ -327,6 +327,19 @@ class ResearchSnapshot:
                    value.get("executionStatus"), value.get("revision"), value.get("createdAt"), value.get("updatedAt"))
 
 
+def validate_evidence_update(value: Mapping[str, Any]) -> dict[str, Any]:
+    keys = {"claimId", "sourceRef", "relation", "location", "applicability"}
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise ResearchContractError("evidenceUpdates 字段不完整", field_name="evidenceUpdates[]", expected="exact_object_fields", allowed=sorted(keys))
+    _text(value["claimId"], "evidenceUpdates[].claimId")
+    _enum(value["relation"], EVIDENCE_RELATIONS, "evidenceUpdates[].relation")
+    _text(value["location"], "evidenceUpdates[].location")
+    _refs([value["sourceRef"]], "evidenceUpdates[].sourceRef")
+    if not isinstance(value["applicability"], Mapping):
+        raise ResearchContractError("applicability 必须为对象", field_name="evidenceUpdates[].applicability", expected="object")
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class ResearchStageResult:
     action: str
@@ -342,6 +355,8 @@ class ResearchStageResult:
     def __post_init__(self) -> None:
         _enum(self.action, RESEARCH_ACTIONS, "action")
         _optional_text(self.safe_error_code, "safeErrorCode")
+        for update in self.evidence_updates:
+            validate_evidence_update(update)
 
     def to_dict(self) -> dict[str, Any]:
         return {"action": self.action, "safeErrorCode": self.safe_error_code, "claims": [item.to_dict() for item in self.claims],

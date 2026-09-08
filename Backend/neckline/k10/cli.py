@@ -120,6 +120,7 @@ def frozen_scan_input_sha256(*, scan_id: str, db_path: Path) -> str:
 def recover_scan(
     *, db_path: Path, scan_id: str, execution_config_id: str, execution_config_revision: int,
     confirmed_input_sha256: str, now: datetime,
+    research_max_tokens: int | None = None, completion_deadline_seconds: int | None = None,
 ) -> str:
     """Create the one controlled recovery task for a failed frozen scan, without recollection."""
     control = store.run_control_status(db_path=db_path)
@@ -151,6 +152,7 @@ def recover_scan(
     if isinstance(progress, dict) and isinstance(progress.get("taskId"), str):
         try:
             task = store.authorize_discovery_recovery(
+                research_max_tokens=research_max_tokens, completion_deadline_seconds=completion_deadline_seconds,
                 scan_id=scan_id, execution_config_id=execution_config_id,
                 execution_config_revision=execution_config_revision,
                 confirmed_input_sha256=actual_input_sha256, authorized_at=now.isoformat(), db_path=db_path,
@@ -185,6 +187,7 @@ def main(argv: list[str] | None=None) -> int:
     execution_config=sub.add_parser("configure-execution"); execution_config.add_argument("--db",required=True,type=Path); execution_config.add_argument("--config-id",required=True); execution_config.add_argument("--file",required=True,type=Path)
     enqueue=sub.add_parser("enqueue"); enqueue.add_argument("--db",required=True,type=Path); enqueue.add_argument("--kind",choices=("evening","morning"),required=True); enqueue.add_argument("--trading-day",required=True); enqueue.add_argument("--config-id",required=True); enqueue.add_argument("--config-revision",required=True,type=int); enqueue.add_argument("--bootstrap-cutoff"); enqueue.add_argument("--execution-config-id"); enqueue.add_argument("--execution-config-revision",type=int)
     recover=sub.add_parser("recover-scan"); recover.add_argument("--db",required=True,type=Path); recover.add_argument("--scan-id",required=True); recover.add_argument("--execution-config-id",required=True); recover.add_argument("--execution-config-revision",required=True,type=int); recover.add_argument("--confirm-frozen-input-sha256",required=True)
+    recover.add_argument("--research-max-tokens",type=int); recover.add_argument("--completion-deadline-seconds",type=int)
     worker=sub.add_parser("worker"); worker.add_argument("--db",required=True,type=Path); worker.add_argument("--parquet-dir",required=True,type=Path); worker.add_argument("--worker-id",required=True); worker.add_argument("--tushare-token-env",required=True); worker.add_argument("--once",action="store_true")
     args=parser.parse_args(argv)
     if args.command=="configure":
@@ -209,6 +212,7 @@ def main(argv: list[str] | None=None) -> int:
         return 0
     if args.command=="recover-scan":
         print(recover_scan(db_path=args.db, scan_id=args.scan_id, execution_config_id=args.execution_config_id,
+                           research_max_tokens=args.research_max_tokens, completion_deadline_seconds=args.completion_deadline_seconds,
                            execution_config_revision=args.execution_config_revision,
                            confirmed_input_sha256=args.confirm_frozen_input_sha256, now=datetime.now().astimezone()))
         return 0

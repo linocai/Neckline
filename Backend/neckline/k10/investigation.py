@@ -168,7 +168,8 @@ def query_path_signature(path: QueryPath) -> str:
                              separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def decode_stage_result(value: Mapping[str, Any], *, action: str) -> ResearchStageResult:
+def decode_stage_result(value: Mapping[str, Any], *, action: str,
+                        evidence_packet: Mapping[str, Any] | None = None) -> ResearchStageResult:
     """Decode a provider JSON derivative without retaining its original response."""
     if isinstance(value, Mapping) and set(value) == {"outputContract"} and isinstance(value["outputContract"], Mapping):
         value = value["outputContract"]
@@ -185,6 +186,16 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str) -> ResearchSta
         raise InvestigationError("研究输出 action 无效", code="investigation_action_mismatch") from ResearchContractError(
             "根 action 必须匹配请求", field_name="action", expected="enum", allowed=(action,))
     try:
+        if evidence_packet is not None and action in {"assess_evidence", "close_research"}:
+            # Updates may refer to known IDs instead of asking the model to copy
+            # immutable source text. Only copy exact fields from this request's
+            # durable input; unknown IDs still require complete typed facts.
+            value = dict(value)
+            for collection, key in (("claims", "claimId"), ("questions", "questionId")):
+                originals = {item[key]: item for item in evidence_packet.get(collection, ())}
+                updates = value.get(collection, ())
+                if isinstance(updates, list) and all(isinstance(item, Mapping) for item in updates):
+                    value[collection] = [{**originals.get(item.get(key), {}), **item} for item in updates]
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))

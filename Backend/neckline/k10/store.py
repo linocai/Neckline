@@ -2698,6 +2698,9 @@ def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[st
         if not isinstance(authorization, Mapping):
             raise K10Conflict("任务恢复授权记录无效")
         merged["recoveryAuthorized"] = dict(authorization)
+    merged.pop("runtimeRepair", None)
+    if isinstance(parsed, Mapping) and "runtimeRepair" in parsed:
+        merged["runtimeRepair"] = parsed["runtimeRepair"]
     return merged
 
 
@@ -2803,6 +2806,7 @@ def is_failed_title_scan(scan: Mapping[str, Any]) -> bool:
 def authorize_discovery_recovery(
     *, scan_id: str, execution_config_id: str, execution_config_revision: int,
     confirmed_input_sha256: str, authorized_at: str, db_path: Path,
+    research_max_tokens: int | None = None, completion_deadline_seconds: int | None = None,
 ) -> Task:
     """Requeue the already-bound failed discovery task against its frozen input.
 
@@ -2876,6 +2880,37 @@ def authorize_discovery_recovery(
         if not isinstance(checkpoint, Mapping):
             raise K10Conflict("任务 checkpoint 无效")
         updated_checkpoint = dict(checkpoint)
+        if research_max_tokens is not None or completion_deadline_seconds is not None:
+            original = json.loads(conn.execute(
+                "SELECT payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
+                (bound_id, bound_revision)).fetchone()[0])["discovery"]
+            repair = dict(updated_checkpoint.get("runtimeRepair", {}))
+            if research_max_tokens is not None:
+                if (isinstance(research_max_tokens, bool) or not isinstance(research_max_tokens, int)
+                        or research_max_tokens < original["modelOptions"]["investigation"]["maxTokens"]):
+                    raise ValueError("研究输出空间修复必须是明确且不小于原值的整数")
+                repair["researchModelOptions"] = {**original["modelOptions"]["investigation"], "maxTokens": research_max_tokens}
+            if completion_deadline_seconds is not None:
+                if (isinstance(completion_deadline_seconds, bool) or not isinstance(completion_deadline_seconds, int)
+                        or completion_deadline_seconds < original["completionDeadlineSeconds"]):
+                    raise ValueError("恢复执行时限必须是明确且不小于原值的整数")
+                repair["completionDeadlineSeconds"] = completion_deadline_seconds
+            repair["authorizedAt"] = authorized_at
+            repair["originalExecutionContentSha256"] = bound_hash
+            updated_checkpoint["runtimeRepair"] = repair
+        # Revalidate old typed results at the explicit recovery boundary. Older
+        # builds could mark a model result completed before persistence rejected
+        # it. Preserve its JSON and usage, but never reuse that poisoned cache.
+        from .investigation import decode_stage_result, InvestigationError
+        for cache_key, stage, raw in conn.execute(
+                "SELECT item_key,stage,result_json FROM k10_execution_item_checkpoints "
+                "WHERE task_id=? AND stage LIKE 'model:investigation_%' AND status='completed'", (task_id,)).fetchall():
+            try:
+                decode_stage_result(json.loads(raw), action=stage.removeprefix("model:investigation_"))
+            except (InvestigationError, ValueError, TypeError, KeyError):
+                conn.execute("UPDATE k10_execution_item_checkpoints SET status='failed',safe_error_code=?,updated_at=? "
+                             "WHERE task_id=? AND item_key=? AND stage=? AND status='completed'",
+                             ("investigation_cached_contract_invalid", authorized_at, task_id, cache_key, stage))
         prior = updated_checkpoint.get("recoveryAuthorized")
         if prior is not None and not isinstance(prior, Mapping):
             raise K10Conflict("任务恢复授权记录无效")

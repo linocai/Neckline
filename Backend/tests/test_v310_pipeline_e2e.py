@@ -80,7 +80,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
                     title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
-                    action_shape: str | None = None):
+                    action_shape: str | None = None, evidence_location: str | None = None):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -114,6 +114,13 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                           "state": "planned", "resultSummary": None}]}
             elif action == "assess_evidence":
                 result = {"action": action, "evidenceUpdates": [], "fulltextRequests": []}
+                if evidence_location is not None:
+                    count = calls.count("research:assess_evidence")
+                    if count == 2 and evidence_location == "repair":
+                        assert "evidenceUpdates[].location" in message and "non_empty_string" in message
+                    result["evidenceUpdates"] = [{"claimId": payload["evidencePacket"]["claims"][0]["claimId"],
+                        "sourceRef": payload["evidencePacket"]["allowedEvidenceRefs"][0],
+                        "relation": "irrelevant", "location": "excerpt" if count > 1 and evidence_location == "repair" else "", "applicability": {}}]
             elif action == "close_research":
                 close_round += 1
                 ref = payload["evidencePacket"]["allowedEvidenceRefs"][0]
@@ -222,7 +229,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None, action_shape: str | None = None):
+         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None):
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
     import sqlite3
@@ -242,7 +249,7 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
                             title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
-                            action_shape=action_shape)
+                            action_shape=action_shape, evidence_location=evidence_location)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))

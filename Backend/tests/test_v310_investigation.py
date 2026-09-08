@@ -320,8 +320,10 @@ def test_assess_prompt_preserves_claim_identity_and_requires_evidence_for_verifi
     assert "新事实必须新建 claimId" in instruction
     assert "evidenceUpdates.relation=supports" in instruction
     shape = payload["outputContract"]["claims"][0]
-    assert shape["text"] == "exactly the existing claim text"
-    assert shape["sourceRef"] == {"documentId": "input", "revision": 1}
+    assert shape["claimId"] == "existing claim id"
+    # B46 sends only changes. Exact immutable identity is copied from this
+    # request's durable input and verified by the compact-update regression.
+    assert "text" not in shape and "sourceRef" not in shape
 
 
 class _FailingResearchModel:

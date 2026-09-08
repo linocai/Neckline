@@ -394,6 +394,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                                                       for index in range(count)})]
 
     def _model_options(self, stage: str) -> Mapping[str, Any]:
+        repair = getattr(self._thread_usage, "research_model_options", None)
+        if stage == "investigation" and isinstance(repair, Mapping):
+            return dict(repair)
         if self._execution_policy is None:
             raise PipelineError("发现执行包未绑定", code="execution_policy_missing")
         options = self._execution_policy["modelOptions"]
@@ -415,7 +418,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         raw = self._json(operation=instruction, payload=payload,
                          model_options=self._model_options("investigation"))
         try:
-            return decode_stage_result(raw, action=action)
+            return decode_stage_result(raw, action=action, evidence_packet=evidence_packet)
         except InvestigationError as exc:
             # Only program-known field presence/types; never article text,
             # provider output values, credentials or exception bodies.
@@ -841,6 +844,15 @@ class _CheckpointedDiscoveryModel:
         operation = f"investigation_{action}"
         item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
             item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code)
+        repair = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("runtimeRepair")
+        if repair is not None and (row is None or row[0] != "completed"):
+            if repair.get("originalExecutionContentSha256") != self._binding.get("contentSha256"):
+                raise PipelineError("研究运行修复绑定不匹配", code="execution_repair_binding_invalid")
+            options = repair.get("researchModelOptions")
+            if options is not None:
+                item = {**item, "runtimeResearchModelOptions": dict(options)}
+                item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
+                    item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code)
         return operation, item_key, item, digest, ledger_key, row
 
     def reject_research_result(self, *, snapshot: ResearchSnapshot, action: str,
@@ -935,9 +947,17 @@ class _CheckpointedDiscoveryModel:
         invoke = getattr(self._base, "advance_research", None)
         if not callable(invoke):
             raise PipelineError("模型未提供研究能力", code="investigation_model_unavailable")
+        def invoke_bound():
+            if isinstance(self._base, DeepSeekDiscoveryModel):
+                self._base._thread_usage.research_model_options = item.get("runtimeResearchModelOptions")
+            try:
+                return invoke(snapshot=snapshot, action=action, evidence_packet=evidence_packet)
+            finally:
+                if isinstance(self._base, DeepSeekDiscoveryModel):
+                    self._base._thread_usage.research_model_options = None
         return self._run(operation=operation, stage="investigation", item_key=item_key,
                          item=item,
-                         invoke=lambda: invoke(snapshot=snapshot, action=action, evidence_packet=evidence_packet),
+                         invoke=invoke_bound,
                          encode=encode, decode=decode)
 
     def _frozen_evidence_context(self, event: EventDraft) -> list[dict[str, Any]]:

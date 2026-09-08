@@ -12,9 +12,11 @@ _COMMON = (
     "采购方/供应方、上市公司/子公司、送样/资格/入围/合同/订单/交付阶段必须分开。一个适用原始来源可支持狭窄事实，不强制凑多个独立来源；一个公司错误不否定整个事件。"
     "不得输出交易计划、仓位、买卖价位、收益结算或涨停概率。只输出 JSON，且只输出本 action 的结构。"
     "输出须精炼，保留决定所需事实与引用，避免在多个字段复述同一长段。assess_evidence 和 close_research 的 claims/questions 是增量更新："
-    "只返回实际需要更新的项，未变项省略，集合没有更新则 []。已存在命题若需更新仍完整保留其身份和原文，不得借精简改写事实；"
+    "只返回实际需要更新的项，未变项省略，集合没有更新则 []。程序为已有命题保留完整身份和原文，模型不得借精简改写事实；"
     "不要重复输出整个输入快照或所有未变证据卡。"
     "既有 questionId 的 question 原文和 claimIds 必须保持原样，更新状态、证据和缺口；answered 问题已无缺口时 missingEvidence 可为 []。"
+    "evidenceUpdates 每项的 location 必须为非空定位：搜索摘录注明 excerpt，全文使用传入段落定位；不得留空。applicability 必须为对象，无额外适用条件可用 {}。"
+    "更新已有命题或问题时只输出 ID 与有变化的字段，程序按 ID 保留未变字段，不要抄写长原文；新增命题则必须提供与输入 claims 相同的完整字段。"
 )
 _RUMOR = (
     "未核传闻可以在完整比较后成为 primary、alternative 或 tied 并正常发布，不自动变成 pending。其 evidenceDisclosure 必须明确 verificationStatus=unverified、isRumor=true、"
@@ -47,6 +49,12 @@ def request_spec(*, snapshot: ResearchSnapshot, action: str, evidence_packet: Ma
     prompt_snapshot = snapshot.to_dict()
     for key in ("revision", "executionStatus", "updatedAt", "verificationCutoffAt"):
         prompt_snapshot.pop(key, None)
-    return _COMMON + _INSTRUCTIONS[action], {"snapshot":prompt_snapshot,"action":action,"evidencePacket":dict(evidence_packet),"outputContract":_SHAPES[action],"emptyCollectionsAreAllowedOnlyWhenTheStageHasNoApplicableItems":True}
+    shape = _SHAPES[action]
+    if action in {"assess_evidence", "close_research"}:
+        shape = {**shape, "questions": [{"questionId":"existing question id", "state":"answered|open|blocked",
+            "knownEvidence":[{"documentId":"input","revision":1}], "missingEvidence":["remaining material gap"], "resumeCondition":"string|null"}]}
+        if action == "assess_evidence":
+            shape["claims"] = [{"claimId":"existing claim id", "verificationStatus":"verified|partially_supported|unverified|contradicted", "decisionImpact":"changed assessment"}]
+    return _COMMON + _INSTRUCTIONS[action], {"snapshot":prompt_snapshot,"action":action,"evidencePacket":dict(evidence_packet),"outputContract":shape,"emptyCollectionsAreAllowedOnlyWhenTheStageHasNoApplicableItems":True}
 
 __all__ = ["request_spec"]

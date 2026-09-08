@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .research_contracts import (
     Claim, EvidenceDisclosure, FullTextRequest, QueryPath, Question,
     ResearchContractError, ResearchSnapshot, ResearchStageResult,
-    validate_company_assessment,
+    validate_company_assessment, validate_evidence_update,
 )
 from .schema import read_connection, require_schema, write_connection
 from .store import K10Conflict, _json
@@ -106,19 +106,10 @@ def create_research_snapshot(*, snapshot: ResearchSnapshot, db_path: Path,
 
 
 def _evidence_update(value: Mapping[str, Any]) -> tuple[str, str, int, str, str, Mapping[str, Any]]:
-    if not isinstance(value, Mapping) or set(value) != {"claimId", "sourceRef", "relation", "location", "applicability"}:
-        raise ResearchContractError("evidenceUpdates 必须精确包含 claimId/sourceRef/relation/location/applicability")
+    value = validate_evidence_update(value)
     claim_id = value["claimId"]
     relation = value["relation"]
     location = value["location"]
-    if not isinstance(claim_id, str) or not claim_id:
-        raise ResearchContractError("evidenceUpdates.claimId 无效")
-    if relation not in {"supports", "partially_supports", "contradicts", "duplicate", "irrelevant", "conflicts"}:
-        raise ResearchContractError("evidenceUpdates.relation 无效")
-    if not isinstance(location, str) or not location:
-        raise ResearchContractError("evidenceUpdates.location 无效")
-    if not isinstance(value["applicability"], Mapping):
-        raise ResearchContractError("evidenceUpdates.applicability 必须为对象")
     document_id, revision = _ref(value["sourceRef"], "evidenceUpdates.sourceRef")
     return claim_id, document_id, revision, relation, location, value["applicability"]
 
