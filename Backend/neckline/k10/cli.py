@@ -54,11 +54,11 @@ def configure_execution(*, db_path: Path, config_id: str, file_path: Path, now: 
     return config_id, revision
 
 
-def _approved_v2_execution(*, db_path: Path, config_id: str, revision: int) -> bool:
+def _approved_v3_execution(*, db_path: Path, config_id: str, revision: int) -> bool:
     """Check the only execution profile an entry point may bind live work to."""
     profile = store.read_execution_config(config_id=config_id, revision=revision, db_path=db_path)
     payload = profile.get("payload") if isinstance(profile, dict) else None
-    return (isinstance(payload, dict) and payload.get("executionVersion") == "k10-execution-v2"
+    return (isinstance(payload, dict) and payload.get("executionVersion") == "k10-execution-v3"
             and validate_execution_config(payload).ready)
 
 def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str, config_revision: int, now: datetime,
@@ -89,17 +89,17 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
     if kind != "evening" and bootstrap_cutoff is not None:
         raise ValueError("bootstrap cutoff 仅适用于 evening")
     if execution_config_id is None or execution_config_revision is None:
-        raise RuntimeError("正式扫描入队必须显式绑定已批准的 V2 执行配置")
-    if not _approved_v2_execution(db_path=db_path, config_id=execution_config_id,
+        raise RuntimeError("正式扫描入队必须显式绑定已批准的 V3 执行配置")
+    if not _approved_v3_execution(db_path=db_path, config_id=execution_config_id,
                                   revision=execution_config_revision):
-        raise RuntimeError("指定 V2 执行配置修订不存在或未就绪")
+        raise RuntimeError("指定 V3 执行配置修订不存在或未就绪")
     task_id=_id("task",kind,cutoff.isoformat(),config_id,str(config_revision),bootstrap_cutoff or "")
     task_kind=f"{kind}_scan"
     store.enqueue_task(task_id=task_id,kind=task_kind,idempotency_key=f"{task_kind}:{cutoff.isoformat()}:{config_id}:{config_revision}:{bootstrap_cutoff or ''}",
                        input_version=str(config["contentSha256"]),input_cutoff_at=cutoff.isoformat(),
                        payload={"windowKind":kind,"tradingDay":trading_day.isoformat(),"configId":config_id,"configRevision":config_revision,
                                 **({"sourceBootstrapCutoff": bootstrap_cutoff} if bootstrap_cutoff is not None else {})},
-                       budget={"maxAttempts":policy["maxAttempts"],"maxSourceRequests":policy["maxSourceRequests"],"costLimit":policy.get("costLimit")},created_at=now.isoformat(),db_path=db_path)
+                       budget={},created_at=now.isoformat(),db_path=db_path)
     store.bind_task_execution(task_id=task_id, execution_config_id=execution_config_id,
                               execution_config_revision=execution_config_revision, binding_kind="scheduled",
                               bound_at=now.isoformat(), db_path=db_path)
@@ -138,9 +138,9 @@ def recover_scan(
         raise RuntimeError("冻结资料哈希确认不匹配，拒绝恢复")
     if store.read_run_config(config_id=scan["configId"], revision=scan["configRevision"], db_path=db_path) is None:
         raise RuntimeError("冻结策略配置修订不存在")
-    if not _approved_v2_execution(db_path=db_path, config_id=execution_config_id,
+    if not _approved_v3_execution(db_path=db_path, config_id=execution_config_id,
                                   revision=execution_config_revision):
-        raise RuntimeError("指定 V2 执行配置修订不存在或未就绪")
+        raise RuntimeError("指定 V3 执行配置修订不存在或未就绪")
     if any(batch.get("scanId") == scan_id for batch in store.list_publication_batches(db_path=db_path)):
         raise RuntimeError("已有正式发布批次的扫描不能建立恢复任务")
     task_id = _id("task", "recovery", scan_id, execution_config_id, str(execution_config_revision), actual_input_sha256)
@@ -152,7 +152,7 @@ def recover_scan(
         input_cutoff_at=str(scan["cutoffAt"]),
         payload={"windowKind": scan["windowKind"], "configId": scan["configId"], "configRevision": scan["configRevision"],
                  "resumeScanId": scan_id, "frozenInputSha256": actual_input_sha256, "sourceCollection": "forbidden"},
-        budget={"maxAttempts": policy["maxAttempts"], "maxSourceRequests": 0, "costLimit": policy.get("costLimit")},
+        budget={},
         created_at=now.isoformat(), db_path=db_path,
     )
     store.bind_task_execution(task_id=task_id, execution_config_id=execution_config_id,

@@ -1422,16 +1422,17 @@ def _scan(value: Mapping[str, Any], publications: list[Mapping[str, Any]], *, pa
         progress_payload = {
             key: progress[key] for key in (
             "state", "stage", "documentCounts", "eventCounts", "coverageStatus", "nextRetryAt",
-            "safeFailures", "strategyBinding", "executionBinding", "runControl", "processingCounts", "factCacheHits", "budget",
+            "safeFailures", "strategyBinding", "executionBinding", "runControl", "titleCounts", "articleCounts",
+            "attemptCounts", "factCacheHits",
         ) if key in progress
         }
-        # The store may retain an internal reason for operators.  HTTP exposes
-        # only the stable aggregate, never that internal bookkeeping detail.
-        budget = progress_payload.get("budget")
-        if isinstance(budget, Mapping):
-            progress_payload["budget"] = {
-                key: budget[key] for key in ("state", "reserved", "occupied", "actual", "unknown", "remaining", "reservationCount")
-                if key in budget and budget[key] is not None
+        # The store keeps exact usage for reconciliation.  HTTP projects only
+        # safe outcome counts; it never turns tokens, calls or money into a
+        # user-facing quota.
+        attempts = progress_payload.get("attemptCounts")
+        if isinstance(attempts, Mapping):
+            progress_payload["attemptCounts"] = {
+                key: attempts[key] for key in ("started", "succeeded", "failed", "unknown") if key in attempts
             }
         progress_out = ExecutionProgressOut.model_validate(progress_payload)
     return ScanOut(scanId=str(value["scanId"]), window=str(value["windowKind"]), cutoffAt=str(value["cutoffAt"]), status=str(value["status"]),

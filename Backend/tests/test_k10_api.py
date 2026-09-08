@@ -16,7 +16,6 @@ from neckline.api.k10_schemas import CompanyWindowEvaluationOut, MarketDayOut
 from neckline.k10 import store
 from neckline.k10.schema import initialize_schema
 from neckline.k10.types import OpportunityPublicationInput
-from tests.k10_v305_fixture import append_approved_execution_profile
 
 
 NOW = "2026-09-06T12:00:00+00:00"
@@ -31,12 +30,70 @@ def _client(path: Path, *, config_binding: tuple[str | None, int | None, str | N
     return TestClient(app)
 
 
+def _freeze_k10_clocks(monkeypatch: pytest.MonkeyPatch, at: str) -> None:
+    """Keep API and store projections at the fixture's intended observation instant."""
+    fixed = datetime.fromisoformat(at)
+
+    class FixtureDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(k10_api, "_now", lambda: at)
+    monkeypatch.setattr(k10_api, "datetime", FixtureDateTime)
+    monkeypatch.setattr(store, "datetime", FixtureDateTime)
+
+
 def _ready_config() -> dict:
     return json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
 
 
 def _execution_config() -> dict:
-    return json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    # Test-only V3 execution boundary. Production keeps this pack unbound
+    # until an operator supplies an approved policy revision.
+    policy_content = json.loads(
+        (Path(__file__).parents[1] / "neckline/config/k10-title-triage-policy-v1.json").read_text()
+    )
+    options = {
+        stage: {"maxTokens": 64, "thinking": {"type": "disabled"}}
+        for stage in ("titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize", "morning", "analysisPro", "analysisCon")
+    }
+    return {
+        "executionVersion": "k10-execution-v3",
+        "discovery": {
+            "model": "deepseek-v4-pro",
+            "titleTriagePolicy": {"policyId": "api-fixture-policy", "revision": 1, "contentSha256": "0" * 64,
+                                  "approvalState": "approved", "content": policy_content},
+            "articleLimits": {"evening": 80, "morning": 40},
+            "titleBatchSize": 8, "titleTriageConcurrency": 1, "deepReadConcurrency": 1,
+            "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0, "retryBackoffSeconds": [1],
+            "taskSliceSeconds": 30, "completionDeadlineSeconds": 60, "continuationDelaySeconds": 1,
+            "modelOptions": options,
+        },
+    }
+
+
+def _append_bound_v3_execution(path: Path, *, task_id: str) -> tuple[str, int]:
+    payload = _execution_config()
+    policy = payload["discovery"]["titleTriagePolicy"]
+    policy_revision = store.append_title_triage_policy(
+        policy_id=str(policy["policyId"]), content=policy["content"], approval_state="approved",
+        created_at=NOW, approved_at=NOW, db_path=path,
+    )
+    stored_policy = store.read_title_triage_policy(policy_id=str(policy["policyId"]), revision=policy_revision, db_path=path)
+    assert stored_policy is not None
+    payload["discovery"]["titleTriagePolicy"] = {
+        "policyId": stored_policy["policyId"], "revision": stored_policy["revision"],
+        "contentSha256": stored_policy["contentSha256"], "approvalState": "approved", "content": stored_policy["content"],
+    }
+    revision = store.append_execution_config(config_id="api-v306-execution", payload=payload, created_at=NOW, db_path=path)
+    store.bind_task_execution(task_id=task_id, execution_config_id="api-v306-execution", execution_config_revision=revision,
+                              binding_kind="scheduled", bound_at=NOW, db_path=path)
+    return "api-v306-execution", revision
+
+
+def _title_manifest_hash(refs: list[dict[str, object]]) -> str:
+    return sha256(json.dumps(refs, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _seed(path: Path) -> str:
@@ -127,64 +184,99 @@ def test_operations_exposes_durable_pause_and_client_pause_stays_closed(tmp_path
 
 
 
-@pytest.mark.parametrize("scan_status", ["running", "partial"])
-def test_scan_progress_exposes_v305_pause_budget_and_processing_aggregates(tmp_path: Path, scan_status: str) -> None:
-    path = tmp_path / "v305-progress.sqlite"
+@pytest.mark.parametrize(("scan_status", "expected_state_after_pause"), [("running", "paused"), ("partial", "partial")])
+def test_scan_progress_exposes_v306_title_article_and_safe_attempt_aggregates(
+    tmp_path: Path, scan_status: str, expected_state_after_pause: str,
+) -> None:
+    path = tmp_path / "v306-progress.sqlite"
     _seed(path)
-    execution_id, execution_revision = append_approved_execution_profile(
-        db_path=path, created_at=NOW, config_id="v305-progress", max_model_calls=1,
-    )
     store.set_run_control(state="open", reason_code="fixture_authorized", changed_at=NOW,
                           changed_by="test", db_path=path)
     store.enqueue_task(
-        task_id="v305-progress-task", kind="evening_scan", idempotency_key="v305-progress-task",
+        task_id="v306-progress-task", kind="evening_scan", idempotency_key="v306-progress-task",
         input_version="frozen", input_cutoff_at=NOW, payload={"windowKind": "evening"},
         budget={"maxAttempts": 1}, created_at=NOW, db_path=path,
     )
-    store.bind_task_execution(
-        task_id="v305-progress-task", execution_config_id=execution_id,
-        execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=NOW, db_path=path,
-    )
-    processing = {
-        "received": 30, "exactDeduplicated": 2, "templateExcluded": 18, "templateDeferred": 3,
-        "templateProtected": 1, "packages": 4, "lightweightUnderstood": 4, "fullTextRequested": 1,
-        "fullTextCompleted": 1, "pendingVerification": 2, "pendingBudget": 1,
-    }
+    execution_id, execution_revision = _append_bound_v3_execution(path, task_id="v306-progress-task")
     store.create_scan(
-        scan_id="v305-progress-scan", window_kind="evening", cutoff_at=NOW, config_id="cfg",
+        scan_id="v306-progress-scan", window_kind="evening", cutoff_at=NOW, config_id="cfg",
         config_revision=1, status=scan_status, coverage={"status": "partial", "inputSnapshotFrozen": True,
-        "processingCounts": processing, "factCacheHits": 2}, created_at=NOW,
+        "receivedTitleCount": 2, "factCacheHits": 2}, created_at=NOW,
         completed_at=NOW if scan_status == "partial" else None, db_path=path,
     )
     store.bind_scan_execution(
-        scan_id="v305-progress-scan", task_id="v305-progress-task", execution_config_id=execution_id,
+        scan_id="v306-progress-scan", task_id="v306-progress-task", execution_config_id=execution_id,
         execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=NOW, db_path=path,
     )
+    refs = [{"documentId": "title-a", "revision": 1}, {"documentId": "title-b", "revision": 1}]
+    store.freeze_title_triage_manifest(
+        task_id="v306-progress-task", input_manifest_sha256=_title_manifest_hash(refs), window_kind="evening",
+        policy_id="api-fixture-policy", policy_revision=1,
+        policy_content_sha256=store.read_title_triage_policy(policy_id="api-fixture-policy", revision=1, db_path=path)["contentSha256"],
+        article_limit=80, input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
+    )
+    store.record_title_triage_item(task_id="v306-progress-task", document_id="title-a", revision=1, batch_index=0,
+                                   disposition="candidate", matter_key="matter-a", merged_ref=None, selection_rank=1,
+                                   audit_reason="独立事项", created_at=NOW, db_path=path)
+    store.record_title_triage_item(task_id="v306-progress-task", document_id="title-b", revision=1, batch_index=0,
+                                   disposition="merged", matter_key="matter-a", merged_ref=refs[0], selection_rank=None,
+                                   audit_reason="同事项转载", created_at=NOW, db_path=path)
+    selected = [refs[0]]
+    store.freeze_title_selection_manifest(task_id="v306-progress-task", selection_manifest_sha256=_title_manifest_hash(selected),
+                                          selected_refs=selected, created_at=NOW, db_path=path)
+    store.admit_article(task_id="v306-progress-task", document_id="title-a", revision=1, admission_kind="selected", created_at=NOW, db_path=path)
+    store.record_article_outcome(task_id="v306-progress-task", document_id="title-a", revision=1, state="missing_body",
+                                 reason_code="source_unavailable", updated_at=NOW, db_path=path)
+    tavily_refs = []
+    for document_id, digest in (("tavily-a", "b" * 64), ("tavily-b", "c" * 64)):
+        version = store.append_document_version(
+            document_id=document_id, source_key="tavily_verification", external_id=document_id,
+            canonical_url=None, content_sha256=digest, published_at=NOW, published_precision="exact",
+            fetched_at=NOW, original_text=None, excerpt="已持久化的 Tavily 核验摘录",
+            fetch_version="tavily-basic-general-v2", metadata={}, created_at=NOW, db_path=path,
+        )
+        tavily_refs.append({"documentId": version.document_id, "revision": version.revision})
+    store.record_execution_checkpoint(
+        task_id="v306-progress-task", item_kind="event", item_key="tavily-evidence",
+        stage="tavily_evidence", input_sha256="tavily-evidence".ljust(64, "0"), status="completed",
+        attempt_count=1, network_attempt_count=1, repair_attempt_count=0, elapsed_ms=0,
+        input_tokens=None, output_tokens=None,
+        result={"coverage": {"requestState": "completed"}, "documentRefs": tavily_refs},
+        safe_error_code=None, safe_error_ref=None, updated_at=NOW, db_path=path,
+    )
+    store.admit_article(task_id="v306-progress-task", document_id="tavily-a", revision=1, admission_kind="tavily_full_article", created_at=NOW, db_path=path)
+    attempt = store.begin_external_attempt(task_id="v306-progress-task", stage="model:titleBatch", item_key="batch-0",
+                                           attempt_key="batch-0:1", input_sha256="a" * 64, started_at=NOW, db_path=path)
+    store.settle_external_attempt(attempt_id=attempt["attemptId"], outcome="succeeded",
+                                  usage={"promptTokens": 4, "completionTokens": 2, "totalTokens": 6, "searchRequests": 0, "searchCredits": 0},
+                                  settled_at=NOW, error_code=None, db_path=path)
 
     with _client(path) as client:
-        running = client.get("/api/v1/k10/scans/v305-progress-scan")
+        running = client.get("/api/v1/k10/scans/v306-progress-scan")
         pause = client.post("/api/v1/k10/operations/pause")
-        paused = client.get("/api/v1/k10/scans/v305-progress-scan")
+        paused = client.get("/api/v1/k10/scans/v306-progress-scan")
 
     assert running.status_code == pause.status_code == paused.status_code == 200
     initial_progress = running.json()["executionProgress"]
-    assert initial_progress["state"] == "budgetExhausted"
-    assert initial_progress["stage"] == "pending_budget"
+    assert initial_progress["state"] == scan_status
+    # This fixture writes the durable title manifest directly; it deliberately
+    # does not simulate a worker claiming and advancing the task stage.
+    assert initial_progress["stage"] == "created"
     assert initial_progress["runControl"]["state"] == "ready"
-    assert initial_progress["processingCounts"] == processing
-    assert initial_progress["factCacheHits"] == 2
-    # pending budget is visible as a guarded, exhausted aggregate; no raw
-    # prompt, source or provider detail leaves the ledger.
-    assert initial_progress["budget"]["state"] == "exhausted"
-    assert initial_progress["budget"]["remaining"]["calls"] == 1
-    assert set(initial_progress["budget"]) == {
-        "state", "reserved", "occupied", "actual", "unknown", "remaining", "reservationCount",
+    assert initial_progress["titleCounts"] == {
+        "received": 2, "exactDeduplicated": 0, "triaged": 2, "merged": 1, "notSelected": 1, "protected": 0, "partial": 0,
     }
+    assert initial_progress["articleCounts"] == {
+        "limit": 80, "selected": 1, "admitted": 2, "completed": 0, "missingBody": 1, "tavilyExcerpt": 2, "tavilyFullArticle": 1,
+    }
+    assert initial_progress["attemptCounts"] == {"started": 0, "succeeded": 1, "failed": 0, "unknown": 0}
+    assert initial_progress["factCacheHits"] == 2
+    assert "budget" not in initial_progress and "actualUsage" not in initial_progress["attemptCounts"]
     paused_progress = paused.json()["executionProgress"]
     assert pause.json()["runControl"]["state"] == "paused"
-    assert paused_progress["state"] == "paused"
+    assert paused_progress["state"] == expected_state_after_pause
     assert paused_progress["runControl"]["reasonCode"] == "user_paused"
-    assert paused_progress["processingCounts"] == processing
+    assert paused_progress["titleCounts"] == initial_progress["titleCounts"]
     assert paused_progress["factCacheHits"] == 2
 
 def test_configuration_uses_bound_revision_not_an_old_scan_or_another_config(tmp_path: Path) -> None:
@@ -193,7 +285,7 @@ def test_configuration_uses_bound_revision_not_an_old_scan_or_another_config(tmp
     old_revision = store.append_run_config(config_id="old", payload=_ready_config(), created_at=NOW, db_path=path)
     current_revision = store.append_run_config(config_id="current", payload=_ready_config(), created_at=NOW, db_path=path)
     current_update = _ready_config()
-    current_update["sourceAdapters"] = [{"key": "newer-current-source"}]
+    current_update["sourceAdapters"] = [{"key": "newer-current-source", "lateArrivalReplaySeconds": 86400}]
     assert store.append_run_config(config_id="current", payload=current_update, created_at=NOW, db_path=path) == 2
     assert store.append_execution_config(config_id="execution", payload=_execution_config(), created_at=NOW, db_path=path) == 1
     store.create_scan(scan_id="old-scan", window_kind="evening", cutoff_at=NOW, config_id="old",
@@ -288,7 +380,7 @@ def test_publications_project_company_cards_and_multifield_wire_contract(tmp_pat
 def test_keep_is_idempotent_and_selection_freeze_is_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "selection.sqlite"; _seed(path)
     action_at = "2026-09-07T01:20:00+00:00"  # 09:20 CST, before the 09:30 D1 freeze.
-    monkeypatch.setattr(k10_api, "_now", lambda: action_at)
+    _freeze_k10_clocks(monkeypatch, action_at)
     with _client(path) as client:
         window_id = client.get("/api/v1/k10/company-windows").json()["items"][0]["companyWindowId"]
         first = client.post(f"/api/v1/k10/company-windows/{window_id}/selection", json={"action": "keep", "idempotencyKey": "keep-1"})
@@ -304,8 +396,11 @@ def test_keep_is_idempotent_and_selection_freeze_is_read_only(tmp_path: Path, mo
     assert selection["state"] == "kept" and selection["analysisJobId"]
 
 
-def test_opportunity_lifecycle_keeps_risk_until_verified_morning_review(tmp_path: Path) -> None:
+def test_opportunity_lifecycle_keeps_risk_until_verified_morning_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     path = tmp_path / "lifecycle.sqlite"; _seed(path)
+    _freeze_k10_clocks(monkeypatch, "2026-09-07T02:10:00+00:00")
     opportunity = next(item for item in store.list_opportunities(db_path=path) if item["companyCode"] == "300001.SZ")
     opportunity_id = str(opportunity["opportunityId"])
     d2_before = str(opportunity["d2TradeDate"])

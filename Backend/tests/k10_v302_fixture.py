@@ -32,7 +32,7 @@ from neckline.k10.schema import initialize_schema
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.llm.base import LLMResult
 
-from .k10_v305_fixture import append_approved_execution_profile
+from .k10_v306_fixture import append_approved_execution_profile
 
 
 TZ = "+08:00"

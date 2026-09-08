@@ -39,12 +39,13 @@ def test_api_projects_frozen_new_stage_reason_and_retains_legacy_absence(tmp_pat
     assert _comparison({"classification": {"kind": "material_stage", "reason": "缺字段"}}).classification is None
 
 
-def test_results_expose_all_category_counts_for_every_metric_projection(tmp_path):
+def test_results_expose_all_category_counts_for_every_metric_projection(tmp_path, monkeypatch):
     from tests.k10_v303_fixture import build_fixture
-    from tests.test_k10_api import _client
+    from tests.test_k10_api import _client, _freeze_k10_clocks
 
     path = tmp_path / "v303-results.sqlite"
     build_fixture(path)
+    _freeze_k10_clocks(monkeypatch, "2026-09-08T14:59:00+08:00")
     with _client(path) as client:
         response = client.get("/api/v1/k10/results")
     assert response.status_code == 200, response.text

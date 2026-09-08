@@ -44,7 +44,7 @@ def test_primary_rate_cannot_acquire_an_overlap_even_with_invalid_eligibility_fl
 
 
 def test_morning_api_flattens_all_sections_and_hydrates_exact_sources(tmp_path):
-    from tests.test_k10_api import _seed, _client, NOW
+    from tests.test_k10_api import _seed, _client, _freeze_k10_clocks, NOW
     from neckline.k10 import store
     path = tmp_path / 'morning-api.sqlite'
     _seed(path)
@@ -72,11 +72,12 @@ def test_morning_api_flattens_all_sections_and_hydrates_exact_sources(tmp_path):
 
 
 def test_followup_api_requires_complete_parent_and_preserves_request_and_window(tmp_path, monkeypatch):
-    from tests.test_k10_api import _seed, _client, NOW
+    from tests.test_k10_api import _seed, _client, _freeze_k10_clocks, NOW
     from neckline.k10 import store
     from neckline.api import k10 as api
     path = tmp_path / 'followup-api.sqlite'
     _seed(path)
+    _freeze_k10_clocks(monkeypatch, '2026-09-07T00:30:00+00:00')
     window = store.list_company_windows(db_path=path)[0]
     window_id = window['companyWindowId']
     monkeypatch.setattr(api, '_now', lambda: '2026-09-07T00:30:00+00:00')
@@ -135,10 +136,11 @@ def test_evening_and_preopen_morning_share_one_result_cohort(tmp_path):
         assert {op['sourceMarker'] for w in windows for op in w['opportunities']}=={'evening','morning'}
 
 
-def test_partial_analysis_and_legacy_morning_rows_do_not_break_public_readers(tmp_path):
-    from tests.test_k10_api import _seed, _client, NOW
+def test_partial_analysis_and_legacy_morning_rows_do_not_break_public_readers(tmp_path, monkeypatch):
+    from tests.test_k10_api import _seed, _client, _freeze_k10_clocks, NOW
     from neckline.k10 import store
     path=tmp_path/'partial.sqlite';_seed(path)
+    _freeze_k10_clocks(monkeypatch, '2026-09-07T00:30:00+00:00')
     window=store.list_company_windows(db_path=path)[0]
     prefix='/api/v1/k10/company-windows/'+window['companyWindowId']
     with _client(path) as client:

@@ -90,7 +90,7 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
                                      execution_profile=context.execution_profile)
     model_options = execution_model_options(execution_profile=context.execution_profile, stage="morning", option_stage="verify")
     if isinstance(resolution.provider, MeteredProvider) and model_options is None:
-        return TaskResult("not_configured", "configuration", error="晨间模型输出上限未在冻结执行配置中明确")
+        return TaskResult("not_configured", "configuration", error="晨间模型单次输出上限未在冻结执行配置中明确")
     try:
         lifecycle_as_of = datetime.fromisoformat(context.input_cutoff_at.replace("Z", "+00:00"))
         if lifecycle_as_of.tzinfo is None:

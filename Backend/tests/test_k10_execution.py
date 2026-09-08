@@ -18,14 +18,14 @@ from neckline.k10.model_execution import SemanticValidationError, execute_model_
 from neckline.k10.schema import K10SchemaError, initialize_schema, rollback_schema, schema_version
 from neckline.k10.worker import TaskResult, run_once
 from neckline.llm.base import LLMResult
-from tests.k10_v305_fixture import append_approved_execution_profile
+from tests.k10_v306_fixture import append_approved_execution_profile, execution_payload
 
 
 NOW = datetime(2026, 9, 8, 1, tzinfo=timezone.utc)
 
 
 def _profile() -> dict:
-    return json.loads((Path(__file__).parents[1] / "neckline" / "config" / "k10-execution-v1.json").read_text())
+    return execution_payload()[1]
 
 
 def _strategy() -> dict:
@@ -84,8 +84,7 @@ def test_checkpoint_is_immutable_after_completion_and_progress_is_safe(tmp_path)
                                       updated_at=NOW.isoformat(), db_path=path)
     assert store.completed_execution_items(task_id="task-1", item_kind="document", stage="understand", db_path=path)[0]["result"]["events"]
     progress = store.execution_progress_for_scan(scan_id="scan-1", db_path=path)
-    assert progress is not None and progress["documentCounts"]["understood"] == 1
-    assert progress["executionBinding"]["bindingKind"] == "scheduled"
+    assert progress is not None and progress["executionBinding"]["bindingKind"] == "scheduled"
     with pytest.raises(ValueError, match="原始响应"):
         store.record_execution_checkpoint(task_id="task-1", item_kind="document", item_key="doc@2", stage="understand",
                                           input_sha256="h", status="completed", attempt_count=1, network_attempt_count=1,
@@ -135,22 +134,15 @@ def test_execution_progress_uses_model_stage_rows_without_duplicate_document_fai
 
     progress = store.execution_progress_for_scan(scan_id="scan-model-rows", db_path=path)
     assert progress is not None
-    assert progress["documentCounts"] == {
-        "received": 2, "deduplicated": 2, "templateSkipped": 0, "understood": 1,
-        "fullText": 0, "failedPending": 1,
-    }
-    assert progress["eventCounts"] == {"verified": 1, "compared": 1, "publishable": None}
-    # A failed document remains visible, but a separate event already in the
-    # comparison phase must not regress the live progress back to verification.
-    assert progress["state"] == "partial" and progress["stage"] == "comparison"
-    assert progress["safeFailures"] == [{"stage": "understand", "code": "model_output_invalid", "ref": "doc-b@1"}]
+    # Legacy B37 model rows cannot fabricate V3 title-selection progress.
+    assert progress["titleCounts"] is None
     store.finalize_scan(
         scan_id="scan-model-rows", status="partial", coverage={"inputDocumentRefs": [
             {"documentId": "doc-a", "revision": 1}, {"documentId": "doc-b", "revision": 1},
         ], "inputSnapshotFrozen": True}, completed_at=NOW.isoformat(), db_path=path,
     )
     terminal = store.execution_progress_for_scan(scan_id="scan-model-rows", db_path=path)
-    assert terminal is not None and terminal["state"] == "partial" and terminal["stage"] == "completed"
+    assert terminal is not None and terminal["state"] == "partial" and terminal["stage"] == "created"
 
 
 def test_execution_progress_hides_stale_retry_after_task_is_claimed(tmp_path):
@@ -187,7 +179,7 @@ def test_execution_progress_hides_stale_retry_after_task_is_claimed(tmp_path):
     assert store.claim_task_by_id(task_id="task-1", worker_id="resumed-worker", now=retry_at,
                                   lease_for=timedelta(minutes=1), db_path=path) is not None
     resumed = store.execution_progress_for_scan(scan_id="scan-retry", db_path=path)
-    assert resumed is not None and resumed["stage"] == "awaiting_verification"
+    assert resumed is not None and resumed["stage"] == "leased"
     assert resumed["nextRetryAt"] is None
 
 
@@ -254,17 +246,13 @@ def test_worker_model_rows_reach_scan_api_progress_counts(tmp_path):
         response = client.get("/api/v1/k10/scans/scan-worker-model")
     assert response.status_code == 200, response.text
     progress = response.json()["executionProgress"]
-    assert progress["documentCounts"]["understood"] == 1
-    assert progress["documentCounts"]["fullText"] == 1
-    assert progress["documentCounts"]["failedPending"] == 1
-    assert progress["safeFailures"] == [{"stage": "understand", "code": "model_output_invalid", "ref": "doc-b@1"}]
-    assert progress["eventCounts"] == {"verified": 1, "compared": 1, "publishable": None}
-    assert progress["stage"] == "comparison"
+    assert progress["state"] == "running"
+    assert progress["titleCounts"] is None
     model("prioritize", "scan-worker-model")
     with TestClient(app) as client:
         ranking_response = client.get("/api/v1/k10/scans/scan-worker-model")
     assert ranking_response.status_code == 200, ranking_response.text
-    assert ranking_response.json()["executionProgress"]["stage"] == "prioritize"
+    assert ranking_response.json()["executionProgress"]["titleCounts"] is None
 
 
 def test_checkpoint_rechecks_lease_inside_write_transaction_after_takeover(tmp_path):
@@ -305,7 +293,7 @@ def test_checkpoint_rechecks_lease_inside_write_transaction_after_takeover(tmp_p
     assert store.completed_execution_items(task_id="task-1", item_kind="document", stage="understand", db_path=path) == []
 
 
-def test_continuation_does_not_consume_failure_attempt_budget(tmp_path):
+def test_continuation_does_not_consume_failure_retry_allowance(tmp_path):
     path = tmp_path / "continuation.sqlite"
     _seed(path)
     calls = []
@@ -499,7 +487,7 @@ def test_model_truncation_preserves_reported_usage_without_reissuing_same_input(
     assert calls == 1
 
 
-def test_model_interrupted_reservation_remains_charged_but_can_use_remaining_attempt(tmp_path):
+def test_model_interrupted_attempt_remains_charged_but_can_use_remaining_attempt(tmp_path):
     path = tmp_path / "model-interrupted.sqlite"
     _seed(path)
     input_sha = _model_input("interrupted")
@@ -512,7 +500,7 @@ def test_model_interrupted_reservation_remains_charged_but_can_use_remaining_att
     assert resumed.status == "completed" and resumed.network_attempt_count == 2 and resumed.attempt_count == 2
 
 
-def test_model_reservation_rechecks_lease_in_its_write_transaction(tmp_path):
+def test_model_attempt_rechecks_lease_in_its_write_transaction(tmp_path):
     path = tmp_path / "model-lease.sqlite"
     _seed(path)
     assert store.claim_task_by_id(task_id="task-1", worker_id="former", now=NOW,
@@ -557,6 +545,6 @@ def test_recovery_binds_new_execution_profile_to_the_exact_failed_snapshot(tmp_p
     task = store.get_task(task_id=task_id, db_path=path)
     assert task is not None and task.payload["resumeScanId"] == "failed-scan" and task.payload["sourceCollection"] == "forbidden"
     assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
-    with pytest.raises(K10SchemaError, match="模板或预算记录"):
+    with pytest.raises(K10SchemaError, match="标题筛选、尝试或缓存记录"):
         rollback_schema(path, target_version=3)
-    assert schema_version(path) == 5
+    assert schema_version(path) == 6

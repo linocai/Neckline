@@ -16,7 +16,7 @@ from neckline.k10.worker import run_once
 from neckline.k10.windows import SHANGHAI
 from tests.test_k10_pipeline import (_Adapter, _FixtureVerificationGateway, _Metadata, _VerifiedModel,
                                     _configuration, _watermark)
-from tests.k10_v305_fixture import append_approved_execution_profile
+from tests.k10_v306_fixture import append_approved_execution_profile
 
 
 DAY = date(2026, 9, 7)

@@ -4,4 +4,4 @@
 详见项目根 `PROJECT_PLAN.md`(唯一权威施工件)。
 """
 
-__version__ = "0.1.0"
+__version__ = "3.0.6"

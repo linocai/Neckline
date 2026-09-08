@@ -59,13 +59,6 @@ def _policy(configuration: Mapping[str, Any], task: str) -> tuple[float, int] | 
         return None
     if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
         return None
-    # ``costLimit: null`` is an explicit approved no-cap policy. It does not prevent
-    # token/failure accounting and does not cause a fallback to an unknown model.
-    cost = policy.get("costLimit")
-    if "costLimit" not in policy or (cost is not None and (
-        isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0
-    )):
-        return None
     return float(timeout), attempts
 
 
@@ -87,7 +80,7 @@ def resolve_deepseek_v4_pro(
         return ProviderResolution("not_configured", None, None, f"{task} 必须明确使用 {DEEPSEEK_V4_PRO}")
     policy = _policy(configuration, task)
     if policy is None:
-        return ProviderResolution("not_configured", None, None, "模型超时、重试或费用策略未明确配置")
+        return ProviderResolution("not_configured", None, None, "模型超时或重试配置不完整")
     timeout, attempts = policy
     records = list(provider_records) if provider_records is not None else list_providers(db_path=db_path)
     matches = [

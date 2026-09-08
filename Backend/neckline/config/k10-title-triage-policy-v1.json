@@ -1,0 +1,25 @@
+{
+  "policyVersion": "k10-title-triage-v1",
+  "allExactDeduplicatedTitlesRequired": true,
+  "titleInputFields": ["documentId", "revision", "sourceKey", "publishedAt", "title"],
+  "retain": [
+    "new material facts with a plausible listed-company, industry-chain or market impact",
+    "unclear titles that may contain a material fact",
+    "corrections, denials, cancellations, material contrary evidence and a watched-company material change",
+    "independent catalysts affecting the same company"
+  ],
+  "merge": {
+    "sameMatterSyndication": "keep one most original, reliable and complete source when titles describe the same fact with no new material detail",
+    "neverMerge": ["correction_or_denial_with_the_original_claim", "independent_catalysts", "different_companies_or_materially_different_stages"]
+  },
+  "forbiddenHardExclusions": [
+    "news_category", "bullish_or_bearish_keywords", "chinext_code_presence", "title_length", "overseas_or_upstream_scope", "company_code_absence"
+  ],
+  "selection": {
+    "globalAfterAllBatches": true,
+    "actualArticleCount": true,
+    "doNotFillQuota": true,
+    "noBodyBeforeFrozenSelection": true,
+    "requiredDisposition": ["candidate", "uncertain", "protected", "not_selected", "merged", "no_value"]
+  }
+}

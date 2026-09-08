@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class K10SchemaError(RuntimeError):
@@ -493,70 +493,22 @@ CREATE INDEX idx_k10_task_retry_due ON k10_task_retry_schedules(not_before_at, t
 """
 
 
-# V5 is additive: it does not rewrite frozen K10 business or V4 execution rows.
-_V5 = r"""
-CREATE TABLE k10_screening_template_revisions (
-  template_id TEXT NOT NULL,
-  revision INTEGER NOT NULL CHECK(revision >= 1),
-  payload_json TEXT NOT NULL,
-  content_sha256 TEXT NOT NULL,
-  approval_state TEXT NOT NULL CHECK(approval_state IN ('draft','approved','retired')),
-  approved_at TEXT,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY(template_id, revision),
-  UNIQUE(template_id, content_sha256),
-  CHECK((approval_state='approved' AND approved_at IS NOT NULL) OR
-        (approval_state!='approved' AND approved_at IS NULL))
-);
-
-CREATE TABLE k10_run_controls (
+# V6 removes the unpublished V3.0.5 budget/template product.  It adds only
+# title-first audit records, bounded article membership, a generic attempt
+# ledger and durable retirement facts.  V4 goes directly here; V5 is cleaned
+# first by _apply_v6 without rewriting any business history.
+_V6 = r"""
+CREATE TABLE IF NOT EXISTS k10_run_controls (
   control_key TEXT PRIMARY KEY,
   state TEXT NOT NULL CHECK(state IN ('closed','open')),
   reason_code TEXT NOT NULL,
   changed_at TEXT NOT NULL,
   changed_by TEXT NOT NULL
 );
-INSERT INTO k10_run_controls(control_key,state,reason_code,changed_at,changed_by)
-VALUES('k10_discovery','closed','unconfigured_closed','1970-01-01T00:00:00+00:00','schema-v5');
+INSERT OR IGNORE INTO k10_run_controls(control_key,state,reason_code,changed_at,changed_by)
+VALUES('k10_discovery','closed','unconfigured_closed','1970-01-01T00:00:00+00:00','schema-v6');
 
-CREATE TABLE k10_task_execution_spend_reservations (
-  reservation_id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
-  reservation_key TEXT NOT NULL,
-  item_key TEXT NOT NULL,
-  stage TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('model','full_text','search','retry')),
-  state TEXT NOT NULL CHECK(state IN ('reserved','settled','unknown','released')),
-  reserve_calls INTEGER NOT NULL CHECK(reserve_calls >= 0),
-  reserve_input_tokens INTEGER NOT NULL CHECK(reserve_input_tokens >= 0),
-  reserve_output_tokens INTEGER NOT NULL CHECK(reserve_output_tokens >= 0),
-  reserve_total_tokens INTEGER NOT NULL CHECK(reserve_total_tokens >= 0),
-  reserve_full_text_calls INTEGER NOT NULL CHECK(reserve_full_text_calls >= 0),
-  reserve_retries INTEGER NOT NULL CHECK(reserve_retries >= 0),
-  reserve_search_requests INTEGER NOT NULL CHECK(reserve_search_requests >= 0),
-  reserve_search_credits INTEGER NOT NULL CHECK(reserve_search_credits >= 0),
-  actual_calls INTEGER CHECK(actual_calls IS NULL OR actual_calls >= 0),
-  actual_input_tokens INTEGER CHECK(actual_input_tokens IS NULL OR actual_input_tokens >= 0),
-  actual_output_tokens INTEGER CHECK(actual_output_tokens IS NULL OR actual_output_tokens >= 0),
-  actual_total_tokens INTEGER CHECK(actual_total_tokens IS NULL OR actual_total_tokens >= 0),
-  actual_full_text_calls INTEGER CHECK(actual_full_text_calls IS NULL OR actual_full_text_calls >= 0),
-  actual_retries INTEGER CHECK(actual_retries IS NULL OR actual_retries >= 0),
-  actual_search_requests INTEGER CHECK(actual_search_requests IS NULL OR actual_search_requests >= 0),
-  actual_search_credits INTEGER CHECK(actual_search_credits IS NULL OR actual_search_credits >= 0),
-  created_at TEXT NOT NULL,
-  settled_at TEXT,
-  UNIQUE(task_id, reservation_key)
-);
-CREATE INDEX idx_k10_spend_task_state ON k10_task_execution_spend_reservations(task_id, state, stage);
-
-CREATE TABLE k10_screening_runs (
-  task_id TEXT PRIMARY KEY REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
-  input_manifest_sha256 TEXT NOT NULL,
-  result_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE k10_fact_cache (
+CREATE TABLE IF NOT EXISTS k10_fact_cache (
   cache_key TEXT PRIMARY KEY,
   source_refs_json TEXT NOT NULL,
   eligible_at TEXT NOT NULL,
@@ -566,7 +518,102 @@ CREATE TABLE k10_fact_cache (
   result_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE INDEX idx_k10_fact_cache_eligible ON k10_fact_cache(eligible_at, cache_key);
+CREATE INDEX IF NOT EXISTS idx_k10_fact_cache_eligible ON k10_fact_cache(eligible_at, cache_key);
+
+CREATE TABLE k10_title_triage_policy_revisions (
+  policy_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  content_json TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  approval_state TEXT NOT NULL CHECK(approval_state IN ('draft','approved','retired')),
+  approved_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(policy_id, revision),
+  UNIQUE(policy_id, content_sha256),
+  CHECK((approval_state='approved' AND approved_at IS NOT NULL) OR
+        (approval_state!='approved' AND approved_at IS NULL))
+);
+
+CREATE TABLE k10_title_triage_manifests (
+  task_id TEXT PRIMARY KEY REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  input_manifest_sha256 TEXT NOT NULL,
+  window_kind TEXT NOT NULL CHECK(window_kind IN ('evening','morning')),
+  policy_id TEXT NOT NULL,
+  policy_revision INTEGER NOT NULL,
+  policy_content_sha256 TEXT NOT NULL,
+  article_limit INTEGER NOT NULL CHECK(article_limit IN (40,80)),
+  input_refs_json TEXT NOT NULL,
+  batch_count INTEGER NOT NULL CHECK(batch_count >= 0),
+  title_status TEXT NOT NULL CHECK(title_status IN ('frozen','partial')),
+  selection_status TEXT NOT NULL CHECK(selection_status IN ('pending','frozen','partial')),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(policy_id, policy_revision) REFERENCES k10_title_triage_policy_revisions(policy_id, revision) ON DELETE RESTRICT
+);
+
+CREATE TABLE k10_title_triage_items (
+  task_id TEXT NOT NULL REFERENCES k10_title_triage_manifests(task_id) ON DELETE RESTRICT,
+  document_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  batch_index INTEGER NOT NULL CHECK(batch_index >= 0),
+  disposition TEXT NOT NULL CHECK(disposition IN ('candidate','uncertain','protected','not_selected','merged','no_value','exact_duplicate')),
+  matter_key TEXT,
+  merged_document_id TEXT,
+  merged_revision INTEGER,
+  selection_rank INTEGER CHECK(selection_rank IS NULL OR selection_rank >= 1),
+  audit_reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(task_id, document_id, revision),
+  CHECK((merged_document_id IS NULL AND merged_revision IS NULL) OR
+        (merged_document_id IS NOT NULL AND merged_revision IS NOT NULL AND merged_revision >= 1))
+);
+CREATE INDEX idx_k10_title_triage_items_task_rank ON k10_title_triage_items(task_id, selection_rank, document_id);
+
+CREATE TABLE k10_title_selection_manifests (
+  task_id TEXT PRIMARY KEY REFERENCES k10_title_triage_manifests(task_id) ON DELETE RESTRICT,
+  selection_manifest_sha256 TEXT NOT NULL,
+  selected_refs_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE k10_article_admissions (
+  task_id TEXT NOT NULL REFERENCES k10_title_triage_manifests(task_id) ON DELETE RESTRICT,
+  document_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  admission_kind TEXT NOT NULL CHECK(admission_kind IN ('selected','tavily_full_article')),
+  state TEXT NOT NULL CHECK(state IN ('admitted','completed','missing_body','failed')),
+  reason_code TEXT,
+  admitted_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY(task_id, document_id, revision)
+);
+CREATE INDEX idx_k10_article_admissions_task_state ON k10_article_admissions(task_id, state, admission_kind);
+
+CREATE TABLE k10_external_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  stage TEXT NOT NULL,
+  item_key TEXT NOT NULL,
+  attempt_key TEXT NOT NULL,
+  input_sha256 TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('started','succeeded','failed','unknown')),
+  prompt_tokens INTEGER CHECK(prompt_tokens IS NULL OR prompt_tokens >= 0),
+  completion_tokens INTEGER CHECK(completion_tokens IS NULL OR completion_tokens >= 0),
+  total_tokens INTEGER CHECK(total_tokens IS NULL OR total_tokens >= 0),
+  search_requests INTEGER CHECK(search_requests IS NULL OR search_requests >= 0),
+  search_credits INTEGER CHECK(search_credits IS NULL OR search_credits >= 0),
+  error_code TEXT,
+  started_at TEXT NOT NULL,
+  settled_at TEXT,
+  UNIQUE(task_id, attempt_key)
+);
+CREATE INDEX idx_k10_external_attempts_task_state ON k10_external_attempts(task_id, state, stage);
+
+CREATE TABLE k10_discovery_retirements (
+  scan_id TEXT PRIMARY KEY REFERENCES k10_scans(scan_id) ON DELETE RESTRICT,
+  task_id TEXT NOT NULL UNIQUE REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  reason_code TEXT NOT NULL,
+  retired_at TEXT NOT NULL
+);
 """
 
 _DROP_V1 = (
@@ -669,8 +716,8 @@ def initialize_schema(db_path: Path) -> int:
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
             _apply_v4(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v5(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (5,?)", (_now(),))
+            _apply_v6(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
         elif version == 1:
             _apply_v2(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (2,?)", (_now(),))
@@ -678,23 +725,26 @@ def initialize_schema(db_path: Path) -> int:
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
             _apply_v4(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v5(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (5,?)", (_now(),))
+            _apply_v6(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
         elif version == 2:
             _apply_v3(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
             _apply_v4(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v5(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (5,?)", (_now(),))
+            _apply_v6(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
         elif version == 3:
             _apply_v4(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v5(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (5,?)", (_now(),))
+            _apply_v6(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
         elif version == 4:
-            _apply_v5(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (5,?)", (_now(),))
+            _apply_v6(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
+        elif version == 5:
+            _apply_v6(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
     return SCHEMA_VERSION
@@ -734,8 +784,13 @@ def _apply_v4(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
-def _apply_v5(conn: sqlite3.Connection) -> None:
-    for statement in _V5.split(";"):
+def _apply_v6(conn: sqlite3.Connection) -> None:
+    # Schema 5 was never released.  A developer database can contain its
+    # budget/template tables, but the V3 title-first contract must not leave
+    # those admission paths available.  The fact cache and pause control stay.
+    for table in ("k10_screening_runs", "k10_task_execution_spend_reservations", "k10_screening_template_revisions"):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    for statement in _V6.split(";"):
         statement = statement.strip()
         if statement:
             conn.execute(statement)
@@ -855,16 +910,31 @@ def _downgrade_v4(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
-def _downgrade_v5(conn: sqlite3.Connection) -> None:
-    """Only the implicit closed control may be discarded in a DDL rehearsal."""
-    for table in ("k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs", "k10_fact_cache"):
+def _downgrade_v6(conn: sqlite3.Connection) -> None:
+    """A V6 rehearsal can only drop empty title/attempt state.
+
+    A database which arrived via the discarded Schema 5 path has already had
+    tables removed during the forward migration; restoring its verified backup
+    is the only lossless rollback.
+    """
+    if conn.execute("SELECT 1 FROM k10_schema_migrations WHERE version=5").fetchone() is not None:
+        raise K10SchemaError("schema 5→6 已删除未发布预算表，须恢复已核备份，不能 DDL 回滚")
+    for table in (
+        "k10_title_triage_policy_revisions", "k10_title_triage_manifests", "k10_title_triage_items",
+        "k10_title_selection_manifests", "k10_article_admissions", "k10_external_attempts",
+        "k10_discovery_retirements", "k10_fact_cache",
+    ):
         if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
-            raise K10SchemaError("schema 5 含模板或预算记录，须恢复已核备份，不能降级丢失数据")
+            raise K10SchemaError("schema 6 含标题筛选、尝试或缓存记录，须恢复已核备份，不能降级丢失数据")
     rows = conn.execute("SELECT control_key,state,reason_code,changed_at,changed_by FROM k10_run_controls").fetchall()
-    implicit = [("k10_discovery", "closed", "unconfigured_closed", "1970-01-01T00:00:00+00:00", "schema-v5")]
+    implicit = [("k10_discovery", "closed", "unconfigured_closed", "1970-01-01T00:00:00+00:00", "schema-v6")]
     if [tuple(row) for row in rows] != implicit:
-        raise K10SchemaError("schema 5 含运行控制变更，须恢复已核备份，不能降级丢失数据")
-    for table in ("k10_fact_cache", "k10_screening_runs", "k10_task_execution_spend_reservations", "k10_run_controls", "k10_screening_template_revisions"):
+        raise K10SchemaError("schema 6 含运行控制变更，须恢复已核备份，不能降级丢失数据")
+    for table in (
+        "k10_discovery_retirements", "k10_external_attempts", "k10_article_admissions",
+        "k10_title_selection_manifests", "k10_title_triage_items", "k10_title_triage_manifests",
+        "k10_title_triage_policy_revisions", "k10_fact_cache", "k10_run_controls",
+    ):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
@@ -874,9 +944,9 @@ def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
         raise ValueError("当前 K10 仅支持回滚到 schema 0、2 或 3")
     with write_connection(db_path) as conn:
         version = _version(conn)
-        if version == 5:
-            _downgrade_v5(conn)
-            conn.execute("DELETE FROM k10_schema_migrations WHERE version=5")
+        if version == 6:
+            _downgrade_v6(conn)
+            conn.execute("DELETE FROM k10_schema_migrations WHERE version=6")
             version = 4
         if target_version == 3:
             if version == 3:

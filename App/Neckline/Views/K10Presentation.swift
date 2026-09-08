@@ -10,7 +10,7 @@ func k10DisplayTime(_ raw: String) -> String {
 func k10StatusText(_ value: String) -> String { [
     "primary":"主样本", "overlap":"重叠机会", "published":"已发布", "evidence_update":"依据更新", "risk":"风险提示", "withdrawal":"系统撤回", "expired":"已到期",
     "keep":"留下", "kept":"已留下", "skip":"明确略过", "skipped":"已略过", "restore":"找回", "withdraw":"取消关注", "unhandled":"未处理", "selected":"留下", "active":"进行中",
-    "queued":"等待中", "running":"执行中", "configured":"已配置", "completed":"已完成", "failed":"失败", "not_configured":"未配置", "notConfigured":"未配置", "ready":"已就绪", "paused":"已暂停", "budgetExhausted":"预算已用尽", "exhausted":"预算已用尽", "blocked":"待配置", "available":"可用", "pending":"未到期", "due":"已到期·待核", "incomplete":"资料不完整", "suspended":"停牌", "data_gap":"行情缺数", "anomaly":"行情异常", "complete":"完整", "partial":"部分完成", "unavailable":"暂不可用", "verified":"已核验", "conflict":"数值冲突", "single_source":"单一来源", "field_unavailable":"字段待核", "morning":"晨间首发", "evening":"晚间首发", "late":"迟到", "alternative":"备选", "tied":"并列", "primary_recommendation":"主推"
+    "queued":"等待中", "running":"执行中", "configured":"已配置", "completed":"已完成", "failed":"失败", "not_configured":"未配置", "notConfigured":"未配置", "ready":"已就绪", "paused":"已暂停", "retired":"已停用", "blocked":"待配置", "pending":"未到期", "due":"已到期·待核", "incomplete":"资料不完整", "suspended":"停牌", "data_gap":"行情缺数", "anomaly":"行情异常", "complete":"完整", "partial":"部分完成", "unavailable":"暂不可用", "verified":"已核验", "conflict":"数值冲突", "single_source":"单一来源", "field_unavailable":"字段待核", "morning":"晨间首发", "evening":"晚间首发", "late":"迟到", "alternative":"备选", "tied":"并列", "primary_recommendation":"主推"
 ][value] ?? value }
 func k10CategoryText(_ value: String) -> String { ["primary":"主推", "alternative":"备选", "tied":"并列"][value] ?? k10StatusText(value) }
 func k10SourceText(_ key: String) -> String { ["tushare-major-news":"TuShare 重要资讯", "tavily-object-review":"Tavily 定向核验", "market_snapshot":"行情快照", "synthetic":"合成来源（仅验收）"][key] ?? key }
@@ -75,7 +75,7 @@ func k10CoverageGapText(_ value: String) -> String {
 }
 
 func k10ExecutionStageText(_ value: String) -> String {
-    ["pending": "等待处理", "queued": "等待处理", "created": "等待处理", "fetched": "已获取资料", "ingestion": "正在获取", "understanding": "正在理解", "understand": "正在理解", "full_text": "正在补充原文", "awaiting_verification": "等待核验", "verification": "正在核验", "verify": "正在核验", "comparison": "正在比较", "company_comparison": "正在比较", "prioritize": "正在确定发布顺序", "publication": "正在发布", "published": "已发布", "failed_pending": "失败待恢复", "recovery": "等待恢复", "retry_scheduled": "等待恢复", "completed": "已完成" ][value] ?? "处理状态待核"
+    ["pending": "等待处理", "queued": "等待处理", "created": "等待处理", "fetched": "已获取资料", "ingestion": "正在获取", "title_triage": "正在理解标题", "understanding": "正在理解", "understand": "正在理解", "full_text": "正在补充原文", "awaiting_verification": "等待核验", "verification": "正在核验", "verify": "正在核验", "comparison": "正在比较", "company_comparison": "正在比较", "prioritize": "正在确定发布顺序", "publication": "正在发布", "published": "已发布", "retired": "已停用", "failed_pending": "失败待恢复", "recovery": "等待恢复", "retry_scheduled": "等待恢复", "completed": "已完成" ][value] ?? "处理状态待核"
 }
 
 func k10ExecutionFailureText(_ value: String) -> String {

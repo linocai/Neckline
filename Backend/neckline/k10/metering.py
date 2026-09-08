@@ -38,16 +38,6 @@ class ProviderSpendContext:
 
 
 _SPEND_CONTEXT: ContextVar[ProviderSpendContext | None] = ContextVar("k10_provider_spend", default=None)
-_SPEND_FIELDS = (
-    "calls", "inputTokens", "outputTokens", "totalTokens",
-    "fullTextCalls", "retries", "searchRequests", "searchCredits",
-)
-
-
-def _zero_spend() -> dict[str, int]:
-    return {field: 0 for field in _SPEND_FIELDS}
-
-
 def _safe_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -76,11 +66,11 @@ class MeteredProvider(OpenAICompatProvider):
         self._spend_payload: Mapping[str, object] | None = None
 
     def bind_execution_spending(self, *, task_id: str, execution_profile: Mapping[str, object] | None) -> None:
-        """Turn on V3.0.5's fail-closed per-attempt admission for one task.
+        """Bind the immutable V3 task identity to every paid request.
 
-        B36 profiles cannot be treated as a weaker paid-call fallback.  K10
-        deliberately uses one HTTP attempt per ``chat`` call; model-operation
-        retry creates a fresh, separately reserved call.
+        This is an attempt ledger, never a quota gate.  The binding still
+        makes a missing context fail closed, and disables provider-internal
+        retries so every HTTP attempt has a durable identity.
         """
         payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
         self._spend_task_id = task_id
@@ -102,43 +92,9 @@ class MeteredProvider(OpenAICompatProvider):
         finally:
             _SPEND_CONTEXT.reset(token)
 
-    def _reservation(self, context: ProviderSpendContext) -> dict[str, int] | None:
-        payload = self._spend_payload
-        if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v2":
-            return None
-        discovery = payload.get("discovery")
-        budgets = discovery.get("budgets") if isinstance(discovery, Mapping) else None
-        reservation = budgets.get("reservation") if isinstance(budgets, Mapping) else None
-        limit = reservation.get(context.stage) if isinstance(reservation, Mapping) else None
-        if not isinstance(limit, Mapping):
-            return None
-        keys = {
-            "calls": "maxModelCalls", "inputTokens": "maxInputTokens", "outputTokens": "maxOutputTokens",
-            "totalTokens": "maxTotalTokens", "fullTextCalls": "maxFullTextCalls", "retries": "maxRetries",
-            "searchRequests": "maxSearchRequests", "searchCredits": "maxSearchCredits",
-        }
-        if any(isinstance(limit.get(key), bool) or not isinstance(limit.get(key), int) or limit[key] < 0 for key in keys.values()):
-            return None
-        reserved = _zero_spend()
-        reserved["calls"] = 1
-        reserved["inputTokens"] = int(limit["maxInputTokens"])
-        reserved["outputTokens"] = int(limit["maxOutputTokens"])
-        reserved["totalTokens"] = int(limit["maxTotalTokens"])
-        if context.full_text:
-            reserved["fullTextCalls"] = 1
-        if context.attempt > 1:
-            reserved["retries"] = 1
-        return reserved
-
     @staticmethod
-    def _request_input_bound(args: tuple[object, ...], kwargs: Mapping[str, object]) -> int | None:
-        """Conservative, deterministic upper bound without retaining prompt text.
-
-        UTF-8 bytes dominate the token count for the OpenAI-compatible JSON
-        payload used here.  The fixed 512-byte transport allowance covers the
-        wire envelope and request fields which are not represented by a chat
-        message.  A missing/unsupported message shape is not guessed.
-        """
+    def _request_input_sha256(args: tuple[object, ...], kwargs: Mapping[str, object]) -> str | None:
+        """Fingerprint the bounded request without retaining its prompt text."""
         messages = args[0] if args else kwargs.get("messages")
         if not isinstance(messages, list):
             return None
@@ -150,92 +106,69 @@ class MeteredProvider(OpenAICompatProvider):
             body = {"model": "deepseek-v4-pro", "messages": rendered,
                     "response_format": kwargs.get("response_format"),
                     "model_options": kwargs.get("model_options")}
-            return len(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")) + 512
+            encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            return sha256(encoded).hexdigest()
         except (TypeError, ValueError):
             return None
 
-    def _preflight_budget(self, *, context: ProviderSpendContext, args: tuple[object, ...], kwargs: Mapping[str, object]) -> str | None:
-        """Reject incompatible prompt/output bounds before admission or HTTP."""
+    def _preflight_request(self, *, context: ProviderSpendContext, args: tuple[object, ...], kwargs: Mapping[str, object]) -> tuple[str | None, str | None]:
+        """Validate protocol bounds, not a total token or spend allowance."""
         payload = self._spend_payload
-        discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
-        budgets = discovery.get("budgets") if isinstance(discovery, Mapping) else None
-        reservation = budgets.get("reservation") if isinstance(budgets, Mapping) else None
-        limit = reservation.get(context.stage) if isinstance(reservation, Mapping) else None
-        if not isinstance(limit, Mapping):
-            return "execution_not_configured"
-        input_bound = self._request_input_bound(args, kwargs)
+        if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v3":
+            return None, "execution_not_configured"
+        input_sha256 = self._request_input_sha256(args, kwargs)
         options = kwargs.get("model_options")
         output_bound = options.get("maxTokens") if isinstance(options, Mapping) else None
-        if (input_bound is None or isinstance(output_bound, bool) or not isinstance(output_bound, int) or output_bound < 1):
-            return "execution_request_bound_missing"
-        input_limit, output_limit, total_limit = (limit.get("maxInputTokens"), limit.get("maxOutputTokens"), limit.get("maxTotalTokens"))
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (input_limit, output_limit, total_limit)):
-            return "execution_not_configured"
-        if input_bound > input_limit or output_bound > output_limit or input_bound + output_bound > total_limit:
-            return "pending_budget"
-        if context.full_text and limit.get("maxFullTextCalls") == 0:
-            return "pending_budget"
-        if context.attempt > 1 and limit.get("maxRetries") == 0:
-            return "pending_budget"
-        return None
+        if input_sha256 is None or isinstance(output_bound, bool) or not isinstance(output_bound, int) or output_bound < 1:
+            return None, "execution_request_bound_missing"
+        return input_sha256, None
 
-    def _reserve_attempt(self, *, args: tuple[object, ...], kwargs: Mapping[str, object]) -> tuple[str | None, str | None]:
-        """Reserve before the socket can be opened; never synthesize a budget."""
+    def _begin_attempt(self, *, args: tuple[object, ...], kwargs: Mapping[str, object]) -> tuple[str | None, str | None]:
+        """Durably begin one external attempt before its socket can open."""
         context = _SPEND_CONTEXT.get()
         if self._spend_task_id is None:
             return None, None
         if context is None or context.task_id != self._spend_task_id:
             return None, "execution_spend_context_missing"
-        preflight = self._preflight_budget(context=context, args=args, kwargs=kwargs)
-        if preflight is not None:
-            return None, preflight
-        reserved = self._reservation(context)
-        if reserved is None:
-            return None, "execution_not_configured"
-        # This key names one model-operation attempt.  No task-wide implicit
-        # counter is used, so parallel document threads cannot share it.
+        input_sha256, preflight = self._preflight_request(context=context, args=args, kwargs=kwargs)
+        if preflight is not None or input_sha256 is None:
+            return None, preflight or "execution_request_bound_missing"
         identity = "\x1f".join((context.task_id, context.stage, context.item_key, str(context.attempt), context.kind))
-        reservation_key = "provider:" + sha256(identity.encode("utf-8")).hexdigest()
+        attempt_key = "provider:" + sha256(identity.encode("utf-8")).hexdigest()
         from . import store
-        result = store.admit_execution_spend(
-            task_id=context.task_id, item_key=context.item_key, stage=context.stage, kind=context.kind,
-            reservation_key=reservation_key, reserved=reserved, created_at=_safe_now(), db_path=self._ledger_db,
+        result = store.begin_external_attempt(
+            task_id=context.task_id, item_key=context.item_key, stage=context.stage,
+            attempt_key=attempt_key, input_sha256=input_sha256, started_at=_safe_now(), db_path=self._ledger_db,
         )
-        if result.get("state") != "reserved":
+        if result.get("state") != "started":
             state = result.get("state")
             return None, {
                 "paused": "execution_paused",
                 "not_configured": "execution_not_configured",
-                "pending_budget": "pending_budget",
                 "pending_outcome": "provider_request_outcome_unknown",
-                "reused": "provider_reservation_reused",
-            }.get(str(state), "provider_budget_admission_failed")
-        reservation_id = result.get("reservationId")
-        return (str(reservation_id), None) if isinstance(reservation_id, str) else (None, "provider_budget_admission_failed")
+                "retired": "execution_retired_by_user",
+                "reused": "provider_attempt_reused",
+            }.get(str(state), "provider_attempt_admission_failed")
+        attempt_id = result.get("attemptId")
+        return (str(attempt_id), None) if isinstance(attempt_id, str) else (None, "provider_attempt_admission_failed")
 
-    def _settle_attempt(self, *, reservation_id: str, result: LLMResult | None) -> None:
+    def _settle_attempt(self, *, attempt_id: str, result: LLMResult | None) -> None:
         from . import store
-        if result is None or bool(getattr(result, "usage_unavailable", True)):
-            store.settle_execution_spend(reservation_id=reservation_id, outcome="unknown", actual=None,
-                                          settled_at=_safe_now(), db_path=self._ledger_db)
-            return
-        values = (result.prompt_tokens, result.completion_tokens, result.total_tokens)
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
-            store.settle_execution_spend(reservation_id=reservation_id, outcome="unknown", actual=None,
-                                          settled_at=_safe_now(), db_path=self._ledger_db)
-            return
-        context = _SPEND_CONTEXT.get()
-        actual = _zero_spend()
-        actual.update({"calls": 1, "inputTokens": int(values[0]), "outputTokens": int(values[1]), "totalTokens": int(values[2])})
-        if context is not None and context.full_text:
-            actual["fullTextCalls"] = 1
-        if context is not None and context.attempt > 1:
-            actual["retries"] = 1
-        store.settle_execution_spend(reservation_id=reservation_id, outcome="settled", actual=actual,
-                                      settled_at=_safe_now(), db_path=self._ledger_db)
+        outcome = "unknown" if result is None else ("succeeded" if result.ok else "failed")
+        actual = None
+        error_code = None if result is None or result.ok else _safe_failure(result)
+        if result is not None and not bool(getattr(result, "usage_unavailable", True)):
+            values = (result.prompt_tokens, result.completion_tokens, result.total_tokens)
+            if all(not isinstance(value, bool) and isinstance(value, int) and value >= 0 for value in values):
+                actual = {
+                    "promptTokens": int(values[0]), "completionTokens": int(values[1]), "totalTokens": int(values[2]),
+                    "searchRequests": None, "searchCredits": None,
+                }
+        store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=actual,
+                                      error_code=error_code, settled_at=_safe_now(), db_path=self._ledger_db)
 
     def chat(self, *args, **kwargs):
-        reservation_id, blocked = self._reserve_attempt(args=args, kwargs=kwargs)
+        attempt_id, blocked = self._begin_attempt(args=args, kwargs=kwargs)
         if blocked is not None:
             return LLMResult(ok=False, reason="K10 execution spend is unavailable", provider=self.name, model=self.model,
                              error_code=blocked, usage_unavailable=True)
@@ -245,11 +178,11 @@ class MeteredProvider(OpenAICompatProvider):
             result = super().chat(*args, **kwargs)
             return result
         finally:
-            if reservation_id is not None:
+            if attempt_id is not None:
                 try:
-                    self._settle_attempt(reservation_id=reservation_id, result=result)
+                    self._settle_attempt(attempt_id=attempt_id, result=result)
                 except Exception as exc:
-                    # A request outcome is already paid.  Preserve the reservation
+                    # A request outcome is already paid.  Preserve the attempt
                     # if settlement itself cannot be trusted; do not retry upstream.
                     logger.warning("K10 spend settlement pending (%s)", type(exc).__name__)
             try:
@@ -291,22 +224,19 @@ def provider_spend_context(
 def execution_model_options(
     *, execution_profile: Mapping[str, object] | None, stage: str, option_stage: str,
 ) -> dict[str, object] | None:
-    """Read an approved V2 output cap; this never supplies a fallback value."""
+    """Read an approved V3 single-request protocol boundary."""
     payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
     discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
-    budgets = discovery.get("budgets") if isinstance(discovery, Mapping) else None
-    reservation = budgets.get("reservation") if isinstance(budgets, Mapping) else None
-    stage_budget = reservation.get(stage) if isinstance(reservation, Mapping) else None
     choices = discovery.get("modelOptions") if isinstance(discovery, Mapping) else None
     base = choices.get(option_stage) if isinstance(choices, Mapping) else None
-    maximum = stage_budget.get("maxOutputTokens") if isinstance(stage_budget, Mapping) else None
-    if (not isinstance(base, Mapping) or isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1):
+    if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v3" or not isinstance(base, Mapping):
         return None
     # Config validation owns the complete shape; copy only after this local
     # guard so a malformed frozen row cannot reach the wire client.
-    result = dict(base)
-    result["maxTokens"] = maximum
-    return result
+    maximum = base.get("maxTokens")
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+        return None
+    return dict(base)
 
 
 __all__ = ["MeteredProvider", "ProviderSpendContext", "bind_provider_execution_spending", "provider_spend_context",

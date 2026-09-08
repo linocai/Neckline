@@ -73,17 +73,16 @@ def _aware_instant(value: str | None) -> datetime | None:
 
 
 class TavilyEvidenceGateway:
-    """One event-specific Tavily query, bounded by the frozen discovery policy."""
+    """One event-specific Tavily query with finite per-event retries."""
     source_key = "tavily_verification"
 
-    def __init__(self, *, db_path: Path, request_limit: int | None, client: SearchClient | None = None,
+    def __init__(self, *, db_path: Path, client: SearchClient | None = None,
                  clock: Callable[[], datetime] | None = None,
                  metadata_resolver: PublicationMetadataResolver | None = None, task_id: str | None = None,
                  leaseguard: Callable[[], None] | None = None,
                  checkpoint_store: VerificationCheckpointStore | None = None,
-                 network_max_attempts: int | None = None, lease_owner: str | None = None,
-                 spend_enforced: bool = False) -> None:
-        self.db_path, self.request_limit = db_path, request_limit
+                 network_max_attempts: int | None = None, lease_owner: str | None = None) -> None:
+        self.db_path = db_path
         self.client = client
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.metadata_resolver = metadata_resolver
@@ -93,81 +92,45 @@ class TavilyEvidenceGateway:
             VerificationCheckpointStore(db_path=db_path, task_id=task_id, leaseguard=leaseguard, lease_owner=lease_owner) if task_id else None
         )
         self.network_max_attempts = network_max_attempts
-        self.spend_enforced = spend_enforced
-        self.requests, self.credits = self.checkpoint_store.budget_snapshot() if self.checkpoint_store else (0, 0)
+        self.requests, self.credits = self.checkpoint_store.attempt_snapshot() if self.checkpoint_store else (0, 0)
 
     def _reserve_search(self, *, item_key: str, input_sha256: str, attempt: int) -> tuple[str | None, str | None]:
-        """Reserve one Tavily HTTP attempt after its durable cache miss."""
-        if not self.spend_enforced:
-            return None, None
+        """Start one external attempt after the event checkpoint claim."""
         if self.checkpoint_store is None:
-            return None, "execution_not_configured"
-        profile = store.task_execution_profile(task_id=self.checkpoint_store.task_id, db_path=self.db_path)
-        payload = profile.get("payload") if isinstance(profile, Mapping) else None
-        discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
-        budgets = discovery.get("budgets") if isinstance(discovery, Mapping) else None
-        reservation = budgets.get("reservation") if isinstance(budgets, Mapping) else None
-        limits = reservation.get("search") if isinstance(reservation, Mapping) else None
-        fields = {
-            "calls": "maxModelCalls", "inputTokens": "maxInputTokens", "outputTokens": "maxOutputTokens",
-            "totalTokens": "maxTotalTokens", "fullTextCalls": "maxFullTextCalls", "retries": "maxRetries",
-            "searchRequests": "maxSearchRequests", "searchCredits": "maxSearchCredits",
-        }
-        if (not isinstance(limits, Mapping)
-                or any(isinstance(limits.get(key), bool) or not isinstance(limits.get(key), int) or limits[key] < 0
-                       for key in fields.values())):
-            return None, "execution_not_configured"
-        # A zero cap is a valid approved way to close this external stage.  It
-        # is a budget decision, not a malformed configuration, and must make
-        # no HTTP attempt.  Credits are conservatively reserved before Tavily
-        # can report its actual charge.
-        if limits["maxSearchRequests"] < 1 or limits["maxSearchCredits"] < 1:
-            return None, "pending_budget"
-        if attempt > 1 and limits["maxRetries"] < 1:
-            return None, "pending_budget"
-        amounts = {field: 0 for field in fields}
-        amounts["searchRequests"] = 1
-        amounts["searchCredits"] = int(limits["maxSearchCredits"])
-        if attempt > 1:
-            amounts["retries"] = 1
-        key = "tavily:" + sha256(f"{self.checkpoint_store.task_id}\x1f{item_key}\x1f{input_sha256}\x1f{attempt}".encode()).hexdigest()
-        admitted = store.admit_execution_spend(
-            task_id=self.checkpoint_store.task_id, item_key=item_key, stage="search", kind="search", reservation_key=key,
-            reserved=amounts, created_at=_text(self.clock()), db_path=self.db_path,
+            return None, None
+        key = "tavily:" + sha256(f"{self.checkpoint_store.task_id}\x1f{item_key}\x1f{attempt}".encode()).hexdigest()
+        admitted = store.begin_external_attempt(
+            task_id=self.checkpoint_store.task_id, item_key=item_key, stage="search", attempt_key=key,
+            input_sha256=input_sha256, started_at=_text(self.clock()), db_path=self.db_path,
         )
-        if admitted.get("state") != "reserved":
+        if admitted.get("state") != "started":
             return None, {
                 "paused": "execution_paused", "not_configured": "execution_not_configured",
-                "pending_budget": "pending_budget", "pending_outcome": "provider_request_outcome_unknown",
-                "reused": "tavily_reservation_reused",
-            }.get(str(admitted.get("state")), "tavily_budget_admission_failed")
-        reservation_id = admitted.get("reservationId")
-        return (str(reservation_id), None) if isinstance(reservation_id, str) else (None, "tavily_budget_admission_failed")
+                "pending_outcome": "tavily_request_outcome_unknown", "retired": "execution_retired_by_user",
+                "reused": "tavily_attempt_reused",
+            }.get(str(admitted.get("state")), "tavily_attempt_admission_failed")
+        attempt_id = admitted.get("attemptId")
+        return (str(attempt_id), None) if isinstance(attempt_id, str) else (None, "tavily_attempt_admission_failed")
 
-    def _settle_search(self, *, reservation_id: str, response: TavilySearchResponse | None, attempt: int) -> None:
-        if response is None or not response.ok or response.credits is None:
-            store.settle_execution_spend(reservation_id=reservation_id, outcome="unknown", actual=None,
-                                          settled_at=_text(self.clock()), db_path=self.db_path)
-            return
-        actual = {"calls": 0, "inputTokens": 0, "outputTokens": 0, "totalTokens": 0,
-                  "fullTextCalls": 0, "retries": 1 if attempt > 1 else 0,
-                  "searchRequests": 1, "searchCredits": int(response.credits)}
-        store.settle_execution_spend(reservation_id=reservation_id, outcome="settled", actual=actual,
+    def _settle_search(self, *, attempt_id: str, response: TavilySearchResponse | None) -> None:
+        outcome = "unknown" if response is None else ("succeeded" if response.ok else "failed")
+        usage = None if response is None else {
+            "promptTokens": None, "completionTokens": None, "totalTokens": None,
+            "searchRequests": 1, "searchCredits": response.credits if isinstance(response.credits, int) else None,
+        }
+        store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=usage,
+                                      error_code=None if response is None or response.ok else "tavily_response_unavailable",
                                       settled_at=_text(self.clock()), db_path=self.db_path)
 
     def fetch(self, *, event: EventDraft, retrieved_at: datetime, cutoff_at: datetime,
               cutoff_inclusive: bool = False) -> VerificationEvidenceBundle:
         if cutoff_at.tzinfo is None:
             raise ValueError("核验 cutoff 必须带时区")
-        if not isinstance(self.request_limit, int) or isinstance(self.request_limit, bool) or self.request_limit < 1:
-            return VerificationEvidenceBundle("pending", (), (), {"provider": "tavily", "state": "pending", "reason": "maxVerificationRequests_missing", "requests": self.requests})
         if self.checkpoint_store is not None and (
             not isinstance(self.network_max_attempts, int) or isinstance(self.network_max_attempts, bool)
             or self.network_max_attempts < 1
         ):
             return self._pending("networkMaxAttempts_missing")
-        if self.checkpoint_store is None and self.requests >= self.request_limit:
-            return VerificationEvidenceBundle("pending", (), (), {"provider": "tavily", "state": "pending", "reason": "request_limit_reached", "requests": self.requests, "credits": self.credits})
         client = self.client
         if client is None:
             key = get_tavily_api_key(db_path=self.db_path)
@@ -190,19 +153,30 @@ class TavilyEvidenceGateway:
                 cutoff_at=_text(cutoff_at), cutoff_inclusive=cutoff_inclusive,
             )
             claim = self.checkpoint_store.claim(item_key=checkpoint_key, input_sha256=checkpoint_input,
-                                                request_limit=self.request_limit, network_max_attempts=self.network_max_attempts)
+                                                network_max_attempts=self.network_max_attempts)
             self.requests = claim.requests
             if claim.state == "reused":
                 return self._restore_checkpoint_bundle(claim.result)
             if claim.state == "pending":
                 return self._pending(claim.reason or "verification_checkpoint_pending")
-        reservation_id, blocked = self._reserve_search(
+        attempt_id, blocked = self._reserve_search(
             item_key=checkpoint_key or event.canonical_key, input_sha256=checkpoint_input or "unbound",
             attempt=self.requests,
         )
         if blocked is not None:
             if self.checkpoint_store is not None and checkpoint_key is not None and checkpoint_input is not None:
-                self.checkpoint_store.fail_retryable(item_key=checkpoint_key, input_sha256=checkpoint_input, safe_error_code=blocked)
+                # These rejections happen before an HTTP request leaves the
+                # process, so they cannot consume a per-event retry.  A
+                # reused external attempt remains conservatively charged:
+                # retrying it could duplicate a paid request.
+                if blocked in {"execution_paused", "execution_not_configured", "execution_retired_by_user"}:
+                    self.checkpoint_store.defer_without_request(
+                        item_key=checkpoint_key, input_sha256=checkpoint_input, safe_error_code=blocked,
+                    )
+                else:
+                    self.checkpoint_store.fail_retryable(
+                        item_key=checkpoint_key, input_sha256=checkpoint_input, safe_error_code=blocked,
+                    )
             return self._pending(blocked)
         # This is user-readable event language only.  Internal stage keys are
         # not query terms and materially reduce search precision in practice.
@@ -211,7 +185,7 @@ class TavilyEvidenceGateway:
             self.requests += 1
         # The checkpoint layer owns K10 retries.  A client-internal retry would
         # otherwise create billable HTTP attempts without separate admission.
-        if self.spend_enforced and isinstance(client, TavilySearchClient):
+        if self.checkpoint_store is not None and isinstance(client, TavilySearchClient):
             client.max_attempts = 1
         response: TavilySearchResponse | None = None
         try:
@@ -220,12 +194,12 @@ class TavilyEvidenceGateway:
             if self.checkpoint_store is not None:
                 self.checkpoint_store.fail_retryable(item_key=checkpoint_key, input_sha256=checkpoint_input,
                                                      safe_error_code="tavily_request_outcome_unknown")
-                if reservation_id is not None:
-                    self._settle_search(reservation_id=reservation_id, response=None, attempt=self.requests)
+                if attempt_id is not None:
+                    self._settle_search(attempt_id=attempt_id, response=None)
                 return self._pending("tavily_request_outcome_unknown")
             raise
-        if reservation_id is not None:
-            self._settle_search(reservation_id=reservation_id, response=response, attempt=self.requests)
+        if attempt_id is not None:
+            self._settle_search(attempt_id=attempt_id, response=response)
         # The caller's retrieved_at was captured before the blocking request.
         # Persist the actual completion time instead, so fetchedAt never
         # pretends that source material was available before it arrived.
@@ -240,7 +214,7 @@ class TavilyEvidenceGateway:
             "tavily_response_unavailable" if not response.ok else "coverage_pending"
         )
         coverage: dict[str, Any] = {"provider": "tavily", "query": query, "requests": self.requests,
-                                    "requestLimit": self.request_limit, "state": "pending", "credits": response.credits,
+                                    "state": "pending", "credits": response.credits,
                                     "reason": response_reason}
         if response.credits is not None:
             self.credits += response.credits
@@ -304,8 +278,8 @@ class TavilyEvidenceGateway:
         bundle = VerificationEvidenceBundle(state, tuple(docs), tuple(eligible), coverage)
         if self.checkpoint_store is not None:
             safe_coverage = {
-                "provider": "tavily", "state": state, "reason": reason, "requestState": "reserved",
-                "requests": self.requests, "requestLimit": self.request_limit, "credits": response.credits,
+                "provider": "tavily", "state": state, "reason": reason, "requestState": "completed",
+                "requests": self.requests, "credits": response.credits,
                 "creditsTotal": self.credits, "documents": len(docs), "eligibleDocuments": len(eligible),
             }
             result = {
@@ -325,7 +299,7 @@ class TavilyEvidenceGateway:
     def _pending(self, reason: str) -> VerificationEvidenceBundle:
         return VerificationEvidenceBundle("pending", (), (), {
             "provider": "tavily", "state": "pending", "reason": reason,
-            "requestState": "pending", "requests": self.requests, "requestLimit": self.request_limit,
+            "requestState": "pending", "requests": self.requests,
             "credits": self.credits,
         })
 

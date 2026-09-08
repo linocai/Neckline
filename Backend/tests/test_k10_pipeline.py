@@ -11,15 +11,17 @@ from neckline.k10 import pipeline, store
 from neckline.k10.cli import frozen_scan_input_sha256, recover_scan
 from neckline.k10.discovery import CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventComparison, EventDraft, Verification, prepare_document_for_analysis, run_discovery
 from neckline.k10.pipeline import DeepSeekDiscoveryModel, PipelineError, _CheckpointedDiscoveryModel, _run_morning_reviews, execute_scan
+from neckline.k10.metering import MeteredProvider, bind_provider_execution_spending
 from neckline.k10.schema import initialize_schema as _initialize_schema
 from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchResult
 from neckline.k10.universe import CompanyMetadata
 from neckline.k10.verification import VerificationEvidenceBundle
 from neckline.k10.windows import SHANGHAI
-from neckline.llm.base import LLMProvider, LLMResult
+from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
+from neckline.llm.openai_compat import OpenAICompatProvider
 from neckline.k10.types import Task
 from neckline.k10.worker import TaskContext, run_once
-from tests.k10_v305_fixture import append_approved_execution_profile
+from tests.k10_v306_fixture import append_approved_execution_profile
 
 
 DAY = date(2026, 9, 7)
@@ -160,6 +162,37 @@ def _append_targeted_verification_document(path: Path) -> str:
 
 def _frozen_config(path: Path) -> int:
     return store.append_run_config(config_id="fixture", payload=_configuration(), created_at=CREATED.isoformat(), db_path=path)
+
+
+def _bound_v306_execution(path: Path, *, task_id: str, binding_kind: str = "scheduled", config_id: str = "execution"):
+    """Bind the approved V3 title/deep-read profile to one isolated task."""
+    profile_id, revision = append_approved_execution_profile(
+        db_path=path, created_at=CREATED.isoformat(), config_id=config_id,
+    )
+    store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id, input_version="fixture",
+                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    return store.bind_task_execution(task_id=task_id, execution_config_id=profile_id,
+                                     execution_config_revision=revision, binding_kind=binding_kind,
+                                     bound_at=CREATED.isoformat(), db_path=path)
+
+
+def _freeze_single_selected_article(path: Path, *, task_id: str, binding, document: DiscoveryDocument) -> None:
+    """Create the V3 selection/admission boundary before direct deep-read testing."""
+    ref = {"documentId": document.document_id, "revision": document.revision}
+    approved = binding["payload"]["discovery"]["titleTriagePolicy"]
+    store.freeze_title_triage_manifest(
+        task_id=task_id, input_manifest_sha256=store._hash([ref]), window_kind="evening",
+        policy_id=approved["policyId"], policy_revision=approved["revision"],
+        policy_content_sha256=approved["contentSha256"], article_limit=80, input_refs=[ref],
+        batch_count=1, title_status="frozen", created_at=CREATED.isoformat(), db_path=path,
+    )
+    store.record_title_triage_item(task_id=task_id, document_id=document.document_id, revision=document.revision,
+                                   batch_index=0, disposition="candidate", matter_key="full-document",
+                                   merged_ref=None, selection_rank=1, audit_reason="离线全文回归",
+                                   created_at=CREATED.isoformat(), db_path=path)
+    store.freeze_title_selection_manifest(task_id=task_id, selection_manifest_sha256=store._hash([ref]),
+                                          selected_refs=[ref], created_at=CREATED.isoformat(), db_path=path)
 
 
 def _scan_id_for(path: Path, identity: str) -> str:
@@ -828,8 +861,8 @@ def test_default_gateway_receives_only_explicit_metadata_resolver(tmp_path, monk
     built = []
 
     class Gateway:
-        def __init__(self, *, db_path, request_limit, metadata_resolver):
-            built.append((db_path, request_limit, metadata_resolver))
+        def __init__(self, *, db_path, metadata_resolver):
+            built.append((db_path, metadata_resolver))
 
         def fetch(self, *, event, retrieved_at, cutoff_at, cutoff_inclusive=False):
             return VerificationEvidenceBundle("pending", (), (), {"state": "pending", "reason": "fixture"})
@@ -839,7 +872,7 @@ def test_default_gateway_receives_only_explicit_metadata_resolver(tmp_path, monk
                           adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED)
     assert result.status == "completed"
     assert len(built) == 1
-    resolver = built[0][2]
+    resolver = built[0][1]
     assert resolver is not None
     assert resolver._max_requests == 16
     assert resolver._timeout == 12.0
@@ -966,17 +999,10 @@ def test_event_comparison_classifies_historical_case_only_from_frozen_source_quo
 
 
 def test_task_bound_model_stage_retries_provider_failure_once_and_caches_the_validated_result(tmp_path):
-    """The B36 retry budget is consumed in the same run, not left for a lucky future slice."""
+    """The V3 retry allowance is consumed in the same run, not a later slice."""
     path = tmp_path / "stage-retry.sqlite"
     initialize_schema(path)
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    profile["discovery"]["networkMaxAttempts"] = 2
-    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
-    store.enqueue_task(task_id="task-stage", kind="evening_scan", idempotency_key="task-stage", input_version="fixture",
-                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
-                       created_at=CREATED.isoformat(), db_path=path)
-    binding = store.bind_task_execution(task_id="task-stage", execution_config_id="execution", execution_config_revision=revision,
-                                        binding_kind="scheduled", bound_at=CREATED.isoformat(), db_path=path)
+    binding = _bound_v306_execution(path, task_id="task-stage")
 
     class Base:
         def __init__(self): self.calls, self.usage_records = 0, []
@@ -1000,18 +1026,135 @@ def test_task_bound_model_stage_retries_provider_failure_once_and_caches_the_val
     assert base.calls == 2  # exact same frozen input hydrates cache, never calls provider again
 
 
+def test_compare_role_failure_keeps_external_usage_and_does_not_repeat_same_input(tmp_path, monkeypatch):
+    """A semantic compare failure remains a one-call, auditable terminal result."""
+    path = tmp_path / "compare-role-invalid.sqlite"
+    initialize_schema(path)
+    binding = _bound_v306_execution(path, task_id="task-compare-invalid")
+    store.set_run_control(state="open", reason_code="fixture", changed_at=CREATED.isoformat(),
+                          changed_by="test", db_path=path)
+    provider = MeteredProvider(ledger_db=path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
+                               name="fixture", api_url="https://api.deepseek.com/chat/completions")
+    bind_provider_execution_spending(provider=provider, task_id="task-compare-invalid", execution_profile=binding)
+    upstream_calls = 0
+
+    def upstream(*_args, **_kwargs):
+        nonlocal upstream_calls
+        upstream_calls += 1
+        return LLMResult(ok=True, content="{}", provider="fixture", model="deepseek-v4-pro",
+                         prompt_tokens=7, completion_tokens=3, total_tokens=10, usage_unavailable=False)
+
+    monkeypatch.setattr(OpenAICompatProvider, "chat", upstream)
+
+    class Base:
+        def __init__(self):
+            self.provider, self.usage_records = provider, []
+
+        def map_companies(self, *, event, verification):
+            return (CompanyMappingDraft("300133.SZ", "supply", event.source_refs, {"basis": "fixture"}, "fixture"),)
+
+        def compare_event(self, *, event, verification, mappings):
+            result = self.provider.chat([ChatMessage(role="user", content="比较")], enable_search=False,
+                                        model_options={"maxTokens": 128, "thinking": {"type": "disabled"}})
+            assert result.ok
+            self.usage_records.append({"inputTokens": 7, "outputTokens": 3, "totalTokens": 10})
+            company = mappings[0]
+            return EventComparison("共同事实", {
+                company.company_code: CandidateComparison("比较", {
+                    "role": "unsupported-role", "priorityReason": "资料", "gap": "差异",
+                    "rankChangeConditions": "新资料", "twoDayReason": "两日催化",
+                }, company.relation_evidence, 1),
+            }, event.source_refs)
+
+    document = DiscoveryDocument("compare-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "冻结资料", None, {})
+    event = EventDraft("compare-event", "initial", "confirmed", "比较事件", "disclosure", {}, (document.evidence_ref,))
+    model = _CheckpointedDiscoveryModel(base=Base(), task_id="task-compare-invalid", execution_profile=binding,
+                                        cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    kwargs = {"documents": (document,), "configuration": _configuration(), "model": model,
+              "verify": lambda item: Verification("verified", "核验", item.source_refs), "metadata": _Metadata(),
+              "cutoff_at": CUTOFF, "understood_by_document": {document.evidence_ref: (event,)}}
+    first = run_discovery(**kwargs)
+    second = run_discovery(**kwargs)
+    assert first.state == second.state == "partial"
+    assert not first.candidates and not second.candidates
+    assert [issue.code for issue in first.issues] == ["compare_company_role_invalid"]
+    assert upstream_calls == 1
+    assert store.external_attempt_summary(task_id="task-compare-invalid", db_path=path)["actualUsage"] == {
+        "promptTokens": 7, "completionTokens": 3, "totalTokens": 10, "searchRequests": 0, "searchCredits": 0,
+    }
+    with store.read_connection(path) as conn:
+        row = conn.execute(
+            "SELECT status,network_attempt_count,safe_error_code,result_json FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND stage='model:compare'", ("task-compare-invalid",),
+        ).fetchone()
+    assert row == ("failed", 1, "compare_company_role_invalid", None)
+
+
+@pytest.mark.parametrize("kind, expected", [
+    ("root", "compare_output_root_invalid"),
+    ("coverage", "compare_company_coverage_invalid"),
+    ("ranking", "compare_company_ranking_invalid"),
+    ("role", "compare_company_role_invalid"),
+    ("prediction", "compare_uncalibrated_prediction"),
+])
+def test_compare_checkpoint_uses_stable_semantic_error_codes(tmp_path, kind, expected):
+    path = tmp_path / f"compare-{kind}.sqlite"
+    initialize_schema(path)
+    binding = _bound_v306_execution(path, task_id=f"task-compare-{kind}")
+    event = EventDraft("compare-event", "initial", "confirmed", "比较事件", "disclosure", {}, (EvidenceRef("doc-1", 1),))
+    mapping = CompanyMappingDraft("300133.SZ", "supply", event.source_refs, {"basis": "fixture"}, "fixture")
+
+    class Base:
+        provider = None
+        usage_records: list[dict] = []
+
+        def compare_event(self, **_kwargs):
+            if kind == "root":
+                return object()
+            candidates = {} if kind == "coverage" else {
+                mapping.company_code: CandidateComparison(
+                    "比较",
+                    {"role": "unsupported" if kind == "role" else "primary", "priorityReason": "资料", "gap": "差异",
+                     "rankChangeConditions": "新资料", "twoDayReason": "两日催化"},
+                    event.source_refs, 2 if kind == "ranking" else 1,
+                ),
+            }
+            return EventComparison("涨停概率70%" if kind == "prediction" else "共同事实", candidates, event.source_refs)
+
+    model = _CheckpointedDiscoveryModel(base=Base(), task_id=f"task-compare-{kind}", execution_profile=binding,
+                                        cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    with pytest.raises(PipelineError) as raised:
+        model.compare_event(event=event, verification=Verification("verified", "核验", event.source_refs), mappings=(mapping,))
+    assert raised.value.code == expected
+
+
+def test_deepseek_compare_labels_invalid_historical_evidence_without_persisting_response():
+    class Provider(LLMProvider):
+        def chat(self, *_args, **_kwargs):
+            return LLMResult(ok=True, content=json.dumps({
+                "summary": "共同事实", "sourceRefs": [{"documentId": "doc-history-check", "revision": 1}],
+                "historicalAssessments": {"invalid": True},
+                "candidates": [{"companyCode": "300133.SZ", "summary": "比较", "role": "primary", "rank": 1,
+                                "priorityReason": "资料", "gap": "差异", "rankChangeConditions": "新资料",
+                                "twoDayReason": "两日催化", "sourceRefs": [{"documentId": "doc-history-check", "revision": 1}]}],
+            }), provider="fixture", model="deepseek-v4-pro")
+
+    model = _deepseek(Provider())
+    model.set_scan_cutoff(CUTOFF)
+    document = DiscoveryDocument("doc-history-check", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "冻结资料", None, {})
+    event = EventDraft("history-check", "initial", "confirmed", "历史校验", "disclosure", {}, (document.evidence_ref,))
+    model._documents[document.evidence_ref] = document
+    mapping = CompanyMappingDraft("300133.SZ", "supply", event.source_refs, {}, "fixture")
+    with pytest.raises(PipelineError) as raised:
+        model.compare_event(event=event, verification=Verification("needs_review", "待核", ()), mappings=(mapping,))
+    assert raised.value.code == "compare_historical_evidence_invalid"
+
+
 def test_task_bound_truncation_is_pending_without_repeating_identical_request(tmp_path):
     """More output capacity must be an explicit new profile/input, never a blind retry."""
     path = tmp_path / "stage-truncated.sqlite"
     initialize_schema(path)
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    assert profile["discovery"]["modelOptions"]["understand"]["maxTokens"] == 8192
-    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
-    store.enqueue_task(task_id="task-truncated", kind="evening_scan", idempotency_key="task-truncated", input_version="fixture",
-                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
-                       created_at=CREATED.isoformat(), db_path=path)
-    binding = store.bind_task_execution(task_id="task-truncated", execution_config_id="execution", execution_config_revision=revision,
-                                        binding_kind="scheduled", bound_at=CREATED.isoformat(), db_path=path)
+    binding = _bound_v306_execution(path, task_id="task-truncated")
 
     class Base:
         def __init__(self): self.calls, self.usage_records = 0, []
@@ -1039,67 +1182,56 @@ def test_task_bound_truncation_is_pending_without_repeating_identical_request(tm
 
 
 def test_full_text_route_marks_the_final_document_coarse_checkpoint(tmp_path):
-    """The progress marker follows a successful key→full route, not a model row name."""
+    """A selected V3 article is read in full once and resumed from one checkpoint."""
     path = tmp_path / "full-text-coarse.sqlite"
     initialize_schema(path)
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    profile["discovery"]["keyPassageMaxCharacters"] = 12
-    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
-    store.enqueue_task(task_id="task-full-text", kind="evening_scan", idempotency_key="task-full-text", input_version="fixture",
-                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
-                       created_at=CREATED.isoformat(), db_path=path)
-    binding = store.bind_task_execution(task_id="task-full-text", execution_config_id="execution", execution_config_revision=revision,
-                                        binding_kind="scheduled", bound_at=CREATED.isoformat(), db_path=path)
+    binding = _bound_v306_execution(path, task_id="task-full-text")
 
     class Provider:
-        def __init__(self): self.calls = 0
-        def chat(self, *_args, **_kwargs):
+        def __init__(self): self.calls, self.prompts = 0, []
+        def chat(self, messages, **_kwargs):
             self.calls += 1
-            payload = ({"events": [], "needsFullText": True} if self.calls == 1 else {
-                "events": [{"canonicalKey": "full-event", "stageKey": "initial", "eventState": "confirmed",
-                            "headline": "全文事件", "eventKind": "disclosure", "facts": {},
-                            "sourceRefs": [{"documentId": "full-doc", "revision": 1}]}], "needsFullText": False})
+            self.prompts.append(messages[-1].content)
+            payload = {"events": [{"canonicalKey": "full-event", "stageKey": "initial", "eventState": "confirmed",
+                                    "headline": "全文事件", "eventKind": "disclosure", "facts": {},
+                                    "sourceRefs": [{"documentId": "full-doc", "revision": 1}]}], "needsFullText": False}
             return LLMResult(ok=True, content=json.dumps(payload), provider="fixture", model="deepseek-v4-pro",
                              prompt_tokens=5, completion_tokens=4, total_tokens=9, usage_unavailable=False)
 
     provider = Provider()
     base = DeepSeekDiscoveryModel(provider)
-    base.set_execution_policy(profile["discovery"])
+    base.set_execution_policy(binding["payload"]["discovery"])
     base.set_scan_cutoff(CUTOFF)
     model = _CheckpointedDiscoveryModel(base=base, task_id="task-full-text", execution_profile=binding,
                                         cutoff_at=CUTOFF, db_path=path, leaseguard=None)
     document = DiscoveryDocument("full-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "第一段足够长\n第二段仍是冻结全文", None, {})
+    _freeze_single_selected_article(path, task_id="task-full-text", binding=binding, document=document)
     checkpoints: list[dict] = []
     run = run_discovery(documents=(document,), configuration=_configuration(), model=model,
                         verify=lambda event: Verification("needs_review", "独立资料待核", (), {"state": "pending"}),
                         metadata=_Metadata(), cutoff_at=CUTOFF, checkpoint=checkpoints.append)
-    assert run.state == "partial" and provider.calls == 2
+    assert run.state == "partial" and provider.calls == 1
+    assert "第一段足够长" in provider.prompts[0] and "第二段仍是冻结全文" in provider.prompts[0]
     final = next(item for item in checkpoints if item["state"] == "completed")
     assert final["fullTextUsed"] is True
-    # A process that stopped after the two model ledgers, before its coarse
-    # document write, replays both routes from the exact cache and retains the
-    # same progress fact without another provider call.
+    # A later slice reuses the one completed full-body understanding checkpoint.
     cached_base = DeepSeekDiscoveryModel(provider)
-    cached_base.set_execution_policy(profile["discovery"])
+    cached_base.set_execution_policy(binding["payload"]["discovery"])
     cached_base.set_scan_cutoff(CUTOFF)
     cached = _CheckpointedDiscoveryModel(base=cached_base, task_id="task-full-text", execution_profile=binding,
                                          cutoff_at=CUTOFF, db_path=path, leaseguard=None)
     prepared = prepare_document_for_analysis(document)
     assert cached.understand(document=prepared)[0].canonical_key == "full-event"
-    assert cached.full_text_used(document=prepared) is True and provider.calls == 2
+    assert cached.full_text_used(document=prepared) is True and provider.calls == 1
+    rows = store.completed_execution_items(task_id="task-full-text", item_kind="document", stage="model:understand", db_path=path)
+    assert len(rows) == 1
 
 
 def test_recovered_understanding_registers_prepared_source_before_event_verify(tmp_path):
     """A new slice must verify recovered drafts without rerunning understanding."""
     path = tmp_path / "recovered-event-context.sqlite"
     initialize_schema(path)
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
-    store.enqueue_task(task_id="task-recovered-event", kind="evening_scan", idempotency_key="task-recovered-event", input_version="fixture",
-                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
-                       created_at=CREATED.isoformat(), db_path=path)
-    binding = store.bind_task_execution(task_id="task-recovered-event", execution_config_id="execution", execution_config_revision=revision,
-                                        binding_kind="recovery", bound_at=CREATED.isoformat(), db_path=path)
+    binding = _bound_v306_execution(path, task_id="task-recovered-event", binding_kind="recovery")
 
     class Provider:
         def __init__(self): self.calls, self.prompts = 0, []
@@ -1113,12 +1245,12 @@ def test_recovered_understanding_registers_prepared_source_before_event_verify(t
 
     provider = Provider()
     base = DeepSeekDiscoveryModel(provider)
-    base.set_execution_policy(profile["discovery"])
+    base.set_execution_policy(binding["payload"]["discovery"])
     base.set_scan_cutoff(CUTOFF)
     model = _CheckpointedDiscoveryModel(base=base, task_id="task-recovered-event", execution_profile=binding,
                                         cutoff_at=CUTOFF, db_path=path, leaseguard=None)
     document = DiscoveryDocument("recovered-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(),
-                                 "<article>已提纯事实</article>", None, {})
+                                 "<article>已提纯事实</article>", None, {"sourceKey": "fixture-source", "title": "恢复资料"})
     event = EventDraft("recovered-event", "initial", "confirmed", "恢复事件", "disclosure", {},
                        (EvidenceRef("recovered-doc", 1),))
     verification_document = DiscoveryDocument("verify-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "独立核验事实", None, {})
@@ -1141,19 +1273,23 @@ def test_task_deadline_finalizes_running_scan_without_publication(tmp_path, monk
     path = tmp_path / "deadline-terminal.sqlite"
     initialize_schema(path)
     _watermark(path)
-    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
-    execution_revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
-    store.enqueue_task(task_id="task-deadline", kind="evening_scan", idempotency_key="task-deadline", input_version="fixture",
-                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
-                       created_at=CREATED.isoformat(), db_path=path)
-    binding = store.bind_task_execution(task_id="task-deadline", execution_config_id="execution",
-                                        execution_config_revision=execution_revision, binding_kind="scheduled",
-                                        bound_at=CREATED.isoformat(), db_path=path)
+    binding = _bound_v306_execution(path, task_id="task-deadline")
 
     class Model(_Model):
         def set_execution_policy(self, _policy): pass
         def set_scan_cutoff(self, _cutoff): pass
         def set_previous_opportunities(self, _previous): pass
+        def titleBatch(self, *, payload):
+            return {"items": [{"documentId": row["documentId"], "revision": row["revision"],
+                               "status": "candidate", "matterKey": "deadline", "stageKey": "initial",
+                               "reason": "离线截止时间回归"} for row in payload["items"]]}
+        def titleReconcile(self, *, payload):
+            if payload.get("operation") == "titleSelectionReview":
+                return {"complete": True, "kept": [{"i": row["i"], "reason": "保留独立事实"}
+                                                  for row in payload["items"]], "removed": []}
+            return {"selected": [{"i": row["i"], "selectedRank": index + 1, "reason": "离线截止时间回归"}
+                                 for index, row in enumerate(payload["items"])],
+                    "merged": [], "notSelected": []}
 
     from neckline.k10.discovery import DiscoveryDeadlineExceeded
     monkeypatch.setattr("neckline.k10.pipeline.run_discovery", lambda **_: (_ for _ in ()).throw(DiscoveryDeadlineExceeded()))
@@ -1183,7 +1319,7 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
         document_id="frozen-doc", source_key="tushare-major-news", external_id="frozen-doc", canonical_url=None,
         content_sha256=sha256(b"frozen").hexdigest(), published_at=(CUTOFF - timedelta(minutes=1)).isoformat(),
         published_precision="exact", fetched_at=CREATED.isoformat(), original_text="冻结资料正文", excerpt=None,
-        fetch_version="fixture", metadata={}, created_at=CREATED.isoformat(), db_path=path,
+        fetch_version="fixture", metadata={"title": "冻结资料"}, created_at=CREATED.isoformat(), db_path=path,
     )
     scan_id = "scan_" + "a" * 32
     refs = [{"documentId": document.document_id, "revision": document.revision}]
@@ -1192,7 +1328,7 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
             document_id="frozen-duplicate", source_key="tushare-major-news", external_id="frozen-duplicate", canonical_url=None,
             content_sha256=sha256(b"frozen").hexdigest(), published_at=(CUTOFF - timedelta(minutes=1)).isoformat(),
             published_precision="exact", fetched_at=CREATED.isoformat(), original_text="冻结资料正文", excerpt=None,
-            fetch_version="fixture", metadata={}, created_at=CREATED.isoformat(), db_path=path)
+            fetch_version="fixture", metadata={"title": "冻结资料"}, created_at=CREATED.isoformat(), db_path=path)
         refs.append({"documentId": duplicate.document_id, "revision": duplicate.revision})
     store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id="strategy",
                       config_revision=strategy_revision, status="failed", created_at=CREATED.isoformat(),
@@ -1204,12 +1340,41 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
                            confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=path), now=CREATED)
 
     class Provider:
-        calls = 0
-        def chat(self, *_args, **_kwargs):
+        def __init__(self):
+            self.calls = 0
+            self.stages = []
+
+        def chat(self, messages, **_kwargs):
             self.calls += 1
-            return LLMResult(ok=True, content='{"events":[],"needsFullText":false}', provider="fixture", model="deepseek-v4-pro",
+            content = messages[-1].content
+            payload = json.loads(content.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
+            if "policyContent" in payload:
+                assert payload["knownSubjects"] == [{"companyCode": "300001.SZ", "headline": "已发布的独立机会"}]
+                assert "PRIVATE_OLD_BODY_MUST_NOT_ENTER_TITLES" not in content
+            if payload.get("operation") == "titleSelectionReview":
+                self.stages.append("titleReview")
+                response = {"complete": True, "kept": [{"i": row["i"], "reason": "标题事实独立，保留"}
+                                                       for row in payload["items"]], "removed": []}
+            elif "articleLimit" in payload:
+                self.stages.append("titleReconcile")
+                response = {"selected": [{"i": 0, "selectedRank": 1, "reason": "离线正文回归"}],
+                            "merged": [], "notSelected": []}
+            elif "policyContent" in payload:
+                self.stages.append("titleBatch")
+                response = {"items": [{"documentId": row["documentId"], "revision": row["revision"],
+                                       "status": "candidate", "matterKey": "frozen", "stageKey": "initial",
+                                       "reason": "离线正文回归"} for row in payload["items"]]}
+            else:
+                self.stages.append("understand")
+                response = {"events": [], "needsFullText": False}
+            return LLMResult(ok=True, content=json.dumps(response), provider="fixture", model="deepseek-v4-pro",
                              prompt_tokens=7, completion_tokens=3, total_tokens=10, usage_unavailable=False)
     provider = Provider()
+    monkeypatch.setattr(pipeline, "_existing_opportunity_context", lambda **_: [
+        {"eventId": "watched-event", "companyCode": "300001.SZ", "headline": "已发布的独立机会", "state": "active",
+         "facts": {"privatePriorBody": "PRIVATE_OLD_BODY_MUST_NOT_ENTER_TITLES"}}])
+    monkeypatch.setattr(pipeline, "_active_published_candidates", lambda **_: [
+        {"eventId": "watched-event", "companyCode": "300001.SZ"}])
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: type("Resolution", (), {"provider": provider, "error": None})())
     monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", lambda **_: pytest.fail("recovery attempted source collection"))
     task = run_once(db_path=path, worker_id="recovery-worker", lease_for=timedelta(minutes=5), clock=lambda: CREATED,
@@ -1218,9 +1383,75 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
     assert task is not None and task.status == "completed"
     recovered = store.get_scan(scan_id=scan_id, db_path=path)
     assert recovered is not None and recovered["coverage"]["inputDocumentRefs"] == refs
-    assert provider.calls == 1
-    assert recovered["coverage"]["processingCounts"]["received"] == copies
-    assert recovered["coverage"]["processingCounts"]["packages"] == 1
-    assert recovered["coverage"]["processingCounts"]["exactDeduplicated"] == copies - 1
-    assert store.read_screening_run(task_id=task_id, db_path=path) is not None
+    assert provider.stages == ["titleBatch", "titleReconcile", "titleReview", "understand"]
+    manifest = store.read_title_selection_manifest(task_id=task_id, db_path=path)
+    assert manifest is not None and manifest["selectedRefs"] == refs[:1]
+    triage = store.read_title_triage_items(task_id=task_id, db_path=path)
+    assert len(triage) == copies
+    if copies == 2:
+        duplicate = next(item for item in triage if item["documentId"] == "frozen-duplicate")
+        assert duplicate["disposition"] == "exact_duplicate"
+        assert duplicate["mergedRef"] == refs[0]
+    bodies = store.completed_execution_items(task_id=task_id, item_kind="document", stage="model:understand", db_path=path)
+    assert len(bodies) == 1
     assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
+
+
+def test_cli_morning_worker_preserves_title_slice_and_resumes_before_report(tmp_path, monkeypatch):
+    """A running morning scan must not be finalized as a report during a slice."""
+    from neckline.k10.cli import enqueue_scan
+    from neckline.k10 import title_runtime
+    from neckline.k10.discovery import DiscoverySliceYield
+    path = tmp_path / 'morning-title-slice.sqlite'
+    initialize_schema(path)
+    now = datetime(2026, 9, 8, 9, 5, tzinfo=SHANGHAI)
+    monkeypatch.setattr(pipeline, '_now', lambda: now)
+    store.set_run_control(state='open', reason_code='offline_fixture', changed_at=now.isoformat(), changed_by='test', db_path=path)
+    config = _configuration()
+    config['sourceAdapters'] = [{'key':'tushare-major-news','lateArrivalReplaySeconds':86400}]
+    rev = store.append_run_config(config_id='morning', payload=config, created_at=now.isoformat(), db_path=path)
+    eid, erev = append_approved_execution_profile(db_path=path,created_at=now.isoformat(),config_id='execution')
+    task_id = enqueue_scan(db_path=path,kind='morning',trading_day=date(2026,9,8),config_id='morning',config_revision=rev,
+        execution_config_id=eid,execution_config_revision=erev,now=now)
+    adapter = _Adapter()
+    adapter.coverage = SourceCoverage('tushare-major-news','market-wide','fixture','bounded','publishedAt','publishedAt',True)
+    monkeypatch.setattr(pipeline,'TuShareMajorNewsAdapter',lambda **_:adapter)
+    calls=[]
+    class Provider:
+        def chat(self,messages,**_kwargs):
+            payload=json.loads(messages[-1].content.split('<untrusted-k10-evidence>\n',1)[1].split('\n</untrusted-k10-evidence>',1)[0])
+            if payload.get('operation') == 'titleSelectionReview':
+                calls.append('titleReview')
+                result={'complete':True,'kept':[{'i':row['i'],'reason':'标题事实独立，保留'} for row in payload['items']], 'removed':[]}
+            elif 'articleLimit' in payload:
+                calls.append('titleReconcile')
+                result={'selected':[{'i':0,'selectedRank':1,'reason':'独立事项'}],'merged':[],'notSelected':[]}
+            elif 'policyContent' in payload:
+                calls.append('titleBatch')
+                result={'items':[{'i':i,'status':'candidate','matterKey':'one','stageKey':'new','reason':'有实质新事实'} for i,_ in enumerate(payload['items'])]}
+            else:
+                calls.append('understand');result={'events':[],'needsFullText':False}
+            return LLMResult(ok=True,content=json.dumps(result),provider='fixture',model='deepseek-v4-pro',
+                prompt_tokens=7,completion_tokens=3,total_tokens=10,usage_unavailable=False)
+    provider=Provider()
+    monkeypatch.setattr(pipeline,'resolve_deepseek_v4_pro',lambda **_:type('Resolution',(),{'provider':provider,'error':None})())
+    original=title_runtime.select_title_documents
+    first=[True]
+    def one_hold(**kwargs):
+        selected=original(**kwargs)
+        if first[0]:
+            first[0]=False
+            raise DiscoverySliceYield()
+        return selected
+    monkeypatch.setattr(title_runtime,'select_title_documents',one_hold)
+    def handler(context):
+        return pipeline.production_scan_handler(context,tushare_token='fixture',parquet_dir=tmp_path/'parquet',now=lambda:now)
+    task=run_once(db_path=path,worker_id='morning-worker',lease_for=timedelta(minutes=5),clock=lambda:now,
+        handlers={'morning_scan':handler},task_id=task_id)
+    assert task is not None and task.status=='queued'
+    assert calls==['titleBatch','titleReconcile','titleReview']
+    now+=timedelta(seconds=2)
+    task=run_once(db_path=path,worker_id='morning-worker',lease_for=timedelta(minutes=5),clock=lambda:now,
+        handlers={'morning_scan':handler},task_id=task_id)
+    assert task is not None and task.status=='completed'
+    assert calls==['titleBatch','titleReconcile','titleReview','understand']

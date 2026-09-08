@@ -141,9 +141,9 @@ def test_scan_projects_sanitized_resumable_progress_without_task_or_provider_det
         input_version="frozen-input", input_cutoff_at=stamp, payload={"scanId": "scan-execution-progress"},
         budget={}, created_at=stamp, db_path=path,
     )
-    execution_revision = store.append_execution_config(
-        config_id="execution-fixture", payload={"workers": 2}, created_at=stamp, db_path=path,
-    )
+    from tests.k10_v306_fixture import append_approved_execution_profile
+    _, execution_revision = append_approved_execution_profile(
+        config_id="execution-fixture", created_at=stamp, db_path=path)
     store.bind_task_execution(
         task_id="task-execution-progress", execution_config_id="execution-fixture",
         execution_config_revision=execution_revision, binding_kind="scheduled", bound_at=stamp, db_path=path,
@@ -168,13 +168,11 @@ def test_scan_projects_sanitized_resumable_progress_without_task_or_provider_det
         response = client.get("/api/v1/k10/scans/scan-execution-progress")
     assert response.status_code == 200, response.text
     progress = response.json()["executionProgress"]
-    assert progress["documentCounts"] == {
-        "received": 2, "deduplicated": 2, "templateSkipped": 0, "understood": 1,
-        "fullText": 0, "failedPending": 1,
-    }
+    assert progress["titleCounts"] is None, "未冻结标题清单，不能用旧正文检查点冒充标题进度"
+    assert progress["articleCounts"] is None, "没有真实正文准入账，不能补造已选或已读篇数"
     assert progress["safeFailures"] == [{"stage": "understand", "code": "model_output_invalid", "ref": "doc-b@1"}]
-    assert progress["state"] == "partial" and progress["coverageStatus"] == "partial"
-    assert progress["eventCounts"]["publishable"] is None, "统一排序前不能伪造可发布候选数"
+    assert progress["state"] == "running" and progress["coverageStatus"] == "partial"
+    assert progress["eventCounts"]["publishable"] is None, "标题筛选进度不能伪造可发布候选数"
     assert "taskId" not in progress and "raw" not in str(progress).lower() and "prompt" not in str(progress).lower()
 
 

@@ -1,0 +1,42 @@
+{
+  "executionVersion": "k10-execution-v3",
+  "discovery": {
+    "model": "deepseek-v4-pro",
+    "titleTriagePolicy": {
+      "policyId": "k10-title-triage-v1",
+      "revision": 1,
+      "contentSha256": "b6ad1e294aa142aabda9ecdd9645b559f68fc9714776e8986a91debee1464a9f",
+      "approvalState": "approved",
+      "content": {
+        "policyVersion": "k10-title-triage-v1",
+        "allExactDeduplicatedTitlesRequired": true,
+        "titleInputFields": ["documentId", "revision", "sourceKey", "publishedAt", "title"],
+        "retain": ["new material facts with a plausible listed-company, industry-chain or market impact", "unclear titles that may contain a material fact", "corrections, denials, cancellations, material contrary evidence and a watched-company material change", "independent catalysts affecting the same company"],
+        "merge": {"sameMatterSyndication": "keep one most original, reliable and complete source when titles describe the same fact with no new material detail", "neverMerge": ["correction_or_denial_with_the_original_claim", "independent_catalysts", "different_companies_or_materially_different_stages"]},
+        "forbiddenHardExclusions": ["news_category", "bullish_or_bearish_keywords", "chinext_code_presence", "title_length", "overseas_or_upstream_scope", "company_code_absence"],
+        "selection": {"globalAfterAllBatches": true, "actualArticleCount": true, "doNotFillQuota": true, "noBodyBeforeFrozenSelection": true, "requiredDisposition": ["candidate", "uncertain", "protected", "not_selected", "merged", "no_value"]}
+      }
+    },
+    "articleLimits": {"evening": 80, "morning": 40},
+    "titleBatchSize": 64,
+    "titleTriageConcurrency": 4,
+    "deepReadConcurrency": 6,
+    "networkMaxAttempts": 2,
+    "jsonRepairMaxAttempts": 1,
+    "retryBackoffSeconds": [60, 300, 900],
+    "taskSliceSeconds": 110,
+    "completionDeadlineSeconds": 7200,
+    "continuationDelaySeconds": 1,
+    "modelOptions": {
+      "titleBatch": {"maxTokens": 12288, "thinking": {"type": "disabled"}},
+      "titleReconcile": {"maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "understand": {"maxTokens": 8192, "thinking": {"type": "disabled"}},
+      "verify": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "companyComparison": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "prioritize": {"maxTokens": 2200, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "morning": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "analysisPro": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"},
+      "analysisCon": {"maxTokens": 3500, "thinking": {"type": "enabled"}, "reasoningEffort": "high"}
+    }
+  }
+}

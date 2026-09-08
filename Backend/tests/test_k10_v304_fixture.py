@@ -5,9 +5,11 @@ from neckline.api.k10 import create_router
 from .k10_v304_fixture import build_fixture
 
 
-def test_build35_producer_api_contract_keeps_configuration_gaps_overlap_and_evidence(tmp_path):
+def test_build35_producer_api_contract_keeps_configuration_gaps_overlap_and_evidence(tmp_path, monkeypatch):
+    from .test_k10_api import _freeze_k10_clocks
     path = tmp_path / "fixture.sqlite"
     ids = build_fixture(path)
+    _freeze_k10_clocks(monkeypatch, "2026-09-08T14:59:00+08:00")
     app = FastAPI()
     app.include_router(create_router(lambda: path, lambda: None, lambda: tmp_path / "parquet",
                                     lambda: ("cfg-fixture", 1, None)))

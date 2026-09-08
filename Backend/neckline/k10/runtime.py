@@ -126,9 +126,9 @@ def analysis_handler(
     resolution = resolver(configuration=configuration, task="analysis", db_path=context.db_path)
     if resolution.provider is None or not isinstance(configuration, Mapping):
         return TaskResult("not_configured", "configuration", context.checkpoint, resolution.error or "模型未配置")
-    # A B36 provider cannot quietly become a live fallback.  The concrete
-    # production provider is fail-closed until an explicit V2 spend context is
-    # bound around each role's only HTTP attempt.
+    # A legacy provider cannot quietly become a live fallback.  The concrete
+    # production provider is fail-closed until an explicit V3 attempt context
+    # is bound around each role's only HTTP attempt.
     bind_provider_execution_spending(provider=resolution.provider, task_id=context.task.task_id,
                                      execution_profile=context.execution_profile)
     pro_model_options = execution_model_options(execution_profile=context.execution_profile,
@@ -137,7 +137,7 @@ def analysis_handler(
                                                 stage="analysisCon", option_stage="companyComparison")
     if isinstance(resolution.provider, MeteredProvider) and (pro_model_options is None or con_model_options is None):
         return TaskResult("not_configured", "configuration", context.checkpoint,
-                          "正反分析模型输出上限未在冻结执行配置中明确")
+                          "正反分析模型单次输出上限未在冻结执行配置中明确")
     requested = _requested_snapshot(context, observation_id)
     if requested is None:
         return TaskResult("failed", "input", context.checkpoint, "观察对象、追加请求或冻结资料不存在")

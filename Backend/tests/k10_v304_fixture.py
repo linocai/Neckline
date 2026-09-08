@@ -24,7 +24,7 @@ from neckline.k10.worker import run_once
 
 from .k10_v302_fixture import _comparison, _config, _Provider
 from .k10_v303_fixture import build_fixture as build_previous_fixture
-from .k10_v305_fixture import append_approved_execution_profile
+from .k10_v306_fixture import append_approved_execution_profile
 
 
 def _publish(path: Path, *, marker: str, config_id: str, codes: tuple[str, ...], available: str) -> list[dict]:

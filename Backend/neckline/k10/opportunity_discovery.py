@@ -12,6 +12,14 @@ NEW_KINDS = frozenset({"initial", "material_stage", "independent"})
 UPDATE_KINDS = frozenset({"continuation", "needs_review", "invalidated"})
 
 
+class ComparisonValidationError(ValueError):
+    """A stable, non-sensitive reason why a comparison cannot be published."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def normalize_catalyst_stage(stage_key: str) -> str:
     """Return the stable identity used for a catalyst stage.
 
@@ -25,10 +33,10 @@ def normalize_catalyst_stage(stage_key: str) -> str:
 
 def validate_comparison(comparison: Mapping[str, Any]) -> None:
     if comparison.get("role") not in {"primary", "alternative", "tied"}:
-        raise ValueError("公司比较必须明确主推、备选或并列")
+        raise ComparisonValidationError("公司比较必须明确主推、备选或并列", code="compare_company_role_invalid")
     for key in ("priorityReason", "gap", "rankChangeConditions", "twoDayReason"):
         if not isinstance(comparison.get(key), str) or not comparison[key].strip():
-            raise ValueError(f"公司比较缺少 {key}")
+            raise ComparisonValidationError(f"公司比较缺少 {key}", code="compare_company_coverage_invalid")
 
 
 def validate_event_comparison(
@@ -41,28 +49,28 @@ def validate_event_comparison(
     model result and makes the editorial order inspectable before publication.
     """
     if not isinstance(summary, str) or not summary.strip():
-        raise ValueError("事件比较缺少共同事实说明")
+        raise ComparisonValidationError("事件比较缺少共同事实说明", code="compare_output_root_invalid")
     expected = tuple(company_codes)
     if len(expected) != len(set(expected)):
-        raise ValueError("同一事件的公司映射不得重复")
+        raise ComparisonValidationError("同一事件的公司映射不得重复", code="compare_company_coverage_invalid")
     if not isinstance(comparisons, Mapping) or set(comparisons) != set(expected):
-        raise ValueError("事件比较必须恰好覆盖每家公司一次")
+        raise ComparisonValidationError("事件比较必须恰好覆盖每家公司一次", code="compare_company_coverage_invalid")
 
     roles: dict[str, str] = {}
     ranks: dict[str, int] = {}
     for company_code in expected:
         item = comparisons[company_code]
         if not isinstance(item, Mapping):
-            raise ValueError("事件比较公司项无效")
+            raise ComparisonValidationError("事件比较公司项无效", code="compare_company_coverage_invalid")
         if not isinstance(item.get("summary"), str) or not item["summary"].strip():
-            raise ValueError("事件比较缺少公司的具体理由")
+            raise ComparisonValidationError("事件比较缺少公司的具体理由", code="compare_company_coverage_invalid")
         differences = item.get("differences")
         if not isinstance(differences, Mapping):
-            raise ValueError("事件比较缺少公司差异")
+            raise ComparisonValidationError("事件比较缺少公司差异", code="compare_company_coverage_invalid")
         validate_comparison(differences)
         rank = item.get("rank")
         if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
-            raise ValueError("事件比较排序必须为正整数")
+            raise ComparisonValidationError("事件比较排序必须为正整数", code="compare_company_ranking_invalid")
         roles[company_code] = str(differences["role"])
         ranks[company_code] = rank
 
@@ -70,21 +78,21 @@ def validate_event_comparison(
     alternatives = [code for code in expected if roles[code] == "alternative"]
     tied = [code for code in expected if roles[code] == "tied"]
     if len(primary) > 1 or (alternatives and len(primary) != 1):
-        raise ValueError("同一事件只能有一个主推，备选必须有主推")
+        raise ComparisonValidationError("同一事件只能有一个主推，备选必须有主推", code="compare_company_role_invalid")
     if primary and ranks[primary[0]] != 1:
-        raise ValueError("同一事件主推必须为第 1 名")
+        raise ComparisonValidationError("同一事件主推必须为第 1 名", code="compare_company_ranking_invalid")
     if tied and len({ranks[code] for code in tied}) != 1:
-        raise ValueError("差异不足的并列公司必须共享同一名次")
+        raise ComparisonValidationError("差异不足的并列公司必须共享同一名次", code="compare_company_ranking_invalid")
     for rank in set(ranks.values()):
         role_set = {roles[code] for code in expected if ranks[code] == rank}
         if "tied" in role_set and len(role_set) != 1:
-            raise ValueError("并列名次不得与主推或备选混用")
+            raise ComparisonValidationError("并列名次不得与主推或备选混用", code="compare_company_ranking_invalid")
         if "tied" not in role_set and len(role_set) != 1:
-            raise ValueError("同一事件排序角色不一致")
+            raise ComparisonValidationError("同一事件排序角色不一致", code="compare_company_role_invalid")
         if "tied" not in role_set and sum(ranks[code] == rank for code in expected) != 1:
-            raise ValueError("非并列名次只能对应一家公司")
+            raise ComparisonValidationError("非并列名次只能对应一家公司", code="compare_company_ranking_invalid")
     if set(ranks.values()) != set(range(1, max(ranks.values()) + 1)):
-        raise ValueError("事件比较名次必须连续")
+        raise ComparisonValidationError("事件比较名次必须连续", code="compare_company_ranking_invalid")
 
 
 def validate_classification(

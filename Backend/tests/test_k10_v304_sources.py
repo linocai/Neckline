@@ -19,7 +19,7 @@ from tests.test_k10_pipeline import (
     _configuration,
     initialize_schema,
 )
-from tests.k10_v305_fixture import append_approved_execution_profile
+from tests.k10_v306_fixture import append_approved_execution_profile
 
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:

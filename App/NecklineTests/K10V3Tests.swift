@@ -726,6 +726,28 @@ final class K10V3Tests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.eventGroups?.first?.companySampleCount ?? 0, 1)
     }
 
+    func testV306IsolatedFastAPIProgressDecodesTitleFirstProjection() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["NK_V306_API_URL"],
+              let baseURL = URL(string: raw) else {
+            throw XCTSkip("set NK_V306_API_URL to run the isolated B38 FastAPI-to-Swift DTO check")
+        }
+        let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
+        let scan = try await client.latestScan(window: "evening")
+        let progress = try XCTUnwrap(scan.executionProgress)
+        XCTAssertEqual(progress.state, "partial")
+        XCTAssertEqual(progress.titleCounts?.received, 2)
+        XCTAssertEqual(progress.titleCounts?.exactDeduplicated, 0)
+        XCTAssertEqual(progress.titleCounts?.triaged, 2)
+        XCTAssertEqual(progress.titleCounts?.merged, 1)
+        XCTAssertEqual(progress.articleCounts?.limit, 80)
+        XCTAssertEqual(progress.articleCounts?.selected, 1)
+        XCTAssertEqual(progress.articleCounts?.missingBody, 1)
+        XCTAssertEqual(progress.articleCounts?.tavilyExcerpt, 2)
+        XCTAssertEqual(progress.articleCounts?.tavilyFullArticle, 1)
+        XCTAssertEqual(progress.attemptCounts?.succeeded, 1)
+        XCTAssertEqual(progress.factCacheHits, 2)
+    }
+
     func testExecutionProgressAndNotificationReadinessDecodeOnlySafeFields() throws {
         let scanData = Data("""
         {
@@ -734,25 +756,28 @@ final class K10V3Tests: XCTestCase {
           "coverageGaps":["source_coverage_incomplete"],"sourceCoverage":[],"publicationStatus":"not_published",
           "publicationBatchId":null,"availableAt":null,"configId":"k10-v1.4-production","configRevision":2,
           "createdAt":"2026-09-08T21:00:00+08:00","completedAt":null,
-          "executionProgress":{"state":"partial","stage":"understanding","coverageStatus":"partial",
-            "documentCounts":{"received":2472,"deduplicated":3,"templateSkipped":18,"understood":6,"fullText":2,"failedPending":1},
+          "executionProgress":{"state":"partial","stage":"title_triage","coverageStatus":"partial",
+            "documentCounts":{"received":30,"deduplicated":1,"templateSkipped":0,"understood":29,"fullText":0,"failedPending":1},
             "eventCounts":{"verified":0,"compared":0,"publishable":0},"nextRetryAt":"2026-09-08T22:00:00+08:00",
             "safeFailures":[{"stage":"understanding","code":"model_output_invalid","ref":"doc-safe@1"}],
             "strategyBinding":{"configId":"k10-v1.4-production","revision":2},
             "executionBinding":{"configId":"k10-execution","revision":1},
             "runControl":{"state":"paused","reasonCode":"user_paused","changedAt":"2026-09-08T21:01:00+08:00"},
-            "processingCounts":{"received":2472,"exactDeduplicated":2000,"templateExcluded":300,"templateDeferred":20,"templateProtected":2,"packages":22,"lightweightUnderstood":18,"fullTextRequested":1,"fullTextCompleted":1,"pendingVerification":3,"pendingBudget":4},
-            "factCacheHits":6,"budget":{"state":"exhausted","reserved":{"calls":4,"inputTokens":500,"outputTokens":200,"totalTokens":700,"fullTextCalls":1,"retries":0,"searchRequests":1,"searchCredits":1},"occupied":{"calls":4,"inputTokens":500,"outputTokens":200,"totalTokens":700,"fullTextCalls":1,"retries":0,"searchRequests":1,"searchCredits":1},"actual":{"calls":3,"inputTokens":400,"outputTokens":150,"totalTokens":550,"fullTextCalls":1,"retries":0,"searchRequests":1,"searchCredits":1},"unknown":{"calls":1,"inputTokens":100,"outputTokens":50,"totalTokens":150,"fullTextCalls":0,"retries":0,"searchRequests":0,"searchCredits":0},"remaining":{"calls":0,"inputTokens":0,"outputTokens":0,"totalTokens":0,"fullTextCalls":0,"retries":0,"searchRequests":0,"searchCredits":0},"reservationCount":4}}
+            "titleCounts":{"received":30,"exactDeduplicated":1,"triaged":29,"merged":2,"notSelected":19,"protected":2,"partial":0},
+            "articleCounts":{"limit":80,"selected":8,"admitted":8,"completed":7,"missingBody":1,"tavilyExcerpt":2,"tavilyFullArticle":0},
+            "attemptCounts":{"started":0,"succeeded":8,"failed":1,"unknown":1},"factCacheHits":6}
         }
         """.utf8)
         let scan = try JSONDecoder().decode(K10Scan.self, from: scanData)
-        XCTAssertEqual(scan.executionProgress?.documentCounts.received, 2472)
+        XCTAssertEqual(scan.executionProgress?.documentCounts.received, 30)
         XCTAssertEqual(scan.executionProgress?.safeFailures.first?.code, "model_output_invalid")
         XCTAssertEqual(scan.executionProgress?.safeFailures.first?.ref, "doc-safe@1")
         XCTAssertEqual(scan.executionProgress?.runControl?.state, "paused")
-        XCTAssertEqual(scan.executionProgress?.processingCounts?.packages, 22)
+        XCTAssertEqual(scan.executionProgress?.titleCounts?.merged, 22)
+        XCTAssertEqual(scan.executionProgress?.articleCounts?.limit, 80)
+        XCTAssertEqual(scan.executionProgress?.articleCounts?.missingBody, 1)
+        XCTAssertEqual(scan.executionProgress?.attemptCounts?.unknown, 1)
         XCTAssertEqual(scan.executionProgress?.factCacheHits, 6)
-        XCTAssertEqual(scan.executionProgress?.budget?.state, "exhausted")
 
         let readinessData = Data("""
         {"schemaVersion":"k10-api-v2","notificationReadiness":{"state":"blocked","reasonCode":"credentials_missing","nextRetryAt":null,"checkedAt":"2026-09-08T21:01:00+08:00"},"runControl":{"state":"paused","reasonCode":"user_paused","changedAt":"2026-09-08T21:01:00+08:00"}}

@@ -33,7 +33,7 @@ from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, 
 from .historical_cases import apply_historical_assessments
 from .model_execution import JsonRepairError, ModelInvocation, ModelNetworkError, SemanticValidationError, execute_model_operation
 from .metering import bind_provider_execution_spending, provider_spend_context
-from .opportunity_discovery import validate_classification, validate_event_comparison
+from .opportunity_discovery import ComparisonValidationError, validate_classification, validate_event_comparison
 from .providers import resolve_deepseek_v4_pro
 from .tushare_news import TuShareMajorNewsAdapter
 from .universe import CHINEXT, CompanyMetadata, CompanyMetadataProvider
@@ -178,11 +178,15 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
 
     def set_execution_policy(self, policy: Mapping[str, Any]) -> None:
         """Bind a validated execution pack.  Production never fills one in locally."""
+        if isinstance(policy, Mapping) and "titleTriagePolicy" in policy:
+            if not validate_execution_config({"executionVersion": "k10-execution-v3", "discovery": policy}).ready:
+                raise PipelineError("标题筛选执行配置无效", code="execution_policy_invalid")
+            self._execution_policy = dict(policy)
+            return
         required = {"documentBatchSize", "understandConcurrency", "keyPassageMaxCharacters",
                     "networkMaxAttempts", "jsonRepairMaxAttempts", "retryBackoffSeconds", "taskSliceSeconds",
                     "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions"}
-        v2_fields = {"model", "screeningTemplate", "packageLimits", "budgets", "priorityOrder"}
-        if not isinstance(policy, Mapping) or not required <= set(policy) or set(policy) - required - v2_fields:
+        if not isinstance(policy, Mapping) or set(policy) != required:
             raise PipelineError("发现执行包字段无效", code="execution_policy_invalid")
         for key in required - {"retryBackoffSeconds", "modelOptions", "jsonRepairMaxAttempts"}:
             value = policy.get(key)
@@ -347,33 +351,29 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                                     "headline": "string", "eventKind": "string", "facts": {},
                                     "sourceRefs": [{"documentId": document.document_id, "revision": document.revision}]}],
                       "needsFullText": False}}
-        if self._execution_policy is not None and "screeningTemplate" in self._execution_policy:
+        if self._execution_policy is not None and "titleTriagePolicy" in self._execution_policy:
             # Source-version facts are reusable. Time-dependent investment judgment
             # belongs to verify/compare/classify, whose inputs retain the scan cutoff.
             payload["publicationContext"].pop("scanCutoffAt", None)
             payload.pop("knownEvents", None)
-            member_refs = document.metadata.get("memberRefs")
-            if isinstance(member_refs, list) and member_refs:
-                payload["sourceRefs"] = member_refs
-                payload["output"]["events"][0]["sourceRefs"] = member_refs
-            operation += "本阶段只提取资料披露时的原始事实，不判断当前价格、投资优先级或两个交易日的表现。引用必须选自传入真实来源，禁止引用资料包ID。"
+            operation += "本阶段只提取这篇入选文章披露时的原始事实，不判断当前价格、投资优先级或两个交易日的表现。引用只能是该文章的真实 documentId 与 revision。"
         return operation, payload
 
     @staticmethod
     def _decode_understand(raw: Mapping[str, Any]) -> tuple[tuple[EventDraft, ...], bool]:
         needs_full = raw.get("needsFullText", False)
         if not isinstance(needs_full, bool):
-            raise PipelineError("理解输出 needsFullText 无效", code="understand_contract_invalid")
+            raise PipelineError("理解输出 needsFullText 无效", code="understand_json_contract_invalid")
         rows = raw.get("events")
         if not isinstance(rows, list):
-            raise PipelineError("理解输出缺少 events", code="understand_contract_invalid")
+            raise PipelineError("理解输出缺少 events", code="understand_json_contract_invalid")
         out: list[EventDraft] = []
         for row in rows:
             if not isinstance(row, Mapping):
-                raise PipelineError("events 项必须是对象", code="understand_contract_invalid")
+                raise PipelineError("events 项必须是对象", code="understand_json_contract_invalid")
             required = ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")
             if any(not isinstance(row.get(key), str) or not row[key].strip() for key in required) or not isinstance(row.get("facts"), Mapping):
-                raise PipelineError("事件结构不完整", code="understand_contract_invalid")
+                raise PipelineError("事件结构不完整", code="understand_json_contract_invalid")
             out.append(EventDraft(row["canonicalKey"], row["stageKey"], row["eventState"], row["headline"],
                                   row["eventKind"], dict(row["facts"]), _refs(row.get("sourceRefs"))))
         return tuple(out), needs_full
@@ -381,7 +381,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
     def understand(self, *, document: DiscoveryDocument) -> Sequence[EventDraft]:
         self._documents[document.evidence_ref] = document
         text = document.analysis_text or document.original_text or document.excerpt or ""
-        maximum = int(self._execution_policy["keyPassageMaxCharacters"]) if self._execution_policy is not None else len(text)
+        maximum = (len(text) if self._execution_policy is not None and "titleTriagePolicy" in self._execution_policy
+                   else int(self._execution_policy["keyPassageMaxCharacters"]) if self._execution_policy is not None else len(text))
         excerpt = self._key_passages(text, maximum=maximum)
         excerpted = len(excerpt) < len(text)
         operation, payload = self._understand_request_spec(
@@ -392,9 +393,6 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         # An empty event list never authorizes an additional model request.
         if excerpted and needs_full:
             self._full_text_requested.add(document.evidence_ref)
-            limits = self._execution_policy.get("packageLimits") if self._execution_policy else None
-            if isinstance(limits, Mapping) and limits.get("fullTextEnabled") is not True:
-                raise PipelineError("全文补读未获许可，资料待处理", code="full_text_disabled")
             operation, payload = self._understand_request_spec(
                 document=document, text=text, text_mode="full_text", is_excerpt=False,
                 paragraph_indexes=list(range(1, len([part for part in text.splitlines() if part.strip()]) + 1)))
@@ -508,26 +506,38 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                                     "sourceRefs":[{"documentId":"string","revision":1}]}]}},
                        model_options=self._model_options("companyComparison"))
         if not isinstance(raw.get("summary"),str) or not isinstance(raw.get("candidates"),list):
-            raise PipelineError("事件整体比较输出不完整")
+            raise PipelineError("事件整体比较输出不完整", code="compare_output_root_invalid")
         try:
             raw_candidates = validate_event_comparison_rows(raw["candidates"])
+        except ValueError as exc:
+            raise PipelineError("事件整体比较公司覆盖无效", code="compare_company_coverage_invalid") from exc
+        try:
             # Historical assessments are model-written comparison prose, rather than source
             # facts or quotes; they need the same uncalibrated-probability guard as candidates.
             reject_uncalibrated_prediction(raw.get("historicalAssessments", []), path="historicalAssessments")
+        except ValueError as exc:
+            raise PipelineError("历史比较包含未校准预测", code="compare_uncalibrated_prediction") from exc
+        try:
             historical_context = apply_historical_assessments(
                 context=historical_context, assessments=raw.get("historicalAssessments", []),
             )
         except ValueError as exc:
-            raise PipelineError(str(exc)) from exc
-        event_refs = _refs(raw.get("sourceRefs"))
-        self._require_frozen_refs(event_refs, available=available, label="事件比较")
+            raise PipelineError("历史案例证据校验失败", code="compare_historical_evidence_invalid") from exc
+        try:
+            event_refs = _refs(raw.get("sourceRefs"))
+            self._require_frozen_refs(event_refs, available=available, label="事件比较")
+        except (ValueError, PipelineError) as exc:
+            raise PipelineError("事件比较来源引用无效", code="compare_source_refs_invalid") from exc
         candidates: dict[str, CandidateComparison] = {}
         for item in raw_candidates:
             if not isinstance(item, Mapping) or not isinstance(item.get("companyCode"), str) or not isinstance(item.get("summary"), str):
-                raise PipelineError("事件整体比较公司项无效")
+                raise PipelineError("事件整体比较公司项无效", code="compare_company_coverage_invalid")
             differences = {key: item.get(key) for key in ("role", "priorityReason", "gap", "rankChangeConditions", "twoDayReason")}
-            refs = _refs(item.get("sourceRefs"))
-            self._require_frozen_refs(refs, available=available, label="候选比较")
+            try:
+                refs = _refs(item.get("sourceRefs"))
+                self._require_frozen_refs(refs, available=available, label="候选比较")
+            except (ValueError, PipelineError) as exc:
+                raise PipelineError("候选比较来源引用无效", code="compare_source_refs_invalid") from exc
             candidates[item["companyCode"]] = CandidateComparison(item["summary"], differences, refs, item.get("rank"),
                 market_context=market_context, historical_cases=tuple(historical_context["historicalCases"]),
                 historical_coverage=dict(historical_context["historicalCoverage"]))
@@ -611,6 +621,26 @@ class _CheckpointedDiscoveryModel:
         register = getattr(self._base, "register_documents", None)
         if callable(register):
             register(documents=documents)
+
+    def run_title_operation(self, *, stage: str, instruction: str, payload: Mapping[str, Any],
+                            validate: Callable[[Any], Mapping[str, Any]]) -> Mapping[str, Any]:
+        if stage not in {"titleBatch", "titleReconcile"}:
+            raise PipelineError("标题操作无效", code="title_operation_invalid")
+        if isinstance(self._base, DeepSeekDiscoveryModel):
+            # Apply the same sole-output envelope normalization as the other
+            # structured operations before strict per-title validation.
+            invoke = lambda: self._base._json(operation=instruction, payload=payload,
+                                             model_options=self._base._model_options(stage))
+        else:
+            callback = getattr(self._base, stage, None)
+            if not callable(callback):
+                raise PipelineError("模型未提供标题筛选能力", code="title_model_unavailable")
+            invoke = lambda: callback(payload=payload)
+        identity = sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+        return self._run(operation=stage, stage=stage, item_key=identity,
+            item={"instruction": instruction, "payload": payload}, invoke=invoke,
+            encode=validate, decode=validate)
 
     def _frozen_evidence_context(self, event: EventDraft) -> list[dict[str, Any]]:
         """Hash the prepared evidence that can affect an event-stage prompt.
@@ -723,11 +753,21 @@ class _CheckpointedDiscoveryModel:
         return decode(result.value)
 
     def understand(self, *, document: DiscoveryDocument) -> Sequence[EventDraft]:
+        if "titleTriagePolicy" in self._policy:
+            admission = store.admit_article(task_id=self._task_id, document_id=document.document_id,
+                revision=document.revision, admission_kind="selected", created_at=_text(_now()), db_path=self._db_path)
+            if admission.get("state") not in {"admitted", "reused"}:
+                raise PipelineError("该文章未获本轮深读准入", code="article_not_admitted")
         if not isinstance(self._base, DeepSeekDiscoveryModel):
             return self._base.understand(document=document)
         self._base._documents[document.evidence_ref] = document
         text = document.analysis_text or document.original_text or document.excerpt or ""
-        maximum = int(self._policy["keyPassageMaxCharacters"])
+        if "titleTriagePolicy" in self._policy and not text.strip():
+            store.record_article_outcome(task_id=self._task_id, document_id=document.document_id,
+                revision=document.revision, state="missing", reason_code="article_body_missing",
+                updated_at=_text(_now()), db_path=self._db_path)
+            raise PipelineError("入选文章正文缺失", code="article_body_missing")
+        maximum = len(text) if "titleTriagePolicy" in self._policy else int(self._policy["keyPassageMaxCharacters"])
         excerpt = self._base._key_passages(text, maximum=maximum)
         excerpted = len(excerpt) < len(text)
         positions = self._base._key_passage_positions(text, maximum=maximum)
@@ -742,8 +782,7 @@ class _CheckpointedDiscoveryModel:
                     "textMode": mode, "text": material, "paragraphIndexes": list(indexes)}
             def encode(raw: Mapping[str, Any]) -> Mapping[str, Any]:
                 events, needs_full = self._base._decode_understand(raw)
-                member_refs = document.metadata.get("memberRefs")
-                expected_refs = set(_refs(member_refs)) if isinstance(member_refs, list) and member_refs else {document.evidence_ref}
+                expected_refs = {document.evidence_ref}
                 if any(not event.source_refs or any(ref not in expected_refs for ref in event.source_refs) for event in events):
                     raise PipelineError("理解事件引用不属于当前冻结资料", code="understand_reference_invalid")
                 if mode == "full_text" and needs_full:
@@ -753,7 +792,7 @@ class _CheckpointedDiscoveryModel:
                 if not isinstance(value, Mapping) or not isinstance(value.get("needsFullText"), bool):
                     raise PipelineError("理解缓存无效", code="model_cache_corrupt")
                 return thaw_event_drafts(value.get("events")), value["needsFullText"]
-            template = self._policy.get("screeningTemplate")
+            template = self._policy.get("titleTriagePolicy")
             cache_key = None
             if isinstance(template, Mapping):
                 # Include the complete immutable source material, even when the
@@ -772,28 +811,25 @@ class _CheckpointedDiscoveryModel:
                     return decode(cached["result"])
             value = self._run(operation="understand", stage="understand", item_key=f"{document.document_id}@{document.revision}:{suffix}",
                              item=item,
-                             invoke=lambda: self._base._request_json(operation=operation, payload=payload,
+                             invoke=lambda: self._base._json(operation=operation, payload=payload,
                                                                      model_options=self._base._model_options("understand")),
                              encode=encode, decode=decode)
             if cache_key is not None:
-                summaries = document.metadata.get("sourceSummaries")
-                publication_times = ([row.get("publishedAt") or row.get("fetchedAt") for row in summaries]
-                                     if isinstance(summaries, list) and summaries
-                                     else [document.published_at or document.fetched_at])
-                eligible_at = max(publication_times, key=lambda value: datetime.fromisoformat(value))
-                refs = document.metadata.get("memberRefs") or [_ref_payload(document.evidence_ref)]
+                eligible_at = document.published_at or document.fetched_at
+                refs = [_ref_payload(document.evidence_ref)]
                 store.store_fact_cache(cache_key=cache_key, source_refs=refs, eligible_at=eligible_at,
                     template_content_sha256=template["contentSha256"], model=self._policy["model"],
                     prompt_input_sha256=prompt_hash, result={"events": freeze_event_drafts(value[0]), "needsFullText": value[1]},
                     created_at=_text(_now()), db_path=self._db_path)
             return value
 
-        events, needs_full = one(material=excerpt, mode="key_passages", is_excerpt=excerpted, indexes=positions, suffix="key")
+        reading_full = "titleTriagePolicy" in self._policy
+        events, needs_full = one(material=excerpt, mode="full_text" if reading_full else "key_passages",
+                                is_excerpt=excerpted, indexes=positions, suffix="full" if reading_full else "key")
+        if reading_full:
+            self._full_text_used.add(document.evidence_ref)
         if excerpted and needs_full:
             self._full_text_requested.add(document.evidence_ref)
-            limits = self._policy.get("packageLimits")
-            if isinstance(limits, Mapping) and limits.get("fullTextEnabled") is not True:
-                raise PipelineError("全文补读未获许可，资料待处理", code="full_text_disabled")
             full_positions = list(range(1, len([part for part in text.splitlines() if part.strip()]) + 1))
             events, _ = one(material=text, mode="full_text", is_excerpt=False, indexes=full_positions, suffix="full")
             self._full_text_used.add(document.evidence_ref)
@@ -845,10 +881,17 @@ class _CheckpointedDiscoveryModel:
                 "verificationDocuments": self._verification_refs(event),
                 "frozenEvidenceContext": self._frozen_evidence_context(event)}
         def encode(value: EventComparison) -> Mapping[str, Any]:
-            if not isinstance(value, EventComparison): raise PipelineError("比较结果无效", code="compare_contract_invalid")
-            validate_event_comparison(summary=value.summary, comparisons={code: {"summary": row.summary, "differences": row.differences, "rank": row.rank}
-                                                                            for code, row in value.candidates.items()}, company_codes=tuple(row.company_code for row in mappings))
-            reject_uncalibrated_prediction(value.summary, path="eventComparison.summary")
+            if not isinstance(value, EventComparison):
+                raise PipelineError("比较结果无效", code="compare_output_root_invalid")
+            try:
+                validate_event_comparison(summary=value.summary, comparisons={code: {"summary": row.summary, "differences": row.differences, "rank": row.rank}
+                                                                                for code, row in value.candidates.items()}, company_codes=tuple(row.company_code for row in mappings))
+            except ComparisonValidationError as exc:
+                raise PipelineError("公司比较校验失败", code=exc.code) from exc
+            try:
+                reject_uncalibrated_prediction(value.summary, path="eventComparison.summary")
+            except ValueError as exc:
+                raise PipelineError("公司比较包含未校准预测", code="compare_uncalibrated_prediction") from exc
             return {"summary": value.summary, "evidenceRefs": self._refs(value.evidence_refs), "candidates": {
                 code: {"summary": row.summary, "differences": dict(row.differences), "evidenceRefs": self._refs(row.evidence_refs),
                        "rank": row.rank, "marketContext": row.market_context, "historicalCases": list(row.historical_cases),
@@ -967,7 +1010,7 @@ def _docs_for_window(*, window: ScanWindow, db_path: Path, completed_at: datetim
                 and fetched.tzinfo is not None and fetched <= completed_at and window.contains(published)):
             out.append(DiscoveryDocument(document_id=row["documentId"], revision=int(row["revision"]),
                                          published_at=row["publishedAt"], fetched_at=row["fetchedAt"],
-                                         original_text=row["originalText"], excerpt=row["excerpt"], metadata=row["metadata"]))
+                                         original_text=row["originalText"], excerpt=row["excerpt"], metadata={**row["metadata"], "sourceKey": row["sourceKey"]}))
     documents = tuple(out)
     if frozen_snapshot:
         expected: set[EvidenceRef] = set()
@@ -1241,9 +1284,7 @@ def _morning_budget(configuration: Mapping[str, Any]) -> Mapping[str, Any] | Non
     policy = policies.get("morning") if isinstance(policies, Mapping) else None
     if not isinstance(policy, Mapping) or isinstance(policy.get("maxAttempts"), bool) or not isinstance(policy.get("maxAttempts"), int) or policy["maxAttempts"] < 1:
         return None
-    if "costLimit" not in policy:
-        return None
-    return {"maxAttempts": policy["maxAttempts"], "costLimit": policy["costLimit"]}
+    return {"maxAttempts": policy["maxAttempts"]}
 
 
 def _morning_item_id(*, scan_id: str, opportunity_id: str, cutoff_at: str, marker: str) -> str:
@@ -1625,6 +1666,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         return TaskResult("failed", "resume_input", error="恢复扫描标识无效")
     scan_id = resume_scan_id or _scan_id(kind=kind, cutoff_at=cutoff_at, identity=scan_identity or _text(created_at))
     existing = store.get_scan(scan_id=scan_id, db_path=db_path)
+    if existing is not None and existing.get("coverage", {}).get("retiredByUser"):
+        return TaskResult("cancelled", "user_retired", {"scanId": scan_id}, "该批次已由用户作废，不再恢复")
     if task_id is not None and execution_deadline_at is not None and _now() >= execution_deadline_at:
         # Do not reopen a failed frozen scan merely to discover its task deadline.
         # Existing checkpoints remain eligible for an explicitly authorised recovery.
@@ -1735,7 +1778,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         prior_opportunities = _existing_opportunity_context(db_path=db_path)
         prior_candidates = _active_published_candidates(
             opportunities=prior_opportunities, as_of=created_at, db_path=db_path,
-        ) if kind == "morning" else []
+        )
     setter = getattr(model, "set_previous_opportunities", None)
     if callable(setter):
         setter(prior_opportunities)
@@ -1840,53 +1883,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
 
     recovered_understanding: Mapping[EvidenceRef, Sequence[EventDraft]] | None = None
     discovery_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
-    screening_enabled = isinstance(profile_payload, Mapping) and profile_payload.get("executionVersion") == "k10-execution-v2"
-    package_by_key: dict[str, Mapping[str, Any]] = {}
-    processing_fields = ("received", "exactDeduplicated", "templateExcluded", "templateDeferred", "templateProtected",
-                         "packages", "lightweightUnderstood", "fullTextRequested", "fullTextCompleted", "pendingVerification", "pendingBudget")
-
-    def package_checkpoint(item: Mapping[str, Any]) -> None:
-        if task_id is None:
-            return
-        if leaseguard is not None:
-            leaseguard()
-        if item.get("stage") == "screening_manifest":
-            result = item.get("result")
-            if not isinstance(result, Mapping):
-                raise PipelineError("资料筛分记录无效", code="checkpoint_invalid")
-            input_hash = sha256(json.dumps({"refs": running_coverage.get("inputDocumentRefs"),
-                "template": profile_payload["discovery"]["screeningTemplate"]}, sort_keys=True,
-                separators=(",", ":")).encode()).hexdigest()
-            store.record_screening_run(task_id=task_id, input_manifest_sha256=input_hash, result=result,
-                                       created_at=_text(_now()), db_path=db_path)
-            raw_counts = result.get("counts", {})
-            names = {"received": "input", "exactDeduplicated": "exactDuplicates", "templateExcluded": "exclude",
-                     "templateDeferred": "defer", "templateProtected": "protect", "packages": "packages"}
-            running_coverage["processingCounts"] = {key: int(raw_counts.get(names.get(key, key), 0)) for key in processing_fields}
-            store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
-            return
-        package_id = item.get("packageId")
-        if isinstance(package_id, str):
-            refs = _refs(item.get("memberRefs"))
-            frozen = {document.evidence_ref for document in documents}
-            if any(ref not in frozen for ref in refs) or not isinstance(item.get("memberHash"), str):
-                raise PipelineError("资料包引用不在冻结输入", code="checkpoint_input_mismatch")
-            package_by_key[f"{package_id}@1"] = item
-            if item.get("stage") == "understand" and item.get("state") == "completed":
-                counts = running_coverage.get("processingCounts")
-                if isinstance(counts, dict):
-                    counts["lightweightUnderstood"] += 1
-                    counts["fullTextRequested"] += int(item.get("fullTextRequested") is True)
-                    counts["fullTextCompleted"] += int(item.get("fullTextUsed") is True)
-                    running_coverage["factCacheHits"] = int(getattr(model, "fact_cache_hits", 0))
-                    store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
-        elif item.get("stage") == "priority":
-            digest = sha256(json.dumps(item, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            store.record_execution_checkpoint(task_id=task_id, item_kind="event", item_key=digest,
-                stage="priority", input_sha256=digest, status="completed", attempt_count=0,
-                network_attempt_count=0, repair_attempt_count=0, elapsed_ms=0, input_tokens=None,
-                output_tokens=None, result=item, safe_error_code=None, safe_error_ref=None,
-                updated_at=_text(_now()), db_path=db_path, leaseguard=leaseguard)
+    title_enabled = isinstance(profile_payload, Mapping) and profile_payload.get("executionVersion") == "k10-execution-v3"
     if task_id is not None and execution_profile is not None:
         profile_id, profile_revision, binding_kind = (execution_profile.get("configId"), execution_profile.get("revision"),
                                                       execution_profile.get("bindingKind"))
@@ -1907,10 +1904,9 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 document_id, revision = raw_ref.get("documentId"), raw_ref.get("revision")
                 key = f"{document_id}@{revision}"
                 document = document_by_key.get(key)
-                package = package_by_key.get(key)
-                if document is None and package is None:
+                if document is None:
                     raise PipelineError("发现检查点资料不在冻结输入", code="checkpoint_input_mismatch")
-                input_sha = package["memberHash"] if package is not None else _document_checkpoint_key(document)[1]
+                input_sha = _document_checkpoint_key(document)[1]
                 if state in {"completed", "template"}:
                     result = {"events": item.get("events", []), "extraction": item.get("extraction", {}),
                               "filterState": state,
@@ -1926,6 +1922,12 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     status=persisted_state, attempt_count=1, network_attempt_count=0, repair_attempt_count=0,
                     elapsed_ms=0, input_tokens=None, output_tokens=None, result=result, safe_error_code=error_code,
                     safe_error_ref=key if error_code else None, updated_at=_text(_now()), db_path=db_path, leaseguard=leaseguard)
+                if title_enabled and stage == "understand" and state in {"completed", "failed"}:
+                    missing = not (document.analysis_text or document.original_text or document.excerpt or "").strip()
+                    outcome = "completed" if state == "completed" else "missing" if missing else "failed"
+                    store.record_article_outcome(task_id=task_id, document_id=document_id, revision=revision,
+                        state=outcome, reason_code=None if outcome == "completed" else "article_body_missing" if missing else error_code,
+                        updated_at=_text(_now()), db_path=db_path)
                 return
             canonical = item.get("canonicalKey")
             if not isinstance(canonical, str) or state not in {"failed", "pending"}:
@@ -1949,18 +1951,50 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 raise DiscoverySliceYield()
 
     try:
+        if title_enabled:
+            from .title_runtime import select_title_documents
+            from .title_triage import TitleTriageProtocolError
+            running_coverage.pop("titleFailure", None)
+            if running_coverage.get("pipelineState") == "title_incomplete":
+                running_coverage.pop("pipelineState", None)
+            def title_progress(item: Mapping[str, Any]) -> None:
+                if base_leaseguard is not None:
+                    base_leaseguard()
+                running_coverage["executionState"] = "title_selection" if item.get("stage") == "title_selection" else "title_triage"
+                store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
+            try:
+                active_pairs = {(row.get("eventId"), row.get("companyCode")) for row in prior_candidates}
+                known_subjects = [{"companyCode": row["companyCode"], "headline": row.get("headline", "")}
+                    for row in prior_opportunities if row.get("state") == "active"
+                    and (row.get("eventId"), row.get("companyCode")) in active_pairs]
+                documents = select_title_documents(documents=documents, window_kind=kind, task_id=task_id,
+                    execution_profile=execution_profile, model=model, db_path=db_path, guard=discovery_guard,
+                    progress=title_progress, known_subjects=known_subjects)
+            except (TitleTriageProtocolError, PipelineError) as exc:
+                safe_code = getattr(exc, "code", "title_protocol_invalid")
+                failure = {**running_coverage, "executionState": "title_incomplete", "titleFailure": safe_code}
+                finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
+                    status="partial", pipeline_state="title_incomplete", coverage_extra=failure)
+                return TaskResult("failed", "title_incomplete", {"scanId": scan_id, "safeErrorCode": safe_code},
+                                  "标题筛选未完整完成，未启动正文深读")
+            selected_manifest = store.read_title_selection_manifest(task_id=task_id, db_path=db_path)
+            selected_hash = selected_manifest["selectionManifestSha256"]
+            if running_coverage.get("titleSelectionManifestSha256") != selected_hash:
+                # A legacy body draft cannot bypass the newly frozen title selection.
+                frozen_draft = None
+            running_coverage["titleSelectionManifestSha256"] = selected_hash
+            running_coverage["executionState"] = "deep_read"
+            store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
         if isinstance(frozen_draft, Mapping):
             run = thaw_discovery_run(frozen=frozen_draft, configuration=configuration)
         else:
             policy = configuration.get("taskPolicies", {}).get("discovery", {}) if isinstance(configuration.get("taskPolicies"), Mapping) else {}
-            gateway_args: dict[str, Any] = {"db_path": db_path, "request_limit": policy.get("maxVerificationRequests"),
-                                             "metadata_resolver": metadata_resolver}
+            gateway_args: dict[str, Any] = {"db_path": db_path, "metadata_resolver": metadata_resolver}
             if task_id is not None:
                 # A task-bound gateway must receive the already validated execution
                 # budget.  The gateway refuses a missing value rather than guessing.
                 discovery_policy = profile_payload.get("discovery") if isinstance(profile_payload, Mapping) else None
                 gateway_args.update({"task_id": task_id, "leaseguard": leaseguard, "lease_owner": lease_owner,
-                                     "spend_enforced": screening_enabled,
                                      "network_max_attempts": (discovery_policy.get("networkMaxAttempts")
                                                               if isinstance(discovery_policy, Mapping) else None)})
             verifier = verification_gateway if verification_gateway is not None else TavilyEvidenceGateway(**gateway_args)
@@ -1994,18 +2028,14 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                 metadata=metadata, cutoff_at=cutoff_at, phase=kind, leaseguard=discovery_guard,
                                 previous_opportunities=prior_opportunities, understood_by_document=recovered_understanding,
                                 checkpoint=discovery_checkpoint,
-                                require_screening=screening_enabled,
-                                screening_rule_pack=(profile_payload["discovery"]["screeningTemplate"] if screening_enabled else None),
-                                priority_order=(profile_payload["discovery"]["priorityOrder"] if screening_enabled else None),
-                                package_limits=(profile_payload["discovery"]["packageLimits"] if screening_enabled else None),
-                                package_checkpoint=package_checkpoint if screening_enabled else None,
-                                understand_concurrency=(profile_payload["discovery"]["understandConcurrency"]
-                                                        if execution_profile is not None else None),
-                                document_batch_size=(profile_payload["discovery"]["documentBatchSize"]
-                                                     if execution_profile is not None else None))
+                                selected_source_refs=([doc.evidence_ref for doc in documents] if title_enabled else None),
+                                article_limit=(profile_payload["discovery"]["articleLimits"][kind] if title_enabled else None),
+                                understand_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
+                                                        if title_enabled else None),
+                                document_batch_size=(profile_payload["discovery"]["articleLimits"][kind]
+                                                     if title_enabled else None))
             if run.state in {"completed", "partial"}:
-                if screening_enabled:
-                    running_coverage["processingCounts"] = {key: int(run.document_counts.get(key, 0)) for key in processing_fields}
+                if title_enabled:
                     running_coverage["factCacheHits"] = int(getattr(model, "fact_cache_hits", 0))
                 running_coverage = {**running_coverage, "discoveryDraft": freeze_discovery_run(run),
                                     "discoveryState": run.state,
@@ -2087,8 +2117,6 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         checkpoint["modelUsage"] = usage
     if run.state == "not_configured":
         return TaskResult("not_configured", "configuration", checkpoint, "发现模型或策略配置未就绪")
-    if screening_enabled and int(run.document_counts.get("pendingBudget", 0)) > 0:
-        return TaskResult("failed", "pending_budget", checkpoint, "本轮额度不足，剩余资料待处理")
     return TaskResult("completed", "partial_coverage" if final_status == "partial" else "discovery_completed", checkpoint)
 
 def _append_unavailable_morning_report(*, context: TaskContext, cutoff: datetime, frozen: Mapping[str, Any],
@@ -2185,12 +2213,12 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     execution_profile = context.execution_profile
     execution_payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
     if (not isinstance(execution_payload, Mapping)
-            or execution_payload.get("executionVersion") != "k10-execution-v2"
+            or execution_payload.get("executionVersion") != "k10-execution-v3"
             or not validate_execution_config(execution_payload).ready):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
-                reason="扫描任务缺少获批的筛分与预算配置", generated_at=started_at)
-        return TaskResult("not_configured", "execution_configuration", error="扫描任务缺少获批的筛分与预算配置")
+                reason="扫描任务缺少获批的标题筛选与正文篇数配置", generated_at=started_at)
+        return TaskResult("not_configured", "execution_configuration", error="扫描任务缺少获批的标题筛选与正文篇数配置")
     resume_scan_id = payload.get("resumeScanId")
     resuming = isinstance(resume_scan_id, str)
     resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path)
@@ -2202,7 +2230,8 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
                 reason=resolution.error or "TuShare token 未配置", generated_at=started_at)
         return TaskResult("not_configured","configuration",error=resolution.error or "TuShare token 未配置")
-    bound=context.budget.get("maxSourceRequests")
+    source_policy = frozen["payload"].get("taskPolicies", {}).get("discovery", {})
+    bound = source_policy.get("maxSourceRequests") if isinstance(source_policy, Mapping) else None
     if not resuming and (isinstance(bound,bool) or not isinstance(bound,int) or bound<1):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
@@ -2228,11 +2257,11 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     execution_discovery = execution_profile.get("payload", {}).get("discovery") if isinstance(execution_profile, Mapping) else None
     network_max_attempts = (execution_discovery.get("networkMaxAttempts")
                             if isinstance(execution_discovery, Mapping) else None)
-    verifier = TavilyEvidenceGateway(db_path=context.db_path, request_limit=policy.get("maxVerificationRequests"),
+    verifier = TavilyEvidenceGateway(db_path=context.db_path,
                                      metadata_resolver=metadata_resolver, task_id=context.task.task_id,
                                      leaseguard=context.require_lease,
                                      network_max_attempts=network_max_attempts,
-                                     lease_owner=context.task.lease_owner, spend_enforced=True)
+                                     lease_owner=context.task.lease_owner)
     historical_loader = make_historical_context_loader(db_path=context.db_path, gateway=verifier, clock=now)
     try:
         result = execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,
@@ -2257,7 +2286,10 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
                 task_status="failed", failure_stage="discovery_failed",
             )
         raise
-    if kind != "morning":
+    # A slice is still the same running scan. Preserve its scheduled continuation;
+    # assembling a morning report here would require a terminal scan and turn a
+    # normal yield into a terminal morning_report failure.
+    if kind != "morning" or result.retry_at is not None:
         return result
     scan_id = result.checkpoint.get("scanId") if isinstance(result.checkpoint, Mapping) else None
     scan = store.get_scan(scan_id=scan_id, db_path=context.db_path) if isinstance(scan_id, str) else None

@@ -16,22 +16,22 @@ def test_missing_config_is_explicit_not_configured_without_defaults():
     assert status.state == "not_configured" and "configVersion" in status.missing
 
 
-def test_v14_pack_is_ready_for_all_live_scopes_with_no_cost_cap():
+def test_v14_pack_is_ready_for_all_live_scopes_without_a_total_cost_cap_field():
     payload=_base()
     for scope in ("candidate","discovery","analysis","morning","evaluation"):
         assert validate_run_config(payload,scope=scope).ready
     assert set(payload["modelRoutes"].values()) == {"deepseek-v4-pro"}
-    assert all(item["costLimit"] is None for item in payload["taskPolicies"].values())
+    assert all("costLimit" not in item for item in payload["taskPolicies"].values())
 
 
 def test_execution_pack_is_explicit_and_ready_without_strategy_defaults():
-    payload = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    payload = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v3.json").read_text())
     assert validate_execution_config(payload).ready
     discovery = payload["discovery"]
-    assert discovery["documentBatchSize"] == 24
-    assert discovery["understandConcurrency"] == 12
+    assert discovery["articleLimits"] == {"evening": 80, "morning": 40}
+    assert discovery["titleBatchSize"] == 64
     assert discovery["modelOptions"]["understand"]["maxTokens"] == 8192
-    payload["discovery"]["understandConcurrency"] = 0
+    payload["discovery"]["titleTriageConcurrency"] = 0
     assert not validate_execution_config(payload).ready
 
 

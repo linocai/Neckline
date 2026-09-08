@@ -20,7 +20,9 @@ from . import store
 from .schema import require_schema, write_connection
 
 
-_OPERATIONS = frozenset({"understand", "verify", "map", "compare", "classify", "prioritize"})
+_OPERATIONS = frozenset({
+    "titleBatch", "titleReconcile", "understand", "verify", "map", "compare", "classify", "prioritize",
+})
 _JSON_CODES = frozenset({"json_invalid", "json_root_invalid", "response_json_invalid", "response_structure_invalid"})
 _NETWORK_CODES = frozenset({
     "provider_configuration", "provider_dependency", "provider_transport", "provider_http_error",
@@ -107,7 +109,11 @@ def _operation_key(*, operation: str, item_key: str, input_sha256: str) -> str:
 
 
 def _item_kind(operation: str) -> str:
-    return "document" if operation == "understand" else ("global" if operation == "prioritize" else "event")
+    if operation == "understand":
+        return "document"
+    if operation == "titleBatch":
+        return "global"
+    return "global" if operation in {"titleReconcile", "prioritize"} else "event"
 
 
 def _stage(operation: str) -> str:

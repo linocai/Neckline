@@ -16,7 +16,8 @@ from neckline.k10.runtime import production_analysis_handler
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.k10.worker import run_once
 from neckline.llm.base import LLMResult
-from .k10_v305_fixture import append_approved_execution_profile
+from .k10_v306_fixture import append_approved_execution_profile
+from .test_k10_api import _freeze_k10_clocks
 
 
 NOW = "2026-09-06T12:00:00+00:00"
@@ -58,6 +59,7 @@ def _seed(path: Path) -> str:
 
 def test_selected_debate_then_morning_contrary_withdraws_without_erasing_history(tmp_path, monkeypatch):
     path = tmp_path / "k10.db"; _seed(path)
+    _freeze_k10_clocks(monkeypatch, "2026-09-07T01:20:00+00:00")
     store.set_run_control(state="open", reason_code="fixture_approved", changed_at=NOW, changed_by="test", db_path=path)
     execution_id, execution_revision = append_approved_execution_profile(db_path=path, created_at=NOW,
                                                                            config_id="end-to-end-execution")

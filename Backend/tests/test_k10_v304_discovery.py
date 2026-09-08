@@ -260,8 +260,9 @@ def test_deepseek_duplicate_company_rows_fail_before_dictionary_collapse():
         _candidate_row("300001.SZ", "第一版"), _candidate_row("300002.SZ", "另一家公司"),
         _candidate_row("300001.SZ", "第二版覆盖第一版"),
     ]}
-    with pytest.raises(PipelineError, match="同一公司不得重复"):
+    with pytest.raises(PipelineError) as raised:
         _compare_with(_deepseek_comparison(payload), ("300001.SZ", "300002.SZ"))
+    assert raised.value.code == "compare_company_coverage_invalid"
 
 
 def test_deepseek_historical_assessment_probability_fails_before_it_can_be_frozen():
@@ -278,5 +279,6 @@ def test_deepseek_historical_assessment_probability_fails_before_it_can_be_froze
                    "summary": "该历史案例涨停概率可能达到70%", "sourceQuote": "公开复盘明确写明该案例成功。",
                    "sourceRefs": [{"documentId": "doc-history", "revision": 1}]}],
                "candidates": [_candidate_row("300001.SZ", "公司比较")]}
-    with pytest.raises(PipelineError, match="未校准概率"):
+    with pytest.raises(PipelineError) as raised:
         _compare_with(_deepseek_comparison(payload, history=history))
+    assert raised.value.code == "compare_uncalibrated_prediction"

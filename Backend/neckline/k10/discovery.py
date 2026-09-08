@@ -1,6 +1,6 @@
 """K10 晚间发现链：全市场资料 → 理解 → 核验 → 公司映射 → 比较。
 
-没有来源、模型路由或预算配置时本模块只返回 ``not_configured``。所有模型和核验能力
+没有来源或模型路由配置时本模块只返回 ``not_configured``。所有模型和核验能力
 均由调用方显式注入；没有真实来源账户时，fake provider 可在临时库完整验证流程。
 """
 
@@ -18,8 +18,6 @@ import re
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .config import ConfigurationStatus, validate_run_config
-from .prefilter import (EvidencePackage, PrefilterResult, TemplateRulePack,
-                        prefilter_documents, screening_manifest_payload)
 from .types import EventRevision
 from .universe import CompanyMetadataProvider, Eligibility, evaluate_company
 from .opportunity_discovery import (
@@ -142,18 +140,6 @@ def prepare_document_for_analysis(document: DiscoveryDocument) -> DiscoveryDocum
         "sourceCharacters": len(raw),
         "readableCharacters": len(readable),
     })
-
-
-@dataclass(frozen=True)
-class DocumentFilterDecision:
-    """A deterministic pre-model decision, limited to explicit template handling."""
-
-    state: str  # include | template | needs_review
-    reason: str
-
-    def __post_init__(self) -> None:
-        if self.state not in {"include", "template", "needs_review"} or not self.reason:
-            raise ValueError("资料初筛状态无效")
 
 
 @dataclass(frozen=True)
@@ -567,99 +553,62 @@ def _safe_issue_code(exc: Exception) -> str:
     return "operation_failed"
 
 
-_SCREENING_PRIORITY_KINDS = ("publishedMajorContrary", "changedKnownFact", "newEvent")
 _PENDING_ADMISSION_CODES = frozenset({
-    "execution_paused", "pending_budget", "execution_request_bound_missing", "execution_not_configured",
+    "execution_paused", "execution_request_bound_missing", "execution_not_configured",
     "provider_request_outcome_unknown", "full_text_disabled",
 })
 
 
-def _screening_not_configured(*, configuration: ConfigurationStatus, reason: str,
-                              document_count: int) -> DiscoveryRun:
-    """Close the discovery gate before any model/provider boundary is reached."""
-    status = ConfigurationStatus("not_configured", configuration.missing + ("screening",),
-                                 configuration.errors + (reason,))
-    return DiscoveryRun("not_configured", status, (), (), (), (), (), (), 0,
-                        document_counts={"input": document_count, "screeningNotConfigured": 1})
+@dataclass(frozen=True)
+class ExactDocumentDeduplication:
+    """Program-only exact duplicate result before title model admission.
 
-
-def _validate_screening_limits(value: Mapping[str, Any] | None) -> tuple[int, int, bool] | None:
-    if not isinstance(value, Mapping) or set(value) != {"maxDocuments", "maxKeyPassageCharacters", "fullTextEnabled"}:
-        return None
-    documents, characters, full_text = value.get("maxDocuments"), value.get("maxKeyPassageCharacters"), value.get("fullTextEnabled")
-    if (isinstance(documents, bool) or not isinstance(documents, int) or documents < 1
-            or isinstance(characters, bool) or not isinstance(characters, int) or characters < 1
-            or not isinstance(full_text, bool)):
-        return None
-    return documents, characters, full_text
-
-
-def _as_package_document(package: EvidencePackage, *, max_key_passage_characters: int,
-                         full_text_enabled: bool) -> DiscoveryDocument:
-    """Represent one conservative package without inventing a source evidence ref.
-
-    The synthetic document is strictly a model input envelope.  ``memberRefs`` are
-    the only references a package-aware model may emit, and `run_discovery` checks
-    them again before an event can reach verification or a candidate.
+    A missing body is deliberately never grouped on title similarity.  The
+    duplicate relation preserves every original source reference so later event
+    evidence remains traceable even when one exact copy avoids repeat work.
     """
-    materials: list[str] = []
-    summaries: list[dict[str, Any]] = []
-    for index, member in enumerate(package.members, start=1):
-        source = member.document
-        source_metadata = source.metadata if isinstance(source.metadata, Mapping) else {}
-        refs = [{"documentId": ref[0], "revision": ref[1]} for ref in member.source_refs]
-        summary = {
-            "ordinal": index, "memberRefs": refs,
-            "publishedAt": source.published_at, "fetchedAt": source.fetched_at,
-            "title": source_metadata.get("title") if isinstance(source_metadata.get("title"), str) else None,
-            "source": source_metadata.get("source") if isinstance(source_metadata.get("source"), str) else None,
-        }
-        summaries.append(summary)
-        material = source.analysis_text or source.original_text or source.excerpt or ""
-        materials.append(
-            f"[资料 {index}; refs={','.join(f'{ref[0]}@{ref[1]}' for ref in member.source_refs)}]\n{material}"
-        )
-    synthetic_metadata = {
-        "packageId": package.package_id,
-        "memberHash": package.member_hash,
-        "screeningAction": package.action,
-        "memberRefs": [ref for summary in summaries for ref in summary["memberRefs"]],
-        "sourceSummaries": summaries,
-        "maxKeyPassageCharacters": max_key_passage_characters,
-        "fullTextEnabled": full_text_enabled,
-    }
-    return DiscoveryDocument(
-        document_id=package.package_id, revision=1,
-        published_at=min((member.document.published_at for member in package.members if member.document.published_at), default=None),
-        fetched_at=min(member.document.fetched_at for member in package.members),
-        original_text=None, excerpt=None, metadata=synthetic_metadata,
-        analysis_text="\n\n".join(materials), extraction={"version": "screening-package-v1", "memberHash": package.member_hash},
-    )
+
+    retained: tuple[DiscoveryDocument, ...]
+    duplicates: Mapping[EvidenceRef, EvidenceRef]
 
 
-def _package_priority_kind(*, event: EventDraft, protected_refs: set[EvidenceRef],
-                           previous_opportunities: Sequence[Mapping[str, Any]]) -> str:
-    if any(ref in protected_refs for ref in event.source_refs):
-        return "publishedMajorContrary"
-    if any(old.get("canonicalKey") == event.canonical_key for old in previous_opportunities):
-        return "changedKnownFact"
-    return "newEvent"
+def _exact_content_key(document: DiscoveryDocument) -> str | None:
+    content = document.original_text if isinstance(document.original_text, str) and document.original_text.strip() else document.excerpt
+    if not isinstance(content, str) or not content.strip():
+        return None
+    metadata = document.metadata if isinstance(document.metadata, Mapping) else {}
+    title = metadata.get("title") if isinstance(metadata.get("title"), str) else ""
+    if not title.strip():
+        # A fixture, import, or degraded source without title context cannot
+        # safely be called an exact news duplicate merely because its body is
+        # equal to another record.
+        return None
+    return sha256((content + "\x1f" + title).encode("utf-8")).hexdigest()
 
 
-def _order_screened_events(*, events: Sequence[EventDraft], priority_order: Sequence[str],
-                           protected_refs: set[EvidenceRef], previous_opportunities: Sequence[Mapping[str, Any]],
-                           package_checkpoint: Callable[[Mapping[str, Any]], None] | None) -> tuple[EventDraft, ...]:
-    positions = {kind: index for index, kind in enumerate(priority_order)}
-    ranked = [(_package_priority_kind(event=event, protected_refs=protected_refs,
-                                      previous_opportunities=previous_opportunities), index, event)
-              for index, event in enumerate(events)]
-    ranked.sort(key=lambda item: (positions[item[0]], item[1]))
-    if package_checkpoint is not None:
-        for kind, _, event in ranked:
-            package_checkpoint({"stage": "priority", "state": "frozen", "canonicalKey": event.canonical_key,
-                                "priorityKind": kind, "priorityIndex": positions[kind],
-                                "sourceRefs": [_ref_payload(ref) for ref in event.source_refs]})
-    return tuple(item[2] for item in ranked)
+def deduplicate_documents(documents: Sequence[DiscoveryDocument]) -> ExactDocumentDeduplication:
+    """Deduplicate only byte-identical readable source content plus its title.
+
+    This is not semantic title grouping: same title with a distinct body, or a
+    title-only source with no body, remains an independent title-audit item.
+    """
+    frozen = tuple(documents)
+    refs = [document.evidence_ref for document in frozen]
+    if len(set(refs)) != len(refs):
+        raise ValueError("发现输入 documentId/revision 不得重复")
+    canonical_by_key: dict[str, DiscoveryDocument] = {}
+    duplicates: dict[EvidenceRef, EvidenceRef] = {}
+    for document in sorted(frozen, key=lambda item: (item.document_id, item.revision)):
+        key = _exact_content_key(document)
+        if key is None:
+            continue
+        original = canonical_by_key.get(key)
+        if original is None:
+            canonical_by_key[key] = document
+        else:
+            duplicates[document.evidence_ref] = original.evidence_ref
+    duplicate_refs = set(duplicates)
+    return ExactDocumentDeduplication(tuple(document for document in frozen if document.evidence_ref not in duplicate_refs), duplicates)
 
 
 def run_discovery(
@@ -669,15 +618,11 @@ def run_discovery(
     leaseguard: Callable[[], None] | None = None,
     previous_opportunities: Sequence[Mapping[str, Any]] = (),
     understood_by_document: Mapping[EvidenceRef, Sequence[EventDraft]] | None = None,
-    document_filter: Callable[[DiscoveryDocument], DocumentFilterDecision] | None = None,
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
     understand_concurrency: int | None = None,
     document_batch_size: int | None = None,
-    screening_rule_pack: TemplateRulePack | Mapping[str, Any] | None = None,
-    priority_order: Sequence[str] | None = None,
-    package_limits: Mapping[str, Any] | None = None,
-    package_checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
-    require_screening: bool = False,
+    selected_source_refs: Sequence[EvidenceRef] | None = None,
+    article_limit: int | None = None,
 ) -> DiscoveryRun:
     """执行可注入发现链；仅晚间可生成最多 30 条新候选。
 
@@ -702,76 +647,41 @@ def run_discovery(
     config = validate_run_config(configuration, scope="discovery")
     if not config.ready:
         return DiscoveryRun("not_configured", config, (), (), (), (), (), (), 0)
-    prepared_documents = tuple(prepare_document_for_analysis(document) for document in documents)
-    screening: PrefilterResult | None = None
-    limits: tuple[int, int, bool] | None = None
-    screened_documents: tuple[DiscoveryDocument, ...] = prepared_documents
+    # V3 title triage freezes body admission before this module is permitted to
+    # touch readable source text.  The caller must provide exactly those real
+    # source revisions, never a larger list that this routine silently filters.
+    if (selected_source_refs is None) != (article_limit is None):
+        raise ValueError("正文发现必须同时提供 selected_source_refs 与 article_limit")
+    if selected_source_refs is not None:
+        expected_limit = 80 if phase == "evening" else 40
+        if isinstance(article_limit, bool) or article_limit != expected_limit:
+            raise ValueError("正文发现 article_limit 必须匹配晚间80/晨间40")
+        selected = tuple(selected_source_refs)
+        if any(not isinstance(ref, EvidenceRef) for ref in selected) or len(set(selected)) != len(selected):
+            raise ValueError("正文发现 selected_source_refs 必须是唯一真实 EvidenceRef")
+        if len(selected) > expected_limit:
+            raise ValueError("正文发现超过已冻结文章上限")
+        by_ref = {document.evidence_ref: document for document in documents}
+        if len(by_ref) != len(documents) or set(by_ref) != set(selected):
+            raise ValueError("正文发现输入必须恰好等于已冻结入选文章")
+        # Retain the global selection's deterministic ordering for event audit;
+        # it is not a body-level re-ranking or a way to replace a missing item.
+        documents = tuple(by_ref[ref] for ref in selected)
+    deduplication = deduplicate_documents(documents)
+    prepared_documents = tuple(prepare_document_for_analysis(document) for document in deduplication.retained)
     source_refs_by_document: dict[EvidenceRef, set[EvidenceRef]] = {
         document.evidence_ref: {document.evidence_ref} for document in prepared_documents
     }
-    package_metadata_by_document: dict[EvidenceRef, Mapping[str, Any]] = {}
-    protected_refs: set[EvidenceRef] = set()
-    screening_issues: list[DiscoveryIssue] = []
-    if require_screening:
-        if screening_rule_pack is None:
-            return _screening_not_configured(configuration=config, reason="缺少已批准资料筛分模板", document_count=len(prepared_documents))
-        limits = _validate_screening_limits(package_limits)
-        if limits is None:
-            return _screening_not_configured(configuration=config, reason="缺少明确资料包限制", document_count=len(prepared_documents))
-        if (not isinstance(priority_order, Sequence) or isinstance(priority_order, (str, bytes))
-                or tuple(priority_order) != _SCREENING_PRIORITY_KINDS):
-            return _screening_not_configured(configuration=config, reason="缺少明确事件优先级顺序", document_count=len(prepared_documents))
-        try:
-            screening = prefilter_documents(prepared_documents, rule_pack=screening_rule_pack)
-        except ValueError:
-            return _screening_not_configured(configuration=config, reason="资料筛分模板无效", document_count=len(prepared_documents))
-        if screening.state != "ready":
-            return _screening_not_configured(configuration=config, reason="资料筛分模板未配置", document_count=len(prepared_documents))
-        admission_packages = tuple(sorted(enumerate(screening.packages),
-                                          key=lambda item: (0 if item[1].action == "protect" else 1, item[0])))
-        if package_checkpoint is not None:
-            # Persist all deductions before a package can reach any provider boundary.
-            manifest = dict(screening_manifest_payload(screening))
-            manifest["admissionOrder"] = [package.package_id for _, package in admission_packages]
-            package_checkpoint({"stage": "screening_manifest", "state": "frozen",
-                                "result": manifest})
-        max_documents, max_key_passage_characters, full_text_enabled = limits
-        package_documents: list[DiscoveryDocument] = []
-        for admission_index, (_, package) in enumerate(admission_packages, start=1):
-            member_refs = tuple(EvidenceRef(document_id, revision) for member in package.members for document_id, revision in member.source_refs)
-            if package_checkpoint is not None:
-                package_checkpoint({"stage": "screening", "state": "frozen", "packageId": package.package_id,
-                                    "memberHash": package.member_hash, "action": package.action,
-                                    "memberRefs": [_ref_payload(ref) for ref in member_refs],
-                                    "admissionIndex": admission_index})
-            if len(package.members) > max_documents:
-                screening_issues.append(DiscoveryIssue("screening", "package_limit_pending"))
-                if package_checkpoint is not None:
-                    package_checkpoint({"stage": "screening", "state": "pending", "code": "package_limit_pending",
-                                        "packageId": package.package_id, "memberHash": package.member_hash,
-                                        "memberRefs": [_ref_payload(ref) for ref in member_refs],
-                                        "admissionIndex": admission_index})
-                continue
-            package_document = _as_package_document(package, max_key_passage_characters=max_key_passage_characters,
-                                                    full_text_enabled=full_text_enabled)
-            package_documents.append(package_document)
-            source_refs_by_document[package_document.evidence_ref] = set(member_refs)
-            package_metadata_by_document[package_document.evidence_ref] = {
-                "packageId": package.package_id, "memberHash": package.member_hash,
-                "action": package.action, "memberRefs": [_ref_payload(ref) for ref in member_refs],
-            }
-            if package.action == "protect":
-                protected_refs.update(member_refs)
-        screened_documents = tuple(package_documents)
+    for duplicate_ref, retained_ref in deduplication.duplicates.items():
+        source_refs_by_document[retained_ref].add(duplicate_ref)
+    screened_documents = prepared_documents
     # A resumed scan can bypass already-completed document understanding.  Give
     # provider-backed event stages the exact same prepared frozen documents
     # before that bypass, without fetching or analysing anything again.
     register_documents = getattr(model, "register_documents", None)
     if callable(register_documents):
         register_documents(documents=prepared_documents)
-        if require_screening:
-            register_documents(documents=screened_documents)
-    available = {document.evidence_ref for document in prepared_documents}
+    available = {document.evidence_ref for document in documents}
     events: list[EventDraft] = []
     verified_events: list[EventVerification] = []
     all_candidates: list[DiscoveryCandidate] = []
@@ -784,24 +694,11 @@ def run_discovery(
     # Keep the final event stream keyed by the frozen document reference and
     # reassemble it in frozen input order after all document work is settled.
     understood_by_ref: dict[EvidenceRef, tuple[EventDraft, ...]] = {}
-    issues: list[DiscoveryIssue] = list(screening_issues)
-    counts = {"input": len(prepared_documents), "templateFiltered": 0, "needsReview": 0,
+    issues: list[DiscoveryIssue] = []
+    counts = {"input": len(documents), "exactDeduplicated": len(deduplication.duplicates),
               "understood": 0, "understandFailed": 0, "eventFailed": 0}
-    if screening is not None:
-        counts.update({
-            "received": screening.counts["input"],
-            "exactDeduplicated": screening.counts["exactDuplicates"],
-            "templateExcluded": screening.counts["exclude"],
-            "templateDeferred": screening.counts["defer"],
-            "templateProtected": screening.counts["protect"],
-            "packages": screening.counts["packages"],
-            "packageLimitPending": sum(issue.code == "package_limit_pending" for issue in screening_issues),
-            "lightweightUnderstood": 0,
-            "fullTextRequested": 0,
-            "fullTextCompleted": 0,
-            "pendingVerification": 0,
-            "pendingBudget": 0,
-        })
+    if selected_source_refs is not None:
+        counts.update({"articleLimit": int(article_limit or 0), "articleAdmitted": len(prepared_documents)})
     recovered = understood_by_document or {}
     pending_documents: list[DiscoveryDocument] = []
     for document in screened_documents:
@@ -810,35 +707,26 @@ def run_discovery(
             for event in recovered_events:
                 _validate_refs(event.source_refs, available, label="恢复事件")
                 if not set(event.source_refs).issubset(source_refs_by_document[document.evidence_ref]):
-                    raise ValueError("恢复事件引用不属于资料包真实来源")
+                    raise ValueError("恢复事件引用不属于已准入真实来源")
             understood_by_ref[document.evidence_ref] = recovered_events
             counts["understood"] += 1
-            if screening is not None:
-                # A validated package checkpoint is a completed lightweight
-                # understanding, even though this continuation spends no call.
-                counts["lightweightUnderstood"] += 1
             continue
-        decision = document_filter(document) if document_filter is not None and not require_screening else DocumentFilterDecision("include", "资料包已筛分")
-        if decision.state == "template":
-            counts["templateFiltered"] += 1
-            if checkpoint is not None:
-                checkpoint({"stage": "understand", "state": "template", "reason": decision.reason,
-                            "documentRef": _ref_payload(document.evidence_ref), "extraction": dict(document.extraction)})
-            continue
-        if decision.state == "needs_review":
-            counts["needsReview"] += 1
         pending_documents.append(document)
 
     def complete_understanding(document: DiscoveryDocument, result: Sequence[EventDraft]) -> None:
-        events_for_document = tuple(result)
+        expanded: list[EventDraft] = []
+        for event in tuple(result):
+            refs: list[EvidenceRef] = []
+            for ref in event.source_refs:
+                refs.extend(sorted(source_refs_by_document.get(ref, {ref}), key=lambda item: (item.document_id, item.revision)))
+            expanded.append(replace(event, source_refs=tuple(dict.fromkeys(refs))))
+        events_for_document = tuple(expanded)
         for event in events_for_document:
             _validate_refs(event.source_refs, available, label="事件")
             if not set(event.source_refs).issubset(source_refs_by_document[document.evidence_ref]):
-                raise ValueError("事件引用不属于资料包真实来源")
+                raise ValueError("事件引用不属于已准入真实来源")
         understood_by_ref[document.evidence_ref] = events_for_document
         counts["understood"] += 1
-        if screening is not None:
-            counts["lightweightUnderstood"] += 1
         full_text_used = getattr(model, "full_text_used", None)
         # This is a display/progress derivative only.  The model operation
         # cache remains exactly the same validated event payload and input
@@ -846,33 +734,18 @@ def run_discovery(
         used_full_text = bool(full_text_used(document=document)) if callable(full_text_used) else False
         full_text_requested = getattr(model, "full_text_requested", None)
         requested_full_text = bool(full_text_requested(document=document)) if callable(full_text_requested) else used_full_text
-        if screening is not None:
-            counts["fullTextRequested"] += int(requested_full_text)
-            counts["fullTextCompleted"] += int(used_full_text)
         if checkpoint is not None:
             checkpoint({"stage": "understand", "state": "completed", "documentRef": _ref_payload(document.evidence_ref),
                         "events": freeze_event_drafts(events_for_document), "extraction": dict(document.extraction),
                         "fullTextUsed": used_full_text})
-        package_metadata = package_metadata_by_document.get(document.evidence_ref)
-        if package_metadata is not None and package_checkpoint is not None:
-            package_checkpoint({"stage": "understand", "state": "completed", **package_metadata,
-                                "fullTextUsed": used_full_text,
-                                "fullTextRequested": requested_full_text,
-                                "eventCount": len(events_for_document)})
 
     def fail_understanding(document: DiscoveryDocument, exc: Exception) -> str | None:
         code = _safe_issue_code(exc)
         pending = code in _PENDING_ADMISSION_CODES
         full_text_requested = getattr(model, "full_text_requested", None)
         requested_full_text = bool(full_text_requested(document=document)) if callable(full_text_requested) else False
-        if screening is not None and requested_full_text:
-            # A denied full-text route is still an explicit model request.  It
-            # must remain visible instead of looking like no full-text decision.
-            counts["fullTextRequested"] += 1
         if pending:
             counts["understandPending"] = counts.get("understandPending", 0) + 1
-            if code == "pending_budget":
-                counts["pendingBudget"] = counts.get("pendingBudget", 0) + 1
         else:
             counts["understandFailed"] += 1
         issue = DiscoveryIssue("understand", code, document.evidence_ref)
@@ -880,10 +753,6 @@ def run_discovery(
         if checkpoint is not None:
             checkpoint({"stage": issue.stage, "state": "pending" if pending else "failed", "code": issue.code,
                         "documentRef": _ref_payload(document.evidence_ref), "extraction": dict(document.extraction)})
-        package_metadata = package_metadata_by_document.get(document.evidence_ref)
-        if package_metadata is not None and package_checkpoint is not None:
-            package_checkpoint({"stage": issue.stage, "state": "pending" if pending else "failed", "code": issue.code,
-                                **package_metadata, "fullTextRequested": requested_full_text})
         return code if pending else None
 
     def mark_unadmitted(documents: Sequence[DiscoveryDocument], *, code: str) -> None:
@@ -891,14 +760,6 @@ def run_discovery(
         if not documents:
             return
         counts["understandPending"] = counts.get("understandPending", 0) + len(documents)
-        if code == "pending_budget":
-            counts["pendingBudget"] = counts.get("pendingBudget", 0) + len(documents)
-        if package_checkpoint is not None:
-            for document in documents:
-                package_metadata = package_metadata_by_document.get(document.evidence_ref)
-                if package_metadata is not None:
-                    package_checkpoint({"stage": "understand", "state": "pending", "code": code,
-                                        **package_metadata})
 
     concurrency = understand_concurrency or 1
     # An omitted window retains the historical "all supplied docs" behaviour
@@ -987,8 +848,6 @@ def run_discovery(
 
     def record_pending_event(*, stage: str, code: str, event: EventDraft,
                              company_code: str | None = None) -> None:
-        if code == "pending_budget":
-            counts["pendingBudget"] = counts.get("pendingBudget", 0) + 1
         if stage == "verify_or_map":
             counts["pendingVerification"] = counts.get("pendingVerification", 0) + 1
         issue = DiscoveryIssue(stage, code, canonical_key=event.canonical_key)
@@ -1002,12 +861,6 @@ def run_discovery(
     understood = [event for document in screened_documents
                   for event in understood_by_ref.get(document.evidence_ref, ())]
     merged_events = _merge_same_event_sources(understood)
-    if require_screening:
-        assert priority_order is not None
-        merged_events = _order_screened_events(events=merged_events, priority_order=priority_order,
-                                               protected_refs=protected_refs,
-                                               previous_opportunities=previous_opportunities,
-                                               package_checkpoint=package_checkpoint)
     event_admission_closed = False
     for event in merged_events:
             events.append(event)  # an understood event remains auditable if later stages fail
@@ -1023,8 +876,6 @@ def run_discovery(
                     # pending item, not permission to spend map/compare/classify calls on a
                     # self-certified event.  The append-only event survives for retry.
                     verified_events.append(EventVerification(event, verification))
-                    if screening is not None:
-                        counts["pendingVerification"] += 1
                     issue = DiscoveryIssue("verify", "verification_pending", canonical_key=event.canonical_key)
                     issues.append(issue)
                     if checkpoint is not None:
@@ -1562,8 +1413,9 @@ def load_documents_from_store(*, cutoff_at: str, db_path: Path) -> tuple[Discove
 
 __all__ = [
     "CandidateComparison", "CompanyMappingDraft", "DiscoveryCandidate", "DiscoveryDocument", "DiscoveryIssue", "DiscoveryModel", "EventComparison",
-    "DiscoveryRun", "DiscoveryDeadlineExceeded", "DiscoverySliceYield", "DiscoveryWriter", "DocumentFilterDecision", "EvidenceRef", "EventDraft", "EventVerification", "SqliteDiscoveryWriter", "Verification",
+    "DiscoveryRun", "DiscoveryDeadlineExceeded", "DiscoverySliceYield", "DiscoveryWriter", "EvidenceRef", "EventDraft", "EventVerification", "SqliteDiscoveryWriter", "Verification",
     "VerificationFunction", "freeze_discovery_run", "thaw_discovery_run", "load_documents_from_store", "persist_discovery", "run_discovery",
     "freeze_event_drafts", "thaw_event_drafts", "prepare_document_for_analysis", "reject_uncalibrated_prediction",
+    "ExactDocumentDeduplication", "deduplicate_documents",
     "validate_event_comparison_rows", "FrozenDiscoveryDraftCompatibilityError",
 ]

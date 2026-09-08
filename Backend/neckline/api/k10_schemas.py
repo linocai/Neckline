@@ -157,47 +157,40 @@ class ExecutionRunControlOut(K10Model):
     changedAt: str
 
 
-class ExecutionSpendTotalsOut(K10Model):
-    calls: int = Field(default=0, ge=0)
-    inputTokens: int = Field(default=0, ge=0)
-    outputTokens: int = Field(default=0, ge=0)
-    totalTokens: int = Field(default=0, ge=0)
-    fullTextCalls: int = Field(default=0, ge=0)
-    retries: int = Field(default=0, ge=0)
-    searchRequests: int = Field(default=0, ge=0)
-    searchCredits: int = Field(default=0, ge=0)
-
-
-class ExecutionBudgetOut(K10Model):
-    """Aggregate spend ledger only; never prompts, sources, prices or fees."""
-    state: Literal["available", "exhausted", "notConfigured"]
-    # An unbound profile has no truthful denominator or spend total.  Keep
-    # these absent instead of presenting zeros as an audited budget.
-    reserved: ExecutionSpendTotalsOut | None = None
-    occupied: ExecutionSpendTotalsOut | None = None
-    actual: ExecutionSpendTotalsOut | None = None
-    unknown: ExecutionSpendTotalsOut | None = None
-    remaining: ExecutionSpendTotalsOut | None = None
-    reservationCount: int = Field(default=0, ge=0)
-
-
-class ExecutionProcessingCountsOut(K10Model):
-    """V3.0.5 pre-model work.  Absent on historical scans rather than zeroed."""
+class ExecutionTitleCountsOut(K10Model):
+    """Audited V3 title-triage result; absent on scans before this workflow."""
     received: int = Field(default=0, ge=0)
     exactDeduplicated: int = Field(default=0, ge=0)
-    templateExcluded: int = Field(default=0, ge=0)
-    templateDeferred: int = Field(default=0, ge=0)
-    templateProtected: int = Field(default=0, ge=0)
-    packages: int = Field(default=0, ge=0)
-    lightweightUnderstood: int = Field(default=0, ge=0)
-    fullTextRequested: int = Field(default=0, ge=0)
-    fullTextCompleted: int = Field(default=0, ge=0)
-    pendingVerification: int = Field(default=0, ge=0)
-    pendingBudget: int = Field(default=0, ge=0)
+    triaged: int = Field(default=0, ge=0)
+    merged: int = Field(default=0, ge=0)
+    notSelected: int = Field(default=0, ge=0)
+    protected: int = Field(default=0, ge=0)
+    partial: int = Field(default=0, ge=0)
+
+
+class ExecutionArticleCountsOut(K10Model):
+    """Selected article admission and deep-read outcomes, never a claim that
+    every collected article body was read."""
+    limit: int = Field(default=0, ge=0)
+    selected: int = Field(default=0, ge=0)
+    admitted: int = Field(default=0, ge=0)
+    completed: int = Field(default=0, ge=0)
+    missingBody: int = Field(default=0, ge=0)
+    tavilyExcerpt: int = Field(default=0, ge=0)
+    tavilyFullArticle: int = Field(default=0, ge=0)
+
+
+class ExecutionAttemptCountsOut(K10Model):
+    """Safe call outcome counts. Token and monetary totals are intentionally
+    kept in the internal audit ledger and never exposed as a UI quota."""
+    started: int = Field(default=0, ge=0)
+    succeeded: int = Field(default=0, ge=0)
+    failed: int = Field(default=0, ge=0)
+    unknown: int = Field(default=0, ge=0)
 
 
 class ExecutionProgressOut(K10Model):
-    state: Literal["running", "partial", "completed", "failed", "notConfigured", "paused", "budgetExhausted"]
+    state: Literal["running", "partial", "completed", "failed", "notConfigured", "paused", "retired"]
     stage: str | None = Field(default=None, max_length=80)
     documentCounts: ExecutionDocumentCountsOut = Field(default_factory=ExecutionDocumentCountsOut)
     eventCounts: ExecutionEventCountsOut = Field(default_factory=ExecutionEventCountsOut)
@@ -206,14 +199,13 @@ class ExecutionProgressOut(K10Model):
     safeFailures: list[SafeExecutionFailureOut] = Field(default_factory=list)
     strategyBinding: dict[str, object] | None = None
     executionBinding: dict[str, object] | None = None
-    # Historical B36 scans lack these V3.0.5 ledgers.  Null is material: a
-    # client must not present it as a measured zero or infer an allow-all run.
+    # Historical scans lack the V3 title ledger. Null is material: a client
+    # must not claim a title pass or an article limit was measured for them.
     runControl: ExecutionRunControlOut | None = None
-    processingCounts: ExecutionProcessingCountsOut | None = None
-    # A real cache hit count is only recorded by B37 scans; historical scans
-    # remain absent rather than looking like a measured zero.
+    titleCounts: ExecutionTitleCountsOut | None = None
+    articleCounts: ExecutionArticleCountsOut | None = None
+    attemptCounts: ExecutionAttemptCountsOut | None = None
     factCacheHits: int | None = Field(default=None, ge=0)
-    budget: ExecutionBudgetOut | None = None
 
 
 class SourceCoverageOut(K10Model):

@@ -6,10 +6,10 @@
   "sourceAdapters": [{"key": "tushare-major-news", "lateArrivalReplaySeconds": 86400}],
   "modelRoutes": {"discovery": "deepseek-v4-pro", "analysis": "deepseek-v4-pro", "morning": "deepseek-v4-pro"},
   "taskPolicies": {
-    "discovery": {"maxAttempts": 3, "maxSourceRequests": 128, "maxVerificationRequests": 128, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},
-    "analysis": {"maxAttempts": 3, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},
-    "morning": {"maxAttempts": 3, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},
-    "evaluation": {"maxAttempts": 3, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3}
+    "discovery": {"maxAttempts": 3, "maxSourceRequests": 128, "timeoutSeconds": 90, "modelMaxAttempts": 3},
+    "analysis": {"maxAttempts": 3, "timeoutSeconds": 90, "modelMaxAttempts": 3},
+    "morning": {"maxAttempts": 3, "timeoutSeconds": 90, "modelMaxAttempts": 3},
+    "evaluation": {"maxAttempts": 3}
   },
   "evaluationPolicy": {"version": "k10-evaluation-v1.4", "selectionFreeze": "d1_open_0930", "window": "d1_d2", "primaryMetric": "close_limit_up_any_d1_d2"},
   "marketCollection": {"retryIntervalSeconds": 300, "retryUntilMinutesAfterClose": 120},

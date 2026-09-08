@@ -70,11 +70,22 @@ TaskHandler = Callable[[TaskContext], TaskResult]
 _PAID_TASK_KINDS = frozenset({"evening_scan", "morning_scan", "analysis", "morning_review"})
 
 
-def _v2_execution_ready(context: TaskContext) -> bool:
+def _v3_execution_ready(context: TaskContext) -> bool:
     profile = context.execution_profile
     payload = profile.get("payload") if isinstance(profile, Mapping) else None
-    return (isinstance(payload, Mapping) and payload.get("executionVersion") == "k10-execution-v2"
+    return (isinstance(payload, Mapping) and payload.get("executionVersion") == "k10-execution-v3"
             and validate_execution_config(payload).ready)
+
+
+def _retry_maximum(context: TaskContext) -> int | None:
+    """Read the explicit finite retry boundary without resurrecting a budget."""
+    if context.task.kind in _PAID_TASK_KINDS:
+        payload = context.execution_profile.get("payload") if isinstance(context.execution_profile, Mapping) else None
+        discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+        maximum = discovery.get("networkMaxAttempts") if isinstance(discovery, Mapping) else None
+    else:
+        maximum = context.budget.get("maxAttempts")
+    return None if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1 else maximum
 
 
 def _utc_now() -> datetime:
@@ -123,7 +134,7 @@ def run_once(
     handlers: Mapping[str, TaskHandler], clock: Callable[[], datetime] = _utc_now,
     task_id: str | None = None,
 ) -> Task | None:
-    """Claim one job; retries never invent a budget or invoke an unknown handler."""
+    """Claim one job; retries are bounded and never invoke an unknown handler."""
     if lease_for.total_seconds() <= 0:
         raise ValueError("lease_for must be positive")
     # This gate precedes claim so a disabled timer/worker cannot turn a queued
@@ -162,14 +173,14 @@ def run_once(
     heartbeat_thread = threading.Thread(target=heartbeat, name="k10-lease", daemon=True)
     heartbeat_thread.start()
     try:
-        maximum = context.budget.get("maxAttempts")
+        maximum = _retry_maximum(context)
         handler = handlers.get(task.kind)
-        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
-            result = TaskResult("not_configured", "configuration", error="任务重试上限未配置")
-        elif task.kind in _PAID_TASK_KINDS and not _v2_execution_ready(context):
+        if task.kind in _PAID_TASK_KINDS and not _v3_execution_ready(context):
             result = TaskResult("not_configured", "configuration", context.checkpoint,
-                                "K10 外部调用要求已批准的 V2 执行配置")
-        elif context.execution_profile is None and task.attempt_count > maximum:
+                                "K10 外部调用要求已批准的 V3 执行配置")
+        elif maximum is None:
+            result = TaskResult("not_configured", "configuration", error="任务有限重试参数未配置")
+        elif context.failure_attempt_count >= maximum:
             result = TaskResult("failed", "attempt_limit", context.checkpoint, "任务已达到重试上限")
         elif handler is None:
             result = TaskResult("not_configured", "configuration", error="任务处理器尚未配置")

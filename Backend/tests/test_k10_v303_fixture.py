@@ -30,9 +30,11 @@ def test_real_api_exposes_stage_rationale_without_rewriting_the_original_opportu
     assert (stage["d1TradeDate"], stage["d2TradeDate"]) == ("2026-09-03", "2026-09-04")
 
 
-def test_real_api_separates_pending_suspension_gaps_anomalies_and_overlap(tmp_path):
+def test_real_api_separates_pending_suspension_gaps_anomalies_and_overlap(tmp_path, monkeypatch):
+    from .test_k10_api import _freeze_k10_clocks
     path = tmp_path / "fixture.sqlite"
     build_fixture(path)
+    _freeze_k10_clocks(monkeypatch, "2026-09-08T14:59:00+08:00")
     app = FastAPI()
     app.include_router(create_router(lambda: path, lambda: None, lambda: tmp_path / "parquet"))
     response = TestClient(app).get("/api/v1/k10/results")

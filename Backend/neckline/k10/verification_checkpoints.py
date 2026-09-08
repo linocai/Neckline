@@ -1,10 +1,4 @@
-"""Durable, task-bound reservations for external verification requests.
-
-The execution ledger is deliberately used before a network request.  A process
-may die after the provider accepts a request, so a reserved request is never
-silently returned to the budget.  The next task slice can show the event as
-pending, but cannot spend the same quota a second time.
-"""
+"""Durable, task-bound checkpoints for finite per-event verification retries."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -43,11 +37,11 @@ def _now() -> str:
 
 
 class VerificationCheckpointStore:
-    """A narrow adapter over the Schema 4 execution ledger.
+    """One frozen event can retry a finite number of times, independently.
 
-    ``record_execution_checkpoint`` is intentionally not used for reservation:
-    that generic upsert cannot atomically check the task-wide consumed budget.
-    Final result writes do use it, retaining the common sanitisation contract.
+    The external-attempt ledger owns paid-call identity.  This checkpoint only
+    preserves the event result and prevents a restarted process from treating
+    an unknown request outcome as safely repeatable.
     """
 
     def __init__(self, *, db_path: Path, task_id: str, leaseguard: Callable[[], None] | None = None,
@@ -78,7 +72,7 @@ class VerificationCheckpointStore:
         identity = _json({"canonicalKey": canonical_key, "stageKey": stage_key, "eventState": event_state})
         return "tavily:" + sha256(identity.encode("utf-8")).hexdigest()[:32]
 
-    def budget_snapshot(self) -> tuple[int, int]:
+    def attempt_snapshot(self) -> tuple[int, int]:
         with read_connection(self.db_path) as conn:
             require_schema(conn)
             self._bound(conn)
@@ -125,7 +119,7 @@ class VerificationCheckpointStore:
         if row is None or row[0] != "running" or row[1] != self.lease_owner or not row[2] or str(row[2]) < _now():
             raise store.K10Conflict("任务租约已失效，请等待恢复")
 
-    def claim(self, *, item_key: str, input_sha256: str, request_limit: int, network_max_attempts: int,
+    def claim(self, *, item_key: str, input_sha256: str, network_max_attempts: int,
               updated_at: str | None = None) -> VerificationRequestClaim:
         if self.leaseguard is not None:
             self.leaseguard()
@@ -155,7 +149,7 @@ class VerificationCheckpointStore:
                         raise VerificationCheckpointError("verification_checkpoint_corrupt")
                     return VerificationRequestClaim("reused", None, used, result)
                 prior_attempts = int(existing[4])
-                if str(existing[1]) == "failed" and prior_attempts < network_max_attempts and used < request_limit:
+                if str(existing[1]) == "failed" and prior_attempts < network_max_attempts:
                     conn.execute(
                         "UPDATE k10_execution_item_checkpoints SET status='running',attempt_count=?,network_attempt_count=?,"
                         "safe_error_code=NULL,safe_error_ref=NULL,updated_at=? WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
@@ -168,8 +162,6 @@ class VerificationCheckpointStore:
                 # recovery rather than allowing duplicate live requests.
                 reason = "network_attempts_exhausted" if prior_attempts >= network_max_attempts else "tavily_request_outcome_unknown"
                 return VerificationRequestClaim("pending", reason, used)
-            if used >= request_limit:
-                return VerificationRequestClaim("pending", "request_limit_reached", used)
             conn.execute(
                 "INSERT INTO k10_execution_item_checkpoints(task_id,item_kind,item_key,stage,input_sha256,status,"
                 "attempt_count,network_attempt_count,repair_attempt_count,elapsed_ms,input_tokens,output_tokens,"
@@ -196,6 +188,39 @@ class VerificationCheckpointStore:
             input_tokens=None, output_tokens=None, result=None, safe_error_code=safe_error_code,
             safe_error_ref=None, updated_at=updated_at or _now(), db_path=self.db_path, leaseguard=self.leaseguard,
         )
+
+    def defer_without_request(self, *, item_key: str, input_sha256: str, safe_error_code: str,
+                              updated_at: str | None = None) -> None:
+        """Undo a claim when the provider request was never admitted.
+
+        The external-attempt ledger checks the run control after this
+        checkpoint claims an event.  A pause or invalid binding therefore
+        must not consume a finite network retry: no provider request left the
+        process.  Keep a safe note while making this frozen input claimable
+        again when operations reopen.
+        """
+        if self.leaseguard is not None:
+            self.leaseguard()
+        with write_connection(self.db_path) as conn:
+            require_schema(conn)
+            self._bound(conn)
+            self._assert_transaction_lease(conn)
+            row = conn.execute(
+                "SELECT input_sha256,status,attempt_count,network_attempt_count FROM k10_execution_item_checkpoints "
+                "WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
+                (self.task_id, _ITEM_KIND, item_key, _STAGE),
+            ).fetchone()
+            if row is None or str(row[0]) != input_sha256 or str(row[1]) != "running":
+                raise VerificationCheckpointError("verification_reservation_lost")
+            attempts, network_attempts = int(row[2]), int(row[3])
+            if attempts < 1 or network_attempts < 1:
+                raise VerificationCheckpointError("verification_checkpoint_corrupt")
+            conn.execute(
+                "UPDATE k10_execution_item_checkpoints SET status='failed',attempt_count=?,network_attempt_count=?,"
+                "safe_error_code=?,safe_error_ref=NULL,updated_at=? WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
+                (attempts - 1, network_attempts - 1, safe_error_code, updated_at or _now(),
+                 self.task_id, _ITEM_KIND, item_key, _STAGE),
+            )
 
     def _attempt_counts(self, *, item_key: str, input_sha256: str) -> tuple[int, int]:
         with read_connection(self.db_path) as conn:

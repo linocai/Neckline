@@ -6,7 +6,7 @@ import pytest
 from neckline.k10 import store
 from neckline.k10.schema import initialize_schema, read_connection
 from neckline.k10.worker import TaskResult, run_once
-from tests.k10_v305_fixture import append_approved_execution_profile
+from tests.k10_v306_fixture import append_approved_execution_profile
 
 
 NOW = datetime(2026, 9, 7, 1, 0, tzinfo=timezone.utc)
@@ -94,13 +94,13 @@ def test_handler_cannot_publish_after_lease_expires_between_heartbeats(task_db):
 
 
 @pytest.mark.parametrize("budget", [{}, {"maxAttempts": True}, {"maxAttempts": 0}])
-def test_missing_attempt_policy_never_calls_model(task_db, budget):
+def test_legacy_budget_shape_does_not_block_a_bound_v3_task(task_db, budget):
     enqueue(task_db, budget=budget)
     calls = []
     task = run_once(db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
-                    handlers={"analysis": lambda _: calls.append(True)}, clock=lambda: NOW)
-    assert task.status == "not_configured"
-    assert calls == []
+                    handlers={"analysis": lambda _: (calls.append(True), TaskResult("completed", "saved"))[1]}, clock=lambda: NOW)
+    assert task.status == "completed"
+    assert calls == [True]
 
 
 def test_unregistered_task_is_visible_as_unconfigured(task_db):
@@ -145,7 +145,7 @@ def test_pause_after_handler_prevents_retry_scheduling(task_db, monkeypatch):
         db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
         handlers={"analysis": lambda _: TaskResult(
             "failed", "continuation", retry_at=NOW + timedelta(minutes=1),
-            retry_kind="continuation", safe_error_code="pending_budget",
+            retry_kind="continuation", safe_error_code="DISCOVERY_SLICE",
         )}, clock=lambda: NOW,
     )
     assert task is not None and task.status == "failed"
@@ -163,27 +163,27 @@ def test_store_retry_write_is_closed_by_durable_pause(task_db):
                           changed_by="test", db_path=task_db)
     assert not store.schedule_task_retry(
         task_id=task_id, worker_id="worker-a", stage="continuation", checkpoint={},
-        safe_error_code="pending_budget", not_before_at=NOW + timedelta(minutes=1), scheduled_at=NOW,
+        safe_error_code="DISCOVERY_SLICE", not_before_at=NOW + timedelta(minutes=1), scheduled_at=NOW,
         retry_kind="continuation", max_failure_attempts=2, db_path=task_db,
     )
     with read_connection(task_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_task_retry_schedules").fetchone()[0] == 0
 
 
-def test_crash_recovery_does_not_exceed_approved_attempts(task_db):
-    # This verifies the worker's generic retry fence without involving a paid
-    # V2 task, whose provider-level retries are metered separately.
+def test_crash_recovery_retries_one_unfinished_generic_task(task_db):
+    # A lease crash proves no handler result was durably recorded, so the
+    # generic task may receive its one finite failure attempt on recovery.
     enqueue(task_db, budget={"maxAttempts": 1}, kind="collect_market_day_fact", bind_execution=False)
     store.claim_tasks(worker_id="crashed-worker", now=NOW, lease_for=timedelta(seconds=1),
                       limit=1, db_path=task_db)
     calls = []
     task = run_once(db_path=task_db, worker_id="recovery-worker", lease_for=timedelta(seconds=30),
-                    handlers={"collect_market_day_fact": lambda _: calls.append(True)},
+                    handlers={"collect_market_day_fact": lambda _: (calls.append(True), TaskResult("completed", "collected"))[1]},
                     clock=lambda: NOW + timedelta(seconds=2))
-    assert task.status == "failed"
-    assert calls == []
+    assert task.status == "completed"
+    assert calls == [True]
     with read_connection(task_db) as conn:
-        assert conn.execute("SELECT stage FROM k10_tasks").fetchone()[0] == "attempt_limit"
+        assert conn.execute("SELECT stage FROM k10_tasks").fetchone()[0] == "collected"
 
 
 def test_untrusted_provider_error_body_is_not_stored(task_db):

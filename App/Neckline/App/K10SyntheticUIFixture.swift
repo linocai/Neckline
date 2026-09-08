@@ -117,9 +117,9 @@ actor K10SyntheticUIService: K10Servicing {
     // Debug-only visual QA switch. It is read only when the synthetic service
     // is already selected, so it cannot affect a production connection.
     private var presentsEmptyState: Bool { ProcessInfo.processInfo.environment["NK_QA_EMPTY"] == "1" }
-    private var presentsB37State: Bool { ProcessInfo.processInfo.environment["NK_QA_B37_STATE"] == "1" }
+    private var presentsB38State: Bool { ProcessInfo.processInfo.environment["NK_QA_B38_STATE"] == "1" }
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.2 Build 33") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.0.6 Build 38") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"
@@ -128,22 +128,19 @@ actor K10SyntheticUIService: K10Servicing {
             pagination: "single_page", limitations: ["合成数据"], pagesFetched: 1, pagesExpected: 1, complete: true,
             errors: [], state: "completed", windowStartAt: nil, windowCutoffAt: cutoff, successWatermark: cutoff, gaps: []
         )
-        let spend = K10ExecutionSpendTotals(calls: 4, inputTokens: 500, outputTokens: 200, totalTokens: 700,
-                                             fullTextCalls: 1, retries: 0, searchRequests: 1, searchCredits: 1)
-        let zero = K10ExecutionSpendTotals(calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0,
-                                            fullTextCalls: 0, retries: 0, searchRequests: 0, searchCredits: 0)
-        let progress = presentsB37State && window == "evening" ? K10ExecutionProgress(
+        let progress = presentsB38State && window == "evening" ? K10ExecutionProgress(
             state: "paused", stage: "awaiting_verification",
-            documentCounts: K10ExecutionDocumentCounts(received: 30, deduplicated: 28, templateSkipped: 18, understood: 4, fullText: 1, failedPending: 0),
+            documentCounts: K10ExecutionDocumentCounts(received: 30, deduplicated: 28, templateSkipped: 0, understood: 30, fullText: 4, failedPending: 0),
             eventCounts: K10ExecutionEventCounts(verified: 2, compared: 1, publishable: nil), coverageStatus: "partial",
             nextRetryAt: nil, safeFailures: [],
             runControl: K10ExecutionRunControl(state: "paused", reasonCode: "user_paused", changedAt: cutoff),
-            processingCounts: K10ExecutionProcessingCounts(received: 30, exactDeduplicated: 2, templateExcluded: 18, templateDeferred: 3, templateProtected: 1, packages: 4, lightweightUnderstood: 4, fullTextRequested: 1, fullTextCompleted: 1, pendingVerification: 2, pendingBudget: 1),
+            titleCounts: K10ExecutionTitleCounts(received: 30, exactDeduplicated: 2, triaged: 28, merged: 5, notSelected: 19, protected: 1, partial: 0),
+            articleCounts: K10ExecutionArticleCounts(limit: 80, selected: 4, admitted: 4, completed: 3, missingBody: 1, tavilyExcerpt: 2, tavilyFullArticle: 0),
+            attemptCounts: K10ExecutionAttemptCounts(started: 8, succeeded: 7, failed: 0, unknown: 1),
             factCacheHits: 2,
-            budget: K10ExecutionBudget(state: "exhausted", reserved: spend, occupied: spend, actual: spend, unknown: zero, remaining: zero, reservationCount: 4)
         ) : nil
         return K10Scan(schemaVersion: "k10-api-v2", scanId: "synthetic-\(window)-scan", window: window, cutoffAt: cutoff,
-                       status: "completed", coverageStatus: "complete", coverageGaps: [], sourceCoverage: presentsB37State ? [] : [coverage], createdAt: cutoff, completedAt: cutoff, executionProgress: progress)
+                       status: "completed", coverageStatus: "complete", coverageGaps: [], sourceCoverage: presentsB38State ? [] : [coverage], createdAt: cutoff, completedAt: cutoff, executionProgress: progress)
     }
 
     func publications() async throws -> [K10Publication] {

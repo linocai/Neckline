@@ -105,6 +105,26 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        if qaCoverageRoute {
+            SettingsCoverageScreen(model: model, scans: model.scanSummaries)
+                .task { await model.refreshAdminSettings() }
+        } else {
+            settingsBody
+        }
+    }
+
+    // A process-only visual-QA route. It cannot affect a normal launch and
+    // lets the isolated QA app show the populated title/deep-read receipt
+    // without relying on coordinate-driven navigation.
+    private var qaCoverageRoute: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["NK_QA_COVERAGE_SCREEN"] == "1"
+        #else
+        false
+        #endif
+    }
+
+    private var settingsBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                 V3PageHeader(title: "设置", subtitle: "查看连接、资料覆盖、任务状态与个人提醒。密钥不会在页面回显。")
@@ -383,7 +403,7 @@ private struct DiscoveryControlRow: View {
         if control.state == "paused" {
             return "后续自动处理已暂停；不会自动恢复"
         }
-        return "开关已打开；仍须通过配置与预算检查"
+        return "开关已打开；仍须通过配置检查"
     }
 }
 
@@ -398,23 +418,37 @@ private struct ExecutionProgressCard: View {
                 V3Pill(text: progress.state)
             }
             Text(stageText).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-            Text("已获取 \(progress.documentCounts.received) · 已理解 \(progress.documentCounts.understood) · 已核验 \(progress.eventCounts.verified) / 已比较 \(progress.eventCounts.compared)")
-                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+            if let titles = progress.titleCounts {
+                Text("标题 \(titles.received) · 精确重复 \(titles.exactDeduplicated) · 已理解 \(titles.triaged)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                Text("同事项合并 \(titles.merged) · 未入选 \(titles.notSelected) · 受保护 \(titles.protected)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                if titles.partial > 0 {
+                    Text("尚有 \(titles.partial) 条资讯未确定全局去向；名单冻结前不会开始正文深读。")
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
+                }
+            } else {
+                Text("已获取 \(progress.documentCounts.received) · 已理解 \(progress.documentCounts.understood) · 已核验 \(progress.eventCounts.verified) / 已比较 \(progress.eventCounts.compared)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+            }
             Text(progress.eventCounts.publishable.map { "统一排序后可发布 \($0) 家" } ?? "尚未完成统一排序，不显示可发布名额")
                 .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-            if let counts = progress.processingCounts {
-                Text("去重移除 \(counts.exactDeduplicated) · 模板排除 \(counts.templateExcluded) · 延后 \(counts.templateDeferred) · 保护 \(counts.templateProtected) · 资料包 \(counts.packages)")
+            if let articles = progress.articleCounts {
+                Text("深读上限 \(articles.limit) 篇 · 已冻结入选 \(articles.selected) · 已准入 \(articles.admitted)")
                     .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
-                Text("轻量理解 \(counts.lightweightUnderstood) · 待核 \(counts.pendingVerification) · 预算待处理 \(counts.pendingBudget)")
-                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(counts.pendingBudget > 0 ? NK.amber : NK.textSecondary)
+                Text("深读完成 \(articles.completed) · 缺正文 \(articles.missingBody) · 搜索核验：摘录 \(articles.tavilyExcerpt) / 新全文 \(articles.tavilyFullArticle)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(articles.missingBody > 0 ? NK.amber : NK.textSecondary)
+                Text("只深读已冻结入选文章，不代表全部资讯正文都已读取。")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            }
+            if let attempts = progress.attemptCounts,
+               attempts.started + attempts.succeeded + attempts.failed + attempts.unknown > 0 {
+                Text("请求回执：完成 \(attempts.succeeded) · 失败 \(attempts.failed) · 结果待确认 \(attempts.unknown)")
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(attempts.failed + attempts.unknown > 0 ? NK.amber : NK.textSecondary)
             }
             if let cacheHits = progress.factCacheHits {
                 Text("已复用 \(cacheHits) 份已核事实，不重复调用模型")
                     .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
-            }
-            if let budget = progress.budget {
-                Text(budgetDetail(budget)).font(NKFont.caption.monospacedDigit())
-                    .foregroundStyle(budget.state == "available" ? NK.textSecondary : NK.amber)
             }
             if progress.runControl?.state == "paused" {
                 Text("处理已暂停；不会自动恢复。")
@@ -443,22 +477,10 @@ private struct ExecutionProgressCard: View {
 
     private var stageText: String {
         if progress.state == "paused" { return "已暂停 · 后续自动处理不会启动" }
-        if progress.state == "budgetExhausted" { return "预算已用尽 · 其余资料保留待处理" }
-        let coverage = progress.coverageStatus == "partial" ? "资料尚未全部完成" : "资料处理完成"
+        if progress.state == "retired" { return "旧任务已停用，不能恢复" }
+        if progress.state == "notConfigured" { return "参数未配置 · 本轮没有开始处理" }
+        let coverage = progress.coverageStatus == "partial" ? "存在待处理缺口" : (progress.titleCounts == nil ? "资料处理完成" : "标题处理完成")
         return "\(k10ExecutionStageText(progress.stage ?? "pending")) · \(coverage)"
-    }
-
-    private func budgetDetail(_ budget: K10ExecutionBudget) -> String {
-        switch budget.state {
-        case "available":
-            let remaining = budget.remaining.map { " · 剩余 \($0.totalTokens) token / \($0.calls) 次" } ?? ""
-            let actual = budget.actual
-            return "预算实耗 \(actual?.totalTokens ?? 0) token / \(actual?.calls ?? 0) 次\(remaining)"
-        case "exhausted":
-            return "预算已用尽 · 未知占用 \(budget.unknown?.totalTokens ?? 0) token"
-        default:
-            return "预算未配置；不会发起模型或搜索调用"
-        }
     }
 }
 
@@ -493,7 +515,7 @@ private struct SettingsConfigurationRows: View {
     }
 
     private func scopeTitle(_ scope: String) -> String {
-        ["candidate": "候选发布", "discovery": "资讯筛分与预算", "analysis": "正反分析", "evaluation": "两日评价"][scope] ?? scope
+        ["candidate": "候选发布", "discovery": "资讯标题筛选", "analysis": "正反分析", "evaluation": "两日评价"][scope] ?? scope
     }
 }
 

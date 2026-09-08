@@ -17,7 +17,7 @@ from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetc
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.k10.windows import SHANGHAI
 from neckline.k10.worker import TaskContext, TaskResult, run_once
-from .k10_v305_fixture import append_approved_execution_profile
+from .k10_v306_fixture import append_approved_execution_profile
 
 
 MORNING = datetime(2026, 9, 8, 9, tzinfo=SHANGHAI)
@@ -29,7 +29,7 @@ def _config() -> dict:
 
 
 def _execution(path: Path) -> tuple[str, int]:
-    """Scheduler regressions use an approved V2 profile and an open test-only control."""
+    """Scheduler regressions use an approved V3 profile and an open test-only control."""
     return append_approved_execution_profile(db_path=path, created_at=STARTED.isoformat(),
                                              config_id="fixture-execution")
 
@@ -201,20 +201,22 @@ def test_unreferenced_unknown_time_count_still_marks_morning_coverage_partial(tm
     assert len(report["groups"]["needs_review"]) == 1
 
 
-def test_document_failure_still_appends_a_partial_morning_report(tmp_path, monkeypatch):
+def test_title_protocol_failure_stops_before_body_read_and_appends_partial_morning_report(tmp_path, monkeypatch):
     path = tmp_path / "failure.sqlite"
     config_id, revision = _seed(path, formal_target=True)
     task_id, task = _run_morning_task(path=path, config_id=config_id, revision=revision, adapter=_ExactAdapter(), monkeypatch=monkeypatch,
         provider=_RaisingProvider())
 
-    assert task.status == "completed"
+    assert task.status == "failed"
+    assert store.task_execution_input(task_id=task_id, db_path=path)["checkpoint"]["safeErrorCode"] == "title_protocol_invalid"
     report = store.list_morning_reports(db_path=path)[0]
     assert report["status"] == "partial"
-    assert report["coverage"]["discoveryState"] == "partial"
-    assert "morning_discovery_partial" in report["coverage"]["gaps"]
+    scan = store.get_scan(scan_id=report["scanId"], db_path=path)
+    assert scan is not None and scan["coverage"]["executionState"] == "title_incomplete"
+    assert scan["coverage"].get("titleSelectionManifestSha256") is None
 
 
-@pytest.mark.parametrize("failure", ("provider", "token", "budget", "calendar"))
+@pytest.mark.parametrize("failure", ("provider", "token", "calendar"))
 def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, monkeypatch, failure):
     path = tmp_path / f"lost-lease-{failure}.sqlite"
     config_id, revision = _seed(path, formal_target=False)
@@ -222,7 +224,7 @@ def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, 
     store.enqueue_task(task_id=task_id, kind="morning_scan", idempotency_key=task_id,
         input_version=f"{config_id}@{revision}", input_cutoff_at=MORNING.isoformat(),
         payload={"windowKind": "morning", "configId": config_id, "configRevision": revision},
-        budget={"maxAttempts": 1, "maxSourceRequests": 0 if failure == "budget" else 128},
+        budget={},
         created_at=STARTED.isoformat(), db_path=path)
     _bind_execution(path, task_id)
     state = {"branchHit": False}
@@ -249,14 +251,6 @@ def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, 
 
     def handler(context):
         state["context"] = context
-        if failure == "budget":
-            class LosingBudget(dict):
-                def get(self, key, default=None):
-                    if key == "maxSourceRequests":
-                        state["branchHit"] = True
-                        context.lease_lost.set()
-                    return super().get(key, default)
-            context = replace(context, budget=LosingBudget(context.budget))
         return pipeline.production_scan_handler(
             context, tushare_token=None if failure == "token" else "fixture-token", parquet_dir=path.parent / "parquet", now=lambda: STARTED,
         )
