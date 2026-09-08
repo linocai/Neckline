@@ -1082,6 +1082,54 @@ def test_full_text_route_marks_the_final_document_coarse_checkpoint(tmp_path):
     assert cached.full_text_used(document=prepared) is True and provider.calls == 2
 
 
+def test_recovered_understanding_registers_prepared_source_before_event_verify(tmp_path):
+    """A new slice must verify recovered drafts without rerunning understanding."""
+    path = tmp_path / "recovered-event-context.sqlite"
+    initialize_schema(path)
+    profile = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v1.json").read_text())
+    revision = store.append_execution_config(config_id="execution", payload=profile, created_at=CREATED.isoformat(), db_path=path)
+    store.enqueue_task(task_id="task-recovered-event", kind="evening_scan", idempotency_key="task-recovered-event", input_version="fixture",
+                       input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
+                       created_at=CREATED.isoformat(), db_path=path)
+    binding = store.bind_task_execution(task_id="task-recovered-event", execution_config_id="execution", execution_config_revision=revision,
+                                        binding_kind="recovery", bound_at=CREATED.isoformat(), db_path=path)
+
+    class Provider:
+        def __init__(self): self.calls, self.prompts = 0, []
+        def chat(self, messages, **_kwargs):
+            self.calls += 1
+            self.prompts.append(messages[-1].content)
+            payload = ({"state": "verified", "summary": "独立资料已核", "sourceRefs": [{"documentId": "verify-doc", "revision": 1}]}
+                       if self.calls == 1 else {"mappings": []})
+            return LLMResult(ok=True, content=json.dumps(payload), provider="fixture", model="deepseek-v4-pro",
+                             prompt_tokens=4, completion_tokens=3, total_tokens=7, usage_unavailable=False)
+
+    provider = Provider()
+    base = DeepSeekDiscoveryModel(provider)
+    base.set_execution_policy(profile["discovery"])
+    base.set_scan_cutoff(CUTOFF)
+    model = _CheckpointedDiscoveryModel(base=base, task_id="task-recovered-event", execution_profile=binding,
+                                        cutoff_at=CUTOFF, db_path=path, leaseguard=None)
+    document = DiscoveryDocument("recovered-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(),
+                                 "<article>已提纯事实</article>", None, {})
+    event = EventDraft("recovered-event", "initial", "confirmed", "恢复事件", "disclosure", {},
+                       (EvidenceRef("recovered-doc", 1),))
+    verification_document = DiscoveryDocument("verify-doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "独立核验事实", None, {})
+    def verify(recovered):
+        model.set_verification_documents(event=recovered, documents=(verification_document,))
+        reviewed = model.verify(recovered)
+        return Verification(reviewed.state, reviewed.summary, reviewed.evidence_refs, {}, (verification_document,))
+    run = run_discovery(documents=(document,), configuration=_configuration(), model=model,
+                        verify=verify, metadata=_Metadata(), cutoff_at=CUTOFF,
+                        understood_by_document={document.evidence_ref: (event,)})
+    with store.read_connection(path) as conn:
+        failures = conn.execute("SELECT safe_error_code FROM k10_execution_item_checkpoints WHERE task_id='task-recovered-event'").fetchall()
+    assert run.state == "completed" and provider.calls == 2, (run.state, run.issues, provider.calls, failures)
+    assert "已提纯事实" in provider.prompts[0]
+    verify_rows = store.completed_execution_items(task_id="task-recovered-event", item_kind="event", stage="model:verify", db_path=path)
+    assert len(verify_rows) == 1 and verify_rows[0]["networkAttemptCount"] == 1
+
+
 def test_task_deadline_finalizes_running_scan_without_publication(tmp_path, monkeypatch):
     path = tmp_path / "deadline-terminal.sqlite"
     initialize_schema(path)

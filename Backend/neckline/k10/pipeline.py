@@ -149,6 +149,17 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
     def set_previous_opportunities(self, previous: Sequence[Mapping[str, Any]]) -> None:
         self._previous_opportunities = previous
 
+    def register_documents(self, *, documents: Sequence[DiscoveryDocument]) -> None:
+        """Install prepared frozen sources before any recovered event is verified.
+
+        A continuation can legitimately skip document understanding because its
+        coarse checkpoint is complete.  Verification still needs the exact same
+        prepared source text, so registration is an in-memory recovery context,
+        never a new source fetch or a model operation.
+        """
+        for document in documents:
+            self._documents[document.evidence_ref] = document
+
     def full_text_used(self, *, document: DiscoveryDocument) -> bool:
         """Whether this frozen document completed the explicit key→full route."""
         return document.evidence_ref in self._full_text_used
@@ -205,7 +216,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         for ref in event.source_refs:
             document = self._documents.get(ref)
             if document is None:
-                raise PipelineError("事件缺少冻结原始资料")
+                raise PipelineError("事件缺少冻结原始资料", code="frozen_source_context_missing")
             originals.append(document)
         verification_documents = tuple(self._verification_documents.get(id(event), ()))
         all_documents = (*originals, *verification_documents)
@@ -575,6 +586,7 @@ class _CheckpointedDiscoveryModel:
     """
 
     _SEMANTIC_VERSION = "k10-model-checkpoint-v1"
+    _EVENT_CONTEXT_VERSION = "frozen-source-context-v1"
 
     def __init__(self, *, base: DiscoveryModel, task_id: str, execution_profile: Mapping[str, Any],
                  cutoff_at: datetime, db_path: Path, leaseguard: Callable[[], None] | None) -> None:
@@ -591,6 +603,37 @@ class _CheckpointedDiscoveryModel:
 
     def full_text_used(self, *, document: DiscoveryDocument) -> bool:
         return document.evidence_ref in self._full_text_used
+
+    def register_documents(self, *, documents: Sequence[DiscoveryDocument]) -> None:
+        register = getattr(self._base, "register_documents", None)
+        if callable(register):
+            register(documents=documents)
+
+    def _frozen_evidence_context(self, event: EventDraft) -> list[dict[str, Any]]:
+        """Hash the prepared evidence that can affect an event-stage prompt.
+
+        This fixes the old event ledger key, which ignored source text and let a
+        pre-HTTP recovery-context failure poison later slices.  It stores only
+        references, extraction version and SHA-256 digests; neither prompt text
+        nor raw source content enters the checkpoint.
+        """
+        if not isinstance(self._base, DeepSeekDiscoveryModel):
+            return []
+        verification_documents = self._base._verification_documents.get(id(event), ())
+        by_ref = {document.evidence_ref: document for document in verification_documents}
+        ordered_refs = tuple(dict.fromkeys((*event.source_refs, *(document.evidence_ref for document in verification_documents))))
+        context: list[dict[str, Any]] = []
+        for ref in ordered_refs:
+            document = self._base._documents.get(ref) or by_ref.get(ref)
+            if document is None:
+                raise PipelineError("事件缺少冻结原始资料", code="frozen_source_context_missing")
+            prompt_text = document.analysis_text or document.original_text or document.excerpt or ""
+            extraction_version = document.extraction.get("version") if isinstance(document.extraction, Mapping) else None
+            context.append({"documentId": ref.document_id, "revision": ref.revision,
+                            "preparedTextSha256": sha256(prompt_text.encode("utf-8")).hexdigest(),
+                            "extractionVersion": extraction_version,
+                            "contextVersion": self._EVENT_CONTEXT_VERSION})
+        return context
 
     @staticmethod
     def _refs(refs: Sequence[EvidenceRef]) -> list[dict[str, Any]]:
@@ -705,7 +748,8 @@ class _CheckpointedDiscoveryModel:
         return events
 
     def verify(self, event: EventDraft) -> Verification:
-        item = {"event": _event_payload(event), "verificationDocuments": self._verification_refs(event)}
+        item = {"event": _event_payload(event), "verificationDocuments": self._verification_refs(event),
+                "frozenEvidenceContext": self._frozen_evidence_context(event)}
         def encode(value: Verification) -> Mapping[str, Any]:
             if not isinstance(value, Verification):
                 raise PipelineError("核验结果无效", code="verify_contract_invalid")
@@ -713,13 +757,19 @@ class _CheckpointedDiscoveryModel:
         def decode(value: Mapping[str, Any] | list[Any]) -> Verification:
             if not isinstance(value, Mapping) or not isinstance(value.get("state"), str) or not isinstance(value.get("summary"), str):
                 raise PipelineError("核验缓存无效", code="model_cache_corrupt")
-            return Verification(value["state"], value["summary"], _refs(value.get("evidenceRefs")))
+            raw_refs = value.get("evidenceRefs")
+            # ``needs_review`` may correctly have no independently auditable
+            # source.  It is a visible coverage gap, not a cache-corruption
+            # exception after a completed provider operation.
+            refs = () if raw_refs == [] else _refs(raw_refs)
+            return Verification(value["state"], value["summary"], refs)
         return self._run(operation="verify", stage="verify", item_key=_event_item_key(event), item=item,
                          invoke=lambda: self._base.verify(event), encode=encode, decode=decode)
 
     def map_companies(self, *, event: EventDraft, verification: Verification) -> Sequence[CompanyMappingDraft]:
         item = {"event": _event_payload(event), "verification": _verification_payload(verification),
-                "verificationDocuments": self._verification_refs(event)}
+                "verificationDocuments": self._verification_refs(event),
+                "frozenEvidenceContext": self._frozen_evidence_context(event)}
         def encode(value: Sequence[CompanyMappingDraft]) -> list[Any]:
             return [{"companyCode": row.company_code, "affectedStage": row.affected_stage,
                      "relationEvidence": self._refs(row.relation_evidence), "inference": dict(row.inference),
@@ -740,7 +790,8 @@ class _CheckpointedDiscoveryModel:
                 "mappings": [{"companyCode": row.company_code, "affectedStage": row.affected_stage,
                               "relationEvidence": self._refs(row.relation_evidence), "inference": dict(row.inference),
                               "uncertainty": row.uncertainty} for row in mappings],
-                "verificationDocuments": self._verification_refs(event)}
+                "verificationDocuments": self._verification_refs(event),
+                "frozenEvidenceContext": self._frozen_evidence_context(event)}
         def encode(value: EventComparison) -> Mapping[str, Any]:
             if not isinstance(value, EventComparison): raise PipelineError("比较结果无效", code="compare_contract_invalid")
             validate_event_comparison(summary=value.summary, comparisons={code: {"summary": row.summary, "differences": row.differences, "rank": row.rank}
@@ -765,7 +816,8 @@ class _CheckpointedDiscoveryModel:
 
     def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
         item = {"event": _event_payload(event), "verification": _verification_payload(verification),
-                "companyCode": mapping.company_code, "comparison": dict(comparison.differences), "previous": list(previous)}
+                "companyCode": mapping.company_code, "comparison": dict(comparison.differences), "previous": list(previous),
+                "frozenEvidenceContext": self._frozen_evidence_context(event)}
         def encode(value: Mapping[str, Any]) -> Mapping[str, Any]:
             return validate_classification(value, canonical_key=event.canonical_key, stage_key=event.stage_key,
                                            company_code=mapping.company_code, previous=previous)

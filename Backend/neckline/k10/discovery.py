@@ -601,6 +601,12 @@ def run_discovery(
     if not config.ready:
         return DiscoveryRun("not_configured", config, (), (), (), (), (), (), 0)
     prepared_documents = tuple(prepare_document_for_analysis(document) for document in documents)
+    # A resumed scan can bypass already-completed document understanding.  Give
+    # provider-backed event stages the exact same prepared frozen documents
+    # before that bypass, without fetching or analysing anything again.
+    register_documents = getattr(model, "register_documents", None)
+    if callable(register_documents):
+        register_documents(documents=prepared_documents)
     available = {document.evidence_ref for document in prepared_documents}
     events: list[EventDraft] = []
     verified_events: list[EventVerification] = []
