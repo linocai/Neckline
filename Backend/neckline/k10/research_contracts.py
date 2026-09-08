@@ -55,12 +55,12 @@ def _enum(value: Any, allowed: frozenset[str], field_name: str) -> str:
 
 def _refs(value: Any, field_name: str) -> tuple[dict[str, Any], ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise ResearchContractError(f"{field_name} 必须为真实来源引用列表")
+        raise ResearchContractError(f"{field_name} 必须为真实来源引用列表", field_name=field_name, expected="reference_array")
     refs: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     for item in value:
         if not isinstance(item, Mapping):
-            raise ResearchContractError(f"{field_name} 包含无效来源引用")
+            raise ResearchContractError(f"{field_name} 包含无效来源引用", field_name=field_name+"[]", expected="reference_object")
         document_id = _text(item.get("documentId"), f"{field_name}.documentId")
         revision = _positive(item.get("revision"), f"{field_name}.revision")
         key = (document_id, revision)
@@ -89,22 +89,22 @@ class EvidenceDisclosure:
     def __post_init__(self) -> None:
         _enum(self.verification_status, VERIFICATION_STATUSES, "verificationStatus")
         if not isinstance(self.is_rumor, bool):
-            raise ResearchContractError("isRumor 必须是 bool")
+            raise ResearchContractError("isRumor 必须是 bool", field_name="evidenceDisclosure.isRumor", expected="boolean")
         _enum(self.origin_status, frozenset({"identified", "unknown"}), "originStatus")
         if self.origin_status == "identified":
             if len(_refs([self.origin_evidence_ref], "originEvidenceRef")) != 1:
-                raise ResearchContractError("identified origin 必须有真实引用")
+                raise ResearchContractError("identified origin 必须有真实引用", field_name="evidenceDisclosure.originEvidenceRef", expected="one_provided_reference_when_origin_identified")
         elif self.origin_evidence_ref is not None:
-            raise ResearchContractError("unknown origin 不得伪造来源引用")
+            raise ResearchContractError("unknown origin 不得伪造来源引用", field_name="evidenceDisclosure.originEvidenceRef", expected="null_when_origin_unknown")
         if self.verification_status == "unverified" and not self.unverified_reasons:
-            raise ResearchContractError("未核实披露必须说明未证实环节")
+            raise ResearchContractError("未核实披露必须说明未证实环节", field_name="evidenceDisclosure.unverifiedReasons", expected="non_empty_string_array_when_unverified")
         if self.is_rumor:
             if self.verification_status == "verified":
-                raise ResearchContractError("传闻不能标记为已核实")
+                raise ResearchContractError("传闻不能标记为已核实", field_name="evidenceDisclosure.verificationStatus", expected="not_verified_when_isRumor_true", allowed=("partially_supported","unverified","contradicted"))
             if not _text(self.conditional_analysis, "conditionalAnalysis"):
-                raise ResearchContractError("传闻披露必须有条件化分析")
+                raise ResearchContractError("传闻披露必须有条件化分析", field_name="evidenceDisclosure.conditionalAnalysis", expected="non_empty_string_when_isRumor_true")
         if any(not isinstance(reason, str) or not reason.strip() for reason in self.unverified_reasons):
-            raise ResearchContractError("unverifiedReasons 必须是非空字符串")
+            raise ResearchContractError("unverifiedReasons 必须是非空字符串", field_name="evidenceDisclosure.unverifiedReasons", expected="non_empty_string_array")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,10 +117,10 @@ class EvidenceDisclosure:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "EvidenceDisclosure":
         if not isinstance(value, Mapping):
-            raise ResearchContractError("EvidenceDisclosure 必须为对象")
+            raise ResearchContractError("EvidenceDisclosure 必须为对象", field_name="evidenceDisclosure", expected="object")
         reasons = value.get("unverifiedReasons", ())
         if not isinstance(reasons, Sequence) or isinstance(reasons, (str, bytes)):
-            raise ResearchContractError("unverifiedReasons 必须为列表")
+            raise ResearchContractError("unverifiedReasons 必须为列表", field_name="evidenceDisclosure.unverifiedReasons", expected="array")
         clean_reasons = tuple(_text(item, "unverifiedReasons") for item in reasons)
         return cls(
             verification_status=_enum(value.get("verificationStatus"), VERIFICATION_STATUSES, "verificationStatus"),
@@ -193,9 +193,9 @@ class Question:
         _text(self.support_condition, "supportCondition"); _text(self.refute_condition, "refuteCondition")
         _text(self.decision_impact, "decisionImpact"); _enum(self.state, QUESTION_STATES, "state")
         if not self.claim_ids or any(not isinstance(item, str) or not item for item in self.claim_ids):
-            raise ResearchContractError("question 必须关联命题")
+            raise ResearchContractError("question 必须关联命题", field_name="questions[].claimIds", expected="non_empty_existing_claim_id_array")
         if any(not isinstance(item, str) or not item.strip() for item in self.company_codes):
-            raise ResearchContractError("companyCodes 必须是非空代码组成的列表")
+            raise ResearchContractError("companyCodes 必须是非空代码组成的列表", field_name="questions[].companyCodes", expected="non_empty_strings_array")
         _refs(self.known_evidence, "knownEvidence")
         if ((self.state != "answered" and not self.missing_evidence)
                 or any(not isinstance(item, str) or not item for item in self.missing_evidence)):
@@ -411,14 +411,14 @@ class ResearchStageResult:
 
 def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise ResearchContractError("company assessment 必须为对象")
+        raise ResearchContractError("company assessment 必须为对象", field_name="companyAssessments[]", expected="object")
     company_code = canonical_company_code(value.get("companyCode"))
     role = _enum(value.get("role"), COMPANY_ROLES, "role")
     rank = value.get("rank")
     if role in {"primary", "alternative", "tied"}:
         _positive(rank, "rank")
     elif rank is not None:
-        raise ResearchContractError("pending/excluded 不得有 rank")
+        raise ResearchContractError("pending/excluded 不得有 rank", field_name="companyAssessments[].rank", expected="null_when_pending_or_excluded")
     disclosure = EvidenceDisclosure.from_dict(value.get("evidenceDisclosure"))
     return {
         "companyCode": company_code, "role": role, "rank": rank, "summary": _text(value.get("summary"), "summary"),

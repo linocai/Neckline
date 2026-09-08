@@ -17,6 +17,7 @@ _COMMON = (
     "既有 questionId 的 question 原文和 claimIds 必须保持原样，更新状态、证据和缺口；answered 问题已无缺口时 missingEvidence 可为 []。"
     "evidenceUpdates 每项的 location 必须为非空定位：搜索摘录注明 excerpt，全文使用传入段落定位；不得留空。applicability 必须为对象，无额外适用条件可用 {}。"
     "更新已有命题或问题时只输出 ID 与有变化的字段，程序按 ID 保留未变字段，不要抄写长原文；新增命题则必须提供与输入 claims 相同的完整字段。"
+    "证据披露的交叉约束：originStatus=unknown 时 originEvidenceRef 必须 null；identified 时必须引用输入真实来源。verificationStatus=unverified 时 unverifiedReasons 至少明确一个未证实环节；isRumor=true 必须有非空 conditionalAnalysis 且不能标 verified。pending/excluded 的 rank 必须 null。"
     "公司代码使用完整六位数字与交易所后缀（例如 300001.SZ）；companyMappings 必须有非空 relationEvidence、affectedStage、对象 inference 和字符串 uncertainty，不得列无证券代码的境外或未上市主体充当 A 股映射。"
     "fulltextRequestRefs 中的真实搜索结果可申请全文来核对缺失时间或细节；其中尚未进入 allowedEvidenceRefs 的来源不能用于事实支持、公司关联或已核结论。申请全文不表示证据已经合格。"
     "全文 eligibleAtNewsCutoff=false 表示其时间尚不适用本消息窗口：可审读作为继续查证的线索，更新缺口并寻找可核原始来源，不能据它把旧窗口命题升级为已核实，也不能把未知发布时间补成零点。"
