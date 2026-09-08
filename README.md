@@ -1,17 +1,15 @@
 # Neckline
 
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-08 已发布
-**3.0.4 / 双端 Build 36 / K10-v1.4 / Schema 4**，后端发布集合为 `v3.0.4-b36`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.4-b36)；Mac 已换装并启动，iOS development IPA 由用户自行安装。
+**3.1.0 / 双端 Build 39 / K10-v1.4 / Schema 7**，后端发布集合为 `v3.1.0-b39`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.1.0-b39)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
 
-Build 36 修复昨晚大批量扫描被单条模型异常中断的问题：HTML 正文提纯、有界并行理解、逐项检查点、分片续跑、
-有限重试和实际进度。冻结输入恢复不重新采集；缺证据或异常资料如实标为部分覆盖。推送增加可签名检查、阻塞和持久退避。
+全部标题先由 DeepSeek 理解，经全局去重排序及只减不补的标题终检后，晚间最多深读 80 篇、晨间最多 40 篇。
+入选正文一次提取关键命题，随后按具体缺口使用 Tavily 搜索、审读和必要补读，再完成公司比较。未核传闻允许正常推荐，但必须保留“未核实”、来源和条件化分析。
 
-**生产扫描仍停用。** K10 worker 和晚/晨定时器保持停止并禁用，API 保留读取。用户已弃用的 2,472 篇事故批次及关联任务已备份后定点取消，不会补跑。
-
-本地目标为 **3.1.0 / 双端 Build 39 / Schema 7**，尚未发布。全部标题先由 DeepSeek 理解，经全局去重排序及只减不补的标题终检后，晚间最多深读 80 篇、晨间最多 40 篇。
-入选正文一次提取关键命题，随后按具体缺口使用 Tavily 搜索、审读和必要补读，再完成公司比较。未核传闻允许正常推荐，但必须保留“未核实”、来源和条件化分析。B39 的本地验证及剩余边界见 PROJECT_PLAN；B38 的 37 篇真实试验因比较失败中断，不能充作 B39 的真实效果验证。
-iOS 后续通过 Xcode 由用户直接安装，默认不再生成或交付 IPA；历史 B36 发布资产保留原样。
+**生产扫描仍停用。** K10 worker 和晚／晨定时器保持停止并禁用，API 保留读取；发布不等于恢复扫描。
+用户已弃用的 2,472 篇事故批次及关联任务已备份后定点取消，不会补跑。
+B39 已完成本地／离线验收和生产迁移，但尚未进行新的真实模型质量验证；B38 的 37 篇真实试验因比较失败中断，不能充作 B39 的真实效果证据。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -66,9 +64,9 @@ TuShare 长篇通讯为当前采集源；快讯、全量公告权限未开通。
 B36 事故与先前付费测试仅作历史证据，详见 [B36 执行记录](archive/v3.0.4-b36_execution.md)；
 本轮仅复用 B38 冻结的 1,430 条有效标题和 37 篇历史正文做离线协议验证；不启动新的付费外呼，合成模型结果不作为真实筛选质量证据。
 
-生产配置修订 2 包含每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
+生产策略配置修订 3 保留每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
 用于有界回补晚到资料，记录实际回查范围和缺口。它不是无限历史覆盖，也不允许把新取得的资料回填为旧推荐。
-修订 1 原样保留，API 和 timer 的显式绑定已更新为修订 2；不得改写现有修订或用代码默认补齐。
+既有修订原样保留；API 和停用 timer 的显式绑定现为策略修订 3、执行修订 2，不得改写历史修订或用代码默认补齐。
 
 API 使用 `/api/v1/k10/`，通用连接/推送设置仍在 `/api/v1/settings`，设备注册为 `/api/v1/devices`。
 API 启动只验证鉴权和既有 schema；GET 不迁移、不启动模型。重任务由独立 K10 worker 执行，timer 只入队。
@@ -100,33 +98,30 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-源码提交 `6017a0c36bf1bbc6e842ef512ca66a29b7e7f607`，不可变标签 `v3.0.4-b36`；后续发布记录提交不移动标签。
-双端签名归档来源为 `c6e91795617d778503820377f6d843587fccc36c`，其 App 源码树与发布提交完全相同，manifest 保留真实归档来源。
-已核验服务器 `ser657204219523`（`114.66.2.205`）、`/opt/neckline/data/neckline.db`、公网 `https://nk.linotsai.top`。
-发布时 API/worker 验收通过；用户叫停后仅保留 API 读取，worker 已禁用，未鉴权请求为 401；三范围配置与实际 DTO 通过，K8/K9 无活动链。
-`/etc/neckline/k10.env` 同时绑定策略 `k10-v1.4-production` 修订 2、执行 `k10-execution-production` 修订 1。
-晚/晨 timer 原为21:00/09:00，当前已停止并禁用；行情更新单元未改动。未经用户明确授权不能恢复模型worker和扫描timer。
+源码提交 `a3732ab3a1c6ddf7042246c30710ee109fa8208b`，不可变标签 `v3.1.0-b39`；后续发布记录提交不移动标签。
+Mac 归档来源 `7c52f0a` 的 App 源码树与该发布提交一致，iOS 归档来源为发布提交；真实来源见 `manifest.json`。
+服务器为 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
+API active+enabled，四范围配置与实际 DTO 通过，未鉴权请求为 401；APNs 密钥可读／可签名且 readiness 就绪，本轮未发送测试推送。
+`/etc/neckline/k10.env` 显式绑定策略 `k10-v1.4-production` 修订 3、执行 `k10-execution-production` 修订 2。
+数据库 run control 为 `closed`，接口投影为 `paused`。worker disabled、MainPID=0；晚／晨 timer inactive+disabled，行情更新／重试 timer 保持 active+enabled。未经明确授权不能恢复付费处理。
 
-APNs 对应私钥从受控历史部署备份恢复，保持 neckline / 0600，实际签名和 readiness 通过。
-此前积压的两条通知在 11:42 均有两份设备投递台账；这证明服务端发送成功，不等于用户已阅读。
-历史失败尝试次数保留，不清零掩盖事故；恢复后无重复无效发送或待重试积压。
+Mac 位于 `/Applications/Neckline.app`，Developer ID 严格验签、通用架构和单实例启动通过；实际设置页确认 Build 39、Prod、四项已配置及暂停状态。
+Mac 尚未公证，网络下载后可能被 Gatekeeper 拦截；严格签名通过不代表公证通过。
+iOS 真机签名归档及工程版本／签名配置已就绪，由用户通过 Xcode 安装，不导出 IPA。
+本地签名归档与包位于 `/Users/linotsai/Lino/releases/Neckline/v3.1.0-b39-20260908/`。
+GitHub 6 个资产下载后与本地逐一校验；后端 tar、wheel 和 runtime manifest 保存在 `/opt/neckline/releases/v3.1.0-b39/`。
 
-Mac 位于 `/Applications/Neckline.app`，严格验签、通用架构及单实例启动通过，实际设置页确认 Build 36、Prod、三范围配置和推送就绪。
-iOS 包为 `/Users/linotsai/Downloads/Neckline-v3.0.4-b36-iOS-development.ipa`，由用户安装。
-GitHub 六文件下载后 SHA256 与本地逐一一致；后端归档、wheel 和 manifest 保存在 `/opt/neckline/releases/v3.0.4-b36/`。
-QA 临时客户端与 API 已退出，过期编译产物释放约 714 MiB；正式包、截图和验证日志保留。
+成功发布恢复集为 `/opt/neckline/data/backups/v3.1.0-b39-predeploy-3/`：原 B36 runtime、旧绑定、迁移前后数据库与回执。
+停下全部写入者后建立基线；真实副本演练和正式 Schema 4→7 迁移均核对 50 个旧表全部旧列／行等价。通知 Schema 保持 2。
+前两次因发布清单的占位文件和 API 暂停状态断言错误而安全回滚；原恢复集 `v3.1.0-b39-predeploy`、`v3.1.0-b39-predeploy-2` 保留。具体证据见 [B39 执行记录](archive/v3.1.0-b39_execution.md)。
 
-本次恢复集位于 `/opt/neckline/data/backups/v3.0.4-b36-predeploy/`：`receipt.json`、B35 runtime、旧绑定/部署单元及迁移前后数据库。
-停止全部写入者后才建立唯一基线；真实副本演练和正式迁移均核对 45 个旧表的全部旧列/行等价。
-追加 Schema 4、通知 Schema 2 与执行配置修订 1，策略修订 2 和原任务/2472 篇资料保留。
+- 迁移前数据库 SHA256：`2c5ea97e77ea02c83077e9f30d05fc620973f824a4293e14274344771c4d6dd2`。
+- 迁移后数据库 SHA256：`f4c2c7e6d1ad22daceb45240dd0eb964b852109f4c15407a497ea0d9b2737eb3`。
 
-- `neckline-pre.db` SHA256：`e2c6e4f8b17bc95a80121784dc0049a6fb2fd61743439a3142caf1d01b750c7d`
-- `neckline-post-migration.db` SHA256：`4347d00aa59e3f68db2523f1898ee9a5faddbe7f5de25ea767a641491173cf3e`
-
-新 worker 已产生业务写入、后因用户要求停机，现阶段故障只能先备份现场再前向修复，不能用迁移前快照覆盖新增任务、候选或成绩。
-仅在 B36 业务写入前，受控部署助手才允许恢复同一恢复集的 B35 runtime、wheel、数据库和配置；该时点已过。
-任何修复保持 `/opt/neckline` 为 root:root / 0755、数据库为 neckline，并复核 health、鉴权、配置、完整性与定时器。
-Mac 可恢复副本为 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.4-build35-pre-b36-20260908.app`。
+回滚必须先停下所有写入者并保存最新现场；只有确认升级后没有新增业务写入，才可恢复同一恢复集的 runtime、wheel、数据库和绑定。
+API、客户端和行情 timer 已恢复运行，不能直接假定当前库仍等于发布快照；存在新写入时优先前向修复。
+保持 `/opt/neckline` 为 root:root / 0755、数据库为 neckline:neckline / 0600，复核 health、鉴权、配置、完整性与定时器。
+Mac 可恢复备份为 `/Users/linotsai/Lino/app_backups/Neckline-v3.0.4-build36-pre-v310-b39-20260908.app`。
 
 受控恢复只允许对无正式发布批次、已失败且有冻结输入的 scan 执行 `neckline.k10.cli recover-scan`，
 必须提供原引用摘要和相同执行配置。B39 复用原任务，保留标题清单、正文准入、实际用量及成功检查点；不得重新采集、回改策略、换输入或重设时限。未知外呼结果仍阻止盲目重发。

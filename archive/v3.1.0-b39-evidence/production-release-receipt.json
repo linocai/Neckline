@@ -1,0 +1,147 @@
+{
+  "releaseSet": "v3.1.0-b39",
+  "commit": "a3732ab3a1c6ddf7042246c30710ee109fa8208b",
+  "priorRelease": "v3.0.4-b36",
+  "status": "completed",
+  "rootMetadata": {
+    "uid": 0,
+    "gid": 0,
+    "mode": 493
+  },
+  "dbMetadata": {
+    "uid": 997,
+    "gid": 988,
+    "mode": 384
+  },
+  "newPaidCalls": 0,
+  "discoveryResumed": false,
+  "noScanReadiness": {
+    "noScan": true,
+    "explicitBindings": true,
+    "configuredScopes": 4
+  },
+  "preStates": {
+    "neckline-k10-evening.timer": "inactive",
+    "neckline-k10-morning.timer": "inactive",
+    "neckline-market-update.timer": "active",
+    "neckline-market-retry.timer": "active",
+    "neckline-backup.timer": "inactive",
+    "neckline.service": "active",
+    "neckline-k10-worker.service": "failed",
+    "neckline-k10-evening.service": "inactive",
+    "neckline-k10-morning.service": "inactive",
+    "neckline-market-update.service": "inactive",
+    "neckline-market-retry.service": "inactive",
+    "neckline-backup.service": "inactive"
+  },
+  "bindingMetadata": {
+    "uid": 0,
+    "gid": 988,
+    "mode": 416
+  },
+  "runtimeBackupSha256": "e2ec3bc681e28a66d7c69cb4f9321bb6711a6f7847c466eb2ae68c2eba536aef",
+  "preDatabase": {
+    "path": "/opt/neckline/data/backups/v3.1.0-b39-predeploy-3/neckline-pre.db",
+    "sha256": "2c5ea97e77ea02c83077e9f30d05fc620973f824a4293e14274344771c4d6dd2"
+  },
+  "rehearsalMigration": {
+    "schema": 7,
+    "notificationSchema": 2
+  },
+  "oldTablesPreserved": 50,
+  "rehearsalConfiguration": {
+    "strategyRevision": 3,
+    "executionRevision": 2,
+    "runControl": "closed"
+  },
+  "rehearsalRestoreVerified": true,
+  "migration": {
+    "schema": 7,
+    "notificationSchema": 2
+  },
+  "configuration": {
+    "strategyRevision": 3,
+    "executionRevision": 2,
+    "runControl": "closed"
+  },
+  "postDatabase": {
+    "path": "/opt/neckline/data/backups/v3.1.0-b39-predeploy-3/neckline-post.db",
+    "sha256": "f4c2c7e6d1ad22daceb45240dd0eb964b852109f4c15407a497ea0d9b2737eb3"
+  },
+  "health": {
+    "status": "ok",
+    "version": "v3.1.0",
+    "releaseSet": "v3.1.0-b39"
+  },
+  "api": {
+    "configuredScopes": 4,
+    "strategyRevision": 3,
+    "executionRevision": 2,
+    "runControl": "closed",
+    "runControlApi": "paused",
+    "apnsState": "ready",
+    "unauthenticatedStatus": 401,
+    "readCounts": {
+      "/opportunities": 0,
+      "/publications": 0,
+      "/selections": 0,
+      "/morning-reports": 1
+    }
+  },
+  "schema": 7,
+  "notificationSchema": 2,
+  "existingDataPreserved": true,
+  "verifiedAt": "2026-09-08T13:39:20.700235+00:00",
+  "units": {
+    "neckline.service": {
+      "MainPID": "240331",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "neckline-k10-worker.service": {
+      "MainPID": "0",
+      "ActiveState": "failed",
+      "UnitFileState": "disabled"
+    },
+    "neckline-k10-evening.timer": {
+      "ActiveState": "inactive",
+      "UnitFileState": "disabled"
+    },
+    "neckline-k10-morning.timer": {
+      "ActiveState": "inactive",
+      "UnitFileState": "disabled"
+    },
+    "neckline-market-update.timer": {
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "neckline-market-retry.timer": {
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    }
+  },
+  "taskCounts": {
+    "cancelled": 2,
+    "failed": 1
+  },
+  "usageRows": 2528,
+  "publicHealth": {
+    "status": "ok",
+    "version": "v3.1.0",
+    "releaseSet": "v3.1.0-b39"
+  },
+  "priorAttempts": [
+    {
+      "backup": "/opt/neckline/data/backups/v3.1.0-b39-predeploy",
+      "failureType": "FileNotFoundError",
+      "rollback": "verified B36 runtime/database/binding restored",
+      "status": "rolled_back"
+    },
+    {
+      "backup": "/opt/neckline/data/backups/v3.1.0-b39-predeploy-2",
+      "failureType": "RuntimeError",
+      "rollback": "verified B36 runtime/database/binding restored",
+      "status": "rolled_back"
+    }
+  ]
+}
