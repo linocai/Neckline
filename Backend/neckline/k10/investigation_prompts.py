@@ -17,6 +17,8 @@ _COMMON = (
     "既有 questionId 的 question 原文和 claimIds 必须保持原样，更新状态、证据和缺口；answered 问题已无缺口时 missingEvidence 可为 []。"
     "evidenceUpdates 每项的 location 必须为非空定位：搜索摘录注明 excerpt，全文使用传入段落定位；不得留空。applicability 必须为对象，无额外适用条件可用 {}。"
     "更新已有命题或问题时只输出 ID 与有变化的字段，程序按 ID 保留未变字段，不要抄写长原文；新增命题则必须提供与输入 claims 相同的完整字段。"
+    "公司代码使用完整六位数字与交易所后缀（例如 300001.SZ）；companyMappings 必须有非空 relationEvidence、affectedStage、对象 inference 和字符串 uncertainty，不得列无证券代码的境外或未上市主体充当 A 股映射。"
+    "fulltextRequestRefs 中的真实搜索结果可申请全文来核对缺失时间或细节；其中尚未进入 allowedEvidenceRefs 的来源不能用于事实支持、公司关联或已核结论。申请全文不表示证据已经合格。"
 )
 _RUMOR = (
     "未核传闻可以在完整比较后成为 primary、alternative 或 tied 并正常发布，不自动变成 pending。其 evidenceDisclosure 必须明确 verificationStatus=unverified、isRumor=true、"

@@ -16,7 +16,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from .research_contracts import (
     RESEARCH_ACTIONS, RESEARCH_STATUSES, Claim, FullTextRequest, QueryPath, Question,
     ResearchContractError, ResearchSnapshot, ResearchStageResult,
-    validate_company_assessment,
+    validate_company_assessment, validate_company_mapping,
 )
 
 
@@ -211,6 +211,9 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
         conclusion = value.get("conclusion")
         if conclusion is not None and not isinstance(conclusion, Mapping):
             raise ResearchContractError("研究结论必须为对象")
+        if isinstance(conclusion, Mapping) and isinstance(conclusion.get("companyMappings"), list):
+            conclusion = {**conclusion, "companyMappings":[validate_company_mapping(item) for item in conclusion["companyMappings"]]}
+        assessments = [validate_company_assessment(item) for item in assessments]
         return ResearchStageResult(action=action, safe_error_code=value.get("safeErrorCode"), claims=claims, questions=questions, query_paths=paths,
                                    evidence_updates=tuple(dict(item) for item in updates),
                                    fulltext_requests=tuple(FullTextRequest.from_dict(item) for item in requests),

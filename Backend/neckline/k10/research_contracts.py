@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Mapping, Sequence
 
 
@@ -340,6 +341,37 @@ def validate_evidence_update(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def canonical_company_code(value: Any) -> str:
+    """Normalize mainland equity code spelling, never infer security eligibility.
+
+    Metadata/universe validation still owns whether this is a real permitted
+    company. Explicit exchange suffixes are never changed to another exchange.
+    """
+    if isinstance(value, str):
+        if re.fullmatch(r"\d{6}\.(SZ|SH)", value):
+            return value
+        if re.fullmatch(r"(?:00[0-3]|30[01])\d{3}", value):
+            return value + ".SZ"
+        if re.fullmatch(r"(?:60[0135]|68[89])\d{3}", value):
+            return value + ".SH"
+    raise ResearchContractError("公司代码格式无效", field_name="companyCode", expected="six_digits_dot_SZ_or_SH")
+
+
+def validate_company_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ResearchContractError("公司映射必须为对象", field_name="companyMappings[]", expected="object")
+    code = canonical_company_code(value.get("companyCode"))
+    refs = _refs(value.get("relationEvidence"), "companyMappings[].relationEvidence")
+    if not refs:
+        raise ResearchContractError("公司关系必须有来源", field_name="companyMappings[].relationEvidence", expected="non_empty_reference_array")
+    _text(value.get("affectedStage"), "companyMappings[].affectedStage")
+    if not isinstance(value.get("inference"), Mapping):
+        raise ResearchContractError("公司推断必须为对象", field_name="companyMappings[].inference", expected="object")
+    if not isinstance(value.get("uncertainty"), str):
+        raise ResearchContractError("公司未知项必须为字符串", field_name="companyMappings[].uncertainty", expected="string")
+    return {**value, "companyCode":code, "relationEvidence":list(refs)}
+
+
 @dataclass(frozen=True)
 class ResearchStageResult:
     action: str
@@ -357,6 +389,15 @@ class ResearchStageResult:
         _optional_text(self.safe_error_code, "safeErrorCode")
         for update in self.evidence_updates:
             validate_evidence_update(update)
+        for assessment in self.company_assessments:
+            validate_company_assessment(assessment)
+        if isinstance(self.conclusion, Mapping) and "companyMappings" in self.conclusion:
+            rows = self.conclusion["companyMappings"]
+            if not isinstance(rows, list):
+                raise ResearchContractError("公司映射必须为列表", field_name="companyMappings", expected="array")
+            codes = [validate_company_mapping(item)["companyCode"] for item in rows]
+            if len(codes) != len(set(codes)):
+                raise ResearchContractError("公司映射重复", field_name="companyMappings[].companyCode", expected="unique_company_codes")
 
     def to_dict(self) -> dict[str, Any]:
         return {"action": self.action, "safeErrorCode": self.safe_error_code, "claims": [item.to_dict() for item in self.claims],
@@ -371,7 +412,7 @@ class ResearchStageResult:
 def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ResearchContractError("company assessment 必须为对象")
-    company_code = _text(value.get("companyCode"), "companyCode")
+    company_code = canonical_company_code(value.get("companyCode"))
     role = _enum(value.get("role"), COMPANY_ROLES, "role")
     rank = value.get("rank")
     if role in {"primary", "alternative", "tied"}:

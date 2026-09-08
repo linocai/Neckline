@@ -86,7 +86,7 @@ def test_close_requesting_an_extra_article_must_assess_it_before_accepting_ready
 
 def test_exhausted_paths_keep_known_companies_for_pending_assessments():
     runtime = _runtime()
-    mappings = [{"companyCode": "300001.SZ", "relationEvidence": [REF]}]
+    mappings = [{"companyCode": "300001.SZ", "relationEvidence": [REF], "affectedStage":"送样", "inference":{}, "uncertainty":"待核"}]
     runtime.state["stageResults"] = [{"result": {"conclusion": {"companyMappings": mappings}}}]
     runtime._record = lambda *args, **kwargs: None
     result = runtime._pending("已经没有可改变判断的新路径")

@@ -23,7 +23,7 @@ from .discovery import (
 from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError, advance_research, decode_stage_result, query_path_signature
 from .opportunity_discovery import validate_event_comparison
-from .research_contracts import Claim, FullTextRequest, Question, QueryPath, ResearchSnapshot, ResearchStageResult
+from .research_contracts import Claim, FullTextRequest, Question, QueryPath, ResearchSnapshot, ResearchStageResult, validate_company_mapping
 from .research_store import (create_research_snapshot, advance_research_snapshot,
                              read_research_state, load_prior_research_evidence)
 
@@ -173,6 +173,8 @@ class _Investigation:
                          for item in self.state["stageResults"]]
         reusable = next(((item["result"].get("conclusion") or {})["runtimePriorEvidence"]
             for item in self.state["stageResults"] if "runtimePriorEvidence" in (item["result"].get("conclusion") or {})), {})
+        fulltext_leads = [ref for item in tool_outcomes if item for ref in item.get("documentRefs", [])
+                         if _key(ref) not in self.allowed]
         return {"event": {key: self.context[key] for key in ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")},
             "newsCutoffAt": self.snapshot.news_cutoff_at,
             "allowedEvidenceRefs": [_ref(ref) for ref in sorted(self.allowed, key=lambda item: (item.document_id, item.revision))],
@@ -180,6 +182,9 @@ class _Investigation:
             "evidenceCards": self._cards(), "evidenceUpdates": self.state["evidenceUpdates"],
             "fulltextRequests": self.state["fulltextRequests"], "toolOutcomes": [item for item in tool_outcomes if item],
             "availableArticlePolicy": {"limits": self.policy["articleLimits"], "reserve": False},
+            # A returned search hit with unknown publication time is a valid
+            # fulltext lead, not yet usable evidence for a factual conclusion.
+            **({"fulltextRequestRefs": fulltext_leads} if fulltext_leads else {}),
             "reusableSourceEvidence": reusable,
         }
 
@@ -222,8 +227,9 @@ class _Investigation:
             old = known_questions.get(question.question_id)
             if old and (list(question.claim_ids) != old["claimIds"] or question.question != old["question"]):
                 raise InvestigationError("同一问题 ID 不可变更含义", code="investigation_question_scope_invalid")
+        requestable = permitted | set(_refs(packet.get("fulltextRequestRefs", [])))
         for request in result.fulltext_requests:
-            if request.question_id not in known_questions or _key(request.source_ref) not in permitted or request.state != "requested":
+            if request.question_id not in known_questions or _key(request.source_ref) not in requestable or request.state != "requested":
                 raise InvestigationError("全文申请缺少真实问题或来源", code="investigation_fulltext_scope_invalid")
             if any(old["questionId"] == request.question_id and old["sourceRef"] == request.source_ref
                    and old["state"] in {"fulfilled", "rejected"} for old in self.state["fulltextRequests"]):
@@ -366,9 +372,8 @@ class _Investigation:
         if not isinstance(rows, list):
             raise InvestigationError("公司映射格式无效", code="investigation_mapping_invalid")
         result = []
-        for item in rows:
-            if not isinstance(item, Mapping) or not isinstance(item.get("companyCode"), str) or not re.fullmatch(r"\d{6}\.(SZ|SH)", item["companyCode"]):
-                raise InvestigationError("公司必须有真实股票代码", code="investigation_mapping_invalid")
+        for raw in rows:
+            item = validate_company_mapping(raw)
             refs = _refs(item.get("relationEvidence"))
             if not refs or not set(refs) <= self.allowed or not isinstance(item.get("inference"), Mapping):
                 raise InvestigationError("公司关系缺少适用证据", code="investigation_mapping_invalid")
