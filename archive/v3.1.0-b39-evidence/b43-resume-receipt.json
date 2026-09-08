@@ -1,0 +1,36 @@
+{
+  "taskId": "task_8ee84154911c2463c54880feeefb93a5",
+  "scanId": "scan_fdd466988114709026e4e922af505ce6",
+  "releaseSet": "v3.1.0-b43",
+  "preflight": {
+    "frozenInputSha256": "24f6d177d02aee4202fecea04c63bb96dad4453b010ca9d3551ba757619c94c5",
+    "configuredScopes": 4,
+    "articleLimits": {
+      "evening": 80,
+      "morning": 40
+    }
+  },
+  "backup": {
+    "path": "/opt/neckline/data/backups/v3.1.0-b43-predeploy/neckline-pre-resume.db",
+    "sha256": "ea94dd7d6db94a40274da6389ad83f82cfd8c596438c9fa469c172a13d55c8f0"
+  },
+  "baselineOtherTasks": [
+    [
+      "task_6ff897cea3495e25bc13b385f9c4df4c",
+      "cancelled",
+      1
+    ],
+    [
+      "task_98cbf8c6401a29ccfae4a42b12647014",
+      "failed",
+      1
+    ],
+    [
+      "task_b04bbf7808525d32bb317fb2f4388ad0",
+      "cancelled",
+      12
+    ]
+  ],
+  "status": "started",
+  "startedAt": "2026-09-08T14:55:36.634916+00:00"
+}
