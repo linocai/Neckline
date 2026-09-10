@@ -1,0 +1,27 @@
+{
+  "build": 71,
+  "sourceCommit": "fd776f4fc3964b92f66e6bf13074a6fb922de8c5",
+  "backendTests": {
+    "passed": 1183,
+    "warnings": 21,
+    "elapsedSeconds": 159.44,
+    "networkDenied": true
+  },
+  "targetedTests": 58,
+  "oldProductionSourceReproductionFailures": 1,
+  "actualPublishedCardsRevalidated": 7,
+  "actualMarketContextsRevalidated": 6,
+  "actualUnknownAcquisitionReferencesPreserved": 66,
+  "paidResultRevalidationProviderCalls": 0,
+  "macOSArchive": "passed",
+  "iOSArchive": "passed",
+  "strictSignatures": "passed",
+  "macOSZipExtractionSignature": "passed",
+  "swiftSourceChanged": false,
+  "liveReportAcceptance": "passed",
+  "actualAPISwiftDecoding": "passed: partial report, seven cards, four configured scopes; current Networking sources unchanged since B61",
+  "githubReleaseAssetsDownloadedAndVerified": 6,
+  "apnsAcceptedDevices": 2,
+  "reportRegeneratedByB71": false,
+  "notificationResentByB71": false
+}
