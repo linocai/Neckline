@@ -26,6 +26,14 @@ _RUMOR = (
     "未核传闻可以在完整比较后成为 primary、alternative 或 tied 并正常发布，不自动变成 pending。其 evidenceDisclosure 必须明确 verificationStatus=unverified、isRumor=true、"
     "originStatus、unverifiedReasons 与 conditionalAnalysis；绝不能称为 verified。"
 )
+_V2_RESEARCH_STOP = (
+    "K10-v2 的调查停止条件：足以支持当前比较、并能说明剩余不确定性时结束调查。"
+    "未核实但标注清楚的消息可正常比较和推荐，缺少官方确认不构成待核关卡。"
+    "未知信息保留为未知，不为补齐所有字段而继续调查；仅在具体新线索可能改变当前公司关联、相对比较或核心反证时继续。"
+    "重复转载、同义查询和无关细节不再展开；没有有效新路径时保留缺口并结束，不把未找到写成不存在。"
+    "收口可用 pending_verification 保留未核实状态并进入比较，不代表自动排除推荐；"
+    "足以支持比较仍不代表事实已核实，原来源、时间限制、传闻和条件化分析必须保留。"
+)
 _INSTRUCTIONS = {
     "extract_claims": "逐项拆 K10 命题，保留说话者、主体、对象、动作、阶段/条件、时间和定位。背景应使用 novelty=background，不是 claim kind；旧背景和无关分支不发现新事件，原文陈述不得直接标 verified。",
     "plan_gaps": "先复用输入中适用事实/公司关系，避免重复调查。只提出会改变真实性、阶段、关联、重要反证、两日理由或比较的问题；非实质未知不创建问题。",
@@ -56,6 +64,7 @@ def request_spec(*, snapshot: ResearchSnapshot, action: str, evidence_packet: Ma
     shape = _SHAPES[action]
     instruction = _COMMON + _INSTRUCTIONS[action]
     if evidence_packet.get("companyScope"):
+        instruction += _V2_RESEARCH_STOP
         instruction += "companyScope 是固定池及按当前命题从本地档案召回的字段。所有问题必须声明合理关联的池内 companyCodes；池外主体只能是证据背景，不得展开其公司尽调。先依据业务、产品、子公司、产业链及资料缺口判断映射，无法合理关联则不建问题和搜索路径，并以 background_only 结束。规划搜索前读取已召回字段及 source_refs，已有资料复用，初稿不是核实证据。搜索路径必须解决指定池内公司问题，禁止全市场公司发现式搜索。"
 
     if action == 'close_research' and evidence_packet.get('pathsExhausted'):
