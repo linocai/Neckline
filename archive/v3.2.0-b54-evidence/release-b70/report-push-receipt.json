@@ -1,0 +1,22 @@
+{
+  "taskId": "task_c9c0feab5c83a08e8a17138ebfb0041a",
+  "reportId": "report_scan_d39fbd5c631ea9a7df5f569dbd432b4d",
+  "notificationId": "71661e75-3dfb-45e1-83bf-8c3a7ff9f7ec",
+  "notificationState": "sent",
+  "deliveredDeviceCount": 2,
+  "apnsResponses": [
+    {
+      "ok": true,
+      "status": 200,
+      "reason": "ok"
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "reason": "ok"
+    }
+  ],
+  "availableAt": "2026-09-10T17:06:26+00:00",
+  "reportStatus": "partial",
+  "checkedAt": "2026-09-10T17:06:28.463920+00:00"
+}
