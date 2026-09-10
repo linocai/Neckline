@@ -332,6 +332,29 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
                     if not isinstance(row, Mapping) or row.get("companyCode") in allowed]
         if evidence_packet is not None and "allowedEvidenceRefs" in evidence_packet and action == "assess_evidence":
             value = _prune_assessment_references(value, evidence_packet)
+        if action == "compare_companies" and evidence_packet is not None and "companyCodes" in evidence_packet:
+            # Local retrieval may contain background companies beyond the
+            # frozen comparison. Keep exactly the requested judgments, with
+            # the first judgment owning a repeated company. Missing requested
+            # companies still fail the coverage validator; never invent them.
+            rows = value.get("companyAssessments")
+            if isinstance(rows, list):
+                codes = set(evidence_packet["companyCodes"])
+                kept, seen, discarded = [], set(), 0
+                for row in rows:
+                    if not isinstance(row, Mapping) or not isinstance(row.get("companyCode"), str):
+                        kept.append(row)  # retain strict structural validation
+                        continue
+                    code = row["companyCode"]
+                    if code not in codes or code in seen:
+                        discarded += 1
+                        continue
+                    kept.append(row)
+                    seen.add(code)
+                value = {**value, "companyAssessments": kept}
+                if discarded and isinstance(value.get("conclusion"), Mapping):
+                    value["conclusion"] = {**value["conclusion"], "runtimeOutputSanitization": {
+                        "discardedCompanyAssessments": discarded}}
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))

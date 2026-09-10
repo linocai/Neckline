@@ -1,0 +1,17 @@
+{
+  "releaseSet": "v3.2.0-b65",
+  "backend": {
+    "passed": 1169,
+    "warnings": 21,
+    "durationSeconds": 160.78,
+    "networkDenied": true
+  },
+  "targetedTests": 48,
+  "realPaidResponseReplay": "passed",
+  "realFinalOutcomeValidation": "passed",
+  "macOSArchive": "passed",
+  "iOSArchive": "passed",
+  "macOSStrictSignature": true,
+  "iOSStrictSignature": true,
+  "macOSZipExtractionStrictVerified": true
+}

@@ -1157,8 +1157,8 @@ class _CheckpointedDiscoveryModel:
         def reusable_paid_response():
             previous = item.get("authorizedSemanticRecoveryOf")
             is_title = operation in {"titleBatch", "titleReconcile"}
-            is_assessment = operation == "investigation_assess_evidence"
-            if not (is_title or is_assessment) or not previous or not self._allow_failed_research_resume:
+            is_research = operation in {"investigation_assess_evidence", "investigation_compare_companies"}
+            if not (is_title or is_research) or not previous or not self._allow_failed_research_resume:
                 return None
             folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
             for path in sorted(folder.glob("*.json")):
@@ -1174,7 +1174,7 @@ class _CheckpointedDiscoveryModel:
                     # The exact-input paid answer must pass current parsing
                     # AND the same live research evidence boundary before use.
                     candidate = value["response"] if is_title else decode(value["response"])
-                    if is_assessment:
+                    if is_research:
                         validator = getattr(self._research_validators, "current", None)
                         if validator is None:
                             continue

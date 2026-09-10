@@ -1,0 +1,16 @@
+{
+  "originalConstraint": "公司比较覆盖不完整或重复",
+  "snapshotRevision": 37,
+  "strictValidation": "passed",
+  "inputCompanies": [
+    "300357.SZ"
+  ],
+  "keptCompanies": [
+    "300357.SZ"
+  ],
+  "pruning": {
+    "discardedCompanyAssessments": 5
+  },
+  "newProviderCalls": 0,
+  "finalOutcomeValidation": "passed"
+}
