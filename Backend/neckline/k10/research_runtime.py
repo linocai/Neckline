@@ -380,20 +380,24 @@ class _Investigation:
             requests = [FullTextRequest.from_dict(item) for item in self.state["fulltextRequests"] if item["state"] == "requested"]
             if not requests:
                 return did_work
-            request = requests[0]
-            question = next((Question.from_dict(item) for item in self.state["questions"] if item["questionId"] == request.question_id), None)
-            document = self.documents.get(_key(request.source_ref))
-            if question is None or document is None:
-                raise InvestigationError("全文申请的调查上下文丢失", code="investigation_fulltext_scope_invalid")
-            self._external_guard()
-            bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
-                request=request, cutoff_at=self.cutoff, cutoff_inclusive=self.cutoff_inclusive)
-            self._tool(bundle, request=request)
-            # A denied admission returned no evidence to read. Batch such
-            # outcomes and let closure see the real resource constraint.
-            if bundle.documents:
+            received = False
+            # These requests were already admitted by the same model decision.
+            # Persist each fetch separately, then read their shared event batch
+            # once. A slice interruption leaves completed fetches recoverable;
+            # _assess_due reads only bodies not previously assessed.
+            for request in requests:
+                question = next((Question.from_dict(item) for item in self.state["questions"] if item["questionId"] == request.question_id), None)
+                document = self.documents.get(_key(request.source_ref))
+                if question is None or document is None:
+                    raise InvestigationError("全文申请的调查上下文丢失", code="investigation_fulltext_scope_invalid")
+                self._external_guard()
+                bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
+                    request=request, cutoff_at=self.cutoff, cutoff_inclusive=self.cutoff_inclusive)
+                self._tool(bundle, request=request)
+                received = received or bool(bundle.documents)
+                did_work = True
+            if received:
                 self._assess_due()
-            did_work = True
 
     def _assess_due(self) -> bool:
         """Finish any durably saved tool batch before planning another query."""

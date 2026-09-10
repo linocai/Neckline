@@ -1,0 +1,16 @@
+{
+  "releaseSet": "v3.2.0-b66",
+  "backend": {
+    "passed": 1172,
+    "warnings": 21,
+    "durationSeconds": 163.37,
+    "networkDenied": true
+  },
+  "targetedTests": 32,
+  "actualProducerAndWorkerRecovery": "passed",
+  "macOSArchive": "passed",
+  "iOSArchive": "passed",
+  "macOSStrictSignature": true,
+  "iOSStrictSignature": true,
+  "macOSZipExtractionStrictVerified": true
+}
