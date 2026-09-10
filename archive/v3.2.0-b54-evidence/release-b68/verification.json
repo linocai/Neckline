@@ -13,5 +13,7 @@
   "strictSignatures": "passed",
   "macOSZipExtractionSignature": "passed",
   "swiftSourceChanged": false,
-  "liveReportAcceptance": "pending"
+  "liveReportAcceptance": "pending",
+  "sourceCommit": "ee4903b01fefca07d7c93242ce2136bebf6b615e",
+  "githubReleaseAssetsDownloadedAndVerified": 6
 }

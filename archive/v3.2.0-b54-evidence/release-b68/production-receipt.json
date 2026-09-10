@@ -1,0 +1,63 @@
+{
+  "status": "completed",
+  "releaseSet": "v3.2.0-b68",
+  "commit": "ee4903b01fefca07d7c93242ce2136bebf6b615e",
+  "priorRelease": "v3.2.0-b66",
+  "priorCommit": "6eab734c939f63a7813a4ad9dd8d65ac9b09b6f6",
+  "preDatabase": {
+    "path": "/opt/neckline/data/backups/v3.2.0-b68-predeploy/neckline-pre.db",
+    "sha256": "e3949688f95b9320d8ab2abc386e24312e0bef2e9e85c87b33068b609a1dc2af"
+  },
+  "schema": 8,
+  "notificationSchema": 2,
+  "tablesPreserved": 85,
+  "offlineAPI": {
+    "mode": "offline",
+    "configuredScopes": 4,
+    "bindings": "K10-v2 rev1 / execution rev1",
+    "runControl": "ready",
+    "evening": "failed",
+    "morning": "empty",
+    "providerUnchanged": true,
+    "unauthenticatedStatus": 401,
+    "readOnly": true
+  },
+  "isolatedRestoreVerified": true,
+  "newPaidCalls": 0,
+  "bindingUnchanged": true,
+  "rootMetadata": {
+    "uid": 0,
+    "gid": 0,
+    "mode": 493
+  },
+  "dbMetadata": {
+    "uid": 997,
+    "gid": 988,
+    "mode": 384
+  },
+  "health": {
+    "status": "ok",
+    "version": "v3.2.0",
+    "releaseSet": "v3.2.0-b68"
+  },
+  "api": {
+    "mode": "live",
+    "configuredScopes": 4,
+    "bindings": "K10-v2 rev1 / execution rev1",
+    "runControl": "ready",
+    "evening": "failed",
+    "morning": "empty",
+    "providerUnchanged": true,
+    "unauthenticatedStatus": 401,
+    "readOnly": true
+  },
+  "postDatabase": {
+    "path": "/opt/neckline/data/backups/v3.2.0-b68-predeploy/neckline-post.db",
+    "sha256": "e3949688f95b9320d8ab2abc386e24312e0bef2e9e85c87b33068b609a1dc2af"
+  },
+  "apiActive": true,
+  "apiEnabled": true,
+  "discoveryResumed": false,
+  "allDatabaseRowsUnchanged": true,
+  "workerAndTimersPaused": true
+}

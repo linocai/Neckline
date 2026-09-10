@@ -1,0 +1,43 @@
+{
+  "release": "v3.2.0-b68",
+  "version": "3.2.0",
+  "build": 68,
+  "releaseSourceCommit": "ee4903b01fefca07d7c93242ce2136bebf6b615e",
+  "releaseAppTree": "414e77c17636fc6518d5f6274646fe96479b3567",
+  "artifacts": {
+    "macOS": {
+      "archive": "build/Neckline-macOS.xcarchive",
+      "bundleIdentifier": "top.linotsai.neckline",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "codesignStrictVerified": true,
+      "authority": [
+        "Developer ID Application: ZheYuan Cai (HX73DFL88G)",
+        "Developer ID Certification Authority",
+        "Apple Root CA"
+      ],
+      "executableSha256": "2431f0e726b93ea387ab03881185d9d9d8458e7ef7e2418155bfd2dd865630b6",
+      "ipaExported": false
+    },
+    "iOS": {
+      "archive": "build/Neckline-iOS.xcarchive",
+      "bundleIdentifier": "top.linotsai.neckline",
+      "architectures": [
+        "arm64"
+      ],
+      "codesignStrictVerified": true,
+      "authority": [
+        "Apple Development: linocai@hotmail.com (J6H3FXT658)",
+        "Apple Worldwide Developer Relations Certification Authority",
+        "Apple Root CA"
+      ],
+      "executableSha256": "88175ce41eb7bdbe549f252b48aab66567807891e1927c51cecc4956ded12466",
+      "ipaExported": false
+    }
+  },
+  "macOSNotarization": "not performed; existing release path uses Developer ID signing without notarization",
+  "macOSZipExtractionStrictVerified": true,
+  "macOSZipSha256": "75f80346aa12f8074d71c22b4533cfbc1cd3afb2050c12ce7cf3397b0a8596aa"
+}
