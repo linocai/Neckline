@@ -204,6 +204,37 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
                 updates = value.get(collection, ())
                 if isinstance(updates, list) and all(isinstance(item, Mapping) for item in updates):
                     value[collection] = [{**originals.get(item.get(key), {}), **item} for item in updates]
+        scope = (evidence_packet or {}).get("companyScope")
+        if scope:
+            # A model may mention background companies outside this selector's
+            # universe. Exclude those hints locally, before planning any paid
+            # search; keep in-pool questions, mappings and assessments intact.
+            allowed = {row["companyCode"] for row in scope["fixedPool"]}
+            value = dict(value)
+            questions, excluded_questions = [], set()
+            for question in value.get("questions", ()):
+                if not isinstance(question, Mapping):
+                    questions.append(question)  # retain strict structural validation
+                    continue
+                codes = question.get("companyCodes", [])
+                codes = [code for code in codes if isinstance(code, str) and code in allowed] if isinstance(codes, list) else []
+                if codes:
+                    questions.append({**question, "companyCodes": codes})
+                else:
+                    excluded_questions.add(question.get("questionId"))
+            if "questions" in value:
+                value["questions"] = questions
+            for field in ("queryPaths", "fulltextRequests"):
+                if isinstance(value.get(field), list):
+                    value[field] = [row for row in value[field]
+                        if not isinstance(row, Mapping) or row.get("questionId") not in excluded_questions]
+            conclusion = value.get("conclusion")
+            if isinstance(conclusion, Mapping) and isinstance(conclusion.get("companyMappings"), list):
+                value["conclusion"] = {**conclusion, "companyMappings": [row for row in conclusion["companyMappings"]
+                    if not isinstance(row, Mapping) or row.get("companyCode") in allowed]}
+            if isinstance(value.get("companyAssessments"), list):
+                value["companyAssessments"] = [row for row in value["companyAssessments"]
+                    if not isinstance(row, Mapping) or row.get("companyCode") in allowed]
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))

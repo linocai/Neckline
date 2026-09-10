@@ -1,0 +1,11 @@
+{
+  "taskId": "task_c9c0feab5c83a08e8a17138ebfb0041a",
+  "releaseSet": "v3.2.0-b59",
+  "cutoff": "2026-09-10T21:00:00+08:00",
+  "runControl": "open",
+  "preDatabase": "/opt/neckline/data/backups/trial-b59-20260910-2100-pre/neckline-pre.db",
+  "preSha256": "9c88ef5ec613e61ff22178cd8c9954affcfe6e1a477ea41d7b780db41ad8dcbf",
+  "oldTasksUnchanged": true,
+  "runner": "neckline-trial-20260910-evening.service",
+  "scheduledTimersResumed": false
+}

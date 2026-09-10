@@ -80,7 +80,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
                     title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
-                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, request_observer=None):
+                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, request_observer=None, require_title_hint=True):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -100,8 +100,11 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
         if v2 and action:
             scope = payload['evidencePacket']['companyScope']
             assert len(scope['fixedPool']) == 1089
-            assert '300002.SZ' in scope['candidateCompanyCodes']
-            assert scope['companyProfiles'] and all(row['review_status']=='local_draft_awaiting_user' for row in scope['companyProfiles'])
+            if require_title_hint:
+                assert '300002.SZ' in scope['candidateCompanyCodes']
+                assert scope['companyProfiles']
+            assert set(scope['candidateCompanyCodes']) <= {row['companyCode'] for row in scope['fixedPool']}
+            assert all(row['review_status']=='local_draft_awaiting_user' for row in scope['companyProfiles'])
             assert all('evidence' not in row and 'notes' not in row for row in scope['companyProfiles'])
         if action:
             calls.append("research:" + action)
@@ -251,7 +254,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, provider_setup=None, request_observer=None):
+         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, provider_setup=None, request_observer=None, require_title_hint=True):
     monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
@@ -280,7 +283,7 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
                             title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
-                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate, v2=v2, provider_status=provider_status, outside_pool=outside_pool, failure_action=failure_action, request_observer=request_observer)
+                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate, v2=v2, provider_status=provider_status, outside_pool=outside_pool, failure_action=failure_action, request_observer=request_observer, require_title_hint=require_title_hint)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     provider.max_attempts = 1

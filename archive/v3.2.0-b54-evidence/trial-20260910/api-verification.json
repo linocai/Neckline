@@ -1,0 +1,22 @@
+{
+  "state": "available",
+  "reportStatus": "failed",
+  "cutoffAt": "2026-09-10T13:00:00+00:00",
+  "availableAt": null,
+  "reason": {
+    "reason": "title_protocol_invalid",
+    "message": "今天没跑成 · 处理未完成",
+    "missing": []
+  },
+  "publishedCards": 0,
+  "units": {
+    "neckline-k10-worker.service": "inactive",
+    "neckline-trial-20260910-evening.service": "inactive",
+    "neckline-k10-evening.timer": "inactive",
+    "neckline-k10-morning.timer": "inactive",
+    "neckline-market-update.timer": "inactive",
+    "neckline-market-retry.timer": "inactive",
+    "neckline-backup.timer": "inactive"
+  },
+  "nativeMacReadOnlyRefresh": "9月10日21:00 / 本轮状态失败 / 今天没跑成·处理未完成"
+}

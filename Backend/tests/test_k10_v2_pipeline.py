@@ -92,12 +92,12 @@ def test_python_subprocess_inherits_external_network_denial():
     assert result.returncode != 0 and 'Offline tests deny external' in result.stderr
 
 
-def test_pool_outside_question_is_rejected_before_any_search(tmp_path, monkeypatch):
+def test_pool_outside_question_is_discarded_before_any_search(tmp_path, monkeypatch):
     db,task_id,task,calls,gateway = _run(tmp_path,monkeypatch,v2=True,outside_pool=True)
-    assert task.status == 'failed'
+    assert task.status == 'completed'
     assert 'research:plan_gaps' in calls
     assert 'research:plan_queries' not in calls and not gateway.search_paths
-    assert read_report(db_path=db)['eveningCards'] == []
+    assert all(row['companyCode'] != '600000.SH' for row in read_report(db_path=db)['eveningCards'])
 
 
 def test_publication_and_daily_cards_rollback_together_on_interruption(tmp_path, monkeypatch):

@@ -998,7 +998,7 @@ class _CheckpointedDiscoveryModel:
             if not isinstance(value, Mapping):
                 raise PipelineError("研究缓存无效", code="model_cache_corrupt")
             try:
-                return decode_stage_result(value, action=action)
+                return decode_stage_result(value, action=action, evidence_packet=evidence_packet)
             except InvestigationError as exc:
                 raise PipelineError("研究缓存无效", code=exc.code) from exc
 

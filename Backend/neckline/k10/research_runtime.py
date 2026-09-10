@@ -319,7 +319,7 @@ class _Investigation:
             if stage is None:
                 break
             try:
-                cached = decode_stage_result(stage["result"], action=action)
+                cached = decode_stage_result(stage["result"], action=action, evidence_packet=packet)
                 validate_stage_result(action=action, result=cached, evidence_packet=packet)
                 self._validate_result(action, cached, packet)
             except InvestigationError:

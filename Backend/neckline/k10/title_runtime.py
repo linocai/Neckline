@@ -29,6 +29,22 @@ def _digest(value: Any) -> str:
                              separators=(",", ":")).encode()).hexdigest()
 
 
+def _filter_company_hints(value: Any, allowed: set[str]) -> Any:
+    """Optional routing hints cannot invalidate an otherwise usable title.
+
+    Applied on both fresh responses and cached decode without changing request
+    identities or rewriting paid checkpoints. Preserve the article itself.
+    """
+    if not isinstance(value, Mapping) or not isinstance(value.get("items"), list):
+        return value
+    return {**value, "items": [
+        {**row, "companyCodes": [code for code in row["companyCodes"]
+                                if isinstance(code, str) and code in allowed]
+         if isinstance(row["companyCodes"], list) else []}
+        if isinstance(row, Mapping) and "companyCodes" in row else row
+        for row in value["items"]]}
+
+
 def select_title_documents(
     *, documents: Sequence[DiscoveryDocument], window_kind: str, task_id: str,
     execution_profile: Mapping[str, Any], model: Any, db_path: Path,
@@ -115,15 +131,17 @@ def select_title_documents(
             payload = {**payload, "fixedPool": [{"companyCode": row["ts_code"], "name": row["name"]} for row in index], "recalledCompanyIndex": recalled}
             payload["output"]["items"][0]["companyCodes"] = ["possible fixedPool company code"]
             instruction += "companyCodes返回可能关联的池内公司，可为空；无合理关联时说明。只研究fixedPool内公司。索引未命中不能跳过标题；依据语义识别合理关联，需要正文则保留。索引是待核线索而非事实。不得逐标题搜索。"
-        raw = operation("titleBatch", instruction, payload, lambda value: normalize_batch_result(value, items))
+        allowed_codes = {row["ts_code"] for row in index} if binding is not None else None
+        def normalize(value):
+            if allowed_codes is not None:
+                value = _filter_company_hints(value, allowed_codes)
+            return normalize_batch_result(value, items)
+        raw = operation("titleBatch", instruction, payload, normalize)
         results = validate_batch_result(raw, items)
         if binding is not None:
             from .schema import write_connection
-            allowed_codes = {row["ts_code"] for row in index}
             with write_connection(db_path) as conn:
                 for result in results:
-                    if not set(result.company_codes) <= allowed_codes:
-                        raise TitleTriageProtocolError("标题模型引用池外公司")
                     content = json.dumps(list(result.company_codes), sort_keys=True)
                     existing = conn.execute("SELECT company_codes_json FROM k10_v2_title_company_hints WHERE task_id=? AND document_id=? AND revision=?", (task_id,result.document_id,result.revision)).fetchone()
                     if existing and existing[0] != content:

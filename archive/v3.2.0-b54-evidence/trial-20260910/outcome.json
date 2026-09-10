@@ -1,0 +1,42 @@
+{
+  "task": {
+    "task_id": "task_c9c0feab5c83a08e8a17138ebfb0041a",
+    "status": "failed",
+    "stage": "title_incomplete",
+    "error_text": "标题筛选未完整完成，未启动正文深读",
+    "created_at": "2026-09-10T21:07:15.912593+08:00",
+    "updated_at": "2026-09-10T13:09:52+00:00",
+    "checkpoint": {
+      "executionStartedAt": "2026-09-10T13:07:17+00:00",
+      "providerBinding": {
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-flash",
+        "name": "deepseek"
+      },
+      "safeErrorCode": "title_protocol_invalid",
+      "scanId": "scan_d39fbd5c631ea9a7df5f569dbd432b4d"
+    }
+  },
+  "usage": {
+    "calls": 22,
+    "inputTokens": 733328,
+    "outputTokens": 68051,
+    "totalTokens": 801379
+  },
+  "directCause": "title model returned company 300487.SZ outside the explicit 1089-company pool; title_runtime rejects this after the completed model checkpoint",
+  "titleBatchesCompleted": 22,
+  "titleBatchesPlanned": 44,
+  "frozenInputCount": 2786,
+  "tushareSuccessfulPages": 20,
+  "sourceCoverage": "partial / upstream_rejected; provider reason was not retained",
+  "oldTasksUnchanged": true,
+  "noNewPublication": true,
+  "noInFlightExternalCalls": true,
+  "noAutomaticRetry": true,
+  "runControl": "open",
+  "normalWorkerAndTimers": "inactive+disabled",
+  "trialRunner": "inactive",
+  "postDatabase": "/opt/neckline/data/backups/trial-b59-20260910-2100-pre/neckline-post.db",
+  "postSha256": "6157fcf9a01c6cb7e56fba88d3777ac00b8fa327139ce0c2b98c76d02996b817",
+  "rawFailedCheckpointStoredPrivately": true
+}

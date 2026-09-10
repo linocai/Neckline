@@ -1,0 +1,21 @@
+{
+  "backend": {
+    "passed": 1141,
+    "warnings": 21,
+    "externalNetworkDenied": true,
+    "isolatedDatabases": true
+  },
+  "targetedRegression": {
+    "passed": 15,
+    "oldCodeFailuresReproduced": 4,
+    "legacyPaidCheckpointRecovery": true
+  },
+  "releaseArchives": {
+    "macOS": "3.2.0 / 60 / Developer ID + timestamp + hardened runtime",
+    "iOS": "3.2.0 / 60 / Apple Development"
+  },
+  "swiftSourceChanged": false,
+  "macOSZipExtractionStrictVerified": true,
+  "newProviderCallsDuringValidation": 0,
+  "ipaExported": false
+}
