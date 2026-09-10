@@ -12,5 +12,7 @@
   "iOSArchive": "passed",
   "macOSStrictSignature": true,
   "iOSStrictSignature": true,
-  "macOSZipExtractionStrictVerified": true
+  "macOSZipExtractionStrictVerified": true,
+  "sourceCommit": "6eab734c939f63a7813a4ad9dd8d65ac9b09b6f6",
+  "githubReleaseAssetsDownloadedAndVerified": 6
 }
