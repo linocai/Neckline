@@ -191,12 +191,12 @@ def _title_refs(value: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 def freeze_title_triage_manifest(
     *, task_id: str, input_manifest_sha256: str, window_kind: str, policy_id: str, policy_revision: int,
-    policy_content_sha256: str, article_limit: int, input_refs: Sequence[Mapping[str, Any]], batch_count: int,
+    policy_content_sha256: str, input_count: int, input_refs: Sequence[Mapping[str, Any]], batch_count: int,
     title_status: str, created_at: str, db_path: Path,
 ) -> dict[str, Any]:
     """Freeze every title input before any body admission can be created."""
-    if window_kind not in {"evening", "morning"} or article_limit != {"evening": 80, "morning": 40}.get(window_kind):
-        raise ValueError("标题筛选必须使用晚间 80、晨间 40 的正文限额")
+    if window_kind not in {"evening", "morning"} or isinstance(input_count, bool) or not isinstance(input_count, int) or input_count < 0:
+        raise ValueError("标题窗口或输入数量无效")
     if title_status not in {"frozen", "partial"} or not isinstance(batch_count, int) or batch_count < 0:
         raise ValueError("标题 manifest 状态或批次数无效")
     refs = _title_refs(input_refs)
@@ -213,18 +213,18 @@ def freeze_title_triage_manifest(
         if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
             raise K10Conflict("标题 manifest 任务不存在")
         expected = (input_manifest_sha256, window_kind, policy_id, policy_revision, policy_content_sha256,
-                    article_limit, _json(refs), batch_count, title_status)
+                    input_count, _json(refs), batch_count, title_status)
         old = conn.execute(
-            "SELECT input_manifest_sha256,window_kind,policy_id,policy_revision,policy_content_sha256,article_limit,"
-            "input_refs_json,batch_count,title_status,selection_status FROM k10_title_triage_manifests WHERE task_id=?", (task_id,),
+            "SELECT input_manifest_sha256,window_kind,policy_id,policy_revision,policy_content_sha256,input_count,"
+            "input_refs_json,batch_count,title_status,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
         if old is not None:
             if tuple(old[:9]) != expected or old[9] not in {"pending", "frozen"}:
                 raise K10Conflict("冻结标题 manifest 不可被重写")
         else:
             conn.execute(
-                "INSERT INTO k10_title_triage_manifests(task_id,input_manifest_sha256,window_kind,policy_id,policy_revision,"
-                "policy_content_sha256,article_limit,input_refs_json,batch_count,title_status,selection_status,created_at) "
+                "INSERT INTO k10_v2_title_triage_manifests(task_id,input_manifest_sha256,window_kind,policy_id,policy_revision,"
+                "policy_content_sha256,input_count,input_refs_json,batch_count,title_status,selection_status,created_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (task_id, *expected, "pending", created_at),
             )
     return read_title_triage_manifest(task_id=task_id, db_path=db_path)  # type: ignore[return-value]
@@ -234,13 +234,13 @@ def read_title_triage_manifest(*, task_id: str, db_path: Path) -> Optional[dict[
     with read_connection(db_path) as conn:
         require_schema(conn)
         row = conn.execute(
-            "SELECT input_manifest_sha256,window_kind,policy_id,policy_revision,policy_content_sha256,article_limit,"
-            "input_refs_json,batch_count,title_status,selection_status,created_at FROM k10_title_triage_manifests WHERE task_id=?", (task_id,),
+            "SELECT input_manifest_sha256,window_kind,policy_id,policy_revision,policy_content_sha256,input_count,"
+            "input_refs_json,batch_count,title_status,selection_status,created_at FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
     if row is None:
         return None
     return {"taskId": task_id, "inputManifestSha256": row[0], "windowKind": row[1], "policyId": row[2],
-            "policyRevision": int(row[3]), "policyContentSha256": row[4], "articleLimit": int(row[5]),
+            "policyRevision": int(row[3]), "policyContentSha256": row[4], "inputCount": int(row[5]),
             "inputRefs": json.loads(row[6]), "batchCount": int(row[7]), "titleStatus": row[8],
             "selectionStatus": row[9], "createdAt": row[10]}
 
@@ -259,7 +259,7 @@ def record_title_triage_item(
         raise ValueError("精确重复或语义合并标题必须指向代表文章")
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
-        manifest = conn.execute("SELECT input_refs_json,selection_status FROM k10_title_triage_manifests WHERE task_id=?", (task_id,)).fetchone()
+        manifest = conn.execute("SELECT input_refs_json,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,)).fetchone()
         if manifest is None:
             raise K10Conflict("标题筛选条目没有冻结 manifest")
         if manifest[1] != "pending":
@@ -270,14 +270,14 @@ def record_title_triage_item(
                     None if merged is None else merged["revision"], selection_rank, audit_reason)
         old = conn.execute(
             "SELECT batch_index,disposition,matter_key,merged_document_id,merged_revision,selection_rank,audit_reason "
-            "FROM k10_title_triage_items WHERE task_id=? AND document_id=? AND revision=?", (task_id, document_id, revision),
+            "FROM k10_v2_title_triage_items WHERE task_id=? AND document_id=? AND revision=?", (task_id, document_id, revision),
         ).fetchone()
         if old is not None:
             if tuple(old) != expected:
                 raise K10Conflict("标题筛选条目不可被静默改写")
             return
         conn.execute(
-            "INSERT INTO k10_title_triage_items(task_id,document_id,revision,batch_index,disposition,matter_key,"
+            "INSERT INTO k10_v2_title_triage_items(task_id,document_id,revision,batch_index,disposition,matter_key,"
             "merged_document_id,merged_revision,selection_rank,audit_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, document_id, revision, *expected, created_at),
         )
@@ -288,7 +288,7 @@ def read_title_triage_items(*, task_id: str, db_path: Path) -> list[dict[str, An
         require_schema(conn)
         rows = conn.execute(
             "SELECT document_id,revision,batch_index,disposition,matter_key,merged_document_id,merged_revision,selection_rank,audit_reason,created_at "
-            "FROM k10_title_triage_items WHERE task_id=? ORDER BY batch_index,document_id,revision", (task_id,),
+            "FROM k10_v2_title_triage_items WHERE task_id=? ORDER BY batch_index,document_id,revision", (task_id,),
         ).fetchall()
     return [{"documentId": row[0], "revision": int(row[1]), "batchIndex": int(row[2]), "disposition": row[3],
              "matterKey": row[4], "mergedRef": None if row[5] is None else {"documentId": row[5], "revision": int(row[6])},
@@ -305,20 +305,20 @@ def freeze_title_selection_manifest(
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
         manifest = conn.execute(
-            "SELECT input_refs_json,article_limit,title_status,selection_status FROM k10_title_triage_manifests WHERE task_id=?", (task_id,),
+            "SELECT input_refs_json,input_count,title_status,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
         if manifest is None:
             raise K10Conflict("全局选择没有标题 manifest")
         if manifest[2] != "frozen":
             raise K10Conflict("标题筛选不完整，禁止冻结正文选择")
         if len(refs) > int(manifest[1]):
-            raise K10Conflict("入选正文超过 80/40 限额")
+            raise K10Conflict("入选正文不属于冻结输入")
         input_keys = {(item["documentId"], item["revision"]) for item in json.loads(manifest[0])}
         if any((item["documentId"], item["revision"]) not in input_keys for item in refs):
             raise K10Conflict("全局选择包含未参与标题初筛的文章")
         rows = conn.execute(
             "SELECT document_id,revision,selection_rank,disposition,merged_document_id,merged_revision "
-            "FROM k10_title_triage_items WHERE task_id=?", (task_id,)
+            "FROM k10_v2_title_triage_items WHERE task_id=?", (task_id,)
         ).fetchall()
         if len(rows) != len(input_keys):
             raise K10Conflict("标题筛选未覆盖全部输入，禁止冻结正文选择")
@@ -332,24 +332,24 @@ def freeze_title_selection_manifest(
             if row[3] == "merged" and (str(row[4]), int(row[5])) not in selected_keys:
                 raise K10Conflict("语义合并必须指向冻结入选文章")
         old = conn.execute(
-            "SELECT selection_manifest_sha256,selected_refs_json FROM k10_title_selection_manifests WHERE task_id=?", (task_id,),
+            "SELECT selection_manifest_sha256,selected_refs_json FROM k10_v2_title_selection_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
         expected = (selection_manifest_sha256, _json(refs))
         if old is not None:
             if tuple(old) != expected:
                 raise K10Conflict("全局选择 manifest 不可被重写")
         else:
-            conn.execute("INSERT INTO k10_title_selection_manifests(task_id,selection_manifest_sha256,selected_refs_json,created_at) VALUES(?,?,?,?)",
+            conn.execute("INSERT INTO k10_v2_title_selection_manifests(task_id,selection_manifest_sha256,selected_refs_json,created_at) VALUES(?,?,?,?)",
                          (task_id, *expected, created_at))
-            # Selection itself owns every 80/40 slot.  Reserving all members
+            # Selection records its immutable source membership.  Reserving all members
             # here prevents a concurrent deep-read/Tavily path from consuming
             # a later selected article's slot before it starts.
             conn.executemany(
-                "INSERT INTO k10_article_admissions(task_id,document_id,revision,admission_kind,state,reason_code,admitted_at,completed_at) "
+                "INSERT INTO k10_v2_article_admissions(task_id,document_id,revision,admission_kind,state,reason_code,admitted_at,completed_at) "
                 "VALUES(?,?,?,'selected','admitted',NULL,?,NULL)",
                 [(task_id, item["documentId"], item["revision"], created_at) for item in refs],
             )
-            conn.execute("UPDATE k10_title_triage_manifests SET selection_status='frozen' WHERE task_id=?", (task_id,))
+            conn.execute("UPDATE k10_v2_title_triage_manifests SET selection_status='frozen' WHERE task_id=?", (task_id,))
     return read_title_selection_manifest(task_id=task_id, db_path=db_path)  # type: ignore[return-value]
 
 
@@ -357,7 +357,7 @@ def read_title_selection_manifest(*, task_id: str, db_path: Path) -> Optional[di
     with read_connection(db_path) as conn:
         require_schema(conn)
         row = conn.execute(
-            "SELECT selection_manifest_sha256,selected_refs_json,created_at FROM k10_title_selection_manifests WHERE task_id=?", (task_id,),
+            "SELECT selection_manifest_sha256,selected_refs_json,created_at FROM k10_v2_title_selection_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
     return None if row is None else {"taskId": task_id, "selectionManifestSha256": row[0], "selectedRefs": json.loads(row[1]), "createdAt": row[2]}
 
@@ -373,12 +373,12 @@ def admit_article(
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
         manifest = conn.execute(
-            "SELECT article_limit,selection_status FROM k10_title_triage_manifests WHERE task_id=?", (task_id,),
+            "SELECT input_count,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
         if manifest is None or manifest[1] != "frozen":
             return {"state": "not_frozen", "reason": "title_selection_not_frozen", "admissionKind": admission_kind}
         old = conn.execute(
-            "SELECT admission_kind,state,reason_code FROM k10_article_admissions WHERE task_id=? AND document_id=? AND revision=?",
+            "SELECT admission_kind,state,reason_code FROM k10_v2_article_admissions WHERE task_id=? AND document_id=? AND revision=?",
             (task_id, document_id, revision),
         ).fetchone()
         if old is not None:
@@ -386,17 +386,14 @@ def admit_article(
                 raise K10Conflict("同一文章不能以不同 admission 类型占两次名额")
             return {"state": "reused", "reason": old[2], "admissionKind": old[0], "articleState": old[1]}
         selected = conn.execute(
-            "SELECT 1 FROM k10_title_selection_manifests m JOIN k10_title_triage_items i ON i.task_id=m.task_id "
+            "SELECT 1 FROM k10_v2_title_selection_manifests m JOIN k10_v2_title_triage_items i ON i.task_id=m.task_id "
             "WHERE m.task_id=? AND i.document_id=? AND i.revision=? AND i.selection_rank IS NOT NULL",
             (task_id, document_id, revision),
         ).fetchone()
         if admission_kind == "selected" and selected is None:
             return {"state": "not_selected", "reason": "article_not_in_frozen_selection", "admissionKind": admission_kind}
-        used = int(conn.execute("SELECT COUNT(*) FROM k10_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0])
-        if used >= int(manifest[0]):
-            return {"state": "limit_reached", "reason": "article_limit_reached", "admissionKind": admission_kind}
         conn.execute(
-            "INSERT INTO k10_article_admissions(task_id,document_id,revision,admission_kind,state,reason_code,admitted_at,completed_at) "
+            "INSERT INTO k10_v2_article_admissions(task_id,document_id,revision,admission_kind,state,reason_code,admitted_at,completed_at) "
             "VALUES(?,?,?,?, 'admitted',NULL,?,NULL)", (task_id, document_id, revision, admission_kind, created_at),
         )
     return {"state": "admitted", "reason": None, "admissionKind": admission_kind, "articleState": "admitted"}
@@ -415,7 +412,7 @@ def record_article_outcome(
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
         old = conn.execute(
-            "SELECT state,reason_code FROM k10_article_admissions WHERE task_id=? AND document_id=? AND revision=?",
+            "SELECT state,reason_code FROM k10_v2_article_admissions WHERE task_id=? AND document_id=? AND revision=?",
             (task_id, document_id, revision),
         ).fetchone()
         if old is None:
@@ -427,7 +424,7 @@ def record_article_outcome(
         if old[0] == "failed" and stored_state not in {"failed", "completed", "missing_body"}:
             raise K10Conflict("失败正文只可重试为 completed 或 missing_body")
         conn.execute(
-            "UPDATE k10_article_admissions SET state=?,reason_code=?,completed_at=? WHERE task_id=? AND document_id=? AND revision=?",
+            "UPDATE k10_v2_article_admissions SET state=?,reason_code=?,completed_at=? WHERE task_id=? AND document_id=? AND revision=?",
             (stored_state, reason_code, updated_at, task_id, document_id, revision),
         )
     return {"state": stored_state, "reason": reason_code}
@@ -441,7 +438,7 @@ def _bound_v3_config(conn, *, task_id: str) -> tuple[Mapping[str, Any] | None, s
     if row is None:
         return None, "execution_unbound"
     payload = json.loads(row[0])
-    if not validate_execution_config(payload).ready or payload.get("executionVersion") != "k10-execution-v3":
+    if not validate_execution_config(payload).ready or payload.get("executionVersion") != "k10-execution-v4":
         return None, "execution_not_configured"
     policy = payload["discovery"]["titleTriagePolicy"]
     stored = conn.execute(
@@ -555,6 +552,10 @@ def begin_external_attempt(
                 raise K10Conflict("同一外部调用 attempt_key 不可对应不同输入")
             old_state = str(old[1])
             return {"state": "pending_outcome" if old_state == "started" else "reused", "reason": None, "attemptId": old[0]}
+        if stage in {"analysisPro", "analysisCon", "morning"}:
+            uncertain = conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown') LIMIT 1", (task_id, stage, item_key)).fetchone()
+            if uncertain is not None:
+                return {"state": "pending_outcome", "reason": None, "attemptId": uncertain[0]}
         attempt_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO k10_external_attempts(attempt_id,task_id,stage,item_key,attempt_key,input_sha256,state,started_at) "
@@ -566,6 +567,7 @@ def begin_external_attempt(
 def settle_external_attempt(
     *, attempt_id: str, outcome: str, usage: Mapping[str, Any] | None,
     settled_at: str, error_code: str | None, db_path: Path,
+    record_provider_failure: bool = False, retry_after_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Settle one started attempt with actual or explicitly unavailable provider usage."""
     if outcome not in {"succeeded", "failed", "unknown"} or not attempt_id or not settled_at:
@@ -592,6 +594,14 @@ def settle_external_attempt(
             "search_credits=?,error_code=?,settled_at=? WHERE attempt_id=?",
             (*expected, settled_at, attempt_id),
         )
+        if record_provider_failure and outcome == "failed" and error_code in {"insufficient_balance", "rate_limited"}:
+            task_id, stage = conn.execute("SELECT task_id,stage FROM k10_external_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+            if stage not in {"analysisPro", "analysisCon", "morning"}:
+                raise ValueError("失败回执只用于正反分析和晨间复核")
+            checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+            checkpoint["providerFailureReceipt"] = {"attemptId": attempt_id, "stage": stage,
+                "errorCode": error_code, "receivedAt": settled_at, "retryAfterSeconds": retry_after_seconds}
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
     return {"state": outcome, "attemptId": attempt_id}
 
 
@@ -691,51 +701,55 @@ def set_run_control(*, state: str, reason_code: str, changed_at: str, changed_by
     return run_control_status(db_path=db_path)
 
 
-def bind_task_execution(
-    *, task_id: str, execution_config_id: str, execution_config_revision: int,
-    binding_kind: str, bound_at: str, db_path: Path,
-) -> dict[str, Any]:
-    """Bind a task once to a profile, with a recorded content hash for audit and recovery."""
-    if binding_kind not in {"scheduled", "recovery"}:
-        raise ValueError("execution binding_kind 必须是 scheduled 或 recovery")
-    with write_connection(db_path) as conn:
-        _require_write_schema(conn)
-        profile = conn.execute(
-            "SELECT content_sha256,payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
-            (execution_config_id, execution_config_revision),
-        ).fetchone()
-        if profile is None:
-            raise K10Conflict("指定执行配置修订不存在")
-        execution_payload = json.loads(profile[1])
-        execution_status = validate_execution_config(execution_payload)
-        if not execution_status.ready or execution_payload.get("executionVersion") != "k10-execution-v3":
-            raise K10Conflict("只有已批准的 k10-execution-v3 可绑定付费任务；V1/V2 仅供历史读取")
-        policy = execution_payload["discovery"]["titleTriagePolicy"]
-        policy_row = conn.execute(
-            "SELECT content_json,content_sha256,approval_state FROM k10_title_triage_policy_revisions "
-            "WHERE policy_id=? AND revision=?", (policy["policyId"], policy["revision"]),
-        ).fetchone()
-        if (policy_row is None or policy_row[1] != policy["contentSha256"] or policy_row[2] != "approved" or
-                json.loads(policy_row[0]) != policy["content"]):
-            raise K10Conflict("V3 执行配置未绑定相同的已批准标题筛选 policy")
-        if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
-            raise K10Conflict("执行绑定任务不存在")
-        expected = (execution_config_id, execution_config_revision, str(profile[0]), binding_kind)
-        old = conn.execute(
-            "SELECT execution_config_id,execution_config_revision,execution_content_sha256,binding_kind "
-            "FROM k10_task_execution_bindings WHERE task_id=?", (task_id,),
-        ).fetchone()
-        if old is not None:
-            if tuple(old) != expected:
-                raise K10Conflict("任务已绑定不同执行配置，拒绝静默替换")
-        else:
-            conn.execute(
-                "INSERT INTO k10_task_execution_bindings(task_id,execution_config_id,execution_config_revision,"
-                "execution_content_sha256,binding_kind,bound_at) VALUES(?,?,?,?,?,?)",
-                (task_id, *expected, bound_at),
-            )
+def _bind_task_execution_conn(conn, *, task_id: str, execution_config_id: str, execution_config_revision: int,
+                              binding_kind: str, bound_at: str):
+    if binding_kind not in {'scheduled','recovery'}:
+        raise ValueError('execution binding_kind 必须是 scheduled 或 recovery')
+    profile = conn.execute(
+        "SELECT content_sha256,payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
+        (execution_config_id, execution_config_revision),
+    ).fetchone()
+    if profile is None:
+        raise K10Conflict("指定执行配置修订不存在")
+    execution_payload = json.loads(profile[1])
+    execution_status = validate_execution_config(execution_payload)
+    if not execution_status.ready or execution_payload.get("executionVersion") != "k10-execution-v4":
+        raise K10Conflict("只有已批准的 k10-execution-v4 可绑定付费任务；V1/V2 仅供历史读取")
+    policy = execution_payload["discovery"]["titleTriagePolicy"]
+    policy_row = conn.execute(
+        "SELECT content_json,content_sha256,approval_state FROM k10_title_triage_policy_revisions "
+        "WHERE policy_id=? AND revision=?", (policy["policyId"], policy["revision"]),
+    ).fetchone()
+    if (policy_row is None or policy_row[1] != policy["contentSha256"] or policy_row[2] != "approved" or
+            json.loads(policy_row[0]) != policy["content"]):
+        raise K10Conflict("V3 执行配置未绑定相同的已批准标题筛选 policy")
+    if conn.execute("SELECT 1 FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone() is None:
+        raise K10Conflict("执行绑定任务不存在")
+    expected = (execution_config_id, execution_config_revision, str(profile[0]), binding_kind)
+    old = conn.execute(
+        "SELECT execution_config_id,execution_config_revision,execution_content_sha256,binding_kind "
+        "FROM k10_task_execution_bindings WHERE task_id=?", (task_id,),
+    ).fetchone()
+    if old is not None:
+        if tuple(old) != expected:
+            raise K10Conflict("任务已绑定不同执行配置，拒绝静默替换")
+    else:
+        conn.execute(
+            "INSERT INTO k10_task_execution_bindings(task_id,execution_config_id,execution_config_revision,"
+            "execution_content_sha256,binding_kind,bound_at) VALUES(?,?,?,?,?,?)",
+            (task_id, *expected, bound_at),
+        )
     return {"configId": execution_config_id, "revision": execution_config_revision,
             "contentSha256": str(profile[0]), "bindingKind": binding_kind, "payload": json.loads(profile[1])}
+
+
+
+def bind_task_execution(*, task_id: str, execution_config_id: str, execution_config_revision: int,
+                        binding_kind: str, bound_at: str, db_path: Path):
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        return _bind_task_execution_conn(conn, task_id=task_id, execution_config_id=execution_config_id,
+            execution_config_revision=execution_config_revision, binding_kind=binding_kind, bound_at=bound_at)
 
 
 def bind_scan_execution(
@@ -945,7 +959,8 @@ def create_scan(
         if old is not None:
             # A recovered scan retains its original created/coverage values; only its immutable
             # identity must match the retry request.
-            if tuple(old[:4]) != tuple(row[:4]):
+            same_cutoff = old[1] == row[1] or _utc_instant(old[1]) == _utc_instant(row[1])
+            if (old[0], old[2], old[3]) != (row[0], row[2], row[3]) or not same_cutoff:
                 raise K10Conflict("scan ID 已存在但冻结输入不同")
             return
         conn.execute(
@@ -1100,7 +1115,7 @@ def append_candidate_action(
 def observe_candidate(
     *, action_id: str, observation_id: str, task_id: str, outbox_id: str, candidate_id: str,
     idempotency_key: str, task_input_version: str, task_input_cutoff_at: str,
-    task_payload: Mapping[str, Any], task_budget: Mapping[str, Any], created_at: str, db_path: Path,
+    task_payload: Mapping[str, Any], task_budget: Mapping[str, Any], created_at: str, db_path: Path, execution_binding: Mapping[str, Any] | None = None,
 ) -> Observation:
     """留下某一公司候选，并原子创建 observation、分析任务和 outbox。"""
     with write_connection(db_path) as conn:
@@ -1133,6 +1148,9 @@ def observe_candidate(
         _insert_task(conn, task_id=task_id, kind="analysis", idempotency_key=f"analysis:{observation_id}",
                      input_version=task_input_version, input_cutoff_at=task_input_cutoff_at, payload=payload,
                      budget=task_budget, created_at=created_at)
+        if execution_binding is not None:
+            _bind_task_execution_conn(conn, task_id=task_id, execution_config_id=execution_binding['configId'],
+                execution_config_revision=execution_binding['revision'], binding_kind='scheduled', bound_at=created_at)
         conn.execute(
             "INSERT INTO k10_task_outbox(outbox_id,task_id,created_at,dispatched_at) VALUES(?,?,?,NULL)",
             (outbox_id, task_id, created_at),
@@ -1153,6 +1171,67 @@ def _window_representative_candidate(conn, *, company_window_id: str) -> str:
     if row is None:
         raise K10Conflict("公司窗口没有已发布正式推荐")
     return str(row[0])
+
+
+def project_opportunity_lifecycle(state: str, events: list[Mapping[str, Any]]) -> str:
+    """Project ordered append-only evidence without clearing risk on a plain update."""
+    if state == "withdrawn":
+        return "withdrawal"
+    if state == "expired":
+        return "expired"
+    if state not in {"active", "risk"}:
+        return "unknown"
+    # A terminal lifecycle fact always wins over a display-only update.  Store
+    # state is intentionally append-only and may still say active here.
+    terminals = [str(item.get("kind")) for item in events if item.get("kind") in {"withdrawal", "expired"}]
+    if "withdrawal" in terminals:
+        return "withdrawal"
+    if "expired" in terminals:
+        return "expired"
+
+    lifecycle = "risk" if state == "risk" else "published"
+    risk_active = state == "risk"
+    for event in events:
+        kind = str(event.get("kind") or "")
+        if kind == "risk":
+            risk_active = True
+            lifecycle = "risk"
+            continue
+        if kind != "evidence_update":
+            continue
+        content = event.get("content")
+        verified_current = (
+            isinstance(content, Mapping)
+            and content.get("reasonStatus") == "current"
+            and content.get("sourceStatus") == "complete"
+        )
+        # An ordinary continuation must not implicitly clear a material risk.
+        # Only the validated morning-review outcome says the reason is current
+        # and its source coverage is complete.
+        if risk_active and not verified_current:
+            continue
+        risk_active = False
+        lifecycle = "evidence_update"
+    return lifecycle
+
+
+def lifecycle_state(lifecycle: str) -> str:
+    """Explicit display-to-business mapping; unknown values never enable selection."""
+    return {"published": "active", "evidence_update": "active", "risk": "risk",
+            "withdrawal": "withdrawn", "expired": "expired"}.get(lifecycle, "unknown")
+
+
+def selection_allowed_for_states(states) -> bool:
+    return any(state in {'active','risk'} for state in states)
+
+
+def _attach_missing_execution_conn(conn, *, task_id, execution_binding, bound_at):
+    if conn.execute('SELECT 1 FROM k10_task_execution_bindings WHERE task_id=?',(task_id,)).fetchone():
+        return
+    if execution_binding is None:
+        raise K10Conflict('未绑定明确执行配置，不能创建或恢复付费任务')
+    _bind_task_execution_conn(conn,task_id=task_id,execution_config_id=execution_binding['configId'],
+        execution_config_revision=execution_binding['revision'],binding_kind='scheduled',bound_at=bound_at)
 
 
 def _append_company_window_action_conn(
@@ -1215,7 +1294,7 @@ def observe_company_window(
     *, action_id: str, observation_id: str, task_id: str, outbox_id: str,
     company_window_id: str, idempotency_key: str, task_input_version: str,
     task_input_cutoff_at: str, task_payload: Mapping[str, Any], task_budget: Mapping[str, Any],
-    created_at: str, db_path: Path,
+    created_at: str, db_path: Path, execution_binding: Mapping[str, Any] | None = None,
 ) -> CompanyWindowObservation:
     """Leave a company window once and create at most one analysis chain for all catalysts."""
     with write_connection(db_path) as conn:
@@ -1229,6 +1308,8 @@ def observe_company_window(
             (company_window_id,),
         ).fetchone()
         if existing is not None:
+            if execution_binding is not None:
+                _attach_missing_execution_conn(conn, task_id=str(existing[2]),execution_binding=execution_binding,bound_at=created_at)
             return CompanyWindowObservation(company_window_id, stored_action_id, str(existing[1]), str(existing[0]),
                                             str(existing[2]), False, replayed)
         # Preserve a direct pre-V1.4 observation if this controlled migration sees one: choose
@@ -1240,6 +1321,8 @@ def observe_company_window(
             "WHERE s.company_window_id=? ORDER BY o.rowid LIMIT 1", (company_window_id,),
         ).fetchone()
         if legacy is not None:
+            if execution_binding is not None:
+                _attach_missing_execution_conn(conn, task_id=str(legacy[2]),execution_binding=execution_binding,bound_at=created_at)
             conn.execute(
                 "INSERT INTO k10_company_window_observations(company_window_id,observation_id,candidate_id,task_id,created_at) "
                 "VALUES(?,?,?,?,?)", (company_window_id, str(legacy[0]), str(legacy[1]), str(legacy[2]), created_at),
@@ -1260,6 +1343,9 @@ def observe_company_window(
         _insert_task(conn, task_id=task_id, kind="analysis", idempotency_key=f"analysis:{observation_id}",
                      input_version=task_input_version, input_cutoff_at=task_input_cutoff_at, payload=payload,
                      budget=task_budget, created_at=created_at)
+        if execution_binding is not None:
+            _bind_task_execution_conn(conn, task_id=task_id, execution_config_id=execution_binding['configId'],
+                execution_config_revision=execution_binding['revision'], binding_kind='scheduled', bound_at=created_at)
         conn.execute("INSERT INTO k10_task_outbox(outbox_id,task_id,created_at,dispatched_at) VALUES(?,?,?,NULL)",
                      (outbox_id, task_id, created_at))
         conn.execute(
@@ -1301,13 +1387,18 @@ def _insert_task(
 
 def enqueue_task(
     *, task_id: str, kind: str, idempotency_key: str, input_version: str, input_cutoff_at: str,
-    payload: Mapping[str, Any], budget: Mapping[str, Any], created_at: str, db_path: Path,
+    payload: Mapping[str, Any], budget: Mapping[str, Any], created_at: str, db_path: Path, execution_binding: Mapping[str, Any] | None = None,
 ) -> Task:
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
-        return _insert_task(conn, task_id=task_id, kind=kind, idempotency_key=idempotency_key,
+        task = _insert_task(conn, task_id=task_id, kind=kind, idempotency_key=idempotency_key,
                             input_version=input_version, input_cutoff_at=input_cutoff_at, payload=payload,
                             budget=budget, created_at=created_at)
+
+        if execution_binding is not None:
+            _bind_task_execution_conn(conn, task_id=task.task_id, execution_config_id=execution_binding['configId'],
+                execution_config_revision=execution_binding['revision'], binding_kind=execution_binding.get('bindingKind','scheduled'), bound_at=created_at)
+        return task
 
 
 def _window_related_document_refs(conn, *, company_window_id: str) -> set[tuple[str, int]]:
@@ -1483,6 +1574,10 @@ def create_analysis_request(
         _insert_task(conn, task_id=task_id, kind="analysis", idempotency_key=task_key,
                      input_version=task_input_version, input_cutoff_at=input_cutoff_at, payload=payload,
                      budget=budget, created_at=created_at)
+        parent_binding = conn.execute('SELECT execution_config_id,execution_config_revision FROM k10_task_execution_bindings WHERE task_id=?', (observation[1],)).fetchone()
+        if parent_binding is not None:
+            _bind_task_execution_conn(conn, task_id=task_id, execution_config_id=parent_binding[0],
+                execution_config_revision=parent_binding[1], binding_kind='scheduled', bound_at=created_at)
         conn.execute(
             "INSERT INTO k10_analysis_requests(request_id,company_window_id,observation_id,task_id,idempotency_key,global_revision,parent_revision,kind,question,source_refs_json,task_input_version,task_payload_json,task_budget_json,input_cutoff_at,created_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -2435,14 +2530,14 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
         except (TypeError, ValueError, json.JSONDecodeError):
             coverage = {}
         manifest = conn.execute(
-            "SELECT input_refs_json,article_limit,title_status,selection_status FROM k10_title_triage_manifests WHERE task_id=?", (task_id,),
+            "SELECT input_refs_json,input_count,title_status,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
         items = conn.execute(
-            "SELECT disposition,selection_rank FROM k10_title_triage_items WHERE task_id=?", (task_id,),
+            "SELECT disposition,selection_rank FROM k10_v2_title_triage_items WHERE task_id=?", (task_id,),
         ).fetchall()
-        selection = conn.execute("SELECT selected_refs_json FROM k10_title_selection_manifests WHERE task_id=?", (task_id,)).fetchone()
+        selection = conn.execute("SELECT selected_refs_json FROM k10_v2_title_selection_manifests WHERE task_id=?", (task_id,)).fetchone()
         articles = conn.execute(
-            "SELECT admission_kind,state FROM k10_article_admissions WHERE task_id=?", (task_id,),
+            "SELECT admission_kind,state FROM k10_v2_article_admissions WHERE task_id=?", (task_id,),
         ).fetchall()
         checkpoints = conn.execute(
             "SELECT stage,status,safe_error_code,safe_error_ref,result_json FROM k10_execution_item_checkpoints WHERE task_id=?", (task_id,),
@@ -2521,7 +2616,7 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
         "partial": max(0, exact - title_covered) if title_incomplete else 0,
     }
     article_counts = None if manifest is None else {
-        "limit": int(manifest[1]), "selected": selected, "admitted": len(articles),
+        "limit": None, "selected": selected, "admitted": len(articles),
         "completed": sum(1 for row in articles if row[1] == "completed"),
         "missingBody": sum(1 for row in articles if row[1] == "missing_body"),
         "tavilyExcerpt": tavily_excerpts,
@@ -2595,6 +2690,7 @@ def finish_task(
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
         checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint)
+        checkpoint.pop("providerFailureReceipt", None)
         changed = conn.execute(
             "UPDATE k10_tasks SET status=?,stage=?,checkpoint_json=?,error_text=?,lease_owner=NULL,lease_until=NULL,"
             "updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
@@ -2603,6 +2699,11 @@ def finish_task(
         if changed != 1:
             raise K10Conflict("任务租约已失效或不属于当前 worker")
         conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
+
+        from .v2_store import refresh_morning_coverage_for_task, record_scan_task_failure
+        record_scan_task_failure(conn, task_id=task_id, status=status, stage=stage,
+                                 checkpoint=checkpoint, created_at=now_text)
+        refresh_morning_coverage_for_task(conn,task_id=task_id)
 
 
 def schedule_task_retry(
@@ -2641,6 +2742,7 @@ def schedule_task_retry(
         if retry_kind == "failure" and failure_count >= max_failure_attempts:
             return False
         checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint, existing_raw=row[2])
+        checkpoint.pop("providerFailureReceipt", None)
         changed = conn.execute(
             "UPDATE k10_tasks SET status='queued',stage='retry_scheduled',checkpoint_json=?,error_text=?,"
             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
@@ -2655,6 +2757,10 @@ def schedule_task_retry(
             "retry_kind=excluded.retry_kind,safe_error_code=excluded.safe_error_code,updated_at=excluded.updated_at",
             (task_id, not_before, int(row[0]), failure_count, retry_kind, safe_error_code, now_text, now_text),
         )
+        # A delayed morning child is still incomplete. Project that state in the
+        # same transaction, just as finish_task projects failure or completion.
+        from .v2_store import refresh_morning_coverage_for_task
+        refresh_morning_coverage_for_task(conn, task_id=task_id)
     return True
 
 
@@ -2770,7 +2876,7 @@ def renew_task_lease(
 
 
 def retry_task(
-    *, task_id: str, expected_attempt_count: int, retried_at: str, db_path: Path,
+    *, task_id: str, expected_attempt_count: int, retried_at: str, db_path: Path, execution_binding: Mapping[str, Any] | None = None,
 ) -> Task:
     """把一个明确失败态任务重新入队；调用方须带上看到的尝试数以避免盲目重试覆盖。"""
     with write_connection(db_path) as conn:
@@ -2785,11 +2891,15 @@ def retry_task(
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务不是可重试的当前失败版本")
+        if execution_binding is not None:
+            _attach_missing_execution_conn(conn,task_id=task_id,execution_binding=execution_binding,bound_at=retried_at)
         conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
         row = conn.execute(
             "SELECT task_id,kind,status,attempt_count,lease_owner,lease_until,payload_json FROM k10_tasks WHERE task_id=?",
             (task_id,),
         ).fetchone()
+        from .v2_store import refresh_morning_coverage_for_task
+        refresh_morning_coverage_for_task(conn,task_id=task_id)
     return _task_from_row(row)
 
 
@@ -3137,7 +3247,7 @@ def _validate_research_publication_bridge(
 
 def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                           inputs: Sequence["OpportunityPublicationInput"], db_path: Path,
-                          clock: "Callable[[], datetime]") -> "PublicationBatch":
+                          clock: "Callable[[], datetime]", publication_hook=None) -> "PublicationBatch":
     """Atomically expose a completed recommendation batch and every included sample.
 
     The timestamp is sampled while the SQLite write transaction is held.  A caller cannot make
@@ -3166,6 +3276,8 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
             if tuple(existing[:2]) != (scan_id, publication_kind) or existing[3] != input_sha256:
                 raise K10Conflict("发布批次 ID 已绑定到不同冻结输入")
             rows = conn.execute("SELECT candidate_id FROM k10_publication_samples WHERE batch_id=?", (batch_id,)).fetchall()
+            if publication_hook is not None:
+                publication_hook(conn, str(existing[2]))
             return PublicationBatch(batch_id, scan_id, publication_kind, str(existing[2]), len(rows))
         if conn.execute("SELECT 1 FROM k10_publication_batches WHERE scan_id=? AND publication_kind=?", (scan_id, publication_kind)).fetchone() is not None:
             raise K10Conflict("同一扫描窗口只能有一个可见发布批次")
@@ -3283,7 +3395,13 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
             conn.execute("UPDATE k10_publication_samples SET created_at=? WHERE batch_id=?", (final_at, batch_id))
             conn.execute("UPDATE k10_opportunity_lifecycle_events SET occurred_at=?,created_at=? WHERE kind='published' AND opportunity_id IN (SELECT opportunity_id FROM k10_opportunities WHERE first_batch_id=?)", (final_at, final_at, batch_id))
             available_at = final_at
+        if publication_hook is not None:
+            publication_hook(conn, available_at)
     return PublicationBatch(batch_id, scan_id, publication_kind, available_at, len(values))
+
+
+def reportable_lifecycle_update(kind, content):
+    return kind in {'risk', 'withdrawal', 'expired'} or (kind == 'evidence_update' and content.get('material') is True)
 
 
 def append_opportunity_update(*, lifecycle_event_id: str, opportunity_id: str, kind: str, reason: str | None,
@@ -3303,6 +3421,11 @@ def append_opportunity_update(*, lifecycle_event_id: str, opportunity_id: str, k
             raise K10Conflict("机会不存在")
         conn.execute("INSERT INTO k10_opportunity_lifecycle_events(lifecycle_event_id,opportunity_id,kind,reason,source_refs_json,content_json,occurred_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
                      (lifecycle_event_id, *expected))
+        scan_id = content.get('scanId')
+        if scan_id and reportable_lifecycle_update(kind, content):
+            report = conn.execute('SELECT report_id FROM k10_v2_report_runs WHERE scan_id=?', (scan_id,)).fetchone()
+            if report:
+                conn.execute('INSERT OR IGNORE INTO k10_v2_report_lifecycle_updates VALUES (?,?)', (report[0],lifecycle_event_id))
 
 
 def withdraw_opportunity(*, opportunity_id: str, reason: str, source_refs: Sequence[Mapping[str, Any]],
@@ -3614,7 +3737,7 @@ def latest_market_day_facts(*, company_code: str, trade_dates: Sequence[str] | N
 def list_opportunity_lifecycle_events(*, opportunity_id: str, db_path: Path) -> list[dict[str, Any]]:
     with read_connection(db_path) as conn:
         require_schema(conn)
-        rows = conn.execute("SELECT lifecycle_event_id,kind,reason,source_refs_json,content_json,occurred_at,created_at FROM k10_opportunity_lifecycle_events WHERE opportunity_id=? ORDER BY occurred_at,rowid", (opportunity_id,)).fetchall()
+        rows = conn.execute("SELECT lifecycle_event_id,kind,reason,source_refs_json,content_json,occurred_at,created_at FROM k10_opportunity_lifecycle_events WHERE opportunity_id=? ORDER BY julianday(occurred_at),rowid", (opportunity_id,)).fetchall()
     return [{"lifecycleEventId": r[0], "opportunityId": opportunity_id, "kind": r[1], "reason": r[2],
              "sourceRefs": json.loads(r[3]), "content": json.loads(r[4]), "occurredAt": r[5], "createdAt": r[6]} for r in rows]
 

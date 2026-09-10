@@ -1,0 +1,138 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /tmp/neckline-v3-qa/ios/b56-offline.xctestrun -destination "platform=iOS Simulator,id=211DD03C-812D-4A42-97EF-F693D7DF924C" -resultBundlePath /tmp/neckline-v3-qa/ios/b56-tests.xcresult
+
+2026-09-10 15:12:10.450 xcodebuild[24030:27749147] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+Writing result bundle at path:
+	/tmp/neckline-v3-qa/ios/b56-tests.xcresult
+
+2026-09-10 15:12:10.452 xcodebuild[24030:27749147] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-10 15:12:12.357 xcodebuild[24030:27749147] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-10 15:12:30.668295+0800 Neckline[24098:27750571] [General] Failed to send CA Event for app launch measurements for ca_event_type: 0 event_name: com.apple.app_launch_measurement.FirstFramePresentationMetric
+objc[24098]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Volumes/iOS_23F77/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x1219b4310) and /Library/Developer/CoreSimulator/Volumes/iOS_23F77/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x120d4c398). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+Test Suite 'All tests' started at 2026-09-10 15:12:32.366.
+Test Suite 'NecklineTests.xctest' started at 2026-09-10 15:12:32.366.
+Test Suite 'K10V3Tests' started at 2026-09-10 15:12:32.367.
+Test Case '-[NecklineTests.K10V3Tests testAdminSettingsCannotCrossConnectionGenerations]' started.
+Test Case '-[NecklineTests.K10V3Tests testAdminSettingsCannotCrossConnectionGenerations]' passed (0.016 seconds).
+Test Case '-[NecklineTests.K10V3Tests testAnalysisChainLoadCannotCrossConnectionGeneration]' started.
+Test Case '-[NecklineTests.K10V3Tests testAnalysisChainLoadCannotCrossConnectionGeneration]' passed (0.008 seconds).
+Test Case '-[NecklineTests.K10V3Tests testAppModelLoadsSyntheticB39SummaryAndAllAssessments]' started.
+Test Case '-[NecklineTests.K10V3Tests testAppModelLoadsSyntheticB39SummaryAndAllAssessments]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testAppModelRefreshUsesCompanyWindowsNotPlans]' started.
+Test Case '-[NecklineTests.K10V3Tests testAppModelRefreshUsesCompanyWindowsNotPlans]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testB39DisclosureDecodesUnverifiedRumorWithoutPromotingLegacyComparison]' started.
+Test Case '-[NecklineTests.K10V3Tests testB39DisclosureDecodesUnverifiedRumorWithoutPromotingLegacyComparison]' passed (0.005 seconds).
+Test Case '-[NecklineTests.K10V3Tests testB55ActualConsistencyResponses]' started.
+Test Case '-[NecklineTests.K10V3Tests testB55ActualConsistencyResponses]' passed (0.027 seconds).
+Test Case '-[NecklineTests.K10V3Tests testB56ActualProviderRecoveryAndStageWindowResponses]' started.
+Test Case '-[NecklineTests.K10V3Tests testB56ActualProviderRecoveryAndStageWindowResponses]' passed (0.011 seconds).
+Test Case '-[NecklineTests.K10V3Tests testBuild35RealProducerPreservesCoverageConfigurationOverlapAndWithdrawnEvidence]' started.
+/Users/linotsai/Lino/Neckline/App/NecklineTests/K10V3Tests.swift:327: -[NecklineTests.K10V3Tests testBuild35RealProducerPreservesCoverageConfigurationOverlapAndWithdrawnEvidence] : Test skipped - set NK_V304_API_URL to run Build 35 real producer acceptance
+Test Case '-[NecklineTests.K10V3Tests testBuild35RealProducerPreservesCoverageConfigurationOverlapAndWithdrawnEvidence]' skipped (0.011 seconds).
+Test Case '-[NecklineTests.K10V3Tests testCancelledAnalysisChainLoadDoesNotReportNetworkFailure]' started.
+Test Case '-[NecklineTests.K10V3Tests testCancelledAnalysisChainLoadDoesNotReportNetworkFailure]' passed (0.002 seconds).
+Test Case '-[NecklineTests.K10V3Tests testCancelledTransportIsNotMappedToNetworkUnavailable]' started.
+Test Case '-[NecklineTests.K10V3Tests testCancelledTransportIsNotMappedToNetworkUnavailable]' passed (0.015 seconds).
+Test Case '-[NecklineTests.K10V3Tests testConnectionGenerationIgnoresStaleFailure]' started.
+Test Case '-[NecklineTests.K10V3Tests testConnectionGenerationIgnoresStaleFailure]' passed (0.002 seconds).
+Test Case '-[NecklineTests.K10V3Tests testConnectionGenerationIgnoresStaleSuccessAndItsCacheWrite]' started.
+Test Case '-[NecklineTests.K10V3Tests testConnectionGenerationIgnoresStaleSuccessAndItsCacheWrite]' passed (0.003 seconds).
+Test Case '-[NecklineTests.K10V3Tests testDebugQACredentialSwitchUsesOnlyProcessToken]' started.
+Test Case '-[NecklineTests.K10V3Tests testDebugQACredentialSwitchUsesOnlyProcessToken]' passed (0.002 seconds).
+Test Case '-[NecklineTests.K10V3Tests testDocumentPaginationPinsRevisionAndConcatenatesBody]' started.
+Test Case '-[NecklineTests.K10V3Tests testDocumentPaginationPinsRevisionAndConcatenatesBody]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testExecutionProgressAndNotificationReadinessDecodeOnlySafeFields]' started.
+Test Case '-[NecklineTests.K10V3Tests testExecutionProgressAndNotificationReadinessDecodeOnlySafeFields]' passed (0.008 seconds).
+Test Case '-[NecklineTests.K10V3Tests testFastAPIErrorEnvelopePreservesActionableDetails]' started.
+Test Case '-[NecklineTests.K10V3Tests testFastAPIErrorEnvelopePreservesActionableDetails]' passed (0.006 seconds).
+Test Case '-[NecklineTests.K10V3Tests testHealthyEmptyFirstRunIsReady]' started.
+Test Case '-[NecklineTests.K10V3Tests testHealthyEmptyFirstRunIsReady]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testMarketSnapshotCollectedAtDecodesWithoutInventingFetchedAt]' started.
+Test Case '-[NecklineTests.K10V3Tests testMarketSnapshotCollectedAtDecodesWithoutInventingFetchedAt]' passed (0.000 seconds).
+Test Case '-[NecklineTests.K10V3Tests testMorningTransportFailurePreservesSameConnectionReportThenRecovers]' started.
+Test Case '-[NecklineTests.K10V3Tests testMorningTransportFailurePreservesSameConnectionReportThenRecovers]' passed (0.011 seconds).
+Test Case '-[NecklineTests.K10V3Tests testNewerAnalysisChainReloadWinsWithinOneConnection]' started.
+Test Case '-[NecklineTests.K10V3Tests testNewerAnalysisChainReloadWinsWithinOneConnection]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testNotificationDoesNotOpenOldDetailAfterConnectionChanges]' started.
+Test Case '-[NecklineTests.K10V3Tests testNotificationDoesNotOpenOldDetailAfterConnectionChanges]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testNotificationRefreshFailureDoesNotOpenOldReadingContext]' started.
+Test Case '-[NecklineTests.K10V3Tests testNotificationRefreshFailureDoesNotOpenOldReadingContext]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testNotificationRoutingOpensExactV14ObjectAndNeverFallsBack]' started.
+Test Case '-[NecklineTests.K10V3Tests testNotificationRoutingOpensExactV14ObjectAndNeverFallsBack]' passed (0.002 seconds).
+Test Case '-[NecklineTests.K10V3Tests testPublicationsPaginationUsesCursorWithoutDroppingSecondPage]' started.
+Test Case '-[NecklineTests.K10V3Tests testPublicationsPaginationUsesCursorWithoutDroppingSecondPage]' passed (0.004 seconds).
+Test Case '-[NecklineTests.K10V3Tests testPushRouteUsesV14WindowAndOpportunityIdentifiers]' started.
+Test Case '-[NecklineTests.K10V3Tests testPushRouteUsesV14WindowAndOpportunityIdentifiers]' passed (0.000 seconds).
+Test Case '-[NecklineTests.K10V3Tests testReasonTextKeepsRecordedNaturalLanguageAndMakesUnknownCodeAuditable]' started.
+Test Case '-[NecklineTests.K10V3Tests testReasonTextKeepsRecordedNaturalLanguageAndMakesUnknownCodeAuditable]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testResultsSeparatePrimaryAndOverlap]' started.
+Test Case '-[NecklineTests.K10V3Tests testResultsSeparatePrimaryAndOverlap]' passed (0.000 seconds).
+Test Case '-[NecklineTests.K10V3Tests testRetryUsesTheFailedAnalysisChainJobWithoutCreatingAnotherRequest]' started.
+Test Case '-[NecklineTests.K10V3Tests testRetryUsesTheFailedAnalysisChainJobWithoutCreatingAnotherRequest]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSameConnectionNewRefreshWinsOverEarlierFailure]' started.
+Test Case '-[NecklineTests.K10V3Tests testSameConnectionNewRefreshWinsOverEarlierFailure]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSelectionTimingAndUnknownLimitStatusDecodeWithoutFalseNegative]' started.
+Test Case '-[NecklineTests.K10V3Tests testSelectionTimingAndUnknownLimitStatusDecodeWithoutFalseNegative]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSourceReferenceIdentityKeepsDocumentRevisionsDistinct]' started.
+Test Case '-[NecklineTests.K10V3Tests testSourceReferenceIdentityKeepsDocumentRevisionsDistinct]' passed (0.000 seconds).
+Test Case '-[NecklineTests.K10V3Tests testStaleAdminSaveDoesNotRefreshTheNewConnection]' started.
+Test Case '-[NecklineTests.K10V3Tests testStaleAdminSaveDoesNotRefreshTheNewConnection]' passed (0.003 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSupplementaryRequestRefreshesAnAlreadyOpenAnalysisChain]' started.
+Test Case '-[NecklineTests.K10V3Tests testSupplementaryRequestRefreshesAnAlreadyOpenAnalysisChain]' passed (0.002 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSyntheticB39ResearchFixtureKeepsFailurePendingAndRumorDisclosureDistinct]' started.
+Test Case '-[NecklineTests.K10V3Tests testSyntheticB39ResearchFixtureKeepsFailurePendingAndRumorDisclosureDistinct]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSyntheticDetailsExposeNaturalEvidenceLongMarkdownAndExcerptOnlyDocument]' started.
+Test Case '-[NecklineTests.K10V3Tests testSyntheticDetailsExposeNaturalEvidenceLongMarkdownAndExcerptOnlyDocument]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSyntheticWindowActionsAreIndependentAndWithdrawalKeepsAnalysisHistory]' started.
+2026-09-10 15:12:32.531534+0800 Neckline[24098:27750571] [General] Failed to send CA Event for app launch measurements for ca_event_type: 1 event_name: com.apple.app_launch_measurement.ExtendedLaunchMetrics
+Test Case '-[NecklineTests.K10V3Tests testSyntheticWindowActionsAreIndependentAndWithdrawalKeepsAnalysisHistory]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testSyntheticWindowsAndMarketFactsUseDistinctDatesAndChinextTwentyPercentLimit]' started.
+Test Case '-[NecklineTests.K10V3Tests testSyntheticWindowsAndMarketFactsUseDistinctDatesAndChinextTwentyPercentLimit]' passed (0.000 seconds).
+Test Case '-[NecklineTests.K10V3Tests testTemporaryBackendAPISmokeDecodesCompanyWindowAndIncompleteResult]' started.
+/Users/linotsai/Lino/Neckline/App/NecklineTests/K10V3Tests.swift:713: -[NecklineTests.K10V3Tests testTemporaryBackendAPISmokeDecodesCompanyWindowAndIncompleteResult] : Test skipped - temporary K10 API smoke server was not requested
+Test Case '-[NecklineTests.K10V3Tests testTemporaryBackendAPISmokeDecodesCompanyWindowAndIncompleteResult]' skipped (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV302RealProducerContractDecodesMorningLifecycleAnalysisHistoryAndMarket]' started.
+/Users/linotsai/Lino/Neckline/App/NecklineTests/K10V3Tests.swift:264: -[NecklineTests.K10V3Tests testV302RealProducerContractDecodesMorningLifecycleAnalysisHistoryAndMarket] : Test skipped - set NK_V303_API_URL (or NK_V302_API_URL) to run the producer-to-Swift contract test
+Test Case '-[NecklineTests.K10V3Tests testV302RealProducerContractDecodesMorningLifecycleAnalysisHistoryAndMarket]' skipped (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV306IsolatedFastAPIProgressDecodesTitleFirstProjection]' started.
+/Users/linotsai/Lino/Neckline/App/NecklineTests/K10V3Tests.swift:757: -[NecklineTests.K10V3Tests testV306IsolatedFastAPIProgressDecodesTitleFirstProjection] : Test skipped - set NK_V306_API_URL to run the isolated B38 FastAPI-to-Swift DTO check
+Test Case '-[NecklineTests.K10V3Tests testV306IsolatedFastAPIProgressDecodesTitleFirstProjection]' skipped (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV310IsolatedFastAPIResearchSummaryAndAssessmentsDecodeDisclosure]' started.
+/Users/linotsai/Lino/Neckline/App/NecklineTests/K10V3Tests.swift:779: -[NecklineTests.K10V3Tests testV310IsolatedFastAPIResearchSummaryAndAssessmentsDecodeDisclosure] : Test skipped - set NK_V310_API_URL to run the isolated B39 FastAPI-to-Swift DTO check
+Test Case '-[NecklineTests.K10V3Tests testV310IsolatedFastAPIResearchSummaryAndAssessmentsDecodeDisclosure]' skipped (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320ActualClosedHistoryDoesNotDisableIndependentNewWindow]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320ActualClosedHistoryDoesNotDisableIndependentNewWindow]' passed (0.009 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320ActualFailedMorningRetainsCardsAndListsIncompleteReviews]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320ActualFailedMorningRetainsCardsAndListsIncompleteReviews]' passed (0.004 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320ActualFastAPIReportResponsesDecode]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320ActualFastAPIReportResponsesDecode]' passed (0.010 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320ClosedDailyCardCannotQueueNewSelection]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320ClosedDailyCardCannotQueueNewSelection]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320ClosedHistoricalWindowCannotRestoreButActiveWindowCan]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320ClosedHistoricalWindowCannotRestoreButActiveWindowCan]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320DailyReadFailurePreservesExplicitlyStaleReportAndEmptyClearsIt]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320DailyReadFailurePreservesExplicitlyStaleReportAndEmptyClearsIt]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320DailySelectionKeepsPublishedCardAndTargetsItsWindow]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320DailySelectionKeepsPublishedCardAndTargetsItsWindow]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320LifecycleNoticeSurvivesWithoutAnyDailyCardAndDeduplicates]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320LifecycleNoticeSurvivesWithoutAnyDailyCardAndDeduplicates]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320MorningPaginationDeduplicatesAndRejectsRepeatedCursor]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320MorningPaginationDeduplicatesAndRejectsRepeatedCursor]' passed (0.001 seconds).
+Test Case '-[NecklineTests.K10V3Tests testV320RepairActualLifecycleResponsesReachCurrentCards]' started.
+Test Case '-[NecklineTests.K10V3Tests testV320RepairActualLifecycleResponsesReachCurrentCards]' passed (0.002 seconds).
+Test Suite 'K10V3Tests' passed at 2026-09-10 15:12:32.579.
+	 Executed 51 tests, with 5 tests skipped and 0 failures (0 unexpected) in 0.188 (0.213) seconds
+Test Suite 'NecklineTests.xctest' passed at 2026-09-10 15:12:32.580.
+	 Executed 51 tests, with 5 tests skipped and 0 failures (0 unexpected) in 0.188 (0.213) seconds
+Test Suite 'All tests' passed at 2026-09-10 15:12:32.580.
+	 Executed 51 tests, with 5 tests skipped and 0 failures (0 unexpected) in 0.188 (0.214) seconds
+2026-09-10 15:12:32.893 xcodebuild[24030:27749147] [MT] IDETestOperationsObserverDebug: 20.534 elapsed -- Testing started completed.
+2026-09-10 15:12:32.893 xcodebuild[24030:27749147] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-10 15:12:32.893 xcodebuild[24030:27749147] [MT] IDETestOperationsObserverDebug: 20.534 sec, +20.534 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/neckline-v3-qa/ios/b56-tests.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started

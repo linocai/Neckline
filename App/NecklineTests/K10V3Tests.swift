@@ -821,7 +821,7 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(scan.executionProgress?.safeFailures.first?.code, "model_output_invalid")
         XCTAssertEqual(scan.executionProgress?.safeFailures.first?.ref, "doc-safe@1")
         XCTAssertEqual(scan.executionProgress?.runControl?.state, "paused")
-        XCTAssertEqual(scan.executionProgress?.titleCounts?.merged, 22)
+        XCTAssertEqual(scan.executionProgress?.titleCounts?.merged, 2, "保持服务响应的 merged=2，不在客户端重新统计")
         XCTAssertEqual(scan.executionProgress?.articleCounts?.limit, 80)
         XCTAssertEqual(scan.executionProgress?.articleCounts?.missingBody, 1)
         XCTAssertEqual(scan.executionProgress?.attemptCounts?.unknown, 1)
@@ -957,6 +957,14 @@ private actor ControlledK10Service: K10Servicing {
     private var publicationCalls = 0
     private var analysisChainCalls = 0
     private var morningFailure: K10APIError?
+    private var dailyFailure: K10APIError?
+    private var dailyEmpty = false
+    private var nextDailyPage: K10DailyReportResponse?
+    private var dailyMorningOverride: K10DailyReportResponse?
+    private var dailyActionCalls = 0
+    private var dailySelections: [String: String] = [:]
+    private var dailyPageFailure: K10APIError?
+    private var dailyActionResponse: K10SelectionAction?
 
     init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
         self.batchID = batchID
@@ -996,6 +1004,32 @@ private actor ControlledK10Service: K10Servicing {
         if empty { return [] }
         return try await fixture.companyWindows()
     }
+    func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
+        if let dailyFailure { throw dailyFailure }
+        if empty || dailyEmpty { return .init(schemaVersion: 8, state: "empty", reason: nil, report: nil) }
+        if window == "morning", let dailyMorningOverride { return try applyingDailySelections(dailyMorningOverride) }
+        return try await fixture.latestDailyReport(window: window)
+    }
+    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
+        if let dailyPageFailure { throw dailyPageFailure }
+        guard let nextDailyPage else { throw K10APIError.notFound("没有下一页") }
+        return try applyingDailySelections(nextDailyPage)
+    }
+    private func applyingDailySelections(_ input: K10DailyReportResponse) throws -> K10DailyReportResponse {
+        var response = input
+        response.report?.addedCards = try (input.report?.addedCards ?? []).map { card in
+            guard let state = dailySelections[card.companyWindowId] else { return card }
+            var row = try JSONSerialization.jsonObject(with: JSONEncoder().encode(card)) as! [String: Any]
+            row["currentSelectionState"] = state
+            return try JSONDecoder().decode(K10DailyCard.self, from: JSONSerialization.data(withJSONObject: row))
+        }
+        return response
+    }
+    func setDailyActionResponse(_ response: K10SelectionAction) { dailyActionResponse = response }
+    func setDailyPageFailure(_ error: K10APIError?) { dailyPageFailure = error }
+    func setDailyFailure(_ error: K10APIError?) { dailyFailure = error }
+    func setDailyEmpty() { dailyEmpty = true }
+    func setDailyPages(first: K10DailyReportResponse, next: K10DailyReportResponse) { dailyMorningOverride = first; nextDailyPage = next }
     func latestMorningReport() async throws -> K10MorningReport? {
         if let morningFailure { throw morningFailure }
         return morningReport
@@ -1004,7 +1038,13 @@ private actor ControlledK10Service: K10Servicing {
         if let opportunityGate { await opportunityGate.wait() }
         return try await fixture.opportunity(id: id)
     }
-    func act(companyWindowID: String, request: K10SelectionRequest) async throws -> K10SelectionAction { try await fixture.act(companyWindowID: companyWindowID, request: request) }
+    func act(companyWindowID: String, request: K10SelectionRequest) async throws -> K10SelectionAction {
+        dailyActionCalls += 1
+        dailySelections[companyWindowID] = ["keep": "kept", "skip": "skipped", "restore": "unhandled"][request.action]
+        if let dailyActionResponse { return dailyActionResponse }
+        return try await fixture.act(companyWindowID: companyWindowID, request: request)
+    }
+    func dailyActionCallCount() -> Int { dailyActionCalls }
     func selections() async throws -> [K10SelectionDetail] {
         if empty { return [] }
         return try await fixture.selections()
@@ -1095,4 +1135,422 @@ private actor ControlledAdminService: K10AdminServicing {
         savedContexts.append(context)
     }
     func clear() { snapshots.removeAll(); savedContexts.removeAll() }
+}
+
+extension K10V3Tests {
+    @MainActor
+    func testV320ClosedHistoricalWindowCannotRestoreButActiveWindowCan() async throws {
+        let service = ControlledK10Service(batchID: "closed-history")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        var window = try XCTUnwrap(model.companyWindows.first)
+        window.canSelect = false
+        await model.act("keep", window: window)
+        await model.act("restore", window: window)
+        let blockedCalls = await service.dailyActionCallCount()
+        XCTAssertEqual(blockedCalls, 0, "历史窗口不能绕过日报已关闭目标的限制")
+        XCTAssertEqual(model.toast, "该机会已撤回或到期，原选择和两日成绩继续保留")
+        window.canSelect = true
+        await model.act("restore", window: window)
+        let allowedCalls = await service.dailyActionCallCount()
+        XCTAssertEqual(allowedCalls, 1, "同公司仍有效的独立窗口继续允许找回")
+    }
+
+    @MainActor
+    func testV320ClosedDailyCardCannotQueueNewSelection() async throws {
+        let service = ControlledK10Service(batchID: "closed-card")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        var card = try XCTUnwrap(model.eveningCards.first)
+        card.canSelect = false
+        await model.act("keep", card: card)
+        await model.act("restore", card: card)
+        let calls = await service.dailyActionCallCount()
+        XCTAssertEqual(calls, 0, "已终止的目标窗口不能从客户端重新启动分析")
+        XCTAssertEqual(model.toast, "该机会已撤回或到期，原选择和两日成绩继续保留")
+    }
+
+    @MainActor
+    func testV320LifecycleNoticeSurvivesWithoutAnyDailyCardAndDeduplicates() async throws {
+        let service = K10SyntheticUIService()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let update = K10DailyLifecycleUpdate(updateId: "old-withdrawal", opportunityId: "old-opportunity",
+            companyWindowId: "old-window", companyCode: "300001.SZ", companyName: "旧关注公司", kind: "withdrawal",
+            reason: "公司明确否认，原催化理由失效。", createdAt: "2026-09-09T09:00:00+08:00", sourceRefs: [])
+        model.dailyEvening?.report?.eveningCards = []
+        model.dailyEvening?.report?.lifecycleUpdates = [update]
+        model.dailyMorning?.report?.updatedCards = []
+        model.dailyMorning?.report?.addedCards = []
+        model.dailyMorning?.report?.lifecycleUpdates = [update]
+        XCTAssertTrue(model.eveningCards.isEmpty)
+        XCTAssertEqual(model.dailyLifecycleUpdates, [update], "旧关注变化不能依赖今天有推荐卡，也不能因晚晨两份投影而重复")
+    }
+
+    @MainActor
+    func testV320DailySelectionKeepsPublishedCardAndTargetsItsWindow() async throws {
+        let service = K10SyntheticUIService()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let card = try XCTUnwrap(model.eveningCards.first)
+        XCTAssertEqual(card.section, "updated")
+        XCTAssertEqual(model.eveningCards.count, 1, "晨间更新并入原公司卡")
+        XCTAssertTrue(card.isUnverified)
+        await model.act("keep", card: card)
+        let after = try XCTUnwrap(model.eveningCards.first)
+        XCTAssertEqual(after.cardId, card.cardId)
+        XCTAssertEqual(after.currentSelectionState, "kept")
+        XCTAssertEqual(after.companyWindowId, card.companyWindowId)
+        XCTAssertEqual(after.d1TradeDate, card.d1TradeDate)
+        XCTAssertEqual(after.d2TradeDate, card.d2TradeDate)
+        let newCard = try XCTUnwrap(model.dailyMorning?.report?.addedCards.first)
+        XCTAssertEqual(newCard.currentSelectionState, "unhandled", "留下旧机会不能替另一机会作选择")
+        let selected = try XCTUnwrap(model.companyWindows.first { $0.id == card.companyWindowId })
+        XCTAssertEqual(selected.selection?.state, "selected", "持久化 selected 映射到卡片 kept")
+    }
+
+    @MainActor
+    func testV320DailyReadFailurePreservesExplicitlyStaleReportAndEmptyClearsIt() async throws {
+        let service = ControlledK10Service(batchID: "daily-read")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let previous = try XCTUnwrap(model.dailyMorning)
+        await service.setDailyFailure(.decoding("晨报结构无效"))
+        await model.refresh()
+        XCTAssertEqual(model.dailyMorning, previous)
+        XCTAssertEqual(model.dailyReportErrors["morning"], "晨报结构无效")
+        await service.setDailyFailure(nil)
+        await service.setDailyEmpty()
+        await model.refresh()
+        XCTAssertNil(model.dailyMorning?.report)
+        XCTAssertTrue(model.eveningCards.isEmpty, "历史窗口不能作为今日卡片的回退来源")
+        XCTAssertFalse(model.companyWindows.isEmpty)
+        XCTAssertTrue(model.dailyReportErrors.isEmpty)
+    }
+
+    @MainActor
+    func testV320MorningPaginationDeduplicatesAndRejectsRepeatedCursor() async throws {
+        let service = ControlledK10Service(batchID: "daily-pages")
+        var first = try await service.latestDailyReport(window: "morning")
+        first.report?.nextCursor = "cursor-one"
+        var next = first
+        next.report?.nextCursor = nil
+        await service.setDailyPages(first: first, next: next)
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let count = model.dailyMorning?.report?.addedCards.count
+        await model.loadMoreDailyCards()
+        XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, count)
+        XCTAssertNil(model.dailyMorning?.report?.nextCursor)
+        await service.setDailyPages(first: first, next: first)
+        await model.refresh()
+        await model.loadMoreDailyCards()
+        XCTAssertNotNil(model.dailyReportErrors["morning"])
+        XCTAssertEqual(model.dailyMorning?.report?.nextCursor, "cursor-one")
+    }
+
+    func testV320ActualFastAPIReportResponsesDecode() async throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"] else {
+            throw XCTSkip("Set NK_V320_DTO_DIR to isolated FastAPI response artifacts")
+        }
+        let decoder = JSONDecoder()
+        let evening = try decoder.decode(K10DailyReportResponse.self, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("evening.json")))
+        let morning = try decoder.decode(K10DailyReportResponse.self, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("morning.json")))
+        XCTAssertEqual(evening.schemaVersion, 8)
+        XCTAssertEqual(evening.report?.strategyVersion, "K10-v2")
+        XCTAssertFalse(try XCTUnwrap(evening.report).eveningCards.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(morning.report).updatedCards.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(morning.report).addedCards.isEmpty)
+        for card in (evening.report?.eveningCards ?? []) + (morning.report?.updatedCards ?? []) + (morning.report?.addedCards ?? []) {
+            XCTAssertTrue(["kept", "skipped", "unhandled"].contains(card.currentSelectionState))
+            XCTAssertFalse(card.companyWindowId.isEmpty)
+            XCTAssertFalse(card.catalysts.isEmpty)
+        }
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            try decoder.decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + ".json")))
+        }
+        let configuration = try read("configuration", as: K10Configuration.self)
+        XCTAssertEqual(configuration.profileReviewStatus, "local_draft_awaiting_user")
+        XCTAssertNotNil(configuration.universeSnapshotId)
+        let windows = try read("windows", as: K10CompanyWindowList.self).items
+        XCTAssertEqual(Set(windows.compactMap(\.strategyVersion)), ["K10-v1.4", "K10-v2"])
+        XCTAssertTrue(windows.filter { $0.strategyVersion == "K10-v2" }.allSatisfy { !($0.companyName?.isEmpty ?? true) })
+        let mixed = try XCTUnwrap(morning.report?.updatedCards.first)
+        XCTAssertEqual(mixed.sampleClass, "overlap")
+        XCTAssertEqual(mixed.currentSelectionState, "unhandled")
+        XCTAssertEqual(Set(mixed.catalysts.map(\.companyWindowId)).count, 2)
+        let original = try XCTUnwrap(evening.report?.eveningCards.first { $0.companyCode == mixed.companyCode })
+        XCTAssertNotEqual(original.companyWindowId, mixed.companyWindowId)
+        XCTAssertEqual(windows.first { $0.id == original.companyWindowId }?.selection?.state, "selected")
+        let detail = try read("detail", as: K10OpportunityDetail.self)
+        XCTAssertEqual(detail.strategyVersion, "K10-v2")
+        let results = try read("results", as: K10Results.self)
+        let historical = try read("historical_results", as: K10Results.self)
+        XCTAssertEqual(results.strategyVersion, "K10-v2")
+        XCTAssertEqual(historical.strategyVersion, "K10-v1.4")
+        XCTAssertTrue(Set(results.records.map(\.companyWindowId)).isDisjoint(with: historical.records.map(\.companyWindowId)))
+    }
+
+    @MainActor
+    func testV320RepairActualLifecycleResponsesReachCurrentCards() async throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"] else {
+            throw XCTSkip("Set NK_V320_DTO_DIR to actual isolated repair responses")
+        }
+        let decoder = JSONDecoder()
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            try decoder.decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + ".json")))
+        }
+        let evening = try read("repair_evening", as: K10DailyReportResponse.self)
+        let morning = try read("repair_morning", as: K10DailyReportResponse.self)
+        let windows = try read("repair_windows", as: K10CompanyWindowList.self).items
+        let model = AppModel()
+        model.dailyEvening = evening
+        model.dailyMorning = morning
+        model.companyWindows = windows
+        let updates = model.dailyLifecycleUpdates
+        XCTAssertTrue(Set(updates.map(\.kind)).isSuperset(of: ["risk", "withdrawal", "expiry"]))
+        XCTAssertEqual(Set(updates.map(\.id)).count, updates.count)
+        XCTAssertTrue(updates.allSatisfy { !$0.reason.isEmpty && !$0.companyWindowId.isEmpty && !$0.opportunityId.isEmpty })
+        let cards = model.eveningCards + (morning.report?.addedCards ?? [])
+        XCTAssertTrue(updates.contains { update in !cards.contains { $0.companyWindowId == update.companyWindowId } }, "无今日卡的旧关注变化仍可见")
+        let closed = try XCTUnwrap(cards.first { $0.canSelect == false })
+        XCTAssertFalse(closed.allowsSelection)
+        let closedReasons = closed.catalysts.filter { $0.companyWindowId == closed.companyWindowId }
+        XCTAssertFalse(closedReasons.isEmpty)
+        XCTAssertTrue(closedReasons.allSatisfy { ["withdrawn", "expired"].contains($0.lifecycleState ?? "") })
+        let mixed = try XCTUnwrap(cards.first { $0.canSelect == true && Set($0.catalysts.map(\.companyWindowId)).count > 1 })
+        XCTAssertTrue(mixed.allowsSelection)
+        XCTAssertTrue(mixed.catalysts.contains { $0.companyWindowId != mixed.companyWindowId && $0.lifecycleState == "withdrawn" })
+        XCTAssertTrue(mixed.catalysts.contains { $0.companyWindowId == mixed.companyWindowId && ["active", "risk"].contains($0.lifecycleState ?? "") })
+        let originalWindow = try XCTUnwrap(windows.first { $0.companyWindowId == closed.companyWindowId })
+        XCTAssertEqual(originalWindow.canSelect, false)
+        XCTAssertFalse(originalWindow.allowsSelection)
+        let mixedTarget = try XCTUnwrap(windows.first { $0.companyWindowId == mixed.companyWindowId })
+        XCTAssertEqual(mixedTarget.canSelect, true)
+        XCTAssertTrue(mixedTarget.allowsSelection)
+        XCTAssertEqual(closed.d1TradeDate, originalWindow.d1TradeDate)
+        XCTAssertEqual(closed.d2TradeDate, originalWindow.d2TradeDate)
+        XCTAssertEqual(mixed.currentSelectionState, "unhandled", "旧催化的历史选择不能传给新的目标窗口")
+    }
+
+    @MainActor
+    func testV320ActualFailedMorningRetainsCardsAndListsIncompleteReviews() async throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"] else {
+            throw XCTSkip("Set NK_V320_DTO_DIR to actual isolated boundary responses")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("boundary_morning_failure.json"))
+        let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
+        let report = try XCTUnwrap(response.report)
+        XCTAssertEqual(report.status, "partial")
+        XCTAssertNotNil(response.reason)
+        XCTAssertFalse(try XCTUnwrap(report.coverageGaps).isEmpty)
+        let incomplete = try XCTUnwrap(report.incompleteReviews)
+        XCTAssertFalse(incomplete.isEmpty)
+        XCTAssertTrue(incomplete.allSatisfy { !$0.reason.isEmpty && !$0.companyCode.isEmpty && !$0.companyWindowId.isEmpty && $0.status != "completed" })
+        let service = ControlledK10Service(batchID: "morning-partial")
+        await service.setDailyPages(first: response, next: response)
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        XCTAssertEqual(model.dailyMorning?.report?.incompleteReviews, incomplete)
+        XCTAssertEqual(model.dailyMorning?.report?.updatedCards, report.updatedCards)
+        XCTAssertEqual(model.dailyMorning?.report?.addedCards, report.addedCards)
+        XCTAssertFalse(report.updatedCards.isEmpty && report.addedCards.isEmpty, "子复核失败不能抹掉已经完成的推荐")
+    }
+
+    @MainActor
+    func testV320ActualClosedHistoryDoesNotDisableIndependentNewWindow() async throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"] else {
+            throw XCTSkip("Set NK_V320_DTO_DIR to actual isolated boundary responses")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("boundary_windows.json"))
+        let windows = try JSONDecoder().decode(K10CompanyWindowList.self, from: data).items
+        let closed = try XCTUnwrap(windows.first { $0.currentSelectionState == "skipped" && $0.canSelect == false })
+        let active = try XCTUnwrap(windows.first { $0.companyCode == closed.companyCode && $0.canSelect == true })
+        XCTAssertNotEqual(closed.id, active.id)
+        let service = ControlledK10Service(batchID: "actual-closed-history")
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        await model.act("restore", window: closed)
+        let closedCalls = await service.dailyActionCallCount()
+        XCTAssertEqual(closedCalls, 0)
+        await model.act("restore", window: active)
+        let activeCalls = await service.dailyActionCallCount()
+        XCTAssertEqual(activeCalls, 1, "限制必须只作用于关闭窗口，而非整家公司")
+    }
+    @MainActor
+    func testB55ActualConsistencyResponses() async throws {
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            try JSONDecoder().decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + ".json")))
+        }
+        let morning = try read("b55_morning", as: K10DailyReportResponse.self)
+        let change = try XCTUnwrap(morning.report?.lifecycleUpdates?.first { $0.kind == "evidence_update" })
+        XCTAssertEqual(change.label, "事实与论点变化")
+        XCTAssertTrue(try XCTUnwrap(morning.report).updatedCards.isEmpty)
+        let evening = try read("b55_evening", as: K10DailyReportResponse.self)
+        let card = try XCTUnwrap(evening.report?.eveningCards.first)
+        XCTAssertTrue(try XCTUnwrap(card.priceReaction).contains("+12.00%"))
+        XCTAssertEqual(card.priceContext?.tradeDate, "2026-09-08")
+        XCTAssertFalse(try XCTUnwrap(card.priceContext).sourceRefs.isEmpty)
+        let chain = try read("b55_analysis", as: K10AnalysisChain.self)
+        let con = try XCTUnwrap(chain.items.first?.analyses.first { $0.role == "con" })
+        XCTAssertFalse(try XCTUnwrap(con.summary).commonFacts.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(con.summary).disagreements.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(con.summary).unknowns.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(con.fullText).contains("共同未知"))
+        let results = try read("b55_results", as: K10Results.self)
+        XCTAssertEqual(results.primary["all"]?.consecutiveLimitUpCount, 1)
+        XCTAssertEqual(results.primary["all"]?.hitCount, 1)
+        XCTAssertEqual(results.records.first?.consecutiveLimitUp, true)
+    }
+
+    @MainActor
+    func testB56ActualProviderRecoveryAndStageWindowResponses() async throws {
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            try JSONDecoder().decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + ".json")))
+        }
+        for role in ["pro", "con"] {
+            let unpaid = try read("b56_analysis_" + role + "_402", as: K10AnalysisChain.self)
+            XCTAssertEqual(unpaid.items.first?.job?.status, "failed")
+            XCTAssertTrue(try XCTUnwrap(unpaid.items.first?.analyses.first { $0.role == role }?.error).contains("余额不足"))
+            let throttled = try read("b56_analysis_" + role + "_429", as: K10AnalysisChain.self)
+            XCTAssertEqual(throttled.items.first?.job?.status, "queued")
+            XCTAssertTrue(try XCTUnwrap(throttled.items.first?.job?.error?.message).contains("延后重试"))
+            let recovered = try read("b56_analysis_" + role + "_recovered", as: K10AnalysisChain.self)
+            XCTAssertEqual(recovered.items.first?.job?.status, "completed")
+            XCTAssertEqual(recovered.items.first?.analyses.count, 2)
+            XCTAssertTrue(try XCTUnwrap(recovered.items.first).analyses.allSatisfy { $0.status == "completed" })
+        }
+        for code in [402, 429] {
+            let morning = try read("b56_morning_" + String(code), as: K10DailyReportResponse.self)
+            let child = try XCTUnwrap(morning.report?.incompleteReviews?.first)
+            XCTAssertEqual(child.status, code == 402 ? "failed" : "queued")
+            XCTAssertTrue(child.reason.contains(code == 402 ? "余额不足" : "延后重试"))
+            XCTAssertEqual(morning.report?.status, "partial")
+        }
+        let restored = try read("b56_morning_recovered", as: K10DailyReportResponse.self)
+        XCTAssertEqual(restored.report?.status, "completed")
+        XCTAssertTrue(try XCTUnwrap(restored.report?.incompleteReviews).isEmpty)
+        let evening = try read("b56_stage_evening", as: K10DailyReportResponse.self)
+        let card = try XCTUnwrap(evening.report?.eveningCards.first)
+        XCTAssertEqual(card.d1TradeDate, "2026-09-10")
+        XCTAssertEqual(card.d2TradeDate, "2026-09-11")
+        XCTAssertEqual(card.canSelect, true)
+        XCTAssertEqual(card.catalysts.first?.companyWindowId, card.companyWindowId)
+    }
+
+    @MainActor
+    private func b57MorningPages() async throws -> (ControlledK10Service, K10DailyReportResponse, K10DailyReportResponse, K10DailyCard) {
+        let service = ControlledK10Service(batchID: "b57-pagination")
+        var first = try await service.latestDailyReport(window: "morning")
+        let tail = try XCTUnwrap(first.report?.addedCards.first)
+        let template = try JSONEncoder().encode(tail)
+        first.report?.addedCards = try (1...30).map { index in
+            var row = try JSONSerialization.jsonObject(with: template) as! [String: Any]
+            row["cardId"] = "b57-card-\(index)"
+            row["companyCode"] = String(format: "300%03d.SZ", index)
+            row["companyWindowId"] = "b57-window-\(index)"
+            row["rank"] = index
+            return try JSONDecoder().decode(K10DailyCard.self, from: JSONSerialization.data(withJSONObject: row))
+        }
+        let firstCursor = first.report?.addedCards.last?.cardId
+        first.report?.nextCursor = firstCursor
+        var next = first
+        next.report?.addedCards = [tail]
+        next.report?.nextCursor = nil
+        await service.setDailyPages(first: first, next: next)
+        return (service, first, next, tail)
+    }
+
+    @MainActor
+    func testB57SecondPageSelectionRefreshPreservesLoadedCardsAndUpdatesState() async throws {
+        let (service, _, _, tail) = try await b57MorningPages()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        await model.loadMoreDailyCards()
+        let ids = try XCTUnwrap(model.dailyMorning?.report).addedCards.map(\.cardId)
+        XCTAssertEqual(ids.count, 31)
+        for (action, state) in [("skip", "skipped"), ("keep", "kept"), ("restore", "unhandled")] {
+            await model.act(action, card: tail)
+            let report = try XCTUnwrap(model.dailyMorning?.report)
+            XCTAssertEqual(report.addedCards.map(\.cardId), ids, "当前卡不能在刷新期间被第一页替换掉")
+            XCTAssertEqual(report.addedCards.last?.currentSelectionState, state)
+            XCTAssertNil(report.nextCursor)
+            XCTAssertNil(model.dailyReportErrors["morning"])
+        }
+    }
+
+    @MainActor
+    func testB57RefreshPageFailurePreservesRangeAndNewReportResetsIt() async throws {
+        let (service, first, next, _) = try await b57MorningPages()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        await model.loadMoreDailyCards()
+        let previous = model.dailyMorning
+        await service.setDailyPageFailure(.networkUnavailable("后续页暂时不可读"))
+        await model.refresh()
+        XCTAssertEqual(model.dailyMorning, previous)
+        XCTAssertNotNil(model.dailyReportErrors["morning"])
+        await service.setDailyPageFailure(nil)
+        var encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(first)) as! [String: Any]
+        var report = encoded["report"] as! [String: Any]
+        report["reportId"] = "b57-new-morning"
+        encoded["report"] = report
+        let new = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: encoded))
+        await service.setDailyPages(first: new, next: next)
+        await model.refresh()
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "b57-new-morning")
+        XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, 30)
+        XCTAssertNil(model.dailyReportErrors["morning"])
+    }
+
+    func testB57ActualEarlyFailureAndParentRecoveryResponsesDecode() throws {
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
+        for kind in ["morning", "evening"] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("b57_early_\(kind)_provider.json"))
+            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
+            XCTAssertEqual(response.report?.status, "not_configured")
+            XCTAssertTrue(try XCTUnwrap(response.reason?.message).contains("参数未配置"))
+            XCTAssertTrue(try XCTUnwrap(response.report?.cutoffAt).hasPrefix("2026-09-09"))
+            XCTAssertNil(response.report?.availableAt)
+        }
+        for status in [402, 429] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("b57_parent_\(status).json"))
+            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
+            XCTAssertEqual(response.report?.status, "partial")
+            XCTAssertEqual(response.report?.incompleteReviews?.first?.status, "failed")
+            XCTAssertTrue(try XCTUnwrap(response.report?.incompleteReviews?.first?.reason).contains(status == 402 ? "余额不足" : "重试上限"))
+        }
+    }
+
+    @MainActor
+    func testB57ActualPaginatedAPIResponsesSurviveActionRefresh() async throws {
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            try JSONDecoder().decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("b57_pages_" + name + ".json")))
+        }
+        let first = try read("first", as: K10DailyReportResponse.self)
+        let next = try read("next", as: K10DailyReportResponse.self)
+        let selected = try read("selected", as: K10DailyReportResponse.self)
+        let action = try read("action", as: K10SelectionAction.self)
+        let tail = try XCTUnwrap(next.report?.addedCards.first)
+        let service = ControlledK10Service(batchID: "b57-real-pages")
+        await service.setDailyPages(first: first, next: next)
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        await model.loadMoreDailyCards()
+        XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, 31)
+        await service.setDailyPages(first: first, next: selected)
+        await service.setDailyActionResponse(action)
+        await model.act("skip", card: tail)
+        let refreshed = try XCTUnwrap(model.dailyMorning?.report)
+        XCTAssertEqual(refreshed.addedCards.count, 31)
+        XCTAssertEqual(refreshed.addedCards.last?.cardId, tail.cardId)
+        XCTAssertEqual(refreshed.addedCards.last?.currentSelectionState, "skipped")
+        XCTAssertEqual(refreshed.addedCards.last?.companyWindowId, tail.companyWindowId)
+        XCTAssertEqual(refreshed.addedCards.last?.d1TradeDate, tail.d1TradeDate)
+        XCTAssertNil(model.dailyReportErrors["morning"])
+    }
+
 }

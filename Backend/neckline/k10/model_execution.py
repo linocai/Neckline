@@ -27,7 +27,7 @@ _OPERATIONS = frozenset({
 })
 _JSON_CODES = frozenset({"json_invalid", "json_root_invalid", "response_json_invalid", "response_structure_invalid"})
 _NETWORK_CODES = frozenset({
-    "provider_configuration", "provider_dependency", "provider_transport", "provider_http_error",
+    "rate_limited", "provider_configuration", "provider_dependency", "provider_transport", "provider_http_error",
     "response_empty", "response_filtered", "provider_tool_limit",
 })
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")

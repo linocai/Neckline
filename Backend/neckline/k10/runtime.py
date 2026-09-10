@@ -10,6 +10,7 @@ from .analysis import AnalysisArtifact, AnalysisInputError, augment_analysis_con
 from .market_context import MarketContextError, attach_frozen_market_context
 from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
 from .providers import resolve_deepseek_v4_pro
+from .provider_failures import provider_deadline_result, provider_failure_result
 from .worker import TaskContext, TaskResult
 
 
@@ -18,9 +19,10 @@ def _artifact(raw: Mapping[str, Any]) -> AnalysisArtifact:
         analysis_id=str(raw["analysisId"]), observation_id=str(raw["observationId"]), revision=int(raw["revision"]),
         role=str(raw["role"]), status=str(raw["status"]), input_cutoff_at=str(raw["inputCutoffAt"]),
         source_refs=tuple(raw.get("sourceRefs") or ()), input_lineage=dict(raw.get("inputLineage") or {}),
-        full_text=str(raw.get("fullText") or ""), provider=raw.get("provider"), model=raw.get("model"),
+        summary=raw.get("summary"), full_text=str(raw.get("fullText") or ""), provider=raw.get("provider"), model=raw.get("model"),
         prompt_version=str(raw.get("promptVersion") or "k10-debate-v1"), usage=dict(raw.get("usage") or {}),
-        error=raw.get("error"),
+        error=raw.get("error"), provider_error_code=raw.get("providerErrorCode"),
+        retry_after_seconds=raw.get("retryAfterSeconds"),
     )
 
 
@@ -40,6 +42,14 @@ def _checkpoint(*, pro: AnalysisArtifact, con: AnalysisArtifact | None = None) -
     if con is not None:
         value["con"] = con.to_dict()
     return value
+
+
+def _failed_role(*, context: TaskContext, role: AnalysisArtifact, checkpoint: Mapping[str, Any]) -> TaskResult:
+    if role.provider_error_code is not None:
+        return provider_failure_result(context=context, stage=role.role + "_failed",
+                                       code=role.provider_error_code, retry_after_seconds=role.retry_after_seconds,
+                                       checkpoint=checkpoint)
+    return TaskResult("failed", role.role + "_failed", checkpoint, role.error or "分析失败")
 
 
 def _chain_artifact(*, company_window_id: str, revision: int, role: str, db_path) -> AnalysisArtifact | None:
@@ -170,10 +180,13 @@ def analysis_handler(
     except MarketContextError:
         return TaskResult("failed", "input", context.checkpoint, "冻结行情上下文无效")
     if pro is None:
+        expired = provider_deadline_result(context=context)
+        if expired is not None:
+            return expired
         try:
             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
                                         stage="analysisPro", item_key=f"{observation_id}:r{revision}",
-                                        attempt=context.task.attempt_count):
+                                        attempt=context.task.attempt_count, clock=context.clock):
                 pro = _with_pricing(run_pro(context=snapshot, cutoff_at=context.input_cutoff_at,
                                             provider=resolution.provider, revision=revision,
                                             model_options=pro_model_options), configuration)
@@ -182,7 +195,7 @@ def analysis_handler(
         context.require_lease()
         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=pro)
     if pro.status != "completed":
-        return TaskResult("failed", "pro_failed", _checkpoint(pro=pro), pro.error or "正方分析失败")
+        return _failed_role(context=context, role=pro, checkpoint=_checkpoint(pro=pro))
     if company_window_id is not None:
         con = _chain_artifact(company_window_id=company_window_id, revision=revision, role="con", db_path=context.db_path)
         completed_con = None
@@ -194,10 +207,13 @@ def analysis_handler(
     if con is not None:
         pass
     else:
+        expired = provider_deadline_result(context=context, checkpoint=_checkpoint(pro=pro))
+        if expired is not None:
+            return expired
         try:
             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
                                         stage="analysisCon", item_key=f"{observation_id}:r{revision}",
-                                        attempt=context.task.attempt_count):
+                                        attempt=context.task.attempt_count, clock=context.clock):
                 con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at,
                                             provider=resolution.provider, pro=pro, revision=revision,
                                             model_options=con_model_options), configuration)
@@ -206,7 +222,7 @@ def analysis_handler(
         context.require_lease()
         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=con)
         if con.status != "completed":
-            return TaskResult("failed", "con_failed", _checkpoint(pro=pro, con=con), con.error or "反方分析失败")
+            return _failed_role(context=context, role=con, checkpoint=_checkpoint(pro=pro, con=con))
     context.require_lease()
     checkpoint = _checkpoint(pro=pro, con=con)
     if request_id is not None:

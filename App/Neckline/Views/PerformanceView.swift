@@ -13,7 +13,18 @@ struct PerformanceView: View {
                     subtitle: "固定 D1 / D2 的行情事实与封板记录，不表示个人交易结果。"
                 )
 
+                Picker("成绩所属策略", selection: $model.resultsStrategyVersion) {
+                    Text("K10-v2").tag("K10-v2")
+                    Text("K10-v1.4 历史").tag("K10-v1.4")
+                }.pickerStyle(.segmented).disabled(model.offline)
+                .onChange(of: model.resultsStrategyVersion) { _, _ in
+                    model.results = nil
+                    Task { await model.refresh() }
+                }
+
                 if let results = model.results {
+                    Text("\(results.strategyVersion ?? "策略版本未记录") · 各版本分开统计")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     PerformanceDashboard(results: results)
                     PerformanceFilterBar(selection: $filter)
 
@@ -142,6 +153,7 @@ private struct PerformanceDashboard: View {
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
                     MetricTile(title: "两日收盘封板", value: "\(primary.hitCount)", note: "仅完整主样本")
+                    MetricTile(title: "两日连板", value: primary.consecutiveLimitUpCount.map(String.init) ?? "未记录", note: "D1、D2 均收盘封板，主命中仍算一次")
                     MetricTile(title: "两日触板", value: primary.touchRate.map { String(format: "%.1f%%", $0 * 100) } ?? "待核", note: "分母同可核主样本")
                     MetricTile(title: "未到期／待核", value: "\(primary.pendingCount)", note: "不计为未命中")
                     MetricTile(title: "停牌", value: "\(primary.suspendedCount)", note: "单列，不计为未命中")
@@ -247,7 +259,7 @@ private struct CohortMetricRow: View {
                     Text(observedOnly
                          ? "样本 \(metric.sampleCount) · 可核 \(metric.observedCompleteCount) · 收盘封板 \(metric.hitCount)"
                          : "样本 \(metric.sampleCount) · 可核 \(metric.eligibleCount) · 收盘封板 \(metric.hitCount)")
-                    Text("评价未配置 \(metric.notConfiguredCount.map(String.init) ?? "未记录")")
+                    Text("两日连板 \(metric.consecutiveLimitUpCount.map(String.init) ?? "未记录") · 评价未配置 \(metric.notConfiguredCount.map(String.init) ?? "未记录")")
                     Text("未到期／待核 \(metric.pendingCount) · 停牌 \(metric.suspendedCount) · 缺数 \(metric.dataGapCount) · 异常 \(metric.anomalyCount) · 不完整 \(metric.incompleteCount)（缺数为不完整子集）")
                 }
                     .font(NKFont.caption.monospacedDigit())
@@ -323,6 +335,7 @@ private struct EvaluationCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("两日收盘封板：\(value.closeLimitHitAny == true ? "命中" : value.closeLimitHitAny == false ? "未命中" : "待核") · 首次触板：\(value.firstTouchDay.map(k10DisplayTime) ?? "待核")")
                         .font(NKFont.callout)
+                    Text("两日连板：\(value.consecutiveLimitUp == true ? "是" : value.consecutiveLimitUp == false ? "否" : "待核")（D1、D2 均收盘封板）").font(NKFont.callout)
                     Text("D1 开盘跳空：\(percentage(value.d1OpenGap)) · \(k10ComparabilityText(value.comparability))")
                         .font(NKFont.caption)
                         .foregroundStyle(NK.textSecondary)

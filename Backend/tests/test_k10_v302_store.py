@@ -71,14 +71,17 @@ def _seed_observed_window(path):
 
 def test_v3_migrates_v2_market_rows_without_loss_and_allows_explicit_anomaly(tmp_path):
     path = tmp_path / "v2.sqlite"
-    initialize_schema(path)
-    rollback_schema(path, target_version=2)
+    from neckline.k10 import schema
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+        schema._apply_v1(conn); schema._apply_v2(conn)
+        conn.executemany("INSERT INTO k10_schema_migrations VALUES (?,?)", [(1,NOW),(2,NOW)])
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (2,)
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT INTO k10_market_day_fact_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      ("300001.SZ", "2026-09-08", 1, "available", 1, 2, 1, 2, 1, 2, 1, 1, None, "{}", "[]", NOW, NOW))
-    assert initialize_schema(path) == 7
+    assert initialize_schema(path) == 8
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT availability,open,high,close FROM k10_market_day_fact_revisions").fetchone() == ("available", 1.0, 2.0, 2.0)
     assert store.append_market_day_fact(company_code="300001.SZ", trade_date="2026-09-08", availability="anomaly",

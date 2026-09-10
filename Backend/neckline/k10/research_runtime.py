@@ -116,6 +116,11 @@ class _Investigation:
         if self.guard:
             self.guard()
 
+    def _external_guard(self) -> None:
+        self._guard()
+        if getattr(self.model, '_terminal_provider_error', None) == 'insufficient_balance':
+            raise InvestigationError('余额不足，停止后续模型及搜索步骤', code='insufficient_balance')
+
     def _refresh(self) -> None:
         self.state = read_research_state(snapshot_id=self.identity, db_path=self.db_path)
         if self.state is None:
@@ -169,6 +174,22 @@ class _Investigation:
                           "excerpt": excerpt, "sourceStatements": statements, "provenance": provenance})
         return cards
 
+    def _company_scope(self) -> dict[str, Any]:
+        binding = getattr(self.model, "_company_profiles_binding", None)
+        if binding is None:
+            return {}
+        from .schema import read_connection
+        from .v2_profiles import retrieve_company_context
+        hints = set()
+        with read_connection(self.db_path) as conn:
+            for ref in self.event.source_refs:
+                row = conn.execute("SELECT company_codes_json FROM k10_v2_title_company_hints WHERE task_id=? AND document_id=? AND revision=?",
+                    (self.task_id, ref.document_id, ref.revision)).fetchone()
+                if row: hints.update(json.loads(row[0]))
+        hints.update(code for question in self.state["questions"] for code in question["companyCodes"])
+        query = self.event.headline + " " + json.dumps({"facts": self.event.facts, "questions": self.state["questions"]}, ensure_ascii=False)
+        return retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=query, hinted_codes=sorted(hints))
+
     def _packet(self) -> dict[str, Any]:
         tool_outcomes = [(item["result"].get("conclusion") or {}).get("runtimeEvidence")
                          for item in self.state["stageResults"]]
@@ -177,12 +198,13 @@ class _Investigation:
         fulltext_leads = [ref for item in tool_outcomes if item for ref in item.get("documentRefs", [])
                          if _key(ref) not in self.allowed]
         return {"event": {key: self.context[key] for key in ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")},
+            "companyScope": self._company_scope(),
             "newsCutoffAt": self.snapshot.news_cutoff_at,
             "allowedEvidenceRefs": [_ref(ref) for ref in sorted(self.allowed, key=lambda item: (item.document_id, item.revision))],
             "claims": self.state["claims"], "questions": self.state["questions"], "queryPaths": self.state["paths"],
             "evidenceCards": self._cards(), "evidenceUpdates": self.state["evidenceUpdates"],
             "fulltextRequests": self.state["fulltextRequests"], "toolOutcomes": [item for item in tool_outcomes if item],
-            "availableArticlePolicy": {"limits": self.policy["articleLimits"], "reserve": False},
+            "availableArticlePolicy": {"fullTextQuota": None, "eventShared": True},
             # A returned search hit with unknown publication time is a valid
             # fulltext lead, not yet usable evidence for a factual conclusion.
             **({"fulltextRequestRefs": fulltext_leads} if fulltext_leads else {}),
@@ -201,6 +223,17 @@ class _Investigation:
             "researchStatus": self.snapshot.research_status, "runtimePriorEvidence": value}), digest=_hash(value))
 
     def _validate_result(self, action: str, result: ResearchStageResult, packet: Mapping[str, Any]) -> None:
+        if action == 'close_research' and packet.get('pathsExhausted') and (result.conclusion or {}).get('researchStatus') == 'continue_research':
+            raise InvestigationError('当前无可执行查询路径，必须基于已有证据收口公司关联：待核、可比较或放弃，不可继续空转', code='investigation_closure_required')
+        scope = packet.get("companyScope")
+        if scope:
+            allowed = {item["companyCode"] for item in scope["fixedPool"]}
+            for question in result.questions:
+                if not question.company_codes or not set(question.company_codes) <= allowed:
+                    raise InvestigationError("研究问题必须关联合理的池内公司，无法映射应结束研究", code="company_outside_fixed_pool")
+            for mapping in (result.conclusion or {}).get("companyMappings", []):
+                if mapping.get("companyCode") not in allowed:
+                    raise InvestigationError("禁止对池外公司展开尽调", code="company_outside_fixed_pool")
         known_claims = {item["claimId"]: item for item in self.state["claims"]}
         known_questions = {item["questionId"]: item for item in self.state["questions"]}
         permitted = set(_refs(packet["allowedEvidenceRefs"]))
@@ -263,7 +296,7 @@ class _Investigation:
                     raise InvestigationError("公司映射引用未提供资料", code="investigation_reference_invalid")
 
     def _call(self, action: str, extra: Mapping[str, Any] | None = None) -> ResearchStageResult:
-        self._guard()
+        self._external_guard()
         packet = self._packet()
         if extra:
             packet.update(extra)
@@ -336,7 +369,7 @@ class _Investigation:
             document = self.documents.get(_key(request.source_ref))
             if question is None or document is None:
                 raise InvestigationError("全文申请的调查上下文丢失", code="investigation_fulltext_scope_invalid")
-            self._guard()
+            self._external_guard()
             bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
                 request=request, cutoff_at=self.cutoff, cutoff_inclusive=self.cutoff_inclusive)
             self._tool(bundle, request=request)
@@ -407,11 +440,11 @@ class _Investigation:
             digest=_hash(conclusion), research_status="pending_verification")
         return conclusion
 
-    def _close(self) -> ResearchStageResult:
+    def _close(self, *, paths_exhausted: bool = False) -> ResearchStageResult:
         # A closure may discover a specific missing paragraph. Complete that
         # admitted request and assess it before accepting the closure itself.
         while True:
-            result = self._call("close_research")
+            result = self._call("close_research", {"pathsExhausted": True}) if paths_exhausted else self._call("close_research")
             if not self._fulltexts():
                 return result
 
@@ -471,7 +504,7 @@ class _Investigation:
             company_codes=tuple(mapping_by_code)) if rows else None
         reject_uncalibrated_prediction({"summary": common, "companies": list(rows)}, path="researchComparison")
         statuses = {row["evidenceDisclosure"]["verificationStatus"] for row in rows}
-        verified = "verified" if statuses == {"verified"} else "needs_review"
+        verified = next(iter(statuses)) if len(statuses) == 1 and statuses <= {"verified", "contradicted"} else "needs_review"
         return InvestigationOutcome(Verification(verified, common, event_refs,
             {"state": "available", "researchSnapshotId": self.identity, "researchRevision": self.snapshot.revision,
              "researchStatus": self.snapshot.research_status, "verificationCutoffAt": self.snapshot.verification_cutoff_at},
@@ -545,7 +578,10 @@ class _Investigation:
                                 for item in self.state["paths"] if item["state"] != "planned"]})
                         pending_paths = list(planned.query_paths)
                         if not pending_paths:
-                            conclusion = self._pending("当前相关查证路径已用尽，尚有影响判断的缺口。")
+                            closed = self._close(paths_exhausted=True)
+                            conclusion = closed.conclusion
+                            if conclusion['researchStatus'] == 'continue_research':
+                                conclusion = self._pending("当前相关查证路径已用尽，保留已有事实与公司关联，尚有影响判断的缺口。")
                             break
                     used = {_path_identity(QueryPath.from_dict(item)) for item in self.state["paths"] if item["state"] != "planned"}
                     for path in pending_paths:
@@ -554,7 +590,10 @@ class _Investigation:
                         question = next((Question.from_dict(item) for item in self.state["questions"] if item["questionId"] == path.question_id), None)
                         if question is None or question.state != "open":
                             raise InvestigationError("查询没有关联开放问题", code="investigation_path_question_invalid")
-                        self._guard()
+                        scope = self._company_scope()
+                        if scope and (not question.company_codes or not set(question.company_codes) <= {row['companyCode'] for row in scope['fixedPool']}):
+                            raise InvestigationError('搜索问题越过固定池', code='company_outside_fixed_pool')
+                        self._external_guard()
                         bundle = self.verifier.fetch(event=self.event, retrieved_at=self.clock(), cutoff_at=self.cutoff,
                             cutoff_inclusive=self.cutoff_inclusive, question=question, query_path=path)
                         self._tool(bundle, path=path)
@@ -575,9 +614,9 @@ class _Investigation:
         if mappings:
             context = self._comparison_context(mappings)
             compared = self._call("compare_companies", {**dict(context), "companyCodes": [item.company_code for item in mappings],
-                "conclusion": conclusion, "publicationAllowed": conclusion["researchStatus"] == "ready_for_comparison"})
+                "conclusion": conclusion, "publicationAllowed": conclusion["researchStatus"] in {"ready_for_comparison", "pending_verification"}})
             rows = compared.company_assessments
-            if conclusion["researchStatus"] != "ready_for_comparison" and any(item["role"] in {"primary", "alternative", "tied"} for item in rows):
+            if conclusion["researchStatus"] not in {"ready_for_comparison", "pending_verification"} and any(item["role"] in {"primary", "alternative", "tied"} for item in rows):
                 raise InvestigationError("调查收口待核却强行给出主推", code="investigation_unresolved_ranking")
             comparison = compared.conclusion or {}
             context = {**dict(context), **apply_historical_assessments(context={
@@ -587,7 +626,7 @@ class _Investigation:
             self._outcome(conclusion, rows, mappings, context, comparison)
         elif conclusion["researchStatus"] == "ready_for_comparison":
             conclusion = {**dict(conclusion), "researchStatus": "background_only"}
-        terminal = "comparison_complete" if mappings and conclusion["researchStatus"] == "ready_for_comparison" else conclusion["researchStatus"]
+        terminal = "comparison_complete" if mappings and conclusion["researchStatus"] in {"ready_for_comparison", "pending_verification"} else conclusion["researchStatus"]
         self._record(ResearchStageResult("close_research", conclusion={"researchStatus": terminal, "runtimeFinal": {
             "conclusion": dict(conclusion), "comparisonContext": dict(context), "comparison": dict(comparison)}}),
             digest=_hash({"final": conclusion, "comparison": comparison}), research_status=terminal)

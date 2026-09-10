@@ -1,0 +1,1240 @@
+--- B55/AGENTS.md
++++ B56/AGENTS.md
+@@ -21,7 +21,7 @@
+ ## Working rules
+ 
+ - **Current production state (2026-09-09 10:21 CST):** The user explicitly paused the entire system. B53 remains installed; durable run control is closed, API/worker and all Neckline timers are inactive+disabled, with no active tasks or external calls. Do not resume any service, schedule, model/search call or failed task without new user authorization. The September 8 evening report and its two samples remain intact (D1 September 9 / D2 September 10); the September 9 morning report failed with DeepSeek 429/402 and remains saved. Pre-pause backup and unit states: `/opt/neckline/data/backups/user-pause-20260909T022137Z/`. Never replay the completed evening report or recover the retired 2,472-article incident batch. See `PROJECT_PLAN.md`.
+-- **Current authorized development:** 3.2.0 / both platforms Build 55, following the latest `/Users/linotsai/Lino/whynotme/K10.md` (K10-v2). The fixed 1,089-company universe, removal of 80/40 full-text caps, labeled-unverified recommendation path and daily company selection supersede conflicting v1.4 implementation rules. Existing v1.4 publication evidence remains historical, not a new-version behavior contract.
++- **Current authorized development:** 3.2.0 / both platforms Build 56, following the latest `/Users/linotsai/Lino/whynotme/K10.md` (K10-v2). The fixed 1,089-company universe, removal of 80/40 full-text caps, labeled-unverified recommendation path and daily company selection supersede conflicting v1.4 implementation rules. Existing v1.4 publication evidence remains historical, not a new-version behavior contract.
+ - **No live-provider validation for this upgrade:** The user explicitly prohibits testing real DeepSeek/Tavily calls and will decide when to try the released system. Do not run real model/search/data-provider probes, account-balance checks, permission checks or report replays. Use existing local data, isolated databases, deterministic transports, local API/client decoding and native builds; enforce external-network denial in tests rather than relying on zero balance. Production stays paused. A local engineering pass is not evidence of actual provider success, stock-selection performance or a guaranteed daily token total. Current company profiles retain their original draft/provenance status and stay local during development.
+ 
+ - Run backend commands from `Backend/` and app commands from `App/`.
+--- B55/App/Neckline.xcodeproj/project.pbxproj
++++ B56/App/Neckline.xcodeproj/project.pbxproj
+@@ -414,7 +414,7 @@
+ 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+ 				COPY_PHASE_STRIP = NO;
+-				CURRENT_PROJECT_VERSION = 55;
++				CURRENT_PROJECT_VERSION = 56;
+ 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+ 				DEVELOPMENT_TEAM = HX73DFL88G;
+ 				ENABLE_NS_ASSERTIONS = NO;
+@@ -479,7 +479,7 @@
+ 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+ 				COPY_PHASE_STRIP = NO;
+-				CURRENT_PROJECT_VERSION = 55;
++				CURRENT_PROJECT_VERSION = 56;
+ 				DEBUG_INFORMATION_FORMAT = dwarf;
+ 				DEVELOPMENT_TEAM = HX73DFL88G;
+ 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+--- B55/App/NecklineTests/K10V3Tests.swift
++++ B56/App/NecklineTests/K10V3Tests.swift
+@@ -1386,4 +1386,40 @@
+         XCTAssertEqual(results.records.first?.consecutiveLimitUp, true)
+     }
+ 
++    @MainActor
++    func testB56ActualProviderRecoveryAndStageWindowResponses() async throws {
++        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
++        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
++            try JSONDecoder().decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + ".json")))
++        }
++        for role in ["pro", "con"] {
++            let unpaid = try read("b56_analysis_" + role + "_402", as: K10AnalysisChain.self)
++            XCTAssertEqual(unpaid.items.first?.job?.status, "failed")
++            XCTAssertTrue(try XCTUnwrap(unpaid.items.first?.analyses.first { $0.role == role }?.error).contains("余额不足"))
++            let throttled = try read("b56_analysis_" + role + "_429", as: K10AnalysisChain.self)
++            XCTAssertEqual(throttled.items.first?.job?.status, "queued")
++            XCTAssertTrue(try XCTUnwrap(throttled.items.first?.job?.error?.message).contains("延后重试"))
++            let recovered = try read("b56_analysis_" + role + "_recovered", as: K10AnalysisChain.self)
++            XCTAssertEqual(recovered.items.first?.job?.status, "completed")
++            XCTAssertEqual(recovered.items.first?.analyses.count, 2)
++            XCTAssertTrue(try XCTUnwrap(recovered.items.first).analyses.allSatisfy { $0.status == "completed" })
++        }
++        for code in [402, 429] {
++            let morning = try read("b56_morning_" + String(code), as: K10DailyReportResponse.self)
++            let child = try XCTUnwrap(morning.report?.incompleteReviews?.first)
++            XCTAssertEqual(child.status, code == 402 ? "failed" : "queued")
++            XCTAssertTrue(child.reason.contains(code == 402 ? "余额不足" : "延后重试"))
++            XCTAssertEqual(morning.report?.status, "partial")
++        }
++        let restored = try read("b56_morning_recovered", as: K10DailyReportResponse.self)
++        XCTAssertEqual(restored.report?.status, "completed")
++        XCTAssertTrue(try XCTUnwrap(restored.report?.incompleteReviews).isEmpty)
++        let evening = try read("b56_stage_evening", as: K10DailyReportResponse.self)
++        let card = try XCTUnwrap(evening.report?.eveningCards.first)
++        XCTAssertEqual(card.d1TradeDate, "2026-09-10")
++        XCTAssertEqual(card.d2TradeDate, "2026-09-11")
++        XCTAssertEqual(card.canSelect, true)
++        XCTAssertEqual(card.catalysts.first?.companyWindowId, card.companyWindowId)
++    }
++
+ }
+--- B55/App/project.yml
++++ B56/App/project.yml
+@@ -10,7 +10,7 @@
+   base:
+     SWIFT_VERSION: "5.0"
+     MARKETING_VERSION: "3.2.0"
+-    CURRENT_PROJECT_VERSION: "55"
++    CURRENT_PROJECT_VERSION: "56"
+     K10_SYNTHETIC_UI: "NO"
+     # One reusable QA bundle per platform; release builds keep the empty suffix.
+     NK_BUNDLE_SUFFIX: ""
+--- B55/Backend/neckline/api/app.py
++++ B56/Backend/neckline/api/app.py
+@@ -25,7 +25,7 @@
+ )
+ 
+ VERSION = "v3.2.0"
+-RELEASE_SET = "v3.2.0-b54"
++RELEASE_SET = "v3.2.0-b56"
+ API_PREFIX = "/api/v1"
+ _DB_PATH_OVERRIDE: Optional[Path] = None
+ 
+--- B55/Backend/neckline/api/k10.py
++++ B56/Backend/neckline/api/k10.py
+@@ -612,6 +612,8 @@
+     if row is None:
+         return None
+     failure = ApiFailure(reason="task_failed", message=str(row[9])) if row[9] else None
++    if row[9] == "rate_limited" and row[2] == "queued":
++        failure = ApiFailure(reason="rate_limited", message="模型服务限流，等待延后重试")
+     return JobOut(jobId=str(row[0]), kind=str(row[1]), status=str(row[2]), stage=str(row[3]), attemptCount=int(row[4]),
+                   inputVersion=str(row[5]), inputCutoffAt=str(row[6]), createdAt=str(row[7]), updatedAt=str(row[8]), error=failure)
+ 
+--- B55/Backend/neckline/k10/analysis.py
++++ B56/Backend/neckline/k10/analysis.py
+@@ -21,6 +21,7 @@
+ from .config import validate_run_config
+ from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
+ from .prompts import PROMPT_VERSION, con_messages, pro_messages
++from .provider_failures import failure_message
+ 
+ 
+ ANALYSIS_STATUSES = frozenset({"queued", "completed", "failed", "not_configured"})
+@@ -65,6 +66,8 @@
+     usage: Mapping[str, Any] = field(default_factory=dict)
+     error: str | None = None
+     summary: Mapping[str, Any] | None = None
++    provider_error_code: str | None = None
++    retry_after_seconds: float | None = None
+ 
+     def to_dict(self) -> dict[str, Any]:
+         return {
+@@ -83,6 +86,8 @@
+             "promptVersion": self.prompt_version,
+             "usage": dict(self.usage),
+             "error": self.error,
++            "providerErrorCode": self.provider_error_code,
++            "retryAfterSeconds": self.retry_after_seconds,
+         }
+ 
+ 
+@@ -376,6 +381,7 @@
+     refs: tuple[Mapping[str, Any], ...], lineage: Mapping[str, Any], full_text: str = "",
+     provider: str | None = None, model: str | None = None, error: str | None = None,
+     analysis_id: str | None = None, usage: Mapping[str, Any] | None = None, summary: Mapping[str, Any] | None = None,
++    provider_error_code: str | None = None, retry_after_seconds: float | None = None,
+ ) -> AnalysisArtifact:
+     if status not in ANALYSIS_STATUSES:
+         raise ValueError(f"未知分析状态：{status}")
+@@ -384,6 +390,7 @@
+         role=role, status=status, input_cutoff_at=cutoff_at, source_refs=refs,
+         input_lineage=dict(lineage), full_text=full_text, provider=provider, model=model,
+         prompt_version=PROMPT_VERSION, usage=dict(usage or {}), error=error, summary=summary,
++        provider_error_code=provider_error_code, retry_after_seconds=retry_after_seconds,
+     )
+ 
+ 
+@@ -422,20 +429,21 @@
+     }
+ 
+ 
+-def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: Mapping[str, Any] | None = None) -> tuple[str, str | None, str | None, str | None, Mapping[str, Any]]:
++def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: Mapping[str, Any] | None = None) -> tuple[str, str | None, str | None, str | None, Mapping[str, Any], str | None, float | None]:
+     try:
+         kwargs: dict[str, Any] = {"enable_search": False}
+         if model_options is not None:
+             kwargs["model_options"] = model_options
+         result: LLMResult = provider.chat(messages, **kwargs)
+     except Exception as exc:  # exception text may contain an upstream URL or credential
+-        return "", None, None, f"模型调用异常：{type(exc).__name__}", {}
++        return "", None, None, f"模型调用异常：{type(exc).__name__}", {}, None, None
+     usage = _usage(result)
+     if not result.ok:
+-        return "", result.provider or None, result.model or None, "模型调用失败", usage
++        code = result.error_code if result.error_code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
++        return "", result.provider or None, result.model or None, failure_message(code), usage, code, result.retry_after_seconds
+     if not isinstance(result.content, str) or not result.content.strip():
+-        return "", result.provider or None, result.model or None, "模型未返回正文", usage
+-    return result.content.strip(), result.provider or None, result.model or None, None, usage
++        return "", result.provider or None, result.model or None, "模型未返回正文", usage, None, None
++    return result.content.strip(), result.provider or None, result.model or None, None, usage, None, None
+ 
+ 
+ def _decode_analysis(text):
+@@ -460,7 +468,7 @@
+ ) -> AnalysisArtifact:
+     """Run and return only the first role, so a worker can durably checkpoint it before con."""
+     observation_id, candidate_id, refs, lineage, evidence, constraints = _context(context, cutoff_at=cutoff_at)
+-    text, provider_name, model, error, usage = _call(provider, pro_messages(
++    text, provider_name, model, error, usage, error_code, retry_after = _call(provider, pro_messages(
+         observation_id=observation_id, candidate_id=candidate_id, cutoff_at=cutoff_at,
+         source_refs=refs, input_lineage=lineage, evidence=evidence, user_constraints=constraints,
+     ), model_options=model_options)
+@@ -471,6 +479,7 @@
+         observation_id=observation_id, revision=revision, role="pro",
+         status="failed" if error else "completed", cutoff_at=cutoff_at, refs=refs, lineage=lineage,
+         full_text=text, provider=provider_name, model=model, usage=usage, error=error, summary=summary,
++        provider_error_code=error_code, retry_after_seconds=retry_after,
+     )
+ 
+ 
+@@ -490,7 +499,7 @@
+         raise AnalysisInputError("正反双方必须读取同一份冻结资料和行情")
+     lineage = {**lineage, "proAnalysis": {"analysisId": pro.analysis_id, "revision": pro.revision,
+         "inputCutoffAt": pro.input_cutoff_at, "contentSha256": sha256(pro.full_text.encode("utf-8")).hexdigest()}}
+-    text, provider_name, model, error, usage = _call(provider, con_messages(
++    text, provider_name, model, error, usage, error_code, retry_after = _call(provider, con_messages(
+         observation_id=observation_id, candidate_id=candidate_id, cutoff_at=cutoff_at,
+         source_refs=refs, input_lineage=lineage, evidence=evidence, pro_full_text=pro.full_text,
+         user_constraints=constraints,
+@@ -502,6 +511,7 @@
+         observation_id=observation_id, revision=target_revision, role="con",
+         status="failed" if error else "completed", cutoff_at=cutoff_at, refs=refs, lineage=lineage,
+         full_text=text, provider=provider_name, model=model, usage=usage, error=error, summary=summary,
++        provider_error_code=error_code, retry_after_seconds=retry_after,
+     )
+ 
+ 
+--- B55/Backend/neckline/k10/metering.py
++++ B56/Backend/neckline/k10/metering.py
+@@ -10,7 +10,7 @@
+ import json
+ from pathlib import Path
+ from time import monotonic
+-from typing import Iterator, Mapping
++from typing import Callable, Iterator, Mapping
+ from zoneinfo import ZoneInfo
+ 
+ from neckline.llm.openai_compat import OpenAICompatProvider
+@@ -35,6 +35,7 @@
+     attempt: int
+     kind: str = "model"
+     full_text: bool = False
++    clock: Callable[[], datetime] | None = None
+ 
+ 
+ _SPEND_CONTEXT: ContextVar[ProviderSpendContext | None] = ContextVar("k10_provider_spend", default=None)
+@@ -45,6 +46,7 @@
+     "provider_configuration", "provider_dependency", "provider_transport", "provider_http_error",
+     "response_json_invalid", "response_structure_invalid", "response_truncated", "response_empty",
+     "response_filtered", "provider_tool_limit",
++    "insufficient_balance", "rate_limited",
+ })
+ 
+ 
+@@ -82,11 +84,12 @@
+     def spend_context(
+         self, *, task_id: str, stage: str, item_key: str, attempt: int,
+         kind: str = "model", full_text: bool = False,
++        clock: Callable[[], datetime] | None = None,
+     ) -> Iterator[None]:
+         """Bind a task/stage explicitly around exactly one provider request."""
+         if not task_id or not stage or not item_key or isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+             raise ValueError("K10 provider spend context is incomplete")
+-        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text))
++        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text, clock))
+         try:
+             yield
+         finally:
+@@ -164,8 +167,13 @@
+                     "promptTokens": int(values[0]), "completionTokens": int(values[1]), "totalTokens": int(values[2]),
+                     "searchRequests": None, "searchCredits": None,
+                 }
++        context = _SPEND_CONTEXT.get()
++        scoped = context is not None and context.stage in {"analysisPro", "analysisCon", "morning"}
++        settled_at = context.clock().isoformat() if scoped and context.clock is not None else _safe_now()
+         store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=actual,
+-                                      error_code=error_code, settled_at=_safe_now(), db_path=self._ledger_db)
++                                      error_code=error_code, settled_at=settled_at, db_path=self._ledger_db,
++                                      record_provider_failure=scoped,
++                                      retry_after_seconds=getattr(result, "retry_after_seconds", None))
+ 
+     def chat(self, *args, **kwargs):
+         attempt_id, blocked = self._begin_attempt(args=args, kwargs=kwargs)
+@@ -213,11 +221,12 @@
+ def provider_spend_context(
+     *, provider: object, task_id: str, stage: str, item_key: str, attempt: int,
+     kind: str = "model", full_text: bool = False,
++    clock: Callable[[], datetime] | None = None,
+ ):
+     """Return an explicit context manager; never leak task context to threads."""
+     if isinstance(provider, MeteredProvider):
+         return provider.spend_context(task_id=task_id, stage=stage, item_key=item_key, attempt=attempt,
+-                                      kind=kind, full_text=full_text)
++                                      kind=kind, full_text=full_text, clock=clock)
+     return nullcontext()
+ 
+ 
+--- B55/Backend/neckline/k10/morning_runtime.py
++++ B56/Backend/neckline/k10/morning_runtime.py
+@@ -14,6 +14,7 @@
+ from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
+ from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
+ from .providers import resolve_deepseek_v4_pro
++from .provider_failures import provider_deadline_result, provider_failure_result
+ from .worker import TaskContext, TaskResult
+ 
+ 
+@@ -158,13 +159,19 @@
+     if cached is not None:
+         raw=cached['raw']
+     else:
++        expired = provider_deadline_result(context=context)
++        if expired is not None:
++            return expired
+         try:
+             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+-                                        stage="morning", item_key=str(candidate_id), attempt=context.task.attempt_count):
++                                        stage="morning", item_key=str(candidate_id), attempt=context.task.attempt_count,
++                                        clock=context.clock):
+                 result=resolution.provider.chat(messages, enable_search=False, response_format={"type":"json_object"},
+                                                 model_options=model_options)
+         except Exception as exc: return TaskResult("failed","model",error=f"晨间模型调用异常：{type(exc).__name__}")
+-        if not result.ok: return TaskResult("failed","model",error="晨间模型调用失败")
++        if not result.ok:
++            return provider_failure_result(context=context, stage="model", code=result.error_code,
++                                           retry_after_seconds=result.retry_after_seconds)
+         try: raw=json.loads(result.content)
+         except (TypeError,json.JSONDecodeError): return TaskResult("failed","model",error="晨间模型未返回有效 JSON")
+     if not isinstance(raw,Mapping) or not isinstance(raw.get("material"),bool) or not isinstance(raw.get("summary"),str): return TaskResult("failed","model",error="晨间模型输出结构无效")
+--- B55/Backend/neckline/k10/opportunity_discovery.py
++++ B56/Backend/neckline/k10/opportunity_discovery.py
+@@ -231,5 +231,11 @@
+     if kind in NEW_KINDS and exact is not None:
+         result.update(kind="continuation", relatedOpportunityId=exact["opportunityId"],
+                       reason="相同催化/阶段已推荐；本次证据追加到原机会。" + result["reason"])
+-    result["opportunityKey"] = semantic_key
++    if result["kind"] in UPDATE_KINDS and result.get("relatedOpportunityId") is not None:
++        # An update inherits the explicitly chosen opportunity's identity, including
++        # a material-stage suffix; the generic event key may name an older window.
++        predecessor = next(old for old in previous if old.get("opportunityId") == result["relatedOpportunityId"])
++        result["opportunityKey"] = predecessor["opportunityKey"]
++    else:
++        result["opportunityKey"] = semantic_key
+     return result
+--- B55/Backend/neckline/k10/provider_failures.py
++++ B56/Backend/neckline/k10/provider_failures.py
+@@ -0,0 +1,73 @@
++"""Safe provider failures shared by the selected-company and morning workers."""
++from __future__ import annotations
++
++import math
++from datetime import datetime, timedelta
++from typing import Any, Mapping
++
++from .worker import TaskContext, TaskResult
++
++
++def failure_message(code: str | None) -> str:
++    return {
++        "insufficient_balance": "模型账户余额不足，任务已停止",
++        "rate_limited": "模型服务限流",
++    }.get(code, "模型调用失败")
++
++
++def provider_deadline_result(*, context: TaskContext,
++                             checkpoint: Mapping[str, Any] | None = None) -> TaskResult | None:
++    """Recheck at the paid step, including a retry claimed long after its due time."""
++    if context.execution_deadline_at is None or context.clock() < context.execution_deadline_at:
++        return None
++    return TaskResult("failed", "deadline",
++                      {**(checkpoint if checkpoint is not None else context.checkpoint),
++                       "safeErrorCode": "completion_deadline_exceeded"},
++                      "任务已超过完成时限，已完成内容保留")
++
++
++def provider_failure_result(*, context: TaskContext, stage: str, code: str | None,
++                            retry_after_seconds: float | None,
++                            checkpoint: Mapping[str, Any] | None = None,
++                            received_at: datetime | None = None) -> TaskResult:
++    # Only protocol codes cross this boundary; never store upstream error text.
++    code = code if code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
++    checkpoint = {**(checkpoint if checkpoint is not None else context.checkpoint), "safeErrorCode": code}
++    error = failure_message(code)
++    if code != "rate_limited":
++        return TaskResult("failed", stage, checkpoint, error)
++    profile = context.execution_profile
++    policy = profile["payload"]["discovery"] if profile is not None else None
++    if policy is None:
++        return TaskResult("not_configured", "configuration", checkpoint, "模型重试参数未配置")
++    # These are the same explicit frozen bounds used by discovery and the worker.
++    if context.failure_attempt_count + 1 >= policy["networkMaxAttempts"]:
++        return TaskResult("failed", stage, checkpoint, error + "，已达到重试上限")
++    delays = policy["retryBackoffSeconds"]
++    delay = retry_after_seconds
++    if isinstance(delay, bool) or not isinstance(delay, (float, int)) or not math.isfinite(delay) or delay < 0:
++        delay = delays[min(context.failure_attempt_count, len(delays) - 1)]
++    now = context.clock()
++    origin = received_at if received_at is not None else now
++    # Compare before adding to datetime: an untrusted Retry-After may be enormous.
++    if context.execution_deadline_at is not None and (now >= context.execution_deadline_at or delay >= (context.execution_deadline_at - origin).total_seconds()):
++        return TaskResult("failed", stage, checkpoint, error + "，无法在本次任务完成时限内重试")
++    return TaskResult("failed", stage, checkpoint, error + "，等待延后重试",
++                      retry_at=origin + timedelta(seconds=delay), retry_kind="failure", safe_error_code=code)
++
++
++def recover_provider_failure(*, context: TaskContext,
++                             checkpoint: Mapping[str, Any] | None = None) -> TaskResult | None:
++    """Restore a settled failure after a crash before its task transition committed."""
++    if context.task.kind not in {"analysis", "morning_review"}:
++        return None
++    from . import store
++    saved = store.task_execution_input(task_id=context.task.task_id, db_path=context.db_path)
++    receipt = saved["checkpoint"].get("providerFailureReceipt") if saved is not None else None
++    if receipt is None:
++        return None
++    stages = {"analysisPro": "pro_failed", "analysisCon": "con_failed", "morning": "model"}
++    return provider_failure_result(context=context, stage=stages[receipt["stage"]],
++                                   code=receipt["errorCode"], retry_after_seconds=receipt["retryAfterSeconds"],
++                                   received_at=datetime.fromisoformat(receipt["receivedAt"]),
++                                   checkpoint=checkpoint if checkpoint is not None else saved["checkpoint"])
+--- B55/Backend/neckline/k10/runtime.py
++++ B56/Backend/neckline/k10/runtime.py
+@@ -10,6 +10,7 @@
+ from .market_context import MarketContextError, attach_frozen_market_context
+ from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
+ from .providers import resolve_deepseek_v4_pro
++from .provider_failures import provider_deadline_result, provider_failure_result
+ from .worker import TaskContext, TaskResult
+ 
+ 
+@@ -20,7 +21,8 @@
+         source_refs=tuple(raw.get("sourceRefs") or ()), input_lineage=dict(raw.get("inputLineage") or {}),
+         summary=raw.get("summary"), full_text=str(raw.get("fullText") or ""), provider=raw.get("provider"), model=raw.get("model"),
+         prompt_version=str(raw.get("promptVersion") or "k10-debate-v1"), usage=dict(raw.get("usage") or {}),
+-        error=raw.get("error"),
++        error=raw.get("error"), provider_error_code=raw.get("providerErrorCode"),
++        retry_after_seconds=raw.get("retryAfterSeconds"),
+     )
+ 
+ 
+@@ -40,6 +42,14 @@
+     if con is not None:
+         value["con"] = con.to_dict()
+     return value
++
++
++def _failed_role(*, context: TaskContext, role: AnalysisArtifact, checkpoint: Mapping[str, Any]) -> TaskResult:
++    if role.provider_error_code is not None:
++        return provider_failure_result(context=context, stage=role.role + "_failed",
++                                       code=role.provider_error_code, retry_after_seconds=role.retry_after_seconds,
++                                       checkpoint=checkpoint)
++    return TaskResult("failed", role.role + "_failed", checkpoint, role.error or "分析失败")
+ 
+ 
+ def _chain_artifact(*, company_window_id: str, revision: int, role: str, db_path) -> AnalysisArtifact | None:
+@@ -170,10 +180,13 @@
+     except MarketContextError:
+         return TaskResult("failed", "input", context.checkpoint, "冻结行情上下文无效")
+     if pro is None:
++        expired = provider_deadline_result(context=context)
++        if expired is not None:
++            return expired
+         try:
+             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                         stage="analysisPro", item_key=f"{observation_id}:r{revision}",
+-                                        attempt=context.task.attempt_count):
++                                        attempt=context.task.attempt_count, clock=context.clock):
+                 pro = _with_pricing(run_pro(context=snapshot, cutoff_at=context.input_cutoff_at,
+                                             provider=resolution.provider, revision=revision,
+                                             model_options=pro_model_options), configuration)
+@@ -182,7 +195,7 @@
+         context.require_lease()
+         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=pro)
+     if pro.status != "completed":
+-        return TaskResult("failed", "pro_failed", _checkpoint(pro=pro), pro.error or "正方分析失败")
++        return _failed_role(context=context, role=pro, checkpoint=_checkpoint(pro=pro))
+     if company_window_id is not None:
+         con = _chain_artifact(company_window_id=company_window_id, revision=revision, role="con", db_path=context.db_path)
+         completed_con = None
+@@ -194,10 +207,13 @@
+     if con is not None:
+         pass
+     else:
++        expired = provider_deadline_result(context=context, checkpoint=_checkpoint(pro=pro))
++        if expired is not None:
++            return expired
+         try:
+             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                         stage="analysisCon", item_key=f"{observation_id}:r{revision}",
+-                                        attempt=context.task.attempt_count):
++                                        attempt=context.task.attempt_count, clock=context.clock):
+                 con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at,
+                                             provider=resolution.provider, pro=pro, revision=revision,
+                                             model_options=con_model_options), configuration)
+@@ -206,7 +222,7 @@
+         context.require_lease()
+         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=con)
+         if con.status != "completed":
+-            return TaskResult("failed", "con_failed", _checkpoint(pro=pro, con=con), con.error or "反方分析失败")
++            return _failed_role(context=context, role=con, checkpoint=_checkpoint(pro=pro, con=con))
+     context.require_lease()
+     checkpoint = _checkpoint(pro=pro, con=con)
+     if request_id is not None:
+--- B55/Backend/neckline/k10/store.py
++++ B56/Backend/neckline/k10/store.py
+@@ -552,6 +552,10 @@
+                 raise K10Conflict("同一外部调用 attempt_key 不可对应不同输入")
+             old_state = str(old[1])
+             return {"state": "pending_outcome" if old_state == "started" else "reused", "reason": None, "attemptId": old[0]}
++        if stage in {"analysisPro", "analysisCon", "morning"}:
++            uncertain = conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown') LIMIT 1", (task_id, stage, item_key)).fetchone()
++            if uncertain is not None:
++                return {"state": "pending_outcome", "reason": None, "attemptId": uncertain[0]}
+         attempt_id = str(uuid.uuid4())
+         conn.execute(
+             "INSERT INTO k10_external_attempts(attempt_id,task_id,stage,item_key,attempt_key,input_sha256,state,started_at) "
+@@ -563,6 +567,7 @@
+ def settle_external_attempt(
+     *, attempt_id: str, outcome: str, usage: Mapping[str, Any] | None,
+     settled_at: str, error_code: str | None, db_path: Path,
++    record_provider_failure: bool = False, retry_after_seconds: float | None = None,
+ ) -> dict[str, Any]:
+     """Settle one started attempt with actual or explicitly unavailable provider usage."""
+     if outcome not in {"succeeded", "failed", "unknown"} or not attempt_id or not settled_at:
+@@ -589,6 +594,14 @@
+             "search_credits=?,error_code=?,settled_at=? WHERE attempt_id=?",
+             (*expected, settled_at, attempt_id),
+         )
++        if record_provider_failure and outcome == "failed" and error_code in {"insufficient_balance", "rate_limited"}:
++            task_id, stage = conn.execute("SELECT task_id,stage FROM k10_external_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
++            if stage not in {"analysisPro", "analysisCon", "morning"}:
++                raise ValueError("失败回执只用于正反分析和晨间复核")
++            checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
++            checkpoint["providerFailureReceipt"] = {"attemptId": attempt_id, "stage": stage,
++                "errorCode": error_code, "receivedAt": settled_at, "retryAfterSeconds": retry_after_seconds}
++            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+     return {"state": outcome, "attemptId": attempt_id}
+ 
+ 
+@@ -2676,6 +2689,7 @@
+     with write_connection(db_path) as conn:
+         _require_write_schema(conn)
+         checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint)
++        checkpoint.pop("providerFailureReceipt", None)
+         changed = conn.execute(
+             "UPDATE k10_tasks SET status=?,stage=?,checkpoint_json=?,error_text=?,lease_owner=NULL,lease_until=NULL,"
+             "updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
+@@ -2725,6 +2739,7 @@
+         if retry_kind == "failure" and failure_count >= max_failure_attempts:
+             return False
+         checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint, existing_raw=row[2])
++        checkpoint.pop("providerFailureReceipt", None)
+         changed = conn.execute(
+             "UPDATE k10_tasks SET status='queued',stage='retry_scheduled',checkpoint_json=?,error_text=?,"
+             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
+@@ -2739,6 +2754,10 @@
+             "retry_kind=excluded.retry_kind,safe_error_code=excluded.safe_error_code,updated_at=excluded.updated_at",
+             (task_id, not_before, int(row[0]), failure_count, retry_kind, safe_error_code, now_text, now_text),
+         )
++        # A delayed morning child is still incomplete. Project that state in the
++        # same transaction, just as finish_task projects failure or completion.
++        from .v2_store import refresh_morning_coverage_for_task
++        refresh_morning_coverage_for_task(conn, task_id=task_id)
+     return True
+ 
+ 
+--- B55/Backend/neckline/k10/v2_store.py
++++ B56/Backend/neckline/k10/v2_store.py
+@@ -124,9 +124,11 @@
+     for rank, (code, items) in enumerate(sorted(groups.items(), key=lambda pair: (min(item.display_rank or 1 for item in pair[1]), pair[0])), 1):
+         mappings = []
+         for item in items:
+-            opportunity = conn.execute('SELECT opportunity_id,company_window_id FROM k10_opportunities WHERE opportunity_key=?', (item.opportunity_key,)).fetchone()
+-            if not opportunity and item.related_opportunity_id:
+-                opportunity = conn.execute('SELECT opportunity_id,company_window_id FROM k10_opportunities WHERE opportunity_id=?', (item.related_opportunity_id,)).fetchone()
++            classification = item.comparison['classification']['kind']
++            if classification in {'initial', 'independent', 'material_stage'}:
++                opportunity = conn.execute('SELECT opportunity_id,company_window_id FROM k10_opportunities WHERE opportunity_key=? AND company_code=?', (item.opportunity_key, code)).fetchone()
++            else:
++                opportunity = conn.execute('SELECT opportunity_id,company_window_id FROM k10_opportunities WHERE opportunity_id=? AND company_code=? AND opportunity_key=?', (item.related_opportunity_id, code, item.opportunity_key)).fetchone()
+             if not opportunity:
+                 raise ValueError('日报卡催化未关联正式机会')
+             headline = conn.execute('SELECT headline FROM k10_event_revisions WHERE event_id=? AND revision=?', (item.event_id, item.event_revision)).fetchone()[0]
+@@ -276,7 +278,8 @@
+         gaps.append('morning_review_'+child[1])
+         sample=conn.execute('SELECT opportunity_id,company_window_id,company_code FROM k10_publication_samples WHERE candidate_id=? ORDER BY rowid LIMIT 1',(payload.get('candidateId'),)).fetchone()
+         if sample:
+-            incomplete.append(dict(taskId=child[0],opportunityId=sample[0],companyWindowId=sample[1],companyCode=sample[2],status=child[1],reason=child[2] or '晨间复核尚未完成'))
++            reason = '模型服务限流，等待延后重试' if child[1]=='queued' and child[2]=='rate_limited' else child[2] or '晨间复核尚未完成'
++            incomplete.append(dict(taskId=child[0],opportunityId=sample[0],companyWindowId=sample[1],companyCode=sample[2],status=child[1],reason=reason))
+     coverage=dict(coverageGaps=sorted(set(gaps)),incompleteReviews=incomplete)
+     original=conn.execute('SELECT status FROM k10_scans WHERE scan_id=?',(scan_id,)).fetchone()
+     status='partial' if gaps else original[0]
+--- B55/Backend/neckline/k10/worker.py
++++ B56/Backend/neckline/k10/worker.py
+@@ -57,6 +57,7 @@
+     failure_attempt_count: int = 0
+     execution_started_at: datetime | None = None
+     execution_deadline_at: datetime | None = None
++    clock: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc), repr=False, compare=False)
+ 
+     def require_lease(self) -> None:
+         """Handlers call this before publishing artifacts or doing another call."""
+@@ -183,7 +184,7 @@
+     profile = None if row[4] is None else {"configId": row[4], "revision": int(row[5]), "contentSha256": row[6],
+                                             "bindingKind": row[7], "payload": json.loads(row[8])}
+     return TaskContext(task, json.loads(row[0]), json.loads(row[1]), row[2], row[3], db_path, lease_lost,
+-                       assert_lease, profile, int(row[9]))
++                       assert_lease, profile, int(row[9]), clock=clock)
+ 
+ 
+ def run_once(
+@@ -257,7 +258,9 @@
+                                       execution_deadline_at=_execution_deadline(profile=context.execution_profile,
+                                                                                runtime_repair=context.checkpoint.get("runtimeRepair"),
+                                                                                started_at=started_at))
+-                result = handler(context)
++                from .provider_failures import recover_provider_failure
++                recovered = recover_provider_failure(context=context)
++                result = recovered if recovered is not None else handler(context)
+                 if not isinstance(result, TaskResult):
+                     raise TypeError("K10 handler must return TaskResult")
+                 result = _truthful_terminal_result(result, db_path=db_path)
+@@ -268,6 +271,12 @@
+                 # they can contain provider credentials or untrusted content.
+                 logger.warning("K10 task failed: %s (%s)", task.task_id, type(exc).__name__)
+                 result = TaskResult("failed", "execution", context.checkpoint, "任务执行失败，可查看已完成资料并重试")
++            # The ledger and failure receipt commit together before returning from
++            # the provider. Consume the receipt only with the terminal/queue write.
++            from .provider_failures import recover_provider_failure
++            recovered = recover_provider_failure(context=context, checkpoint=result.checkpoint)
++            if recovered is not None:
++                result = recovered
+         context.require_lease()
+         if result.retry_at is not None:
+             if store.run_control_status(db_path=db_path).get("state") != "open":
+--- B55/Backend/tests/k10_v320_b56_fixture.py
++++ B56/Backend/tests/k10_v320_b56_fixture.py
+@@ -0,0 +1,31 @@
++"""Export actual B56 API responses from isolated CLI and worker regressions."""
++from pathlib import Path
++import shutil
++import pytest
++from tests.test_b56_review_regressions import (
++    test_paid_analysis_error_contract, test_paid_morning_review_error_contract,
++    test_material_stage_continuation_keeps_its_related_window,
++)
++
++
++def export_b56(root: Path, output: Path):
++    output.mkdir(parents=True,exist_ok=True)
++    cases=[('analysis_'+role+'_'+str(status),test_paid_analysis_error_contract,
++            {'status':status,'retry_succeeds':True,'failed_role':role}) for role in ('pro','con') for status in (402,429)]
++    cases += [('morning_'+str(status),test_paid_morning_review_error_contract,{'status':status}) for status in (402,429)]
++    cases += [('stage',test_material_stage_continuation_keeps_its_related_window,{})]
++    for name,scenario,kwargs in cases:
++        path=root/name;path.mkdir(parents=True)
++        with pytest.MonkeyPatch.context() as mp:
++            scenario(path,mp,**kwargs)
++        for file in path.glob('b56_*.json'):
++            shutil.copy2(file,output/file.name)
++
++
++if __name__=='__main__':
++    import argparse
++    parser=argparse.ArgumentParser()
++    parser.add_argument('--root',type=Path,required=True)
++    parser.add_argument('--output',type=Path,required=True)
++    args=parser.parse_args()
++    export_b56(args.root,args.output)
+--- B55/Backend/tests/test_b54_boundary_regressions.py
++++ B56/Backend/tests/test_b54_boundary_regressions.py
+@@ -61,6 +61,7 @@
+     provider=FakeProvider([replace(_result(''),ok=False)])
+     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
+     db,old,_,_=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
++    _freeze_k10_clocks(monkeypatch,"2026-09-09T09:10:00+08:00")
+     with client_for(db) as client:
+         envelope=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
+     report=envelope['report']
+@@ -83,7 +84,7 @@
+ 
+ 
+ @pytest.mark.parametrize('status,kind', [('needs_review','risk'),('current','evidence_update')])
+-def test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,status,kind):
++def test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,status,kind,late_retry=False):
+     now=[datetime(2026,9,9,9,10,tzinfo=SHANGHAI)]
+     class ClockDateTime(datetime):
+         @classmethod
+@@ -100,7 +101,7 @@
+         before=conn.execute("SELECT * FROM k10_opportunity_lifecycle_events WHERE kind=?",(kind,)).fetchall()
+     assert before and child[1]=='failed' and len(provider.results)==1
+     monkeypatch.setattr(morning_runtime,'_report_checkpoint',real)
+-    now[0]+=timedelta(minutes=1);_freeze_k10_clocks(monkeypatch,now[0].isoformat())
++    now[0]+=(timedelta(hours=7) if late_retry else timedelta(minutes=1));_freeze_k10_clocks(monkeypatch,now[0].isoformat())
+     with client_for(db) as client:
+         assert client.post('/api/v1/k10/jobs/'+child[0]+'/retry',json={'expectedAttemptCount':child[2]}).status_code==200
+     result=run_once(db_path=db,worker_id='interruption-retry',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:now[0],task_id=child[0])
+--- B55/Backend/tests/test_b54_review_regressions.py
++++ B56/Backend/tests/test_b54_review_regressions.py
+@@ -16,6 +16,7 @@
+ from neckline.k10.worker import run_once
+ from neckline.k10.v2_store import read_report
+ from neckline.k10.windows import SHANGHAI
++from tests.test_k10_api import _freeze_k10_clocks
+ 
+ 
+ def client_for(db):
+@@ -43,6 +44,7 @@
+ 
+ def test_r1_real_keep_creates_bound_analysis_without_test_binding(tmp_path,monkeypatch):
+     db,_,_,_,_ = e2e._run(tmp_path,monkeypatch,v2=True)
++    _freeze_k10_clocks(monkeypatch,e2e.RUN_AT.isoformat())
+     card = read_report(db_path=db)['eveningCards'][0]
+     with client_for(db) as client:
+         assert all(row['state']=='configured' for row in client.get('/api/v1/k10/configuration').json()['scopes'])
+@@ -158,6 +160,7 @@
+ 
+ def test_r1_analysis_binding_interruption_rolls_back_keep_and_outbox(tmp_path,monkeypatch):
+     db,_,_,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
++    _freeze_k10_clocks(monkeypatch,e2e.RUN_AT.isoformat())
+     card=read_report(db_path=db)['eveningCards'][0]
+     tables=('k10_company_window_actions','k10_observations','k10_tasks','k10_task_outbox','k10_task_execution_bindings')
+     with sqlite3.connect(db) as conn: before={table:conn.execute('SELECT count(*) FROM '+table).fetchone()[0] for table in tables}
+@@ -214,14 +217,16 @@
+         if isinstance(payload.get('output'),dict) and 'kind' in payload['output'] and payload['companyCode']=='300004.SZ':
+             value.update(kind='continuation',reason='另一家公司原有催化未被否认')
+     db,_,_,_=later_scan(tmp_path,monkeypatch,mixed)
++    _freeze_k10_clocks(monkeypatch,"2026-09-09T09:10:00+08:00")
+     states={row['companyCode']:row['state'] for row in store.list_opportunities(db_path=db)}
+     assert states['300002.SZ']=='withdrawn' and states['300004.SZ']=='active'
+     assert seen['300002.SZ']=='contradicted' and seen['300004.SZ']=='needs_review'
+ 
+ 
+-def test_r4_lifecycle_read_is_durable_readonly_and_does_not_reset_selection(tmp_path):
++def test_r4_lifecycle_read_is_durable_readonly_and_does_not_reset_selection(tmp_path,monkeypatch):
+     from tests.k10_v320_repair_fixture import build_repair_fixture
+     db=tmp_path/'repair.sqlite';build_repair_fixture(db)
++    _freeze_k10_clocks(monkeypatch,"2026-09-09T09:22:00+08:00")
+     with sqlite3.connect(db) as conn:
+         frozen=conn.execute('SELECT * FROM k10_company_window_selection_snapshots').fetchall()
+         windows=conn.execute('SELECT * FROM k10_company_windows').fetchall()
+--- B55/Backend/tests/test_b56_review_regressions.py
++++ B56/Backend/tests/test_b56_review_regressions.py
+@@ -0,0 +1,377 @@
++import json
++import sqlite3
++from datetime import datetime, timedelta
++import httpx
++import pytest
++from neckline.k10 import pipeline, runtime, store
++from neckline.k10.metering import MeteredProvider
++from neckline.k10.providers import ProviderResolution
++from neckline.k10.worker import run_once
++from neckline.k10.v2_store import read_report
++import tests.test_v310_pipeline_e2e as e2e
++from tests.test_b54_review_regressions import client_for
++from tests.test_k10_api import _freeze_k10_clocks
++
++@pytest.mark.parametrize('status,retry_succeeds', [(402,False), (429,True), (429,False)])
++@pytest.mark.parametrize('failed_role', ['pro', 'con'])
++def test_paid_analysis_error_contract(tmp_path, monkeypatch, status, retry_succeeds, failed_role, late_retry=False, interrupt_after_failure=False):
++    db, _, original_task, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
++    assert original_task.status == 'completed'
++    _freeze_k10_clocks(monkeypatch, e2e.RUN_AT.isoformat())
++    card = read_report(db_path=db)['eveningCards'][0]
++    with client_for(db) as client:
++        response = client.post('/api/v1/k10/company-windows/' + card['companyWindowId'] + '/selection', json={'action':'keep','idempotencyKey':'independent-review-keep'})
++        assert response.status_code == 200, response.text
++        task_id = response.json()['analysisJobId']
++    calls=[]
++    recover=[False]
++    def respond(request):
++        calls.append(json.loads(request.content))
++        if recover[0] or (failed_role == 'con' and len(calls) == 1):
++            content = {'fullText':'正方完整讨论','summary':{'commonFacts':['已有公开消息'], 'disagreements':[], 'unknowns':['公司未确认']}}
++            return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':json.dumps(content)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
++        return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic provider failure'}})
++    transport = httpx.MockTransport(respond)
++    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: e2e._HTTPX_CLIENT(**{**kwargs,'transport':transport}))
++    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
++    monkeypatch.setattr(runtime, 'resolve_deepseek_v4_pro', lambda **_:ProviderResolution('configured',provider,'fixture',None))
++    def initial_work(at):
++        return run_once(db_path=db,worker_id='independent-review',lease_for=timedelta(minutes=5), handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'), clock=lambda:at,task_id=task_id)
++    if interrupt_after_failure:
++        record=runtime.record_analysis_artifact
++        def crash(**kwargs):
++            record(**kwargs)
++            if kwargs['artifact'].status=='failed':raise SystemExit('after failure artifact commit')
++        monkeypatch.setattr(runtime,'record_analysis_artifact',crash)
++        with pytest.raises(SystemExit):initial_work(e2e.RUN_AT)
++        assert store.get_task(task_id=task_id,db_path=db).status=='running'
++        receipt=store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['providerFailureReceipt']
++        assert receipt['errorCode']==('rate_limited' if status==429 else 'insufficient_balance')
++        assert datetime.fromisoformat(receipt['receivedAt'])==e2e.RUN_AT
++        monkeypatch.setattr(runtime,'record_analysis_artifact',record)
++        task=initial_work(e2e.RUN_AT+timedelta(seconds=301))
++        assert 'providerFailureReceipt' not in store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']
++    else:
++        task=initial_work(e2e.RUN_AT)
++    with sqlite3.connect(db) as conn:
++        retries=conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]
++        external=conn.execute('SELECT error_code FROM k10_external_attempts WHERE task_id=? ORDER BY rowid',(task_id,)).fetchall()
++    execution = store.task_execution_input(task_id=task_id,db_path=db)
++    with client_for(db) as client:
++        chain=client.get('/api/v1/k10/company-windows/' + card['companyWindowId'] + '/analysis-chain').json()
++    print(json.dumps({'providerStatus':status,'failedRole':failed_role,'taskStatus':task.status,'httpCalls':len(calls),'retries':retries,'attemptErrors':external,'taskError':execution.get('error'),'stage':execution.get('stage'),'analysisErrors':[a.get('error') for item in chain.get('items',[]) for a in item.get('analyses',[])]}, ensure_ascii=False))
++    (tmp_path / f'b56_analysis_{failed_role}_{status}.json').write_text(json.dumps(chain,ensure_ascii=False))
++    expected_calls = 1 if failed_role == 'pro' else 2
++    assert len(calls) == expected_calls
++    assert external[-1][0] == ('rate_limited' if status == 429 else 'insufficient_balance')
++    before_payload = store.get_task(task_id=task_id,db_path=db).payload
++    before_pro = [a for item in chain['items'] for a in item['analyses'] if a['role']=='pro' and a['status']=='completed']
++    def work(at):
++        return run_once(db_path=db,worker_id='review-recovery',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:at,task_id=task_id)
++    if status==429:
++        assert chain['items'][0]['job']['error']['message']=='模型服务限流，等待延后重试'
++        assert task.status=='queued' and retries==1, '429 must retain the failed role and schedule Retry-After'
++        with sqlite3.connect(db) as conn:
++            due = datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0])
++        assert due == e2e.RUN_AT + timedelta(seconds=900 if interrupt_after_failure else 60)
++        assert work(due-timedelta(seconds=1)) is None and len(calls)==expected_calls
++        recover[0] = retry_succeeds
++        if late_retry:
++            retried=work(due+timedelta(hours=7))
++            assert retried.status=='failed' and len(calls)==expected_calls
++            with client_for(db) as client:
++                expired=client.get('/api/v1/k10/company-windows/' + card['companyWindowId'] + '/analysis-chain').json()
++            assert '完成时限' in expired['items'][0]['job']['error']['message']
++            if before_pro:
++                assert [a for item in expired['items'] for a in item['analyses'] if a['role']=='pro' and a['status']=='completed']==before_pro
++            assert store.get_task(task_id=task_id,db_path=db).payload==before_payload
++            with sqlite3.connect(db) as conn:
++                assert conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]==0
++            return
++        retried=work(due)
++        assert retried.status == ('completed' if retry_succeeds else 'failed')
++        assert calls[expected_calls] == calls[expected_calls-1], 'only the failed role retries with identical frozen input'
++        assert len(calls)==expected_calls + (2 if failed_role=='pro' and retry_succeeds else 1)
++        with client_for(db) as client:
++            recovered=client.get('/api/v1/k10/company-windows/' + card['companyWindowId'] + '/analysis-chain').json()
++        if before_pro:
++            assert [a for item in recovered['items'] for a in item['analyses'] if a['role']=='pro' and a['status']=='completed']==before_pro
++        assert store.get_task(task_id=task_id,db_path=db).payload == before_payload
++        if not retry_succeeds:
++            with sqlite3.connect(db) as conn:
++                assert '重试上限' in conn.execute('SELECT error_text FROM k10_tasks WHERE task_id=?',(task_id,)).fetchone()[0]
++            assert work(due+timedelta(minutes=5)) is None
++        else:
++            (tmp_path / f'b56_analysis_{failed_role}_recovered.json').write_text(json.dumps(recovered,ensure_ascii=False))
++    else:
++        assert '余额不足' in json.dumps(chain,ensure_ascii=False), '402 must reach the actual client-readable analysis failure'
++        assert task.status=='failed' and retries==0
++        assert work(e2e.RUN_AT+timedelta(minutes=5)) is None and len(calls)==expected_calls
++
++@pytest.mark.parametrize('status', [402, 429])
++def test_paid_morning_review_error_contract(tmp_path, monkeypatch, status, late_retry=False, interrupt_after_failure=False):
++    from neckline.k10 import morning_runtime
++    from tests.test_b54_review_regressions import later_scan
++    calls=[]
++    recover=[False]
++    def resolve(**kwargs):
++        def respond(request):
++            calls.append(json.loads(request.content))
++            if recover[0]:
++                content={'material':False,'reasonStatus':'current','observationStatus':'current','summary':'冻结资料复核无新增变化','materialContraryEvidence':[]}
++                return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':json.dumps(content)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
++            return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic morning failure'}})
++        transport=httpx.MockTransport(respond)
++        monkeypatch.setattr(httpx,'Client',lambda **opts:e2e._HTTPX_CLIENT(**{**opts,'transport':transport}))
++        provider=MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
++        return ProviderResolution('configured',provider,'fixture',None)
++    monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',resolve)
++    if interrupt_after_failure:
++        failure_result=morning_runtime.provider_failure_result
++        def crash(**kwargs):raise SystemExit('after morning failure ledger commit')
++        monkeypatch.setattr(morning_runtime,'provider_failure_result',crash)
++        with pytest.raises(SystemExit):later_scan(tmp_path,monkeypatch,lambda payload,value:None)
++        db=tmp_path/'b39-e2e.sqlite';old=store.list_opportunities(db_path=db)[0]
++        with sqlite3.connect(db) as conn:
++            child_id,lease_until=conn.execute("SELECT task_id,lease_until FROM k10_tasks WHERE kind='morning_review'").fetchone()
++            parent_id=conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
++        parent=store.get_task(task_id=parent_id,db_path=db)
++        assert store.task_execution_input(task_id=child_id,db_path=db)['checkpoint']['providerFailureReceipt']['errorCode']==('rate_limited' if status==429 else 'insufficient_balance')
++        monkeypatch.setattr(morning_runtime,'provider_failure_result',failure_result)
++        claimed_at=datetime.fromisoformat(lease_until)+timedelta(seconds=1)
++        task=run_once(db_path=db,worker_id='morning-after-crash',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:claimed_at,task_id=child_id)
++        assert task.status==('queued' if status==429 else 'failed')
++        assert 'providerFailureReceipt' not in store.task_execution_input(task_id=child_id,db_path=db)['checkpoint']
++    else:
++        db, old, parent, _=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
++    with sqlite3.connect(db) as conn:
++        children=conn.execute("SELECT task_id,status,error_text FROM k10_tasks WHERE kind='morning_review'").fetchall()
++        assert len(children)==1
++        task_id=children[0][0]
++        retries=conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]
++        external=conn.execute('SELECT error_code FROM k10_external_attempts WHERE task_id=? ORDER BY rowid',(task_id,)).fetchall()
++    with client_for(db) as client:
++        report=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
++    print(json.dumps({'providerStatus':status,'scope':'morning_review','parentStatus':parent.status,'childStatus':children[0][1],'httpCalls':len(calls),'retries':retries,'attemptErrors':external,'error':children[0][2],'clientIncomplete':report['report']['incompleteReviews']},ensure_ascii=False))
++    (tmp_path / f'b56_morning_{status}.json').write_text(json.dumps(report,ensure_ascii=False))
++    assert len(calls)==1 and external[-1][0]==('rate_limited' if status==429 else 'insufficient_balance')
++    if status==429:
++        assert '限流' in report['report']['incompleteReviews'][0]['reason']
++        assert children[0][1]=='queued' and retries==1, '429 morning child must schedule only its failed review'
++        with sqlite3.connect(db) as conn:
++            due=datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0])
++        from neckline.k10.windows import SHANGHAI
++        assert due==datetime(2026,9,9,9,25 if interrupt_after_failure else 11,tzinfo=SHANGHAI)
++        opportunities=store.list_opportunities(db_path=db)
++        recover[0]=True
++        retried=run_once(db_path=db,worker_id='morning-recovery',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:due+timedelta(hours=7) if late_retry else due,task_id=task_id)
++        if late_retry:
++            assert retried.status=='failed' and len(calls)==1
++            with client_for(db) as client:
++                expired=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
++            assert expired['report']['status']=='partial'
++            assert '完成时限' in expired['report']['incompleteReviews'][0]['reason']
++            assert expired['report']['updatedCards']==report['report']['updatedCards']
++            assert store.list_opportunities(db_path=db)==opportunities
++            return
++        assert retried.status=='completed' and len(calls)==2 and calls[0]==calls[1]
++        with client_for(db) as client:
++            recovered=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
++        assert recovered['report']['incompleteReviews']==[] and recovered['report']['status']=='completed'
++        for section in ('updatedCards','addedCards','eveningCards'):
++            assert recovered['report'][section]==report['report'][section]
++        assert store.list_opportunities(db_path=db)==opportunities
++        (tmp_path / 'b56_morning_recovered.json').write_text(json.dumps(recovered,ensure_ascii=False))
++    else:
++        assert '余额不足' in json.dumps(report,ensure_ascii=False), '402 must be readable in current morning report'
++        assert children[0][1]=='failed' and retries==0
++
++def test_material_stage_continuation_keeps_its_related_window(tmp_path,monkeypatch):
++    from datetime import date,datetime
++    from neckline.k10.cli import enqueue_scan
++    from neckline.k10.sources import SourceDocumentInput,SourceFetchResult
++    from neckline.k10.windows import SHANGHAI
++    from tests.test_b54_review_regressions import intercept
++    db,_,first_task,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
++    assert first_task.status=='completed'
++    initial=store.list_opportunities(company_code='300002.SZ',db_path=db)[0]
++    with sqlite3.connect(db) as conn:
++        conn.executemany("INSERT INTO trade_cal VALUES ('SSE',?,1)",[('20260911',),('20260914',),('20260915',)])
++        conn.executemany("INSERT INTO trade_cal VALUES ('SSE',?,0)",[('20260912',),('20260913',)])
++    def run_next(day, related_id, classification):
++        at=datetime(2026,9,day,22,0,tzinfo=SHANGHAI)
++        published=at.replace(hour=19)
++        text='公司公告：项目已经客户验证，签订首张批量交付订单，原先送样阶段结束。' if day==9 else '公司重申昨日公告的同一批量订单交付安排，金额和合同条件没有新增变化。'
++        class News(e2e._News):
++            def fetch_incremental(self,request):
++                return SourceFetchResult(documents=(SourceDocumentInput('order-'+str(day),None,text,None,published,'exact',published+timedelta(minutes=1),'order-'+str(day),{'title':text}),),next_cursor='day-'+str(day),success_watermark=request.window.cutoff_at,pages_fetched=1,pages_expected=1,exhausted=True)
++        monkeypatch.setattr(pipeline,'_now',lambda:at)
++        monkeypatch.setattr(pipeline,'TuShareMajorNewsAdapter',News)
++        e2e._http_transport(monkeypatch,v2=True)
++        def change(payload,value):
++            if 'events' in value:
++                for event in value['events']:
++                    event.update(stageKey='order_confirmed',headline='项目正式进入批量交付订单阶段',facts={'increment':text})
++                    for claim in event.get('claims',[]):
++                        claim.update(text=text,stageOrCondition='订单确认',subject='公司项目',action='签订订单')
++            if isinstance(payload.get('output'),dict) and 'kind' in payload['output'] and payload['companyCode']=='300002.SZ':
++                value.update(kind=classification,relatedOpportunityId=related_id,reason=text,newFacts=text,changedJudgment='首张批量订单取代原先试样的不确定判断',twoDayReason='订单阶段实质改变公司业务判断')
++        intercept(monkeypatch,change)
++        task_id=enqueue_scan(db_path=db,kind='evening',trading_day=date(2026,9,day),config_id='b39',config_revision=1,execution_config_id='b39-execution',execution_config_revision=1,now=at)
++        task=run_once(db_path=db,worker_id='stage-'+str(day),lease_for=timedelta(minutes=5),handlers={'evening_scan':lambda ctx:pipeline.production_scan_handler(ctx,tushare_token='fixture-token',parquet_dir=tmp_path/'parquet',now=lambda:at)},clock=lambda:at,task_id=task_id)
++        assert task.status=='completed',store.task_execution_input(task_id=task_id,db_path=db)
++        return read_report(db_path=db)['eveningCards'][0]
++    second=run_next(9,initial['opportunityId'],'material_stage')
++    material=next(row for row in store.list_opportunities(company_code='300002.SZ',db_path=db) if row['opportunityId']!=initial['opportunityId'])
++    assert second['companyWindowId']==material['companyWindowId']
++    third=run_next(10,material['opportunityId'],'continuation')
++    _freeze_k10_clocks(monkeypatch,datetime(2026,9,10,22,0,tzinfo=SHANGHAI).isoformat())
++    with client_for(db) as client:
++        actual=client.get('/api/v1/k10/v2/reports/latest?window=evening')
++        assert actual.status_code==200
++        api_card=actual.json()['report']['eveningCards'][0]
++        assert api_card['companyWindowId']==third['companyWindowId'] and api_card['canSelect'] is True
++        blocked=client.post('/api/v1/k10/company-windows/'+api_card['companyWindowId']+'/selection',json={'action':'keep','idempotencyKey':'correct-stage-window'})
++        assert blocked.status_code==200
++        print(json.dumps({'apiCardWindow':api_card['companyWindowId'],'apiCanSelect':api_card['canSelect'],'selectStatus':blocked.status_code,'selectMessage':blocked.json(),'actualMaterialState':store.get_opportunity(opportunity_id=material['opportunityId'],db_path=db)['state']},ensure_ascii=False))
++    print(json.dumps({'initialWindow':initial['companyWindowId'],'initialDates':[initial['d1TradeDate'],initial['d2TradeDate']],'materialOpportunity':material['opportunityId'],'materialWindow':material['companyWindowId'],'materialDates':[material['d1TradeDate'],material['d2TradeDate']],'actualThirdWindow':third['companyWindowId'],'actualDates':[third['d1TradeDate'],third['d2TradeDate']],'thirdCanSelect':third['canSelect'],'thirdCatalysts':third['catalysts'],'opportunityCount':len(store.list_opportunities(company_code='300002.SZ',db_path=db))},ensure_ascii=False))
++    assert third['companyWindowId']==material['companyWindowId'], 'Continuing material-stage card must use the related material window, not the original catalyst window'
++
++    assert len(store.list_opportunities(company_code='300002.SZ',db_path=db))==2
++    assert [third['d1TradeDate'],third['d2TradeDate']]==[material['d1TradeDate'],material['d2TradeDate']]
++    assert third['catalysts'][0]['opportunityId']==material['opportunityId']
++    (tmp_path / 'b56_stage_evening.json').write_text(json.dumps(actual.json(),ensure_ascii=False))
++
++
++@pytest.mark.parametrize('kind', ['continuation','needs_review','invalidated'])
++def test_explicit_material_predecessor_owns_update_identity(kind):
++    from neckline.k10.opportunity_discovery import validate_classification
++    previous=[{'opportunityId':'initial','opportunityKey':'event\x1f300002.SZ','companyCode':'300002.SZ','canonicalKey':'event','catalystStage':'sample'},
++              {'opportunityId':'material','opportunityKey':'event\x1f300002.SZ\x1forder','companyCode':'300002.SZ','canonicalKey':'event','catalystStage':'order'}]
++    decision=validate_classification({'kind':kind,'relatedOpportunityId':'material','reason':'本次材料更新订单阶段'},canonical_key='event',stage_key='order',company_code='300002.SZ',previous=previous)
++    assert decision['opportunityKey']==previous[1]['opportunityKey']
++    with pytest.raises(ValueError,match='不同公司'):
++        validate_classification({'kind':kind,'relatedOpportunityId':'material','reason':'错误关联'},canonical_key='event',stage_key='order',company_code='300001.SZ',previous=previous)
++
++
++@pytest.mark.parametrize('retry_after,expected', [(None,60),(-1,60),(float('nan'),60),(0,0),(37,37),(10**30,None)])
++def test_rate_limit_uses_only_frozen_backoff_and_deadline(retry_after,expected):
++    from dataclasses import replace
++    from threading import Event
++    from neckline.k10.types import Task
++    from neckline.k10.worker import TaskContext
++    from neckline.k10.provider_failures import provider_failure_result
++    task=Task('isolated','analysis','running',1,'worker',None,{})
++    profile={'payload':{'discovery':{'networkMaxAttempts':2,'retryBackoffSeconds':[60,300,900]}}}
++    context=TaskContext(task,{}, {},'fixture',e2e.RUN_AT.isoformat(),None,Event(),execution_profile=profile,
++                        execution_deadline_at=e2e.RUN_AT+timedelta(hours=6),clock=lambda:e2e.RUN_AT)
++    result=provider_failure_result(context=context,stage='con_failed',code='rate_limited',retry_after_seconds=retry_after)
++    assert result.retry_at==(e2e.RUN_AT+timedelta(seconds=expected) if expected is not None else None)
++    exhausted=provider_failure_result(context=replace(context,failure_attempt_count=1),stage='con_failed',code='rate_limited',retry_after_seconds=0)
++    assert exhausted.retry_at is None and '重试上限' in exhausted.error
++
++
++@pytest.mark.parametrize('status',[402,429])
++def test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_path,monkeypatch,status,completed_roles="pro",late_resume=False):
++    db,_,_,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
++    _freeze_k10_clocks(monkeypatch,e2e.RUN_AT.isoformat())
++    card=read_report(db_path=db)['eveningCards'][0]
++    with client_for(db) as client:
++        job=client.post('/api/v1/k10/company-windows/'+card['companyWindowId']+'/selection',json={'action':'keep','idempotencyKey':'interrupted-pro'}).json()['analysisJobId']
++    calls=[]
++    def respond(request):
++        calls.append(json.loads(request.content))
++        if len(calls)==1 or completed_roles=="both":
++            from tests.debate_fixture import debate_text
++            return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':debate_text('持久正方全文')},'finish_reason':'stop'}]})
++        return httpx.Response(status,headers={'Retry-After':'60'},json={'error':{'message':'synthetic error'}})
++    transport=httpx.MockTransport(respond)
++    monkeypatch.setattr(httpx,'Client',lambda **kwargs:e2e._HTTPX_CLIENT(**{**kwargs,'transport':transport}))
++    provider=MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
++    monkeypatch.setattr(runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'fixture',None))
++    record=runtime.record_analysis_artifact
++    def interrupted(**kwargs):
++        record(**kwargs)
++        if kwargs['artifact'].role==('con' if completed_roles=='both' else 'pro'):
++            raise RuntimeError('synthetic interruption after durable role')
++    monkeypatch.setattr(runtime,'record_analysis_artifact',interrupted)
++    def work(at=e2e.RUN_AT):
++        return run_once(db_path=db,worker_id='interruption',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:at,task_id=job)
++    first=work()
++    assert first.status=='failed' and len(calls)==(2 if completed_roles=='both' else 1)
++    monkeypatch.setattr(runtime,'record_analysis_artifact',record)
++    resumed_at=e2e.RUN_AT+timedelta(hours=7) if late_resume else e2e.RUN_AT
++    _freeze_k10_clocks(monkeypatch,resumed_at.isoformat())
++    with client_for(db) as client:
++        response=client.post('/api/v1/k10/jobs/'+job+'/retry',json={'expectedAttemptCount':first.attempt_count})
++        assert response.status_code==200
++    second=work(resumed_at)
++    assert second.status==('completed' if completed_roles=='both' else 'queued' if status==429 else 'failed') and len(calls)==2
++    assert '持久正方全文' in json.dumps(calls[1],ensure_ascii=False)
++    with client_for(db) as client:
++        chain=client.get('/api/v1/k10/company-windows/'+card['companyWindowId']+'/analysis-chain').json()
++    pro=[a for item in chain['items'] for a in item['analyses'] if a['role']=='pro']
++    assert len(pro)==1 and pro[0]['status']=='completed'
++
++
++def test_build56_health_and_operator_config_paths():
++    from pathlib import Path
++    from fastapi.testclient import TestClient
++    from neckline.api.app import app
++    # No startup or operational database access is needed by this public endpoint.
++    response=TestClient(app).get('/api/v1/health')
++    assert response.status_code==200 and response.json()['releaseSet']=='v3.2.0-b56'
++    root=Path(__file__).parents[2]
++    for name in ('k10-v2.json','k10-execution-v4.json'):
++        assert (root/'Backend/neckline/config'/name).is_file()
++    readme=(root/'README.md').read_text()
++    assert '[k10-execution-v3.json]' not in readme
++    assert '[k10-execution-v4.json]' in readme and '[k10-v2.json]' in readme
++
++
++@pytest.mark.parametrize('role',['pro','con'])
++def test_late_claim_of_analysis_retry_cannot_spend_after_frozen_deadline(tmp_path,monkeypatch,role):
++    test_paid_analysis_error_contract(tmp_path,monkeypatch,429,True,role,late_retry=True)
++
++
++def test_late_claim_of_morning_retry_retains_incomplete_report_without_spending(tmp_path,monkeypatch):
++    test_paid_morning_review_error_contract(tmp_path,monkeypatch,429,late_retry=True)
++
++
++def test_completed_analysis_can_finalize_after_deadline_without_any_provider_call(tmp_path,monkeypatch):
++    test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_path,monkeypatch,429,completed_roles='both',late_resume=True)
++
++
++def test_cached_morning_can_finalize_after_deadline_without_any_provider_call(tmp_path,monkeypatch):
++    from tests.test_b54_boundary_regressions import test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry
++    test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,'current','evidence_update',late_retry=True)
++
++
++@pytest.mark.parametrize('status',[402,429])
++@pytest.mark.parametrize('role',['pro','con'])
++def test_failure_artifact_crash_restores_terminal_or_original_retry_without_new_call(tmp_path,monkeypatch,status,role):
++    test_paid_analysis_error_contract(tmp_path,monkeypatch,status,True,role,interrupt_after_failure=True)
++
++
++@pytest.mark.parametrize('status',[402,429])
++def test_morning_failure_ledger_crash_restores_original_outcome_without_new_call(tmp_path,monkeypatch,status):
++    test_paid_morning_review_error_contract(tmp_path,monkeypatch,status,interrupt_after_failure=True)
++
++
++def test_failure_receipt_rolls_back_with_attempt_and_unknown_outcome_blocks_new_attempt(tmp_path,monkeypatch):
++    db,_,_,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
++    _freeze_k10_clocks(monkeypatch,e2e.RUN_AT.isoformat())
++    card=read_report(db_path=db)['eveningCards'][0]
++    with client_for(db) as client:
++        job=client.post('/api/v1/k10/company-windows/'+card['companyWindowId']+'/selection',json={'action':'keep','idempotencyKey':'receipt-atomic'}).json()['analysisJobId']
++    args=dict(task_id=job,stage='analysisPro',item_key='same-frozen-role',input_sha256='a'*64,started_at=e2e.RUN_AT.isoformat(),db_path=db)
++    attempt=store.begin_external_attempt(attempt_key='first',**args)
++    assert attempt['state']=='started'
++    with sqlite3.connect(db) as conn:
++        conn.execute("CREATE TRIGGER reject_receipt BEFORE UPDATE OF checkpoint_json ON k10_tasks WHEN json_extract(NEW.checkpoint_json,'$.providerFailureReceipt') IS NOT NULL BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END")
++    with pytest.raises(sqlite3.IntegrityError,match='receipt failure'):
++        store.settle_external_attempt(attempt_id=attempt['attemptId'],outcome='failed',usage=None,settled_at=e2e.RUN_AT.isoformat(),error_code='rate_limited',db_path=db,record_provider_failure=True,retry_after_seconds=900)
++    with sqlite3.connect(db) as conn:
++        assert conn.execute('SELECT state,error_code FROM k10_external_attempts WHERE attempt_id=?',(attempt['attemptId'],)).fetchone()==('started',None)
++    assert 'providerFailureReceipt' not in store.task_execution_input(task_id=job,db_path=db)['checkpoint']
++    assert store.begin_external_attempt(attempt_key='different-worker-attempt',**args)['state']=='pending_outcome'
+--- B55/PROJECT_PLAN.md
++++ B56/PROJECT_PLAN.md
+@@ -1,4 +1,4 @@
+-# Neckline · 3.2.0 / 双端 Build 55 · K10-v2
++# Neckline · 3.2.0 / 双端 Build 56 · K10-v2
+ 
+ 本文件是工程控制面。本轮详细契约与验收证据写入 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。现行策略唯一依据为 [`whynotme/K10.md`](../whynotme/K10.md)；生产代码不得导入研究仓。
+ 
+@@ -8,7 +8,7 @@
+ 
+ ## 稳定技术决定
+ 
+-- 目标为 **3.2.0 / 双端 Build 55 / Schema 8 / K10-v2**。版本三处和客户端 Build 必须一致；生产仍为 3.1.0 Build 53 / Schema 7，未获发布或恢复授权。
++- 目标为 **3.2.0 / 双端 Build 56 / Schema 8 / K10-v2**。版本三处和客户端 Build 必须一致；生产仍为 3.1.0 Build 53 / Schema 7，未获发布或恢复授权。
+ - K10-v2 固定使用 `K10-v2初始股票池_20260909.json` 的 1,089 只公司。导入器显式接收 `--universe-file` 和 `--profiles-dir`，校验名单、完整资料、索引与原始证据后原子写入工程侧数据；运行期只读该快照，不读取或 Python 导入 `whynotme`。资料的 `local_draft_awaiting_user` 来源状态、引用、报告期和缺口原样保留，缺项不排除公司。
+ - Schema 8 只新增 v2 的池／资料快照与日推荐卡账本；现有 K10-v1.4 的已发布推荐、选择和证据冻结保留且不可重写。旧 D1/D2 仍可在日后获恢复授权后追加行情事实和评价修订，但不重置窗口或回改选择；v2 新卡借用既有机会／公司窗口账本。
+ - 所有精确去重标题均经批量模型短筛；本地索引只帮助召回相关公司，名称或关键词未命中不能硬删。无 80／40、正文、搜索、文章、初选公司、题材、涨幅或 token 总配额；正文／补查按共享事件和实际缺口进行，跨批归并并复用资料与证据。删除 80／40 的活跃生产、校验和测试契约，不保留兼容运行路径。
+@@ -19,10 +19,11 @@
+ 
+ ## 当前状态
+ 
++- B56 快修已开始；源码基线与清单已冻结，记录见版本记录第 17 节。
+ - 基线为 `71d0e1a`；已发布标签 `v3.1.0-b53` 指向 `76c0a9f`。生产 run control closed，API／worker／所有 timer 均停用；9 月 8 日晚报及两份样本、9 月 9 日晨报失败检查点均保留。
+ - K10-v2 规范哈希为 `44817d…2dd3d`；固定池、完整资料、筛选索引均为 1,089 条，详细来源哈希见本轮版本记录。资料仅本地初稿，未上传、未标记为已核或已批准。
+ - 用户已授权本地工程实施；禁止真实 DeepSeek、Tavily、TuShare、余额／权限探测、真实报告重放、现场试跑与真实推送。生产服务、排程和数据库不得变更。
+-- **3.2.0 / 双端 Build 55 四项一致性快修已完成并独立复查通过，尚未发布。** 晨间实质变化独立呈现，价格反应保留冻结日期／来源，正反摘要随原两轮生成，两日连板单列且不重复主命中。见版本记录第 15 节。
++- **3.2.0 / 双端 Build 56 四项一致性快修已完成并独立复查通过，尚未发布。** 晨间实质变化独立呈现，价格反应保留冻结日期／来源，正反摘要随原两轮生成，两日连板单列且不重复主命中。见版本记录第 15 节。
+ - Backend **1039 passed**；XCTest **45 通过／5 个历史专测跳过／0 失败**；macOS、iOS、iOS build-for-testing 均通过。16 份实际 API DTO 解码验证；双端填充页面对照批准设计方向验收。
+ - 前轮四项修复已通过窄复查；用户随后要求完整独立复审，**新增 3 项 P2 待修及 1 项非阻塞 P3**：新阶段延续错绑旧窗口、正反／晨间子复核 402/429 契约漏接、当前配置指引引用删除文件；本地发布集标识待既定发布脚本同步。见版本记录第 16 节。
+ - 本次 Reviewer **38 项相关回归通过，7 个独立反例断言失败**；主会话迁移／固定资料 11 项通过，Schema 7→8 与回滚核验 50 个旧表等价。401 路径完整目标 `d59ba2…bb64` 审查期间无漂移；本轮未改源码，不作完整 SOP 通过结论。
+@@ -31,7 +32,7 @@
+ 
+ ## 当前 Plan
+ 
+-本轮全范围只读复审已完成，新增问题尚未修复。保留 3.2.0（55），本轮未授权新修复或发布。详细 findings、反例与此前验证见 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md) 第 16 节。
++用户已授权本轮快修：保持 3.2.0，双端 Build 56。修复阶段延续关联、正反／晨间子复核 402/429、配置指引与本地发布集标识；以原七个反例和受影响链路离线验证，完成后独立窄复查。未授权发布或恢复生产。详细 findings、反例与此前验证见 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md) 第 16 节。
+ 
+ ## 待用户决定
+ 
+--- B55/README.md
++++ B56/README.md
+@@ -6,7 +6,7 @@
+ 
+ **当前生产已全面暂停。** 用户于 2026-09-09 10:21 CST 停用 API、worker、所有 timer 和运行开关；B53 安装、9 月 8 日晚报两份样本及晨报失败检查点保留，不重放报告，不恢复已退役的 2,472 篇事故批次。
+ 
+-**本地已完成：3.2.0 / 双端 Build 55 / K10-v2 / Schema 8，尚未发布。** 固定 1,089 公司池与完整资料显式导入，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
++**本地开发：3.2.0 / 双端 Build 56 / K10-v2 / Schema 8，尚未发布。** 固定 1,089 公司池与完整资料显式导入，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
+ 
+ 本轮只做临时库、确定性 transport、localhost API、Swift 解码与原生 QA；禁止真实模型／搜索／行情／推送调用和余额／权限探测。离线通过不代表真实供应商效果或实际 token 总量。当前完整状态与验证进展见主 Plan。
+ 
+@@ -17,14 +17,14 @@
+ ## V3 功能
+ 
+ 入口为 **机会 / 关注 / 选股表现 / 设置**。事件共同事实只讲一次，系统先给出主推、备选或并列，说明
+-优先理由、差距和改变排序的条件。同公司同批次多催化共用公司卡与一次选择；晚间最多 30 家新机会公司。
++优先理由、差距和改变排序的条件。同公司同批次多催化共用公司卡与一次选择；晚间最多 30 家不同公司，旧催化仍可在每日重选后展示，但不重开两日窗口。
+ 留下才启动正方、反方各一轮，双方共享冻结证据，反方另读正方全文；全文、来源与修订可追溯。
+ 
+ 双端已按参考图重做白色轻卡、蓝色线性图标与文字层级。iPhone 逐张浏览公司卡，略过/留下固定在底部，
+ 浏览不提交选择；底栏为机会、关注、选股表现，设置从齿轮进入。macOS 使用公司列表与阅读区双栏，
+ 正反观点并排；原始资料与搜索摘录分开标识，正文引用可定位到冻结资料修订。
+ 
+-仅创业板、无股价上限，排除 ST/*ST 和 SW2021 白酒Ⅱ（801125.SI）全部成员。21:00 为晚扫资料截止
++K10-v2 资格以已确认的 1,089 公司固定快照为准，运行期不按动态行业或 ST 信息重新增删名单。21:00 为晚扫资料截止
+ （不含整点），次一交易日 09:00 为晨间截止（含整点）；发布、采集、分析、实际可查看和操作时间分别记录。
+ 全部正式主推与备选自动记录两日行情，与用户是否留下无关。D1 是推荐可查看后的第一个完整交易日，
+ D2 为下一交易日；推荐因延迟错过预定 D1 的 09:30 开盘时点，从下一交易日起观察并标迟到，
+@@ -38,7 +38,7 @@
+ 价格观察以 D1 开盘为参照，分别给出两日高低收与整个窗口的极值；除权资料不足时跨日指标留空。
+ 同 D1/D2、同评价版本的三组可以对照，晚间与开盘前晨间来源合并统计并保留各批次；同一事件涉及多家公司时另列事件关联，不能相加当作多次独立催化成功。
+ 
+-全候选五段晨报已就绪，配套事件整体公司比较、带来源及缺口的历史同类资料、追加追问与正反版本阅读链。
++晨报独立展示公司更新、新增和重大变化，配套事件整体公司比较、带来源及缺口的历史同类资料、追加追问与正反版本阅读链。
+ 行情逐字段展示双源核验、单源回退或冲突原因；重叠机会保留实际命中记录，缺数与异常不会充作未命中。
+ 撤回与两日到期为终态，普通资料更新和补充分析不会重新激活旧机会。
+ 
+@@ -46,16 +46,20 @@
+ 
+ ## 配置与数据
+ 
+-策略包为 [k10-v1.4.json](Backend/neckline/config/k10-v1.4.json)，全部模型继续使用 `deepseek-v4-pro`。
+-执行控制为 [k10-execution-v3.json](Backend/neckline/config/k10-execution-v3.json)，显式绑定批准的标题筛选规则与 80/40 篇数限额。
+-程序只做精确去重；标题 Agent 分批理解全部标题，再跨批合并同一事项并排序。不因来源、海外、未带创业板代码或利好词机械丢弃资料；保留独立催化与重要反证，不足不凑数。
+-全局清单冻结后才允许正文模型调用。入选缺正文仍占名额且如实显示，不以其他文章替补；重试和恢复沿用同一清单。
+-Tavily 只核验入选事件，每次搜索必须关联具体问题、查询意图、来源路径和预期判断变化；默认使用搜索摘录，必要时申请全文。全文不预留名额，只使用冻结清单之外的剩余额度，不挤占入选正文。
+-来源事实未变可复用，正文版本、规则或模型输入改变则失效；时效、价格和两日判断仍重新核验。
+-不设整轮或整日金额、token、模型调用、搜索调用总上限。逐次实际用量账、有限重试、缓存与持久暂停保留；未知调用结果单列，不伪装成功或可免费重试。
++当前开发策略包为 [k10-v2.json](Backend/neckline/config/k10-v2.json)，执行包为 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)，全部模型使用 `deepseek-v4-pro`。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
+ 
+-Schema 7 支持生产 4→7 与本地 6→7，增加可恢复研究记录，保留既有标题、正文准入与实际用量审计，迁移默认持久暂停。设置页显示标题、正文、研究与执行状态以及完整公司比较；待核、排除和程序失败分别保留。
+-缺执行规则或批准绑定时安全停止；历史 V1/V2 执行包不能绑定新的付费任务。
++初始化／升级顺序：确认目标和备份 → 受控 Schema 8 初始化／迁移 → 导入固定资料 → 登记配置修订 → 绑定策略快照 → 核对 API 配置响应。当前只允许在隔离本地库操作；生产迁移和恢复尚未授权。API 启动和 GET 不执行迁移。Schema 8 新增固定池、资料快照和日报卡账本，保留旧版正式机会、选择及 D1/D2 原记录。
++
++在 `Backend/` 使用 `python -m neckline.k10.cli`，按顺序执行以下子命令；`--db` 都传同一已核对的 Schema 8 库，修订号使用前两项登记命令实际返回值，不照抄旧生产修订：
++
++1. `import-v2-profiles`：传 `--db` 与同值 `--confirmed-target`，以及 `--universe-file`、`--profiles-dir`、`--universe-id k10-v2-initial-20260909`、`--profiles-id k10-v2-profiles-20260909`。输入分别是研究侧 `research/K10-v2初始股票池_20260909.json` 和 `artifacts/output/k10-company-profiles-v2-20260909/`；导入核验固定哈希及三份 1,089 公司集合。资料保留 `local_draft_awaiting_user` 和原始引用，导入不等于已核实或获准上传。
++2. `configure --config-id <策略配置ID> --file neckline/config/k10-v2.json` 与 `configure-execution --config-id <执行配置ID> --file neckline/config/k10-execution-v4.json`，均传 `--db`。
++3. `bind-v2-strategy --snapshot-id k10-v2-20260909`，传 `--db`、上述 `--config-id`／`--config-revision`、`--execution-config-id`／`--execution-config-revision`。启动绑定使用同一组 ID／修订；策略快照不可覆盖，调整配置时需显式更新策略快照 ID。
++
++标题 Agent 分批理解全部精确去重标题，跨批合并同一事项；不因来源、海外、未带公司代码或利好词机械删除资料。公司资料索引用于召回相关公司，无名称或关键词命中不能直接排除。
++研究以共享事件为单位，正文、公司档案、核验材料按实际问题取得并复用，不逐标题搜索。Tavily 每次搜索均关联问题、查询意图、来源路径和预期判断变化；搜索摘录和全文分别标识，必要时取全文。**没有 80／40 篇、正文或搜索总配额，也没有“剩余额度”准入。**
++来源事实未变可复用，正文版本、规则或模型输入改变则重新核对；时效、价格和两日判断不得由旧证据冒充。不设整轮或整日金额、token、模型调用、搜索调用总上限；有界并发、单次输出边界、有限重试、逐次用量账和持久暂停保留。未知调用结果单列，不伪装成功或可免费重试。
++402 余额不足终止任务；429 按冻结执行包和 `Retry-After` 延后受影响步骤，正方完成后不因反方重试而重跑。设置页显示当前明确绑定、公司资料来源状态、标题／正文／研究／执行状态与公司比较；待核、排除和程序失败分别保留。
+ 通知退避配置仍见 [notification-delivery-v1.json](Backend/neckline/config/notification-delivery-v1.json)。
+ 
+ TuShare 长篇通讯为当前采集源；快讯、全量公告权限未开通。Tavily 用于重点核验，不冒充全市场来源，
+@@ -63,7 +67,7 @@
+ B36 事故与先前付费测试仅作历史证据，详见 [B36 执行记录](archive/v3.0.4-b36_execution.md)；
+ 本轮仅复用 B38 冻结的 1,430 条有效标题和 37 篇历史正文做离线协议验证；不启动新的付费外呼，合成模型结果不作为真实筛选质量证据。
+ 
+-生产策略配置修订 3 保留每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
++**暂停的 B53 历史配置（不是新版本配置步骤）：** 策略配置修订 3 保留每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
+ 用于有界回补晚到资料，记录实际回查范围和缺口。它不是无限历史覆盖，也不允许把新取得的资料回填为旧推荐。
+ 既有修订原样保留；当前停用 API／timer 的配置绑定为策略修订 3、执行修订 4，原晚报任务仍绑定执行修订 2，不得改写历史修订或用代码默认补齐。
+ 
+@@ -82,13 +86,13 @@
+ 修改 Swift 后，从 App 依次运行三条门禁：
+ 
+ ```bash
+-xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' -derivedDataPath /tmp/neckline-v3-qa/macos NK_BUNDLE_SUFFIX=.qa.livev14 CODE_SIGNING_ALLOWED=NO build
+-xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa.livev14 CODE_SIGNING_ALLOWED=NO build
+-xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa.livev14 CODE_SIGNING_ALLOWED=NO build-for-testing
++xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' -derivedDataPath /tmp/neckline-v3-qa/macos NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build
++xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build
++xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build-for-testing
+ ```
+ 
+ Debug 参数 `-K10SyntheticUI` 使用独立演示数据和空凭据，不联网、不注册推送；不能用于宣称真实模型已验通。
+-测试仅复用上述两个目录和 `top.linotsai.neckline.qa.livev14`，每平台最多一个运行实例，启动前先退出上一实例。
++测试仅复用上述两个目录和 `top.linotsai.neckline.qa`，每平台最多一个运行实例，启动前先退出上一实例。
+ 结束后退出 QA App、停止临时 API、移除临时 token，清理过期副本；保留生产客户端和签名归档。
+ 真实隔离 QA 显式设置 Debug 进程变量 `NK_DISABLE_PERSISTENT_CREDENTIALS=1`，此时只取进程
+ `NK_API_TOKEN`，不读写持久凭据。`NK_QA_TAB`、`NK_QA_READING` 仅供 Debug 页面定位；

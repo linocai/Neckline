@@ -80,7 +80,7 @@ def _review_fixture():
         TitleSelectionItem("doc-3", 1, "merged", "b", "initial", "原合并", merged_into=("doc-1", 1)),
         TitleSelectionItem("doc-4", 1, "no_value", "d", "none", "无关"),
     )
-    selection = TitleSelection("frozen", "evening", 80, tuple(item.ref for item in items), results,
+    selection = TitleSelection("frozen", "evening", len(tuple(item.ref for item in items)), tuple(item.ref for item in items), results,
                                selection_items, (("doc-0", 1), ("doc-1", 1), ("doc-2", 1)), "f" * 64)
     return items, results, selection
 
@@ -286,12 +286,12 @@ def test_cross_batch_repost_merges_but_correction_remains_a_real_selected_articl
     assert next(item for item in selection.items if item.document_id == "doc-3").merged_into == ("doc-0", 1)
 
 
-@pytest.mark.parametrize(("window", "count", "expected"), [("evening", 103, 80), ("morning", 103, 40)])
-def test_window_article_limits_are_article_counts_and_do_not_fill_missing(window, count, expected):
+@pytest.mark.parametrize(("window", "count", "expected"), [("evening", 103, 103), ("morning", 103, 103)])
+def test_all_relevant_titles_can_be_read_without_window_quota(window, count, expected):
     selection = triage_titles(_items(count), window_kind=window, policy=POLICY,
                                batch_call=_batch, reconcile_call=_choose, batch_concurrency=1)
     assert len(selection.selected_refs) == expected
-    assert selection.article_limit == expected
+    assert selection.input_count == expected
 
     sparse = triage_titles(_items(3), window_kind=window, policy=POLICY,
                            batch_call=_batch, reconcile_call=_choose, batch_concurrency=1)
@@ -320,13 +320,13 @@ def test_global_contract_rejects_forged_ids_and_correction_merge():
     results = _batch(items)
     with pytest.raises(TitleTriageProtocolError, match="陌生 refIndex"):
         validate_reconcile_result({"selected": [{"i": 99, "selectedRank": 1, "reason": "x"}],
-                                   "merged": [], "notSelected": [1]}, items, results, 80)
+                                   "merged": [], "notSelected": [1]}, items, results, len(items))
     correction = (TitleTriageResult("doc-0", 1, "correction_or_denial", "same", "denial", "否认"),
                   TitleTriageResult("doc-1", 1, "candidate", "same", "initial", "原报道"))
     with pytest.raises(TitleTriageProtocolError, match="更正/否认"):
         validate_reconcile_result({"selected": [{"i": 1, "selectedRank": 1, "reason": "入选"}],
                                    "merged": [{"i": 0, "into": 1, "reason": "转载"}], "notSelected": []},
-                                  items, correction, 80)
+                                  items, correction, len(items))
 
 
 def test_raw_decoders_and_global_request_keep_only_schema_fields():
@@ -335,8 +335,8 @@ def test_raw_decoders_and_global_request_keep_only_schema_fields():
         {"documentId": "doc-0", "revision": 1, "status": "candidate", "matterKey": "a", "stageKey": "initial", "reason": "a"},
         {"documentId": "doc-1", "revision": 1, "status": "uncertain", "matterKey": "b", "stageKey": "initial", "reason": "b"},
     ]}, items)
-    instruction, payload = reconcile_request_spec(items, batch, 40, POLICY)
-    assert payload["articleLimit"] == 40
+    instruction, payload = reconcile_request_spec(items, batch, len(items), POLICY)
+    assert payload["inputCount"] == 2
     assert len(payload["items"]) == 2
     assert "references" not in payload
     assert all(set(row) == {"i", "sourceKey", "publishedAt", "title", "status", "matterKey", "stageKey"}
@@ -346,7 +346,7 @@ def test_raw_decoders_and_global_request_keep_only_schema_fields():
     assert payload["output"]["merged"][0]["into"] == 0
     assert "originalText" not in str(payload) and "excerpt" not in str(payload)
     selection = validate_reconcile_result({"selected": [{"i": 0, "selectedRank": 1, "reason": "保留"}],
-                                           "merged": [], "notSelected": [1]}, items, batch, 40)
+                                           "merged": [], "notSelected": [1]}, items, batch, len(items))
     assert [item.disposition for item in selection] == ["selected", "not_selected"]
 
 
@@ -356,16 +356,16 @@ def test_compact_global_declaration_generates_the_full_not_selected_complement_w
     compact = {"selectionComplete": True, "reviewedCount": 1430,
                "selected": [{"i": 5, "selectedRank": 1, "reason": "唯一保留"}],
                "merged": [{"i": 6, "into": 5, "reason": "同一事项转载"}]}
-    canonical = normalize_reconcile_result(compact, items, batch, 80)
+    canonical = normalize_reconcile_result(compact, items, batch, len(items))
     assert canonical["notSelected"] == [index for index in range(1430) if index not in {5, 6}]
-    selection = validate_reconcile_result(compact, items, batch, 80)
+    selection = validate_reconcile_result(compact, items, batch, len(items))
     assert len(selection) == 1430
     assert len([item for item in selection if item.disposition == "not_selected"]) == 1428
     assert [item.ref for item in selection if item.disposition == "selected"] == [("doc-5", 1)]
     assert next(item for item in selection if item.ref == ("doc-6", 1)).merged_into == ("doc-5", 1)
 
     empty = validate_reconcile_result({"selectionComplete": True, "reviewedCount": 1430,
-                                       "selected": [], "merged": []}, items, batch, 80)
+                                       "selected": [], "merged": []}, items, batch, len(items))
     assert len(empty) == 1430
     assert not [item for item in empty if item.disposition == "selected"]
     assert len([item for item in empty if item.disposition == "not_selected"]) == 1430
@@ -384,7 +384,7 @@ def test_compact_global_declaration_generates_the_full_not_selected_complement_w
 ])
 def test_compact_global_declaration_rejects_missing_completion_count_or_invalid_selection(raw, message):
     with pytest.raises(TitleTriageProtocolError, match=message):
-        validate_reconcile_result(raw, _items(2), _batch(_items(2)), 80)
+        validate_reconcile_result(raw, _items(2), _batch(_items(2)), len(_items(2)))
 
 
 def test_title_final_review_is_title_only_and_can_only_prune_or_rewire_normal_duplicates():
@@ -423,7 +423,7 @@ def test_title_final_review_allows_two_protected_corrections_to_reduce_without_m
     proposed_items = tuple(TitleSelectionItem(item.document_id, 1, "selected", item.document_id, "denial",
                                               "拟深读反证", selected_rank=index + 1)
                            for index, item in enumerate(items))
-    proposed = TitleSelection("frozen", "evening", 80, tuple(item.ref for item in items), results,
+    proposed = TitleSelection("frozen", "evening", len(tuple(item.ref for item in items)), tuple(item.ref for item in items), results,
                               proposed_items, tuple(item.ref for item in items), "e" * 64)
     review = {"complete": True, "kept": [{"i": 0, "reason": "保留一条反证"}],
               "removed": [{"i": 1, "reason": "同一更正不重复深读", "duplicateOf": 0}]}
@@ -486,55 +486,31 @@ def test_frozen_incident_2472_titles_are_all_audited_without_body_or_search_call
     assert body_or_search_calls == 0
 
 
-@pytest.mark.parametrize(("window_kind", "expected_limit"), [("evening", 80), ("morning", 40)])
-def test_frozen_incident_global_selection_enforces_80_40_with_cross_batch_merge_and_correction(window_kind, expected_limit):
-    frozen_path = Path("/tmp/neckline-b36-validation/first-run-frozen.json")
-    if not frozen_path.exists():
-        pytest.skip("frozen incident input is unavailable")
-    payload = json.loads(frozen_path.read_text())
-    items = tuple(TitleDTO(row["document_id"], int(row["revision"]), row["source_key"], row["published_at"],
-                           json.loads(row["metadata_json"])["title"])
-                  for row in payload["documents"])
-    positions = {item.ref: index for index, item in enumerate(items)}
-
-    def fake_batch(batch):
-        rows = []
-        for item in batch:
-            index = positions[item.ref]
-            if index == 97:  # second 97-title batch: same event as item 0
-                rows.append(TitleTriageResult(item.document_id, item.revision, "same_matter", "fixture-same", "initial", "跨批转载"))
-            elif index == 98:  # same matter but a distinct correction stage
-                rows.append(TitleTriageResult(item.document_id, item.revision, "correction_or_denial", "fixture-same", "denial", "跨批否认"))
-            else:
-                rows.append(TitleTriageResult(item.document_id, item.revision, "candidate", f"fixture-{index}", "initial", "离线候选"))
-        return tuple(rows)
-
-    def fake_global(all_items, results, limit):
-        by_ref = {result.ref: result for result in results}
-        selected_candidates = set(range(limit - 1))
-        selected_candidates.add(98)
-        output = []
-        rank = 1
-        for index, item in enumerate(all_items):
-            result = by_ref[item.ref]
-            if index in selected_candidates:
-                output.append(TitleSelectionItem(item.document_id, item.revision, "selected", result.matter_key,
-                                                 result.stage_key, "冻结入选", selected_rank=rank))
-                rank += 1
-            elif index == 97:
-                output.append(TitleSelectionItem(item.document_id, item.revision, "merged", result.matter_key,
-                                                 result.stage_key, "跨批转载合并", merged_into=all_items[0].ref))
-            else:
-                output.append(TitleSelectionItem(item.document_id, item.revision, "not_selected", result.matter_key,
-                                                 result.stage_key, "全局未入选"))
+@pytest.mark.parametrize("window_kind", ["evening", "morning"])
+def test_cross_batch_merge_and_correction_without_body_quota(window_kind):
+    items = _items(303)
+    def batch(batch):
+        return tuple(TitleTriageResult(item.document_id, 1,
+            "correction_or_denial" if item.document_id == "doc-98" else "candidate",
+            "shared" if item.document_id in {"doc-0", "doc-97"} else item.document_id,
+            "denial" if item.document_id == "doc-98" else "initial", "线索") for item in batch)
+    def reconcile(all_items, results, count):
+        by_ref = {item.ref:item for item in results}
+        output=[]
+        rank=0
+        for item in all_items:
+            merged = item.document_id == "doc-97"
+            rank += int(not merged)
+            result=by_ref[item.ref]
+            output.append(TitleSelectionItem(item.document_id, 1, "merged" if merged else "selected",
+                result.matter_key, result.stage_key, "转载" if merged else "实质消息",
+                selected_rank=None if merged else rank, merged_into=("doc-0",1) if merged else None))
         return tuple(output)
-
-    selection = triage_titles(items, window_kind=window_kind, policy={**POLICY, "batchSize": 97},
-                               batch_call=fake_batch, reconcile_call=fake_global, batch_concurrency=1)
-    assert len(selection.input_refs) == len(selection.batch_results) == 2472
-    assert len(selection.selected_refs) == selection.article_limit == expected_limit
-    assert selection.selected_refs[-1] == items[98].ref
-    assert next(item for item in selection.items if item.ref == items[97].ref).merged_into == items[0].ref
+    selection=triage_titles(items,window_kind=window_kind,policy={**POLICY,"batchSize":97},
+        batch_call=batch,reconcile_call=reconcile,batch_concurrency=1)
+    assert len(selection.batch_results)==303 and len(selection.selected_refs)==302
+    assert ("doc-98",1) in selection.selected_refs
+    assert next(item for item in selection.items if item.document_id=="doc-97").merged_into == ("doc-0",1)
 
 
 def test_discovery_refuses_nonselected_body_before_preparation_or_model(monkeypatch):
@@ -558,7 +534,7 @@ def test_discovery_refuses_nonselected_body_before_preparation_or_model(monkeypa
         run_discovery(documents=documents, configuration=_run_configuration(), model=Model(),
                       verify=lambda event: None, metadata=object(),
                       cutoff_at=__import__("datetime").datetime.fromisoformat("2026-09-08T13:00:00+00:00"),
-                      selected_source_refs=(EvidenceRef("source-0", 1),), article_limit=80)
+                      selected_source_refs=(EvidenceRef("source-0", 1),))
     assert prepared == 0
 
 
@@ -576,10 +552,10 @@ def test_discovery_article_admission_preserves_frozen_order_and_count():
     run = run_discovery(documents=documents, configuration=_run_configuration(), model=Model(),
                         verify=lambda event: None, metadata=object(),
                         cutoff_at=__import__("datetime").datetime.fromisoformat("2026-09-08T13:00:00+00:00"),
-                        selected_source_refs=(EvidenceRef("source-1", 1), EvidenceRef("source-0", 1)), article_limit=80)
+                        selected_source_refs=(EvidenceRef("source-1", 1), EvidenceRef("source-0", 1)))
     assert run.state == "completed"
     assert understood == [EvidenceRef("source-1", 1), EvidenceRef("source-0", 1)]
-    assert run.document_counts["articleLimit"] == 80
+    assert "inputCount" not in run.document_counts
     assert run.document_counts["articleAdmitted"] == 2
 
 

@@ -15,7 +15,7 @@ def test_blank_impact_gets_specific_field_feedback_and_repairs_before_publicatio
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1
     with sqlite3.connect(db) as c:
-        assert c.execute("SELECT count(*) FROM k10_article_admissions WHERE task_id=?", (task_id,)).fetchone() == (1,)
+        assert c.execute("SELECT count(*) FROM k10_v2_article_admissions WHERE task_id=?", (task_id,)).fetchone() == (1,)
 
 
 def test_null_facts_gets_exact_field_feedback_and_repair(tmp_path, monkeypatch):
@@ -37,7 +37,7 @@ def test_second_explicit_recovery_can_repair_failed_recovery_without_automatic_e
     second = run_once(db_path=db, worker_id="still-invalid", lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT)
     assert second.status == "failed" and failed_calls.count("understand") == 2
     with sqlite3.connect(db) as c:
-        reason = c.execute("SELECT reason_code FROM k10_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0]
+        reason = c.execute("SELECT reason_code FROM k10_v2_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0]
     assert reason == "model_json_repair_exhausted"
     # A normal worker tick has no new recovery grant and makes no paid calls.
     assert run_once(db_path=db, worker_id="no-grant", lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT) is None
@@ -79,7 +79,7 @@ def test_pause_after_body_checkpoint_can_recover_same_running_scan_without_new_c
     assert done.status == "completed" and calls.count("understand") == 1
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1
     with sqlite3.connect(db) as c:
-        assert c.execute("SELECT count(*) FROM k10_article_admissions WHERE task_id=?", (task_id,)).fetchone() == (1,)
+        assert c.execute("SELECT count(*) FROM k10_v2_article_admissions WHERE task_id=?", (task_id,)).fetchone() == (1,)
 
 
 def test_failed_body_recovery_keeps_selection_and_retries_only_rejected_body(tmp_path, monkeypatch):

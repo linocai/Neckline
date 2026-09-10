@@ -545,6 +545,6 @@ def test_recovery_binds_new_execution_profile_to_the_exact_failed_snapshot(tmp_p
     task = store.get_task(task_id=task_id, db_path=path)
     assert task is not None and task.payload["resumeScanId"] == "failed-scan" and task.payload["sourceCollection"] == "forbidden"
     assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
-    with pytest.raises(K10SchemaError, match="标题筛选、尝试或缓存记录"):
+    with pytest.raises(K10SchemaError, match="schema 8"):
         rollback_schema(path, target_version=3)
-    assert schema_version(path) == 7
+    assert schema_version(path) == 8

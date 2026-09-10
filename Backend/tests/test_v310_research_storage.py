@@ -145,7 +145,7 @@ def test_contract_rejects_verified_rumor_and_migration_forwards_schema_six(tmp_p
         schema._apply_v1(conn); schema._apply_v2(conn); schema._apply_v3(conn); schema._apply_v4(conn); schema._apply_v6(conn)
         for version in (1, 2, 3, 4, 6):
             conn.execute("INSERT INTO k10_schema_migrations VALUES(?,?)", (version, NOW))
-    assert schema.initialize_schema(path) == 7 == schema.schema_version(path)
+    assert schema.initialize_schema(path) == 8 == schema.schema_version(path)
     with sqlite3.connect(path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"k10_research_snapshot_revisions", "k10_research_stage_results", "k10_research_company_assessments"} <= tables
@@ -351,7 +351,7 @@ def _seed_pre_b39_database(path: Path, *, schema_version: int) -> dict[str, obje
         refs = [{"documentId": "legacy-source", "revision": 1}]
         store.freeze_title_triage_manifest(task_id="legacy-task", input_manifest_sha256=store._hash(refs), window_kind="evening",
                                            policy_id="migration-policy", policy_revision=1,
-                                           policy_content_sha256=store._hash(policy), article_limit=80, input_refs=refs,
+                                           policy_content_sha256=store._hash(policy), input_count=len(refs), input_refs=refs,
                                            batch_count=1, title_status="frozen", created_at=NOW, db_path=path)
         store.record_title_triage_item(task_id="legacy-task", document_id="legacy-source", revision=1, batch_index=0,
                                        disposition="candidate", matter_key="legacy", merged_ref=None, selection_rank=1,
@@ -377,6 +377,15 @@ def _seed_pre_b39_database(path: Path, *, schema_version: int) -> dict[str, obje
                                      settled_at=NOW, error_code=None, db_path=path)
         store.set_run_control(state="closed", reason_code="fixture_paused", changed_at=LATER, changed_by="test", db_path=path)
     with sqlite3.connect(path) as conn:
+        # Construct a genuine legacy snapshot: transfer seeded title evidence,
+        # then remove only the newly added V2 namespace before the upgrade test.
+        if schema_version == 6:
+            conn.execute("INSERT INTO k10_title_triage_manifests SELECT task_id,input_manifest_sha256,window_kind,policy_id,policy_revision,policy_content_sha256,80,input_refs_json,batch_count,title_status,selection_status,created_at FROM k10_v2_title_triage_manifests")
+            for table in ("title_triage_items", "title_selection_manifests", "article_admissions"):
+                conn.execute(f"INSERT INTO k10_{table} SELECT * FROM k10_v2_{table}")
+        conn.execute("DROP TABLE k10_morning_review_results")
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'k10_v2_%'").fetchall():
+            conn.execute(f"DROP TABLE {row[0]}")
         for table in _V7_TABLES:
             conn.execute(f"DROP TABLE {table}")
         if schema_version == 4:
@@ -401,7 +410,7 @@ def test_controlled_pre_b39_migration_and_restore_preserve_history_and_pause(tmp
     before = _seed_pre_b39_database(path, schema_version=prior_version)
     backup = tmp_path / f"schema-{prior_version}.backup.sqlite"
     receipt = migration.migrate_to_v3(target=path, confirmed_target=path, backup=backup, writers_stopped=True)
-    assert schema.schema_version(path) == 7
+    assert schema.schema_version(path) == 8
     assert receipt.backup_sha256 == migration.file_sha256(backup)
     with sqlite3.connect(path) as conn:
         assert tuple(row[1] for row in conn.execute("PRAGMA table_info(k10_candidates)")) == before["candidateColumns"]

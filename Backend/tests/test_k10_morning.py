@@ -102,6 +102,8 @@ def test_morning_runtime_records_complete_no_change_as_continuing_report_item(tm
     ])
     task = Task("morning-task", "morning_review", "queued", 1, None, None, {"candidateId": "candidate-1", "originalCutoffAt": "2026-09-06T21:00:00+08:00", "morningEvidenceRefs": [{"documentId": "doc-2", "revision": 1}], "independentVerificationRefs": [{"documentId": "doc-3", "revision": 1}], "companyWindowId": "window-1", "displayRank": 1, "selectionState": "kept", "lifecycle": "active", "isNew": False, "sourceStatus": "complete", "configId": "cfg", "configRevision": 1})
     context = TaskContext(task, {}, {}, "v", "2026-09-07T09:00:00+08:00", tmp_path / "isolated.db", Event())
+    from tests.morning_context_fixture import persist_context
+    persist_context(context)
     result = morning_runtime.morning_review_handler(context)
     assert result.status == "completed"
     assert result.stage == "continued"

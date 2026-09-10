@@ -25,10 +25,10 @@ def test_v14_pack_is_ready_for_all_live_scopes_without_a_total_cost_cap_field():
 
 
 def test_execution_pack_is_explicit_and_ready_without_strategy_defaults():
-    payload = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v3.json").read_text())
+    payload = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v4.json").read_text())
     assert validate_execution_config(payload).ready
     discovery = payload["discovery"]
-    assert discovery["articleLimits"] == {"evening": 80, "morning": 40}
+    assert "articleLimits" not in discovery
     assert discovery["titleBatchSize"] == 64
     assert discovery["modelOptions"]["understand"]["maxTokens"] == 8192
     payload["discovery"]["titleTriageConcurrency"] = 0

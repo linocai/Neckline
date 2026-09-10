@@ -18,7 +18,7 @@ NOW = datetime(2026, 9, 8, 6, tzinfo=timezone.utc).isoformat()
 
 
 def _task(path, task_id: str = "task") -> tuple[str, int]:
-    assert initialize_schema(path) == 7
+    assert initialize_schema(path) == 8
     config_id, revision = append_approved_execution_profile(db_path=path, created_at=NOW)
     store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id, input_version="frozen",
                        input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)
@@ -68,10 +68,10 @@ def test_v306_freezes_all_title_audit_and_preoccupies_selected_articles(tmp_path
     assert policy is not None
     manifest = store.freeze_title_triage_manifest(
         task_id="task", input_manifest_sha256=store._hash(refs), window_kind="evening", policy_id=policy["policyId"],
-        policy_revision=1, policy_content_sha256=policy["contentSha256"], article_limit=80, input_refs=refs,
+        policy_revision=1, policy_content_sha256=policy["contentSha256"], input_count=len(refs), input_refs=refs,
         batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
     )
-    assert manifest["articleLimit"] == 80
+    assert manifest["inputCount"] == 3
     store.record_title_triage_item(task_id="task", document_id="a", revision=1, batch_index=0, disposition="candidate",
                                    matter_key="a", merged_ref=None, selection_rank=1, audit_reason="新事实", created_at=NOW, db_path=path)
     store.record_title_triage_item(task_id="task", document_id="b", revision=1, batch_index=0, disposition="candidate",
@@ -87,7 +87,7 @@ def test_v306_freezes_all_title_audit_and_preoccupies_selected_articles(tmp_path
     assert store.record_article_outcome(task_id="task", document_id="a", revision=1, state="completed", reason_code=None,
                                         updated_at=NOW, db_path=path)["state"] == "completed"
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM k10_article_admissions WHERE task_id='task'").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE task_id='task'").fetchone()[0] == 2
     with pytest.raises(store.K10Conflict, match="不可改写"):
         store.record_title_triage_item(task_id="task", document_id="a", revision=1, batch_index=0, disposition="candidate",
                                        matter_key="a", merged_ref=None, selection_rank=1, audit_reason="变化", created_at=NOW, db_path=path)
@@ -118,7 +118,7 @@ def test_v306_progress_uses_durable_title_and_tavily_records_not_coverage_guesse
     store.freeze_title_triage_manifest(
         task_id="deep-read-task", input_manifest_sha256=store._hash(refs), window_kind="evening",
         policy_id=policy["policyId"], policy_revision=1, policy_content_sha256=policy["contentSha256"],
-        article_limit=80, input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
+        input_count=len(refs), input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
     )
     store.record_title_triage_item(task_id="deep-read-task", document_id="title-a", revision=1, batch_index=0,
                                    disposition="candidate", matter_key="a", merged_ref=None, selection_rank=1,
@@ -155,7 +155,7 @@ def test_v306_progress_uses_durable_title_and_tavily_records_not_coverage_guesse
     store.freeze_title_triage_manifest(
         task_id="incomplete-task", input_manifest_sha256=store._hash(refs), window_kind="evening",
         policy_id=policy["policyId"], policy_revision=1, policy_content_sha256=policy["contentSha256"],
-        article_limit=80, input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
+        input_count=len(refs), input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
     )
     incomplete = store.execution_progress_for_scan(scan_id="incomplete-scan", db_path=path)
     assert incomplete is not None
@@ -165,11 +165,11 @@ def test_v306_progress_uses_durable_title_and_tavily_records_not_coverage_guesse
 
 def test_v306_schema_has_no_unpublished_budget_tables(tmp_path):
     path = tmp_path / "schema.sqlite"
-    assert initialize_schema(path) == 7 == schema_version(path)
+    assert initialize_schema(path) == 8 == schema_version(path)
     with sqlite3.connect(path) as conn:
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"k10_title_triage_policy_revisions", "k10_title_triage_manifests", "k10_title_triage_items",
-            "k10_title_selection_manifests", "k10_article_admissions", "k10_external_attempts", "k10_discovery_retirements"} <= names
+    assert {"k10_title_triage_policy_revisions", "k10_v2_title_triage_manifests", "k10_v2_title_triage_items",
+            "k10_v2_title_selection_manifests", "k10_v2_article_admissions", "k10_external_attempts", "k10_discovery_retirements"} <= names
     assert not {"k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs"} & names
 
 
@@ -189,11 +189,11 @@ def test_v306_forwards_schema_four_and_removes_unreleased_schema_five_tables(tmp
         conn.execute("CREATE TABLE k10_task_execution_spend_reservations(id TEXT)")
         conn.execute("CREATE TABLE k10_screening_runs(id TEXT)")
         conn.execute("INSERT INTO k10_schema_migrations VALUES(5,?)", (NOW,))
-    assert initialize_schema(path) == 7
+    assert initialize_schema(path) == 8
     with sqlite3.connect(path) as conn:
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert not {"k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs"} & names
-        assert {"k10_run_controls", "k10_fact_cache", "k10_title_triage_manifests"} <= names
+        assert {"k10_run_controls", "k10_fact_cache", "k10_v2_title_triage_manifests"} <= names
 
 
 def test_v306_retired_discovery_cannot_be_claimed_reopened_or_reenqueued(tmp_path):

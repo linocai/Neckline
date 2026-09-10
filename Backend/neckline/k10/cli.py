@@ -58,7 +58,7 @@ def _approved_v3_execution(*, db_path: Path, config_id: str, revision: int) -> b
     """Check the only execution profile an entry point may bind live work to."""
     profile = store.read_execution_config(config_id=config_id, revision=revision, db_path=db_path)
     payload = profile.get("payload") if isinstance(profile, dict) else None
-    return (isinstance(payload, dict) and payload.get("executionVersion") == "k10-execution-v3"
+    return (isinstance(payload, dict) and payload.get("executionVersion") == "k10-execution-v4"
             and validate_execution_config(payload).ready)
 
 def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str, config_revision: int, now: datetime,
@@ -93,16 +93,20 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
     if not _approved_v3_execution(db_path=db_path, config_id=execution_config_id,
                                   revision=execution_config_revision):
         raise RuntimeError("指定 V3 执行配置修订不存在或未就绪")
+    if config["payload"].get("configVersion") == "k10-v2":
+        from .v2_store import binding_status
+        execution = store.read_execution_config(config_id=execution_config_id, revision=execution_config_revision, db_path=db_path)
+        if binding_status(db_path=db_path, config=config, execution=execution)["state"] != "configured":
+            raise RuntimeError("今天没跑成 · 参数未配置")
     task_id=_id("task",kind,cutoff.isoformat(),config_id,str(config_revision),bootstrap_cutoff or "")
     task_kind=f"{kind}_scan"
     store.enqueue_task(task_id=task_id,kind=task_kind,idempotency_key=f"{task_kind}:{cutoff.isoformat()}:{config_id}:{config_revision}:{bootstrap_cutoff or ''}",
                        input_version=str(config["contentSha256"]),input_cutoff_at=cutoff.isoformat(),
                        payload={"windowKind":kind,"tradingDay":trading_day.isoformat(),"configId":config_id,"configRevision":config_revision,
+                                **({"strategySnapshotId":config["payload"]["strategySnapshotId"]} if config["payload"].get("configVersion")=="k10-v2" else {}),
                                 **({"sourceBootstrapCutoff": bootstrap_cutoff} if bootstrap_cutoff is not None else {})},
-                       budget={},created_at=now.isoformat(),db_path=db_path)
-    store.bind_task_execution(task_id=task_id, execution_config_id=execution_config_id,
-                              execution_config_revision=execution_config_revision, binding_kind="scheduled",
-                              bound_at=now.isoformat(), db_path=db_path)
+                       budget={},created_at=now.isoformat(),db_path=db_path,
+                       execution_binding={"configId":execution_config_id,"revision":execution_config_revision,"bindingKind":"scheduled"})
     return task_id
 
 
@@ -148,7 +152,7 @@ def recover_scan(
     # B39 keeps title audit, actual article admissions, model checkpoints and
     # research snapshots on the original task. Requeue that exact task after a
     # confirmed frozen-input authorization; a replacement task would reset the
-    # 80/40 boundary and could repeat already successful paid work.
+    # frozen source boundary and could repeat already successful paid work.
     progress = store.execution_progress_for_scan(scan_id=scan_id, db_path=db_path)
     if isinstance(progress, dict) and isinstance(progress.get("taskId"), str):
         try:
@@ -173,10 +177,8 @@ def recover_scan(
                  "resumeScanId": scan_id, "frozenInputSha256": actual_input_sha256, "sourceCollection": "forbidden"},
         budget={},
         created_at=now.isoformat(), db_path=db_path,
+        execution_binding={"configId":execution_config_id,"revision":execution_config_revision,"bindingKind":"recovery"},
     )
-    store.bind_task_execution(task_id=task_id, execution_config_id=execution_config_id,
-                              execution_config_revision=execution_config_revision, binding_kind="recovery",
-                              bound_at=now.isoformat(), db_path=db_path)
     store.bind_scan_execution(scan_id=scan_id, task_id=task_id, execution_config_id=execution_config_id,
                               execution_config_revision=execution_config_revision, binding_kind="recovery",
                               bound_at=now.isoformat(), db_path=db_path)
@@ -192,7 +194,34 @@ def main(argv: list[str] | None=None) -> int:
     recover.add_argument("--finalization-max-tokens",type=int)
     recover.add_argument("--research-max-tokens",type=int); recover.add_argument("--completion-deadline-seconds",type=int)
     worker=sub.add_parser("worker"); worker.add_argument("--db",required=True,type=Path); worker.add_argument("--parquet-dir",required=True,type=Path); worker.add_argument("--worker-id",required=True); worker.add_argument("--tushare-token-env",required=True); worker.add_argument("--once",action="store_true")
+    importer = sub.add_parser("import-v2-profiles")
+    for name in ("universe-file", "profiles-dir", "db", "confirmed-target"):
+        importer.add_argument("--" + name, required=True, type=Path)
+    importer.add_argument("--universe-id", required=True)
+    importer.add_argument("--profiles-id", required=True)
+    binder = sub.add_parser("bind-v2-strategy")
+    binder.add_argument("--db", type=Path, required=True)
+    binder.add_argument("--snapshot-id", required=True)
+    binder.add_argument("--config-id", required=True)
+    binder.add_argument("--config-revision", type=int, required=True)
+    binder.add_argument("--execution-config-id", required=True)
+    binder.add_argument("--execution-config-revision", type=int, required=True)
     args=parser.parse_args(argv)
+    if args.command == "bind-v2-strategy":
+        from .v2_store import bind_strategy
+        print(json.dumps(bind_strategy(db_path=args.db, snapshot_id=args.snapshot_id, config_id=args.config_id,
+            config_revision=args.config_revision, execution_config_id=args.execution_config_id,
+            execution_config_revision=args.execution_config_revision, created_at=datetime.now().astimezone().isoformat()), ensure_ascii=False))
+        return 0
+
+    if args.command == "import-v2-profiles":
+        from .v2_profiles import import_profiles
+        result = import_profiles(universe_file=args.universe_file, profiles_dir=args.profiles_dir,
+            db_path=args.db, confirmed_target=args.confirmed_target, universe_id=args.universe_id,
+            profiles_id=args.profiles_id, imported_at=datetime.now().astimezone().isoformat())
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+
     if args.command=="configure":
         config_id, revision = configure(db_path=args.db, config_id=args.config_id, file_path=args.file, now=datetime.now().astimezone())
         print(json.dumps({"configId": config_id, "revision": revision}, ensure_ascii=False))

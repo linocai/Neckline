@@ -57,6 +57,7 @@ class TaskContext:
     failure_attempt_count: int = 0
     execution_started_at: datetime | None = None
     execution_deadline_at: datetime | None = None
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc), repr=False, compare=False)
 
     def require_lease(self) -> None:
         """Handlers call this before publishing artifacts or doing another call."""
@@ -122,7 +123,7 @@ def _truthful_terminal_result(result: TaskResult, *, db_path: Path) -> TaskResul
 def _v3_execution_ready(context: TaskContext) -> bool:
     profile = context.execution_profile
     payload = profile.get("payload") if isinstance(profile, Mapping) else None
-    return (isinstance(payload, Mapping) and payload.get("executionVersion") == "k10-execution-v3"
+    return (isinstance(payload, Mapping) and payload.get("executionVersion") == "k10-execution-v4"
             and validate_execution_config(payload).ready)
 
 
@@ -183,7 +184,7 @@ def _context(task: Task, db_path: Path, lease_lost: threading.Event, clock: Call
     profile = None if row[4] is None else {"configId": row[4], "revision": int(row[5]), "contentSha256": row[6],
                                             "bindingKind": row[7], "payload": json.loads(row[8])}
     return TaskContext(task, json.loads(row[0]), json.loads(row[1]), row[2], row[3], db_path, lease_lost,
-                       assert_lease, profile, int(row[9]))
+                       assert_lease, profile, int(row[9]), clock=clock)
 
 
 def run_once(
@@ -257,7 +258,9 @@ def run_once(
                                       execution_deadline_at=_execution_deadline(profile=context.execution_profile,
                                                                                runtime_repair=context.checkpoint.get("runtimeRepair"),
                                                                                started_at=started_at))
-                result = handler(context)
+                from .provider_failures import recover_provider_failure
+                recovered = recover_provider_failure(context=context)
+                result = recovered if recovered is not None else handler(context)
                 if not isinstance(result, TaskResult):
                     raise TypeError("K10 handler must return TaskResult")
                 result = _truthful_terminal_result(result, db_path=db_path)
@@ -268,6 +271,12 @@ def run_once(
                 # they can contain provider credentials or untrusted content.
                 logger.warning("K10 task failed: %s (%s)", task.task_id, type(exc).__name__)
                 result = TaskResult("failed", "execution", context.checkpoint, "任务执行失败，可查看已完成资料并重试")
+            # The ledger and failure receipt commit together before returning from
+            # the provider. Consume the receipt only with the terminal/queue write.
+            from .provider_failures import recover_provider_failure
+            recovered = recover_provider_failure(context=context, checkpoint=result.checkpoint)
+            if recovered is not None:
+                result = recovered
         context.require_lease()
         if result.retry_at is not None:
             if store.run_control_status(db_path=db_path).get("state") != "open":

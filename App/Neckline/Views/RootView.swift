@@ -135,7 +135,7 @@ struct RootView: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 5) {
-                Text("K10-v1.4").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                Text("K10-v2").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 refreshButton
                 settingsButton
             }.frame(width: 230, alignment: .trailing)

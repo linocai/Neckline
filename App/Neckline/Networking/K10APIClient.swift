@@ -1,5 +1,31 @@
 import Foundation
 
+enum K10NetworkIsolation {
+    static func validate(_ url: URL) throws {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NK_OFFLINE_ONLY"] == "1",
+           !["127.0.0.1", "localhost", "::1"].contains(url.host ?? "") {
+            throw K10APIError.networkUnavailable("离线验收禁止访问外部网络")
+        }
+        #endif
+    }
+    static func session(_ original: URLSession) -> URLSession {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NK_OFFLINE_ONLY"] == "1" {
+            return URLSession(configuration: .ephemeral, delegate: K10LocalRedirectDelegate(), delegateQueue: nil)
+        }
+        #endif
+        return original
+    }
+}
+
+private final class K10LocalRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, ["127.0.0.1", "localhost", "::1"].contains(url.host ?? "") else { completionHandler(nil); return }
+        completionHandler(request)
+    }
+}
+
 protocol K10Servicing: Sendable {
     func health() async throws -> K10Health
     func latestScan(window: String) async throws -> K10Scan
@@ -7,6 +33,8 @@ protocol K10Servicing: Sendable {
     func researchAssessments(scanID: String) async throws -> K10ResearchAssessmentList
     func publications() async throws -> [K10Publication]
     func companyWindows() async throws -> [K10CompanyWindow]
+    func latestDailyReport(window: String) async throws -> K10DailyReportResponse
+    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse
     func latestMorningReport() async throws -> K10MorningReport?
     func morningReports() async throws -> [K10MorningReport]
     func opportunity(id: String) async throws -> K10OpportunityDetail
@@ -18,6 +46,7 @@ protocol K10Servicing: Sendable {
     func job(id: String) async throws -> K10Job
     func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job
     func results() async throws -> K10Results
+    func results(strategyVersion: String) async throws -> K10Results
     func configuration() async throws -> K10Configuration
     func operationsReadiness() async throws -> K10OperationsReadiness
     func pauseDiscovery() async throws -> K10DiscoveryPauseResult
@@ -25,6 +54,16 @@ protocol K10Servicing: Sendable {
 }
 
 extension K10Servicing {
+    func results(strategyVersion: String) async throws -> K10Results {
+        guard strategyVersion == "K10-v2" else { throw K10APIError.notFound("尚未取得该策略版本的成绩") }
+        return try await results()
+    }
+    func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
+        throw K10APIError.notFound("尚未取得 K10-v2 日报告")
+    }
+    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
+        throw K10APIError.notFound("尚未取得 K10-v2 日报告下一页")
+    }
     func researchSummary(scanID: String) async throws -> K10ResearchSummary {
         throw K10APIError.notFound("该扫描没有 B39 研究摘要")
     }
@@ -49,13 +88,19 @@ extension K10Servicing {
 
 actor K10APIClient: K10Servicing {
     private let baseURL: URL; private let token: String; private let session: URLSession
-    init(baseURL: URL, token: String, session: URLSession = .shared) { self.baseURL = baseURL; self.token = token; self.session = session }
+    init(baseURL: URL, token: String, session: URLSession = .shared) { self.baseURL = baseURL; self.token = token; self.session = K10NetworkIsolation.session(session) }
     func health() async throws -> K10Health { try await get("/api/v1/health", authenticated: false) }
     func latestScan(window: String) async throws -> K10Scan { try await get("/api/v1/k10/scans/latest", query: [URLQueryItem(name: "window", value: window)]) }
     func researchSummary(scanID: String) async throws -> K10ResearchSummary { try await get("/api/v1/k10/scans/\(scanID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? scanID)/research-summary") }
     func researchAssessments(scanID: String) async throws -> K10ResearchAssessmentList { try await get("/api/v1/k10/scans/\(scanID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? scanID)/assessments") }
     func publications() async throws -> [K10Publication] { try await allPages(path: "/api/v1/k10/publications", extra: [], as: K10PublicationList.self).items }
     func companyWindows() async throws -> [K10CompanyWindow] { try await allPages(path: "/api/v1/k10/company-windows", extra: [], as: K10CompanyWindowList.self).items }
+    func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
+        try await get("/api/v1/k10/v2/reports/latest", query: [URLQueryItem(name: "window", value: window), URLQueryItem(name: "limit", value: "30")])
+    }
+    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
+        try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)", query: [URLQueryItem(name: "cursor", value: cursor), URLQueryItem(name: "limit", value: "30")])
+    }
     func latestMorningReport() async throws -> K10MorningReport? {
         do { return try await get("/api/v1/k10/morning-reports/latest") }
         catch let error as K10APIError { if case .notFound = error { return nil }; throw error }
@@ -70,6 +115,9 @@ actor K10APIClient: K10Servicing {
     func job(id: String) async throws -> K10Job { try await get("/api/v1/k10/jobs/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)") }
     func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job { try await post("/api/v1/k10/jobs/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/retry", body: ["expectedAttemptCount": expectedAttemptCount]) }
     func results() async throws -> K10Results { try await get("/api/v1/k10/results") }
+    func results(strategyVersion: String) async throws -> K10Results {
+        try await get("/api/v1/k10/results", query: [URLQueryItem(name: "strategy_version", value: strategyVersion)])
+    }
     func configuration() async throws -> K10Configuration { try await get("/api/v1/k10/configuration") }
     func operationsReadiness() async throws -> K10OperationsReadiness { try await get("/api/v1/k10/operations/readiness") }
     func pauseDiscovery() async throws -> K10DiscoveryPauseResult { try await post("/api/v1/k10/operations/pause", body: [String: String]()) }
@@ -86,10 +134,11 @@ actor K10APIClient: K10Servicing {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { throw K10APIError.server(0, "服务地址无效") }
         components.path = path; components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw K10APIError.server(0, "请求地址无效") }
+        try K10NetworkIsolation.validate(url)
         var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 20; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if authenticated { guard !token.isEmpty else { throw K10APIError.noToken }; request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { request.httpBody = try JSONEncoder().encode(body) }
-        do { let (data, response) = try await session.data(for: request); guard let http = response as? HTTPURLResponse else { throw K10APIError.server(0, "服务未返回 HTTP 响应") }; guard 200..<300 ~= http.statusCode else { throw decodeError(data, status: http.statusCode) }; do { return try JSONDecoder().decode(T.self, from: data) } catch { throw K10APIError.decoding("服务响应无法按 K10-v1.4 契约读取") } } catch is CancellationError { throw CancellationError() } catch let error as URLError where error.code == .cancelled { throw CancellationError() } catch let error as K10APIError { throw error } catch { throw K10APIError.networkUnavailable(error.localizedDescription) }
+        do { let (data, response) = try await session.data(for: request); guard let http = response as? HTTPURLResponse else { throw K10APIError.server(0, "服务未返回 HTTP 响应") }; guard 200..<300 ~= http.statusCode else { throw decodeError(data, status: http.statusCode) }; do { return try JSONDecoder().decode(T.self, from: data) } catch { throw K10APIError.decoding("服务响应无法按 K10-v2 契约读取") } } catch is CancellationError { throw CancellationError() } catch let error as URLError where error.code == .cancelled { throw CancellationError() } catch let error as K10APIError { throw error } catch { throw K10APIError.networkUnavailable(error.localizedDescription) }
     }
     private func decodeError(_ data: Data, status: Int) -> K10APIError { K10APIError.decodeServerFailure(data, status: status) }
 }

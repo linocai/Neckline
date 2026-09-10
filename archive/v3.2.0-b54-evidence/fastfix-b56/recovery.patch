@@ -1,0 +1,518 @@
+--- reviewed-B56/Backend/neckline/k10/metering.py
++++ fixed-B56/Backend/neckline/k10/metering.py
+@@ -10,7 +10,7 @@
+ import json
+ from pathlib import Path
+ from time import monotonic
+-from typing import Iterator, Mapping
++from typing import Callable, Iterator, Mapping
+ from zoneinfo import ZoneInfo
+ 
+ from neckline.llm.openai_compat import OpenAICompatProvider
+@@ -35,6 +35,7 @@
+     attempt: int
+     kind: str = "model"
+     full_text: bool = False
++    clock: Callable[[], datetime] | None = None
+ 
+ 
+ _SPEND_CONTEXT: ContextVar[ProviderSpendContext | None] = ContextVar("k10_provider_spend", default=None)
+@@ -83,11 +84,12 @@
+     def spend_context(
+         self, *, task_id: str, stage: str, item_key: str, attempt: int,
+         kind: str = "model", full_text: bool = False,
++        clock: Callable[[], datetime] | None = None,
+     ) -> Iterator[None]:
+         """Bind a task/stage explicitly around exactly one provider request."""
+         if not task_id or not stage or not item_key or isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+             raise ValueError("K10 provider spend context is incomplete")
+-        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text))
++        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text, clock))
+         try:
+             yield
+         finally:
+@@ -165,8 +167,13 @@
+                     "promptTokens": int(values[0]), "completionTokens": int(values[1]), "totalTokens": int(values[2]),
+                     "searchRequests": None, "searchCredits": None,
+                 }
++        context = _SPEND_CONTEXT.get()
++        scoped = context is not None and context.stage in {"analysisPro", "analysisCon", "morning"}
++        settled_at = context.clock().isoformat() if scoped and context.clock is not None else _safe_now()
+         store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=actual,
+-                                      error_code=error_code, settled_at=_safe_now(), db_path=self._ledger_db)
++                                      error_code=error_code, settled_at=settled_at, db_path=self._ledger_db,
++                                      record_provider_failure=scoped,
++                                      retry_after_seconds=getattr(result, "retry_after_seconds", None))
+ 
+     def chat(self, *args, **kwargs):
+         attempt_id, blocked = self._begin_attempt(args=args, kwargs=kwargs)
+@@ -214,11 +221,12 @@
+ def provider_spend_context(
+     *, provider: object, task_id: str, stage: str, item_key: str, attempt: int,
+     kind: str = "model", full_text: bool = False,
++    clock: Callable[[], datetime] | None = None,
+ ):
+     """Return an explicit context manager; never leak task context to threads."""
+     if isinstance(provider, MeteredProvider):
+         return provider.spend_context(task_id=task_id, stage=stage, item_key=item_key, attempt=attempt,
+-                                      kind=kind, full_text=full_text)
++                                      kind=kind, full_text=full_text, clock=clock)
+     return nullcontext()
+ 
+ 
+--- reviewed-B56/Backend/neckline/k10/morning_runtime.py
++++ fixed-B56/Backend/neckline/k10/morning_runtime.py
+@@ -14,7 +14,7 @@
+ from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
+ from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
+ from .providers import resolve_deepseek_v4_pro
+-from .provider_failures import provider_failure_result
++from .provider_failures import provider_deadline_result, provider_failure_result
+ from .worker import TaskContext, TaskResult
+ 
+ 
+@@ -159,9 +159,13 @@
+     if cached is not None:
+         raw=cached['raw']
+     else:
++        expired = provider_deadline_result(context=context)
++        if expired is not None:
++            return expired
+         try:
+             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+-                                        stage="morning", item_key=str(candidate_id), attempt=context.task.attempt_count):
++                                        stage="morning", item_key=str(candidate_id), attempt=context.task.attempt_count,
++                                        clock=context.clock):
+                 result=resolution.provider.chat(messages, enable_search=False, response_format={"type":"json_object"},
+                                                 model_options=model_options)
+         except Exception as exc: return TaskResult("failed","model",error=f"晨间模型调用异常：{type(exc).__name__}")
+--- reviewed-B56/Backend/neckline/k10/provider_failures.py
++++ fixed-B56/Backend/neckline/k10/provider_failures.py
+@@ -2,7 +2,7 @@
+ from __future__ import annotations
+ 
+ import math
+-from datetime import timedelta
++from datetime import datetime, timedelta
+ from typing import Any, Mapping
+ 
+ from .worker import TaskContext, TaskResult
+@@ -15,9 +15,21 @@
+     }.get(code, "模型调用失败")
+ 
+ 
++def provider_deadline_result(*, context: TaskContext,
++                             checkpoint: Mapping[str, Any] | None = None) -> TaskResult | None:
++    """Recheck at the paid step, including a retry claimed long after its due time."""
++    if context.execution_deadline_at is None or context.clock() < context.execution_deadline_at:
++        return None
++    return TaskResult("failed", "deadline",
++                      {**(checkpoint if checkpoint is not None else context.checkpoint),
++                       "safeErrorCode": "completion_deadline_exceeded"},
++                      "任务已超过完成时限，已完成内容保留")
++
++
+ def provider_failure_result(*, context: TaskContext, stage: str, code: str | None,
+                             retry_after_seconds: float | None,
+-                            checkpoint: Mapping[str, Any] | None = None) -> TaskResult:
++                            checkpoint: Mapping[str, Any] | None = None,
++                            received_at: datetime | None = None) -> TaskResult:
+     # Only protocol codes cross this boundary; never store upstream error text.
+     code = code if code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
+     checkpoint = {**(checkpoint if checkpoint is not None else context.checkpoint), "safeErrorCode": code}
+@@ -36,8 +48,26 @@
+     if isinstance(delay, bool) or not isinstance(delay, (float, int)) or not math.isfinite(delay) or delay < 0:
+         delay = delays[min(context.failure_attempt_count, len(delays) - 1)]
+     now = context.clock()
++    origin = received_at if received_at is not None else now
+     # Compare before adding to datetime: an untrusted Retry-After may be enormous.
+-    if context.execution_deadline_at is not None and delay >= (context.execution_deadline_at - now).total_seconds():
++    if context.execution_deadline_at is not None and (now >= context.execution_deadline_at or delay >= (context.execution_deadline_at - origin).total_seconds()):
+         return TaskResult("failed", stage, checkpoint, error + "，无法在本次任务完成时限内重试")
+     return TaskResult("failed", stage, checkpoint, error + "，等待延后重试",
+-                      retry_at=now + timedelta(seconds=delay), retry_kind="failure", safe_error_code=code)
++                      retry_at=origin + timedelta(seconds=delay), retry_kind="failure", safe_error_code=code)
++
++
++def recover_provider_failure(*, context: TaskContext,
++                             checkpoint: Mapping[str, Any] | None = None) -> TaskResult | None:
++    """Restore a settled failure after a crash before its task transition committed."""
++    if context.task.kind not in {"analysis", "morning_review"}:
++        return None
++    from . import store
++    saved = store.task_execution_input(task_id=context.task.task_id, db_path=context.db_path)
++    receipt = saved["checkpoint"].get("providerFailureReceipt") if saved is not None else None
++    if receipt is None:
++        return None
++    stages = {"analysisPro": "pro_failed", "analysisCon": "con_failed", "morning": "model"}
++    return provider_failure_result(context=context, stage=stages[receipt["stage"]],
++                                   code=receipt["errorCode"], retry_after_seconds=receipt["retryAfterSeconds"],
++                                   received_at=datetime.fromisoformat(receipt["receivedAt"]),
++                                   checkpoint=checkpoint if checkpoint is not None else saved["checkpoint"])
+--- reviewed-B56/Backend/neckline/k10/runtime.py
++++ fixed-B56/Backend/neckline/k10/runtime.py
+@@ -10,7 +10,7 @@
+ from .market_context import MarketContextError, attach_frozen_market_context
+ from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
+ from .providers import resolve_deepseek_v4_pro
+-from .provider_failures import provider_failure_result
++from .provider_failures import provider_deadline_result, provider_failure_result
+ from .worker import TaskContext, TaskResult
+ 
+ 
+@@ -180,10 +180,13 @@
+     except MarketContextError:
+         return TaskResult("failed", "input", context.checkpoint, "冻结行情上下文无效")
+     if pro is None:
++        expired = provider_deadline_result(context=context)
++        if expired is not None:
++            return expired
+         try:
+             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                         stage="analysisPro", item_key=f"{observation_id}:r{revision}",
+-                                        attempt=context.task.attempt_count):
++                                        attempt=context.task.attempt_count, clock=context.clock):
+                 pro = _with_pricing(run_pro(context=snapshot, cutoff_at=context.input_cutoff_at,
+                                             provider=resolution.provider, revision=revision,
+                                             model_options=pro_model_options), configuration)
+@@ -204,10 +207,13 @@
+     if con is not None:
+         pass
+     else:
++        expired = provider_deadline_result(context=context, checkpoint=_checkpoint(pro=pro))
++        if expired is not None:
++            return expired
+         try:
+             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                         stage="analysisCon", item_key=f"{observation_id}:r{revision}",
+-                                        attempt=context.task.attempt_count):
++                                        attempt=context.task.attempt_count, clock=context.clock):
+                 con = _with_pricing(run_con(context=snapshot, cutoff_at=context.input_cutoff_at,
+                                             provider=resolution.provider, pro=pro, revision=revision,
+                                             model_options=con_model_options), configuration)
+--- reviewed-B56/Backend/neckline/k10/store.py
++++ fixed-B56/Backend/neckline/k10/store.py
+@@ -552,6 +552,10 @@
+                 raise K10Conflict("同一外部调用 attempt_key 不可对应不同输入")
+             old_state = str(old[1])
+             return {"state": "pending_outcome" if old_state == "started" else "reused", "reason": None, "attemptId": old[0]}
++        if stage in {"analysisPro", "analysisCon", "morning"}:
++            uncertain = conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown') LIMIT 1", (task_id, stage, item_key)).fetchone()
++            if uncertain is not None:
++                return {"state": "pending_outcome", "reason": None, "attemptId": uncertain[0]}
+         attempt_id = str(uuid.uuid4())
+         conn.execute(
+             "INSERT INTO k10_external_attempts(attempt_id,task_id,stage,item_key,attempt_key,input_sha256,state,started_at) "
+@@ -563,6 +567,7 @@
+ def settle_external_attempt(
+     *, attempt_id: str, outcome: str, usage: Mapping[str, Any] | None,
+     settled_at: str, error_code: str | None, db_path: Path,
++    record_provider_failure: bool = False, retry_after_seconds: float | None = None,
+ ) -> dict[str, Any]:
+     """Settle one started attempt with actual or explicitly unavailable provider usage."""
+     if outcome not in {"succeeded", "failed", "unknown"} or not attempt_id or not settled_at:
+@@ -589,6 +594,14 @@
+             "search_credits=?,error_code=?,settled_at=? WHERE attempt_id=?",
+             (*expected, settled_at, attempt_id),
+         )
++        if record_provider_failure and outcome == "failed" and error_code in {"insufficient_balance", "rate_limited"}:
++            task_id, stage = conn.execute("SELECT task_id,stage FROM k10_external_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
++            if stage not in {"analysisPro", "analysisCon", "morning"}:
++                raise ValueError("失败回执只用于正反分析和晨间复核")
++            checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
++            checkpoint["providerFailureReceipt"] = {"attemptId": attempt_id, "stage": stage,
++                "errorCode": error_code, "receivedAt": settled_at, "retryAfterSeconds": retry_after_seconds}
++            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+     return {"state": outcome, "attemptId": attempt_id}
+ 
+ 
+@@ -2676,6 +2689,7 @@
+     with write_connection(db_path) as conn:
+         _require_write_schema(conn)
+         checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint)
++        checkpoint.pop("providerFailureReceipt", None)
+         changed = conn.execute(
+             "UPDATE k10_tasks SET status=?,stage=?,checkpoint_json=?,error_text=?,lease_owner=NULL,lease_until=NULL,"
+             "updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
+@@ -2725,6 +2739,7 @@
+         if retry_kind == "failure" and failure_count >= max_failure_attempts:
+             return False
+         checkpoint = _preserve_execution_started_at(conn, task_id=task_id, checkpoint=checkpoint, existing_raw=row[2])
++        checkpoint.pop("providerFailureReceipt", None)
+         changed = conn.execute(
+             "UPDATE k10_tasks SET status='queued',stage='retry_scheduled',checkpoint_json=?,error_text=?,"
+             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
+--- reviewed-B56/Backend/neckline/k10/worker.py
++++ fixed-B56/Backend/neckline/k10/worker.py
+@@ -258,7 +258,9 @@
+                                       execution_deadline_at=_execution_deadline(profile=context.execution_profile,
+                                                                                runtime_repair=context.checkpoint.get("runtimeRepair"),
+                                                                                started_at=started_at))
+-                result = handler(context)
++                from .provider_failures import recover_provider_failure
++                recovered = recover_provider_failure(context=context)
++                result = recovered if recovered is not None else handler(context)
+                 if not isinstance(result, TaskResult):
+                     raise TypeError("K10 handler must return TaskResult")
+                 result = _truthful_terminal_result(result, db_path=db_path)
+@@ -269,6 +271,12 @@
+                 # they can contain provider credentials or untrusted content.
+                 logger.warning("K10 task failed: %s (%s)", task.task_id, type(exc).__name__)
+                 result = TaskResult("failed", "execution", context.checkpoint, "任务执行失败，可查看已完成资料并重试")
++            # The ledger and failure receipt commit together before returning from
++            # the provider. Consume the receipt only with the terminal/queue write.
++            from .provider_failures import recover_provider_failure
++            recovered = recover_provider_failure(context=context, checkpoint=result.checkpoint)
++            if recovered is not None:
++                result = recovered
+         context.require_lease()
+         if result.retry_at is not None:
+             if store.run_control_status(db_path=db_path).get("state") != "open":
+--- reviewed-B56/Backend/tests/test_b54_boundary_regressions.py
++++ fixed-B56/Backend/tests/test_b54_boundary_regressions.py
+@@ -84,7 +84,7 @@
+ 
+ 
+ @pytest.mark.parametrize('status,kind', [('needs_review','risk'),('current','evidence_update')])
+-def test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,status,kind):
++def test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,status,kind,late_retry=False):
+     now=[datetime(2026,9,9,9,10,tzinfo=SHANGHAI)]
+     class ClockDateTime(datetime):
+         @classmethod
+@@ -101,7 +101,7 @@
+         before=conn.execute("SELECT * FROM k10_opportunity_lifecycle_events WHERE kind=?",(kind,)).fetchall()
+     assert before and child[1]=='failed' and len(provider.results)==1
+     monkeypatch.setattr(morning_runtime,'_report_checkpoint',real)
+-    now[0]+=timedelta(minutes=1);_freeze_k10_clocks(monkeypatch,now[0].isoformat())
++    now[0]+=(timedelta(hours=7) if late_retry else timedelta(minutes=1));_freeze_k10_clocks(monkeypatch,now[0].isoformat())
+     with client_for(db) as client:
+         assert client.post('/api/v1/k10/jobs/'+child[0]+'/retry',json={'expectedAttemptCount':child[2]}).status_code==200
+     result=run_once(db_path=db,worker_id='interruption-retry',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:now[0],task_id=child[0])
+--- reviewed-B56/Backend/tests/test_b56_review_regressions.py
++++ fixed-B56/Backend/tests/test_b56_review_regressions.py
+@@ -14,7 +14,7 @@
+ 
+ @pytest.mark.parametrize('status,retry_succeeds', [(402,False), (429,True), (429,False)])
+ @pytest.mark.parametrize('failed_role', ['pro', 'con'])
+-def test_paid_analysis_error_contract(tmp_path, monkeypatch, status, retry_succeeds, failed_role):
++def test_paid_analysis_error_contract(tmp_path, monkeypatch, status, retry_succeeds, failed_role, late_retry=False, interrupt_after_failure=False):
+     db, _, original_task, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+     assert original_task.status == 'completed'
+     _freeze_k10_clocks(monkeypatch, e2e.RUN_AT.isoformat())
+@@ -30,12 +30,29 @@
+         if recover[0] or (failed_role == 'con' and len(calls) == 1):
+             content = {'fullText':'正方完整讨论','summary':{'commonFacts':['已有公开消息'], 'disagreements':[], 'unknowns':['公司未确认']}}
+             return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':json.dumps(content)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
+-        return httpx.Response(status,headers={'Retry-After':'60'},json={'error':{'message':'deterministic provider failure'}})
++        return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic provider failure'}})
+     transport = httpx.MockTransport(respond)
+     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: e2e._HTTPX_CLIENT(**{**kwargs,'transport':transport}))
+     provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
+     monkeypatch.setattr(runtime, 'resolve_deepseek_v4_pro', lambda **_:ProviderResolution('configured',provider,'fixture',None))
+-    task = run_once(db_path=db,worker_id='independent-review',lease_for=timedelta(minutes=5), handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'), clock=lambda:e2e.RUN_AT,task_id=task_id)
++    def initial_work(at):
++        return run_once(db_path=db,worker_id='independent-review',lease_for=timedelta(minutes=5), handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'), clock=lambda:at,task_id=task_id)
++    if interrupt_after_failure:
++        record=runtime.record_analysis_artifact
++        def crash(**kwargs):
++            record(**kwargs)
++            if kwargs['artifact'].status=='failed':raise SystemExit('after failure artifact commit')
++        monkeypatch.setattr(runtime,'record_analysis_artifact',crash)
++        with pytest.raises(SystemExit):initial_work(e2e.RUN_AT)
++        assert store.get_task(task_id=task_id,db_path=db).status=='running'
++        receipt=store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['providerFailureReceipt']
++        assert receipt['errorCode']==('rate_limited' if status==429 else 'insufficient_balance')
++        assert datetime.fromisoformat(receipt['receivedAt'])==e2e.RUN_AT
++        monkeypatch.setattr(runtime,'record_analysis_artifact',record)
++        task=initial_work(e2e.RUN_AT+timedelta(seconds=301))
++        assert 'providerFailureReceipt' not in store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']
++    else:
++        task=initial_work(e2e.RUN_AT)
+     with sqlite3.connect(db) as conn:
+         retries=conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]
+         external=conn.execute('SELECT error_code FROM k10_external_attempts WHERE task_id=? ORDER BY rowid',(task_id,)).fetchall()
+@@ -56,9 +73,21 @@
+         assert task.status=='queued' and retries==1, '429 must retain the failed role and schedule Retry-After'
+         with sqlite3.connect(db) as conn:
+             due = datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0])
+-        assert due == e2e.RUN_AT + timedelta(seconds=60)
++        assert due == e2e.RUN_AT + timedelta(seconds=900 if interrupt_after_failure else 60)
+         assert work(due-timedelta(seconds=1)) is None and len(calls)==expected_calls
+         recover[0] = retry_succeeds
++        if late_retry:
++            retried=work(due+timedelta(hours=7))
++            assert retried.status=='failed' and len(calls)==expected_calls
++            with client_for(db) as client:
++                expired=client.get('/api/v1/k10/company-windows/' + card['companyWindowId'] + '/analysis-chain').json()
++            assert '完成时限' in expired['items'][0]['job']['error']['message']
++            if before_pro:
++                assert [a for item in expired['items'] for a in item['analyses'] if a['role']=='pro' and a['status']=='completed']==before_pro
++            assert store.get_task(task_id=task_id,db_path=db).payload==before_payload
++            with sqlite3.connect(db) as conn:
++                assert conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]==0
++            return
+         retried=work(due)
+         assert retried.status == ('completed' if retry_succeeds else 'failed')
+         assert calls[expected_calls] == calls[expected_calls-1], 'only the failed role retries with identical frozen input'
+@@ -80,7 +109,7 @@
+         assert work(e2e.RUN_AT+timedelta(minutes=5)) is None and len(calls)==expected_calls
+ 
+ @pytest.mark.parametrize('status', [402, 429])
+-def test_paid_morning_review_error_contract(tmp_path, monkeypatch, status):
++def test_paid_morning_review_error_contract(tmp_path, monkeypatch, status, late_retry=False, interrupt_after_failure=False):
+     from neckline.k10 import morning_runtime
+     from tests.test_b54_review_regressions import later_scan
+     calls=[]
+@@ -91,13 +120,30 @@
+             if recover[0]:
+                 content={'material':False,'reasonStatus':'current','observationStatus':'current','summary':'冻结资料复核无新增变化','materialContraryEvidence':[]}
+                 return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':json.dumps(content)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
+-            return httpx.Response(status,headers={'Retry-After':'60'},json={'error':{'message':'deterministic morning failure'}})
++            return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic morning failure'}})
+         transport=httpx.MockTransport(respond)
+         monkeypatch.setattr(httpx,'Client',lambda **opts:e2e._HTTPX_CLIENT(**{**opts,'transport':transport}))
+         provider=MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
+         return ProviderResolution('configured',provider,'fixture',None)
+     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',resolve)
+-    db, old, parent, _=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
++    if interrupt_after_failure:
++        failure_result=morning_runtime.provider_failure_result
++        def crash(**kwargs):raise SystemExit('after morning failure ledger commit')
++        monkeypatch.setattr(morning_runtime,'provider_failure_result',crash)
++        with pytest.raises(SystemExit):later_scan(tmp_path,monkeypatch,lambda payload,value:None)
++        db=tmp_path/'b39-e2e.sqlite';old=store.list_opportunities(db_path=db)[0]
++        with sqlite3.connect(db) as conn:
++            child_id,lease_until=conn.execute("SELECT task_id,lease_until FROM k10_tasks WHERE kind='morning_review'").fetchone()
++            parent_id=conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
++        parent=store.get_task(task_id=parent_id,db_path=db)
++        assert store.task_execution_input(task_id=child_id,db_path=db)['checkpoint']['providerFailureReceipt']['errorCode']==('rate_limited' if status==429 else 'insufficient_balance')
++        monkeypatch.setattr(morning_runtime,'provider_failure_result',failure_result)
++        claimed_at=datetime.fromisoformat(lease_until)+timedelta(seconds=1)
++        task=run_once(db_path=db,worker_id='morning-after-crash',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:claimed_at,task_id=child_id)
++        assert task.status==('queued' if status==429 else 'failed')
++        assert 'providerFailureReceipt' not in store.task_execution_input(task_id=child_id,db_path=db)['checkpoint']
++    else:
++        db, old, parent, _=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
+     with sqlite3.connect(db) as conn:
+         children=conn.execute("SELECT task_id,status,error_text FROM k10_tasks WHERE kind='morning_review'").fetchall()
+         assert len(children)==1
+@@ -115,10 +161,19 @@
+         with sqlite3.connect(db) as conn:
+             due=datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0])
+         from neckline.k10.windows import SHANGHAI
+-        assert due==datetime(2026,9,9,9,11,tzinfo=SHANGHAI)
++        assert due==datetime(2026,9,9,9,25 if interrupt_after_failure else 11,tzinfo=SHANGHAI)
+         opportunities=store.list_opportunities(db_path=db)
+         recover[0]=True
+-        retried=run_once(db_path=db,worker_id='morning-recovery',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:due,task_id=task_id)
++        retried=run_once(db_path=db,worker_id='morning-recovery',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:due+timedelta(hours=7) if late_retry else due,task_id=task_id)
++        if late_retry:
++            assert retried.status=='failed' and len(calls)==1
++            with client_for(db) as client:
++                expired=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
++            assert expired['report']['status']=='partial'
++            assert '完成时限' in expired['report']['incompleteReviews'][0]['reason']
++            assert expired['report']['updatedCards']==report['report']['updatedCards']
++            assert store.list_opportunities(db_path=db)==opportunities
++            return
+         assert retried.status=='completed' and len(calls)==2 and calls[0]==calls[1]
+         with client_for(db) as client:
+             recovered=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
+@@ -217,7 +272,7 @@
+ 
+ 
+ @pytest.mark.parametrize('status',[402,429])
+-def test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_path,monkeypatch,status):
++def test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_path,monkeypatch,status,completed_roles="pro",late_resume=False):
+     db,_,_,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
+     _freeze_k10_clocks(monkeypatch,e2e.RUN_AT.isoformat())
+     card=read_report(db_path=db)['eveningCards'][0]
+@@ -226,7 +281,7 @@
+     calls=[]
+     def respond(request):
+         calls.append(json.loads(request.content))
+-        if len(calls)==1:
++        if len(calls)==1 or completed_roles=="both":
+             from tests.debate_fixture import debate_text
+             return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':debate_text('持久正方全文')},'finish_reason':'stop'}]})
+         return httpx.Response(status,headers={'Retry-After':'60'},json={'error':{'message':'synthetic error'}})
+@@ -237,18 +292,21 @@
+     record=runtime.record_analysis_artifact
+     def interrupted(**kwargs):
+         record(**kwargs)
+-        raise RuntimeError('synthetic interruption after durable pro')
++        if kwargs['artifact'].role==('con' if completed_roles=='both' else 'pro'):
++            raise RuntimeError('synthetic interruption after durable role')
+     monkeypatch.setattr(runtime,'record_analysis_artifact',interrupted)
+-    def work():
+-        return run_once(db_path=db,worker_id='interruption',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:e2e.RUN_AT,task_id=job)
++    def work(at=e2e.RUN_AT):
++        return run_once(db_path=db,worker_id='interruption',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:at,task_id=job)
+     first=work()
+-    assert first.status=='failed' and len(calls)==1
++    assert first.status=='failed' and len(calls)==(2 if completed_roles=='both' else 1)
+     monkeypatch.setattr(runtime,'record_analysis_artifact',record)
++    resumed_at=e2e.RUN_AT+timedelta(hours=7) if late_resume else e2e.RUN_AT
++    _freeze_k10_clocks(monkeypatch,resumed_at.isoformat())
+     with client_for(db) as client:
+         response=client.post('/api/v1/k10/jobs/'+job+'/retry',json={'expectedAttemptCount':first.attempt_count})
+         assert response.status_code==200
+-    second=work()
+-    assert second.status==('queued' if status==429 else 'failed') and len(calls)==2
++    second=work(resumed_at)
++    assert second.status==('completed' if completed_roles=='both' else 'queued' if status==429 else 'failed') and len(calls)==2
+     assert '持久正方全文' in json.dumps(calls[1],ensure_ascii=False)
+     with client_for(db) as client:
+         chain=client.get('/api/v1/k10/company-windows/'+card['companyWindowId']+'/analysis-chain').json()
+@@ -269,3 +327,51 @@
+     readme=(root/'README.md').read_text()
+     assert '[k10-execution-v3.json]' not in readme
+     assert '[k10-execution-v4.json]' in readme and '[k10-v2.json]' in readme
++
++
++@pytest.mark.parametrize('role',['pro','con'])
++def test_late_claim_of_analysis_retry_cannot_spend_after_frozen_deadline(tmp_path,monkeypatch,role):
++    test_paid_analysis_error_contract(tmp_path,monkeypatch,429,True,role,late_retry=True)
++
++
++def test_late_claim_of_morning_retry_retains_incomplete_report_without_spending(tmp_path,monkeypatch):
++    test_paid_morning_review_error_contract(tmp_path,monkeypatch,429,late_retry=True)
++
++
++def test_completed_analysis_can_finalize_after_deadline_without_any_provider_call(tmp_path,monkeypatch):
++    test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_path,monkeypatch,429,completed_roles='both',late_resume=True)
++
++
++def test_cached_morning_can_finalize_after_deadline_without_any_provider_call(tmp_path,monkeypatch):
++    from tests.test_b54_boundary_regressions import test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry
++    test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,'current','evidence_update',late_retry=True)
++
++
++@pytest.mark.parametrize('status',[402,429])
++@pytest.mark.parametrize('role',['pro','con'])
++def test_failure_artifact_crash_restores_terminal_or_original_retry_without_new_call(tmp_path,monkeypatch,status,role):
++    test_paid_analysis_error_contract(tmp_path,monkeypatch,status,True,role,interrupt_after_failure=True)
++
++
++@pytest.mark.parametrize('status',[402,429])
++def test_morning_failure_ledger_crash_restores_original_outcome_without_new_call(tmp_path,monkeypatch,status):
++    test_paid_morning_review_error_contract(tmp_path,monkeypatch,status,interrupt_after_failure=True)
++
++
++def test_failure_receipt_rolls_back_with_attempt_and_unknown_outcome_blocks_new_attempt(tmp_path,monkeypatch):
++    db,_,_,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
++    _freeze_k10_clocks(monkeypatch,e2e.RUN_AT.isoformat())
++    card=read_report(db_path=db)['eveningCards'][0]
++    with client_for(db) as client:
++        job=client.post('/api/v1/k10/company-windows/'+card['companyWindowId']+'/selection',json={'action':'keep','idempotencyKey':'receipt-atomic'}).json()['analysisJobId']
++    args=dict(task_id=job,stage='analysisPro',item_key='same-frozen-role',input_sha256='a'*64,started_at=e2e.RUN_AT.isoformat(),db_path=db)
++    attempt=store.begin_external_attempt(attempt_key='first',**args)
++    assert attempt['state']=='started'
++    with sqlite3.connect(db) as conn:
++        conn.execute("CREATE TRIGGER reject_receipt BEFORE UPDATE OF checkpoint_json ON k10_tasks WHEN json_extract(NEW.checkpoint_json,'$.providerFailureReceipt') IS NOT NULL BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END")
++    with pytest.raises(sqlite3.IntegrityError,match='receipt failure'):
++        store.settle_external_attempt(attempt_id=attempt['attemptId'],outcome='failed',usage=None,settled_at=e2e.RUN_AT.isoformat(),error_code='rate_limited',db_path=db,record_provider_failure=True,retry_after_seconds=900)
++    with sqlite3.connect(db) as conn:
++        assert conn.execute('SELECT state,error_code FROM k10_external_attempts WHERE attempt_id=?',(attempt['attemptId'],)).fetchone()==('started',None)
++    assert 'providerFailureReceipt' not in store.task_execution_input(task_id=job,db_path=db)['checkpoint']
++    assert store.begin_external_attempt(attempt_key='different-worker-attempt',**args)['state']=='pending_outcome'

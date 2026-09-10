@@ -37,6 +37,105 @@ private struct K10LooseFailureEnvelope: Decodable { let detail: K10LooseFailure 
 private struct K10LooseFailure: Decodable { let reason: String?; let message: String? }
 struct K10Health: Codable, Equatable { let status: String; let version: String? }
 struct K10Page: Codable, Equatable { let nextCursor: String? }
+
+struct K10DailyReportResponse: Codable, Equatable {
+    let schemaVersion: Int
+    let state: String
+    let reason: K10Failure?
+    var report: K10DailyReport?
+}
+
+struct K10DailyReport: Codable, Identifiable, Equatable {
+    let reportId: String
+    let strategyVersion: String
+    let strategySnapshotId: String
+    let windowKind: String
+    let parentReportId: String?
+    let cutoffAt: String
+    let verificationCutoffAt: String?
+    let availableAt: String?
+    let status: String
+    var eveningCards: [K10DailyCard]
+    var updatedCards: [K10DailyCard]
+    var addedCards: [K10DailyCard]
+    var nextCursor: String?
+    var lifecycleUpdates: [K10DailyLifecycleUpdate]? = nil
+    var coverageGaps: [String]? = nil
+    var incompleteReviews: [K10IncompleteReview]? = nil
+    var id: String { reportId }
+}
+
+struct K10IncompleteReview: Codable, Identifiable, Equatable {
+    let taskId: String
+    let opportunityId: String
+    let companyWindowId: String
+    let companyCode: String
+    let status: String
+    let reason: String
+    var id: String { taskId }
+}
+
+struct K10DailyLifecycleUpdate: Codable, Identifiable, Equatable {
+    let updateId: String
+    let opportunityId: String
+    let companyWindowId: String
+    let companyCode: String
+    let companyName: String
+    let kind: String
+    let reason: String
+    let createdAt: String
+    let sourceRefs: [K10SourceReference]
+    var id: String { updateId }
+    var label: String { ["risk": "重要风险", "withdrawal": "理由已撤回", "expiry": "观察已到期", "evidence_update": "事实与论点变化"][kind] ?? "机会变化" }
+}
+
+struct K10CardPriceContext: Codable, Equatable {
+    let asOf: String
+    let collectedAt: String?
+    let tradeDate: String
+    let pctChg: Double
+    let sourceRefs: [K10SourceReference]
+}
+
+struct K10DailyCard: Codable, Identifiable, Equatable {
+    let cardId: String
+    let companyCode: String
+    let companyName: String
+    let rank: Int
+    let section: String
+    let companyWindowId: String
+    let currentSelectionState: String
+    let d1TradeDate: String
+    let d2TradeDate: String
+    let sampleClass: String
+    let strategyVersion: String
+    let summary: String
+    let twoDayReason: String
+    let uncertainty: [String]
+    let sourceRefs: [K10SourceReference]
+    let catalysts: [K10CardCatalyst]
+    let priceReaction: String?
+    var priceContext: K10CardPriceContext? = nil
+    var sourceMarker: String? = nil
+    var latePublication: Bool? = nil
+    var canSelect: Bool? = nil
+    var id: String { cardId }
+    var isUnverified: Bool { catalysts.contains { $0.verificationStatus == "unverified" } }
+    var allowsSelection: Bool { canSelect != false }
+}
+
+struct K10CardCatalyst: Codable, Identifiable, Equatable {
+    let eventId: String
+    let eventRevision: Int
+    let opportunityId: String?
+    let companyWindowId: String
+    let headline: String
+    let summary: String
+    let classification: String
+    let verificationStatus: String
+    var lifecycleState: String? = nil
+    var id: String { "\(eventId)#\(eventRevision)#\(opportunityId ?? companyWindowId)" }
+}
 struct K10SourceReference: Codable, Identifiable, Equatable {
     let documentId: String?; let factId: String?; let companyCode: String?; let tradeDate: String?; let revision: Int?; let sourceKey: String?; let title: String?; let url: String?
     let excerpt: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String?
@@ -88,7 +187,7 @@ struct K10ExecutionTitleCounts: Codable, Equatable {
     let notSelected: Int; let protected: Int; let partial: Int
 }
 struct K10ExecutionArticleCounts: Codable, Equatable {
-    let limit: Int; let selected: Int; let admitted: Int; let completed: Int
+    let limit: Int?; let selected: Int; let admitted: Int; let completed: Int
     let missingBody: Int; let tavilyExcerpt: Int; let tavilyFullArticle: Int
 }
 struct K10ExecutionAttemptCounts: Codable, Equatable {
@@ -164,6 +263,7 @@ struct K10OpportunityDetail: Codable, Identifiable, Equatable {
     let eventId: String; let eventRevision: Int; let catalystStage: String; let relatedOpportunityId: String?; let companyWindowId: String; let firstBatchId: String
     let availableAt: String; let d0TradeDate: String; let d1TradeDate: String; let d2TradeDate: String; let sampleClass: String; let overlapsWindowId: String?
     let lifecycle: String; let sourceMarker: String?; let latePublication: Bool?; let createdAt: String; let eventHeadline: String?; let commonFacts: [K10CommonFact]; let samples: [K10PublicationSample]; let lifecycleEvents: [K10LifecycleEvent]
+    var strategyVersion: String? = nil
     var id: String { opportunityId }
 }
 struct K10OpportunityList: Codable { let items: [K10Opportunity]; let page: K10Page }
@@ -172,7 +272,11 @@ struct K10CompanyWindow: Codable, Identifiable, Equatable {
     let schemaVersion: String; let companyWindowId: String; let companyCode: String; let companyName: String?; let firstBatchId: String
     let d0TradeDate: String; let d1TradeDate: String; let d2TradeDate: String; let d1SelectionAt: String; let d2CloseAt: String
     let sampleClass: String; let overlapsWindowId: String?; let selection: K10SelectionSnapshot?; let currentSelectionState: String?; let lastActionAt: String?; let postFreeze: Bool?
-    let opportunities: [K10Opportunity]; let samples: [K10PublicationSample]; var displayRank: Int? = nil; var availableAt: String? = nil; let createdAt: String
+    let opportunities: [K10Opportunity]; let samples: [K10PublicationSample]; var displayRank: Int? = nil; var availableAt: String? = nil; let createdAt: String; var strategyVersion: String? = nil
+    var canSelect: Bool? = nil
+    var allowsSelection: Bool {
+        canSelect ?? opportunities.contains { !["withdrawal", "withdrawn", "expired"].contains($0.lifecycle) }
+    }
     var id: String { companyWindowId }
 }
 struct K10CompanyWindowList: Codable { let items: [K10CompanyWindow]; let page: K10Page }
@@ -183,9 +287,16 @@ struct K10AnalysisEventLineage: Codable, Equatable { let eventId: String; let re
 struct K10AnalysisLineage: Codable, Equatable { let candidateId: String?; let event: K10AnalysisEventLineage?; let mappingIds: [String]; let documentVersions: [K10SourceReference]; let inputCutoffAt: String?; var evidenceDisclosure: K10EvidenceDisclosure? = nil }
 struct K10ModelCost: Codable, Equatable { let amount: Double?; let currency: String?; let pricingVersion: String?; let status: String? }
 struct K10ModelUsage: Codable, Equatable { let inputTokens: Int?; let outputTokens: Int?; let totalTokens: Int?; let cacheTokens: Int?; let usageUnavailable: Bool?; let cacheUsageUnavailable: Bool?; let cost: K10ModelCost? }
+struct K10AnalysisSummary: Codable, Equatable {
+    let commonFacts: [String]
+    let disagreements: [String]
+    let unknowns: [String]
+}
+
 struct K10Analysis: Codable, Identifiable, Equatable {
     let analysisId: String; let observationId: String; let revision: Int; let role: String; let status: String; let inputCutoffAt: String
     let sourceRefs: [K10SourceReference]; let inputLineage: K10AnalysisLineage; let fullText: String?; let provider: String?; let model: String?; let promptVersion: String?; let usage: K10ModelUsage?; let error: String?
+    var summary: K10AnalysisSummary? = nil
     var id: String { analysisId }
 }
 struct K10JobFailure: Codable, Equatable { let reason: String; let message: String }
@@ -216,21 +327,33 @@ struct K10Evaluation: Codable, Identifiable, Equatable {
     let companyWindowId: String; let opportunityIds: [String]; let companyCode: String; let sampleClass: String; let selection: K10SelectionSnapshot?; let state: String; let revision: Int; let updatedAt: String
     let d1: K10MarketDay?; let d2: K10MarketDay?; let primaryEligible: Bool; let closeLimitHitAny: Bool?; let firstTouchDay: String?; let firstTouchStatus: String?; let knownTouchDays: [String]?
     let d1OpenGap: Double?; let d1PriceChanges: [String: Double?]?; let d2PriceChanges: [String: Double?]?; let windowPriceChanges: [String: Double?]?; let comparability: String?; let gaps: [String]; let factRefs: [K10SourceReference]
+    var consecutiveLimitUp: Bool? = nil
     var evaluationConfigurationState: String? = nil
     var evaluationConfigurationMissing: [String]? = nil
     var evaluationConfigurationErrors: [String]? = nil
     var id: String { companyWindowId }
 }
-struct K10EvaluationMetrics: Codable, Equatable { let sampleCount: Int; let eligibleCount: Int; let hitCount: Int; let hitRate: Double?; let touchRate: Double?; let incompleteCount: Int; let pendingCount: Int; let observedCompleteCount: Int; let knownHitCount: Int; let touchCount: Int; let suspendedCount: Int; let dataGapCount: Int; let anomalyCount: Int; let selectionPendingCount: Int; var notConfiguredCount: Int? = nil }
+struct K10EvaluationMetrics: Codable, Equatable { let sampleCount: Int; let eligibleCount: Int; let hitCount: Int; let hitRate: Double?; let touchRate: Double?; let incompleteCount: Int; let pendingCount: Int; let observedCompleteCount: Int; let knownHitCount: Int; let touchCount: Int; let suspendedCount: Int; let dataGapCount: Int; let anomalyCount: Int; let selectionPendingCount: Int; var notConfiguredCount: Int? = nil; var consecutiveLimitUpCount: Int? = nil }
 struct K10ResultsCohort: Codable, Identifiable, Equatable { let batchId: String; var batchIds: [String]? = nil; let d1TradeDate: String; let d2TradeDate: String; let evaluationVersion: String?; let companySampleCount: Int; let catalystEventCount: Int; let primary: [String: K10EvaluationMetrics]; let overlap: K10EvaluationMetrics; var id: String { "\(d1TradeDate)#\(d2TradeDate)#\(evaluationVersion ?? "未记录")" } }
 struct K10ResultsEventGroup: Codable, Identifiable, Equatable { let eventId: String; let headline: String?; let companyWindowIds: [String]; let opportunityIds: [String]; let companySampleCount: Int; let catalystCount: Int; let primary: [String: K10EvaluationMetrics]; var overlap: K10EvaluationMetrics? = nil; var id: String { eventId } }
-struct K10Results: Codable, Equatable { let schemaVersion: String; let state: String; let reason: K10Failure?; let asOf: String?; let primary: [String: K10EvaluationMetrics]; let overlap: K10EvaluationMetrics; let records: [K10Evaluation]; let cohorts: [K10ResultsCohort]?; let eventGroups: [K10ResultsEventGroup]?; var configurationState: String? = nil; var configurationMissing: [String]? = nil; var configurationErrors: [String]? = nil }
+struct K10Results: Codable, Equatable { let schemaVersion: String; let state: String; let reason: K10Failure?; let asOf: String?; let primary: [String: K10EvaluationMetrics]; let overlap: K10EvaluationMetrics; let records: [K10Evaluation]; let cohorts: [K10ResultsCohort]?; let eventGroups: [K10ResultsEventGroup]?; var configurationState: String? = nil; var configurationMissing: [String]? = nil; var configurationErrors: [String]? = nil; var strategyVersion: String? = nil }
 
 struct K10DocumentPage: Codable, Equatable, Identifiable { let schemaVersion: String; let documentId: String; let revision: Int; let sourceKey: String; let externalId: String; let canonicalUrl: String?; let title: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String; let excerpt: String?; let body: String?; let page: K10Page; var id: String { "\(documentId)-\(revision)" } }
 struct K10UsageTotals: Codable, Equatable { let calls: Int; let failed: Int; let usageUnavailable: Int; let promptTokens: Int?; let completionTokens: Int?; let totalTokens: Int?; let tavilyCredits: Int?; let durationMs: Int? }
 struct K10UsageDay: Codable, Equatable { let date: String; let totals: K10UsageTotals }
 struct K10UsageSummary: Codable, Equatable { let days: [K10UsageDay]; let totals: K10UsageTotals }
-struct K10Configuration: Codable, Equatable { let schemaVersion: String; let configId: String?; let configRevision: Int?; let scopes: [K10ConfigurationScope] }
+struct K10Configuration: Codable, Equatable {
+    let schemaVersion: String; let configId: String?; let configRevision: Int?; let scopes: [K10ConfigurationScope]
+    var strategySnapshotId: String? = nil
+    var universeSnapshotId: String? = nil
+    var profileSnapshotId: String? = nil
+    var universeSha256: String? = nil
+    var profilesSha256: String? = nil
+    var profileReviewStatus: String? = nil
+    var strategyVersion: String? = nil
+    var executionConfigId: String? = nil
+    var executionConfigRevision: Int? = nil
+}
 struct K10ConfigurationScope: Codable, Identifiable, Equatable { let scope: String; let state: String; let missing: [String]; let errors: [String]; var id: String { scope } }
 
 enum K10Value: Codable, Equatable { case string(String), number(Double), bool(Bool), null, object([String: K10Value]), array([K10Value])

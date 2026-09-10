@@ -184,7 +184,7 @@ def _freeze_single_selected_article(path: Path, *, task_id: str, binding, docume
     store.freeze_title_triage_manifest(
         task_id=task_id, input_manifest_sha256=store._hash([ref]), window_kind="evening",
         policy_id=approved["policyId"], policy_revision=approved["revision"],
-        policy_content_sha256=approved["contentSha256"], article_limit=80, input_refs=[ref],
+        policy_content_sha256=approved["contentSha256"], input_count=len([ref]), input_refs=[ref],
         batch_count=1, title_status="frozen", created_at=CREATED.isoformat(), db_path=path,
     )
     store.record_title_triage_item(task_id=task_id, document_id=document.document_id, revision=document.revision,
@@ -576,7 +576,7 @@ def test_crash_after_candidate_write_replays_same_event_revision_and_candidate(t
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
 
 
-def test_persisted_morning_match_retries_failed_child_on_parent_replay(tmp_path, monkeypatch):
+def test_persisted_morning_match_requires_explicit_retry_for_terminal_child(tmp_path, monkeypatch):
     path = tmp_path / "morning-child-retry.sqlite"
     initialize_schema(path)
     _frozen_config(path)
@@ -595,7 +595,8 @@ def test_persisted_morning_match_retries_failed_child_on_parent_replay(tmp_path,
         def runner(*, db_path, worker_id, lease_for, handlers, task_id, clock):
             now = CREATED.astimezone(timezone.utc)
             task = store.claim_task_by_id(task_id=task_id, worker_id=worker_id, now=now, lease_for=timedelta(minutes=10), db_path=db_path)
-            assert task is not None
+            if task is None:
+                return None
             store.finish_task(task_id=task_id, worker_id=worker_id, status=status, stage="fixture", checkpoint={}, error_text=None,
                               finished_at=now, db_path=db_path)
             return store.get_task(task_id=task_id, db_path=db_path)
@@ -607,7 +608,14 @@ def test_persisted_morning_match_retries_failed_child_on_parent_replay(tmp_path,
     monkeypatch.setattr(pipeline, "run_once", finish("completed"))
     second, replay_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
                                                config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
-    assert second == "completed" and replay_ids == ids
+    terminal = store.get_task(task_id=ids[0], db_path=path)
+    assert second == "partial" and replay_ids == ids
+    assert terminal.status == "failed" and terminal.attempt_count == 1
+    store.retry_task(task_id=ids[0], expected_attempt_count=terminal.attempt_count,
+                     retried_at=CREATED.isoformat(), db_path=path)
+    third, explicit_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
+        config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
+    assert third == "completed" and explicit_ids == ids
     assert store.get_task(task_id=ids[0], db_path=path).status == "completed"
 
 
@@ -1362,7 +1370,7 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
                 self.stages.append("titleReview")
                 response = {"complete": True, "kept": [{"i": row["i"], "reason": "标题事实独立，保留"}
                                                        for row in payload["items"]], "removed": []}
-            elif "articleLimit" in payload:
+            elif "inputCount" in payload:
                 self.stages.append("titleReconcile")
                 response = {"selected": [{"i": 0, "selectedRank": 1, "reason": "离线正文回归"}],
                             "merged": [], "notSelected": []}
@@ -1430,7 +1438,7 @@ def test_cli_morning_worker_preserves_title_slice_and_resumes_before_report(tmp_
             if payload.get('operation') == 'titleSelectionReview':
                 calls.append('titleReview')
                 result={'complete':True,'kept':[{'i':row['i'],'reason':'标题事实独立，保留'} for row in payload['items']], 'removed':[]}
-            elif 'articleLimit' in payload:
+            elif 'inputCount' in payload:
                 calls.append('titleReconcile')
                 result={'selected':[{'i':0,'selectedRank':1,'reason':'独立事项'}],'merged':[],'notSelected':[]}
             elif 'policyContent' in payload:

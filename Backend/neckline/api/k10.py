@@ -27,6 +27,8 @@ from neckline.k10.evaluation import EvaluationInputError, evaluate_company_windo
 from neckline.k10.schema import read_connection, require_schema
 
 from .k10_schemas import (
+    V2ReportEnvelope,
+    V2ReportOut,
     AnalysisArtifactOut,
     AnalysisChainOut,
     AnalysisChainItemOut,
@@ -494,6 +496,10 @@ def _document_body(source_key: str, original_text: str | None) -> str:
 
 
 def _company_name(conn: Any, company_code: str) -> str | None:
+    # V2 names come from the universe frozen with an actual company card.
+    names = conn.execute("SELECT DISTINCT m.company_name FROM k10_v2_report_cards c JOIN k10_v2_report_runs r ON r.report_id=c.report_id JOIN k10_v2_strategy_snapshots s ON s.snapshot_id=r.strategy_snapshot_id JOIN k10_v2_universe_members m ON m.snapshot_id=s.universe_snapshot_id AND m.company_code=c.company_code WHERE c.company_code=?", (company_code,)).fetchall()
+    if len(names) == 1:
+        return str(names[0][0])
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stock_basic'").fetchone() is None:
         return None
     row = conn.execute("SELECT name FROM stock_basic WHERE ts_code=?", (company_code,)).fetchone()
@@ -505,51 +511,24 @@ def _windows(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def _opportunity_lifecycle(path: Path, value: Mapping[str, Any]) -> str:
-    state = str(value.get("state") or "active")
-    if state == "withdrawn":
-        return "withdrawal"
-    if state == "expired":
-        return "expired"
     events = store.list_opportunity_lifecycle_events(opportunity_id=str(value["opportunityId"]), db_path=path)
-    # A terminal lifecycle fact always wins over a display-only update.  Store
-    # state is intentionally append-only and may still say active here.
-    terminals = [str(item.get("kind")) for item in events if item.get("kind") in {"withdrawal", "expired"}]
-    if "withdrawal" in terminals:
-        return "withdrawal"
-    if "expired" in terminals:
-        return "expired"
+    return store.project_opportunity_lifecycle(str(value.get("state") or "unknown"), events)
 
-    lifecycle = "published"
-    risk_active = False
-    for event in events:
-        kind = str(event.get("kind") or "")
-        if kind == "risk":
-            risk_active = True
-            lifecycle = "risk"
-            continue
-        if kind != "evidence_update":
-            continue
-        content = event.get("content")
-        verified_current = (
-            isinstance(content, Mapping)
-            and content.get("reasonStatus") == "current"
-            and content.get("sourceStatus") == "complete"
-        )
-        # An ordinary continuation must not implicitly clear a material risk.
-        # Only the validated morning-review outcome says the reason is current
-        # and its source coverage is complete.
-        if risk_active and not verified_current:
-            continue
-        risk_active = False
-        lifecycle = "evidence_update"
-    return lifecycle
+
+def _window_strategy(path: Path, window_id: str) -> str | None:
+    with _reader(path) as conn:
+        row = conn.execute("SELECT c.payload_json FROM k10_company_windows w JOIN k10_publication_batches b ON b.batch_id=w.first_batch_id JOIN k10_scans s ON s.scan_id=b.scan_id JOIN k10_run_config_revisions c ON c.config_id=s.config_id AND c.revision=s.config_revision WHERE w.company_window_id=?", (window_id,)).fetchone()
+        if not row:
+            return None
+        version = json.loads(row[0]).get("configVersion")
+        return {"k10-v2": "K10-v2", "k10-v1.4": "K10-v1.4"}.get(version)
 
 
 def _opportunity(value: Mapping[str, Any], windows: Mapping[str, Mapping[str, Any]], company_name: str | None = None,
                  path: Path | None = None) -> OpportunityOut:
     window = windows.get(str(value["companyWindowId"]), {})
     lifecycle = _opportunity_lifecycle(path, value) if path is not None else {"active": "published", "withdrawn": "withdrawal", "expired": "expired"}.get(value.get("state"), "published")
-    return OpportunityOut(opportunityId=str(value["opportunityId"]), opportunityKey=str(value["opportunityKey"]),
+    return OpportunityOut(strategyVersion=_window_strategy(path, str(value["companyWindowId"])) if path else None, opportunityId=str(value["opportunityId"]), opportunityKey=str(value["opportunityKey"]),
                           companyCode=str(value["companyCode"]), companyName=company_name,
                           eventId=str(value["eventId"]), eventRevision=int(value["eventRevision"]),
                           catalystStage=str(value["catalystStage"]), relatedOpportunityId=value.get("relatedOpportunityId"),
@@ -633,6 +612,8 @@ def _job_out(conn: Any, task_id: str | None) -> JobOut | None:
     if row is None:
         return None
     failure = ApiFailure(reason="task_failed", message=str(row[9])) if row[9] else None
+    if row[9] == "rate_limited" and row[2] == "queued":
+        failure = ApiFailure(reason="rate_limited", message="模型服务限流，等待延后重试")
     return JobOut(jobId=str(row[0]), kind=str(row[1]), status=str(row[2]), stage=str(row[3]), attemptCount=int(row[4]),
                   inputVersion=str(row[5]), inputCutoffAt=str(row[6]), createdAt=str(row[7]), updatedAt=str(row[8]), error=failure)
 
@@ -671,6 +652,7 @@ def _analyses(conn: Any, observation_id: str) -> list[AnalysisArtifactOut]:
                 historicalContext=raw_lineage.get("historicalContext") if isinstance(raw_lineage.get("historicalContext"), Mapping) else None,
                 evidenceDisclosure=_evidence_disclosure(raw_lineage.get("evidenceDisclosure"), documents)),
             fullText=content.get("fullText") if isinstance(content, Mapping) else None,
+            summary=content.get("summary") if isinstance(content, Mapping) else None,
             provider=content.get("provider") if isinstance(content, Mapping) else None,
             model=content.get("model") if isinstance(content, Mapping) else None,
             promptVersion=content.get("promptVersion") if isinstance(content, Mapping) else None,
@@ -782,6 +764,12 @@ def _evaluation_configuration_by_window(
     return values
 
 
+def _consecutive_limit(d1, d2):
+    if not all(isinstance(day, Mapping) and day.get('availability') == 'available' and isinstance(day.get('closeLimitUp'), bool) for day in (d1, d2)):
+        return None
+    return d1['closeLimitUp'] and d2['closeLimitUp']
+
+
 def _evaluation_records(
     path: Path, *, configurations: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[CompanyWindowEvaluationOut]:
@@ -844,6 +832,7 @@ def _evaluation_records(
             d1=_market_day(result["d1"]) if isinstance(result.get("d1"), Mapping) else None,
             d2=_market_day(result["d2"]) if isinstance(result.get("d2"), Mapping) else None,
             primaryEligible=bool(result.get("primaryEligible", False)), closeLimitHitAny=result.get("closeLimitHitAny"),
+            consecutiveLimitUp=_consecutive_limit(result.get("d1"), result.get("d2")),
             firstTouchDay=result.get("firstTouchDay"), firstTouchStatus=result.get("firstTouchStatus"),
             knownTouchDays=[item for item in result.get("knownTouchDays", []) if item in {"D1", "D2"}],
             d1OpenGap=result.get("d1OpenGap"), d1PriceChanges=result.get("d1PriceChanges", {}) if isinstance(result.get("d1PriceChanges"), Mapping) else {},
@@ -896,6 +885,7 @@ def _metrics(records: list[CompanyWindowEvaluationOut], *, windows: Mapping[str,
     return EvaluationMetricsOut(sampleCount=len(records), eligibleCount=len(eligible), hitCount=len(hits),
                                 hitRate=len(hits) / len(eligible) if sample_class == "primary" and eligible else None,
                                 touchRate=touch_count / touch_base if touch_base else None,
+                                consecutiveLimitUpCount=sum(item.d1.closeLimitUp is True and item.d2.closeLimitUp is True for item in hit_records),
                                 incompleteCount=sum(item.state == "incomplete" for item in records),
                                 pendingCount=sum(item.state in {"pending", "due"} for item in records),
                                 observedCompleteCount=len(observed),
@@ -1205,6 +1195,12 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             return _company_window(value, _company_name(conn, str(value["companyCode"])), opportunities, _all_samples(path),
                                    _window_selection(path, company_window_id))
 
+    def required_runtime_execution_binding():
+        config_id, revision, error = current_execution_config_binding()
+        if error is not None or config_id is None or revision is None:
+            raise _conflict('未绑定明确执行配置，不能留下或重试付费任务')
+        return {'configId':config_id,'revision':revision}
+
     @router.post("/company-windows/{company_window_id}/selection", response_model=SelectionActionOut)
     def select_company_window(company_window_id: str, command: SelectionActionIn) -> SelectionActionOut:
         """Append a company-window decision and create at most one shared analysis chain.
@@ -1218,7 +1214,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             raise _not_found("公司观察窗口不存在")
         opportunities = [item for item in store.list_opportunities(db_path=path)
                          if item["companyWindowId"] == company_window_id]
-        if command.action == "keep" and (not opportunities or all(item["state"] in {"withdrawn", "expired"} for item in opportunities)):
+        if command.action in {"keep", "restore"} and not store.selection_allowed_for_states(item["state"] for item in opportunities):
             raise _conflict("已撤回或到期公司窗口不能新留意")
         batch = store.get_publication_batch(batch_id=str(window["firstBatchId"]), db_path=path)
         scan = store.get_scan(scan_id=str(batch["scanId"]), db_path=path) if batch else None
@@ -1246,6 +1242,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                     "configId": config["configId"] if config else None,
                     "configRevision": config["revision"] if config else None,
                 }
+                execution_binding = required_runtime_execution_binding()
                 result = store.observe_company_window(
                     action_id=action_id, observation_id=_stable_id("observation", "window", company_window_id),
                     task_id=_stable_id("task", "analysis", company_window_id),
@@ -1253,7 +1250,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                     idempotency_key=command.idempotencyKey,
                     task_input_version=str(config["contentSha256"]) if config else "not_configured",
                     task_input_cutoff_at=cutoff_at, task_payload=task_payload,
-                    task_budget=dict(policy) if isinstance(policy, Mapping) else {}, created_at=_now(), db_path=path,
+                    task_budget=dict(policy) if isinstance(policy, Mapping) else {}, created_at=_now(), db_path=path, execution_binding=execution_binding,
                 )
                 action_id, replayed = result.action_id, result.replayed
             else:
@@ -1350,7 +1347,11 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.post("/jobs/{job_id}/retry", response_model=JobOut)
     def retry_job(job_id: str, command: JobRetryIn) -> JobOut:
         try:
-            store.retry_task(task_id=job_id, expected_attempt_count=command.expectedAttemptCount, retried_at=_now(), db_path=db_path())
+            task = store.get_task(task_id=job_id,db_path=db_path())
+            execution_binding = None
+            if task is not None and task.kind in {'analysis','morning_review','evening_scan','morning_scan'} and store.task_execution_profile(task_id=job_id,db_path=db_path()) is None:
+                execution_binding = required_runtime_execution_binding()
+            store.retry_task(task_id=job_id, expected_attempt_count=command.expectedAttemptCount, retried_at=_now(), db_path=db_path(),execution_binding=execution_binding)
         except store.K10Conflict as exc:
             raise _conflict(str(exc)) from exc
         with _reader(db_path()) as conn:
@@ -1360,17 +1361,17 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         return job
 
     @router.get("/results", response_model=ResultsOut)
-    def results() -> ResultsOut:
-        path = db_path(); windows = _windows(path)
+    def results(strategy_version: str | None = Query(None, pattern=r"^K10-v(2|1\.4)$")) -> ResultsOut:
+        path = db_path(); windows = {key: value for key,value in _windows(path).items() if strategy_version is None or _window_strategy(path, key) == strategy_version}
         configurations = _evaluation_configuration_by_window(path, windows)
-        records = _evaluation_records(path, configurations=configurations)
+        records = [item for item in _evaluation_records(path, configurations=configurations) if item.companyWindowId in windows]
         primary = [item for item in records if item.sampleClass == "primary"]
         overlap = [item for item in records if item.sampleClass == "overlap"]
         cohorts, event_groups = _result_groups(records, path=path, configurations=configurations)
         configuration_missing = [item for item in configurations.values() if item.get("state") != "configured"]
         missing = sorted({str(name) for item in configuration_missing for name in item.get("missing", [])})
         errors = sorted({str(message) for item in configuration_missing for message in item.get("errors", [])})
-        return ResultsOut(state="not_configured" if configuration_missing else "available",
+        return ResultsOut(strategyVersion=strategy_version, state="not_configured" if configuration_missing else "available",
                           reason=ApiFailure(reason="not_configured", message="部分窗口的两日行情采集或评价参数未配置", missing=missing) if configuration_missing else None,
                           configurationState="not_configured" if configuration_missing else "configured",
                           configurationMissing=missing, configurationErrors=errors,
@@ -1393,6 +1394,59 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                                      title=_json(row[9], {}).get("title"), publishedAt=row[4], publishedPrecision=str(row[5]), fetchedAt=str(row[6]),
                                      excerpt=row[8], body=body, page=PageMeta(nextCursor=next_cursor))
 
+    def v2_report_result(window, report_id, cursor, limit):
+        from neckline.k10.v2_store import read_report
+        configured = configuration()
+        if report_id is None and not all(scope.state == "configured" for scope in configured.scopes):
+            return V2ReportEnvelope(state="not_configured",reason=ApiFailure(reason="not_configured",message="今天没跑成 · 参数未配置"))
+        try:
+            report = read_report(db_path=db_path(), report_id=report_id, window=window, cursor=cursor, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if report is None:
+            configured = configuration()
+            ready = all(scope.state == "configured" for scope in configured.scopes)
+            return V2ReportEnvelope(state="empty" if ready else "not_configured",
+                reason=ApiFailure(reason="no_report" if ready else "not_configured", message="尚无日报" if ready else "今天没跑成 · 参数未配置"))
+        # Expand actual persisted source versions through the shared source DTO.
+        refs = [ref for section in ("eveningCards", "updatedCards", "addedCards") for card in report[section] for ref in card["sourceRefs"]]
+        refs.extend(ref for change in report['lifecycleUpdates'] for ref in change['sourceRefs'])
+        with _reader(db_path()) as conn:
+            docs = _document_reference_map(conn, refs)
+            failure_row = conn.execute('SELECT error_json FROM k10_v2_report_runs WHERE report_id=?', (report['reportId'],)).fetchone()
+            failure = _json(failure_row[0], {}) if failure_row else {}
+        for section in ("eveningCards", "updatedCards", "addedCards"):
+            for card in report[section]:
+                card["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump() for ref in card["sourceRefs"]]
+        for change in report['lifecycleUpdates']:
+            change['sourceRefs'] = [_source_ref({**dict(ref), **dict(docs.get((ref.get('documentId'), ref.get('revision')), {}))}).model_dump() for ref in change['sourceRefs']]
+        return V2ReportEnvelope(state="available", report=V2ReportOut(**report),
+            reason=ApiFailure(reason=failure.get("reason", "incomplete"), message=failure.get("message", "今天没跑成 · 处理未完成")) if failure or report["status"] not in {"completed","partial"} else None)
+
+    @router.get("/v2/reports/latest", response_model=V2ReportEnvelope)
+    def v2_latest(window: str = Query("evening", pattern="^(evening|morning)$"), cursor: str | None = None, limit: int = Query(30, ge=1, le=100)):
+        return v2_report_result(window, None, cursor, limit)
+
+    from .k10_schemas import V2ReportListOut, V2ReportSummaryOut
+
+    @router.get("/v2/reports", response_model=V2ReportListOut)
+    def v2_reports(cursor: str | None = None, limit: int = Query(30, ge=1, le=100)):
+        with _reader(db_path()) as conn:
+            rows = list(conn.execute('SELECT report_id,window_kind,cutoff_at,available_at,status FROM k10_v2_report_runs ORDER BY julianday(cutoff_at) DESC,report_id DESC'))
+        start = 0
+        if cursor is not None:
+            found = next((index for index,row in enumerate(rows) if row[0] == cursor), None)
+            if found is None:
+                raise HTTPException(status_code=422, detail='分页游标不属于日报历史')
+            start = found + 1
+        visible = rows[start:start+limit]
+        return V2ReportListOut(items=[V2ReportSummaryOut(reportId=row[0], strategyVersion='K10-v2', windowKind=row[1], cutoffAt=row[2], availableAt=row[3], status=row[4]) for row in visible],
+                               page=PageMeta(nextCursor=visible[-1][0] if start+limit < len(rows) else None))
+
+    @router.get("/v2/reports/{report_id}", response_model=V2ReportEnvelope)
+    def v2_detail(report_id: str, cursor: str | None = None, limit: int = Query(30, ge=1, le=100)):
+        return v2_report_result("evening", report_id, cursor, limit)
+
     @router.get("/configuration", response_model=ConfigurationOut)
     def configuration() -> ConfigurationOut:
         path = db_path()
@@ -1406,6 +1460,8 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                             if execution_id is not None and execution_revision is not None and execution_binding_error is None else None)
         if execution_config is None and execution_binding_error is None:
             execution_binding_error = "K10_EXECUTION_CONFIG_ID/K10_EXECUTION_CONFIG_REVISION 指向的执行配置修订不存在"
+        from neckline.k10.v2_store import binding_status
+        snapshot_status = binding_status(db_path=path, config=config, execution=execution_config)
         scopes = []
         for scope in ("candidate", "discovery", "analysis", "evaluation"):
             if binding_error is not None:
@@ -1421,6 +1477,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 continue
             result = validate_run_config(config["payload"], scope=scope)
             missing, errors = list(result.missing), list(result.errors)
+            errors.extend(snapshot_status["errors"])
             if scope in {"candidate", "discovery"}:
                 if execution_binding_error is not None:
                     if execution_id is None or execution_revision is None:
@@ -1431,7 +1488,9 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                     missing.extend(execution_result.missing)
                     errors.extend(execution_result.errors)
             scopes.append(ConfigurationScopeOut(scope=scope, state="configured" if not missing and not errors else "not_configured", missing=missing, errors=errors))
-        return ConfigurationOut(configId=config["configId"] if config else None, configRevision=config["revision"] if config else None, scopes=scopes)
+        return ConfigurationOut(configId=config["configId"] if config else None, configRevision=config["revision"] if config else None, scopes=scopes,
+            executionConfigId=execution_id, executionConfigRevision=execution_revision, runControl=_run_control_out(store.run_control_status(db_path=path)),
+            **{key: value for key,value in snapshot_status.items() if key not in {"state", "errors"}})
 
     @router.get("/operations/readiness", response_model=OperationsReadinessOut)
     def operations_readiness() -> OperationsReadinessOut:
@@ -1546,7 +1605,7 @@ def _company_window(value: Mapping[str, Any], company_name: str | None, opportun
     selection = value.get("selection")
     snapshot = SelectionSnapshotOut.model_validate(selection) if isinstance(selection, Mapping) else None
     window_id = str(value["companyWindowId"])
-    return CompanyWindowOut(companyWindowId=window_id, companyCode=str(value["companyCode"]), companyName=company_name,
+    return CompanyWindowOut(canSelect=store.selection_allowed_for_states(store.lifecycle_state(item.lifecycle) for item in opportunities if item.companyWindowId == window_id),strategyVersion=next((item.strategyVersion for item in opportunities if item.companyWindowId == window_id), None), companyWindowId=window_id, companyCode=str(value["companyCode"]), companyName=company_name,
                             displayRank=value.get("displayRank"), availableAt=value.get("availableAt"),
                             firstBatchId=str(value["firstBatchId"]), d0TradeDate=str(value["d0TradeDate"]), d1TradeDate=str(value["d1TradeDate"]),
                             d2TradeDate=str(value["d2TradeDate"]), d1SelectionAt=str(value["d1SelectionAt"]), d2CloseAt=str(value["d2CloseAt"]),

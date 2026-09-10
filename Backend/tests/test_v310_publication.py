@@ -174,7 +174,7 @@ def test_worker_refuses_research_required_completion_without_a_snapshot(tmp_path
     assert result is not None and result.status == "failed"
 
 
-def test_morning_handler_carries_frozen_disclosure_into_model_and_report(monkeypatch):
+def test_morning_handler_carries_frozen_disclosure_into_model_and_report(tmp_path, monkeypatch):
     from neckline.k10 import morning_runtime
 
     disclosure = {
@@ -199,7 +199,7 @@ def test_morning_handler_carries_frozen_disclosure_into_model_and_report(monkeyp
         "isNew": False, "sourceStatus": "complete", "configId": "cfg", "configRevision": 1,
         "evidenceDisclosure": disclosure,
     })
-    context = TaskContext(task, {}, {}, "cfg", "2026-09-08T01:00:00+00:00", Path("/tmp/v310-morning.sqlite"), Event())
+    context = TaskContext(task, {}, {}, "cfg", "2026-09-08T01:00:00+00:00", tmp_path/"v310-morning.sqlite", Event())
     monkeypatch.setattr(morning_runtime.store, "read_run_config", lambda **_: {"payload": {"modelRoutes": {"morning": "deepseek-v4-pro"}}})
     monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=Provider(), error=None))
     monkeypatch.setattr(morning_runtime.store, "load_candidate_context", lambda **_: {
@@ -211,6 +211,8 @@ def test_morning_handler_carries_frozen_disclosure_into_model_and_report(monkeyp
         for item in refs
     ])
     monkeypatch.setattr(morning_runtime, "record_morning_update", lambda **_: "lifecycle-rumor")
+    from tests.morning_context_fixture import persist_context
+    persist_context(context)
     result = morning_runtime.morning_review_handler(context)
     assert result.status == "completed"
     assert disclosure == result.checkpoint["reportItem"]["content"]["evidenceDisclosure"]

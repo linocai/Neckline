@@ -7,6 +7,8 @@ Observation 冻结上下文及显式 K10 provider；这样两个角色始终读�
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -19,6 +21,7 @@ from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
 from .config import validate_run_config
 from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
 from .prompts import PROMPT_VERSION, con_messages, pro_messages
+from .provider_failures import failure_message
 
 
 ANALYSIS_STATUSES = frozenset({"queued", "completed", "failed", "not_configured"})
@@ -62,6 +65,9 @@ class AnalysisArtifact:
     prompt_version: str
     usage: Mapping[str, Any] = field(default_factory=dict)
     error: str | None = None
+    summary: Mapping[str, Any] | None = None
+    provider_error_code: str | None = None
+    retry_after_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,11 +80,14 @@ class AnalysisArtifact:
             "sourceRefs": [dict(item) for item in self.source_refs],
             "inputLineage": dict(self.input_lineage),
             "fullText": self.full_text,
+            "summary": dict(self.summary) if self.summary is not None else None,
             "provider": self.provider,
             "model": self.model,
             "promptVersion": self.prompt_version,
             "usage": dict(self.usage),
             "error": self.error,
+            "providerErrorCode": self.provider_error_code,
+            "retryAfterSeconds": self.retry_after_seconds,
         }
 
 
@@ -371,7 +380,8 @@ def _artifact(
     *, observation_id: str, revision: int, role: str, status: str, cutoff_at: str,
     refs: tuple[Mapping[str, Any], ...], lineage: Mapping[str, Any], full_text: str = "",
     provider: str | None = None, model: str | None = None, error: str | None = None,
-    analysis_id: str | None = None, usage: Mapping[str, Any] | None = None,
+    analysis_id: str | None = None, usage: Mapping[str, Any] | None = None, summary: Mapping[str, Any] | None = None,
+    provider_error_code: str | None = None, retry_after_seconds: float | None = None,
 ) -> AnalysisArtifact:
     if status not in ANALYSIS_STATUSES:
         raise ValueError(f"未知分析状态：{status}")
@@ -379,7 +389,8 @@ def _artifact(
         analysis_id=analysis_id or str(uuid4()), observation_id=observation_id, revision=revision,
         role=role, status=status, input_cutoff_at=cutoff_at, source_refs=refs,
         input_lineage=dict(lineage), full_text=full_text, provider=provider, model=model,
-        prompt_version=PROMPT_VERSION, usage=dict(usage or {}), error=error,
+        prompt_version=PROMPT_VERSION, usage=dict(usage or {}), error=error, summary=summary,
+        provider_error_code=provider_error_code, retry_after_seconds=retry_after_seconds,
     )
 
 
@@ -418,20 +429,37 @@ def _usage(result: LLMResult) -> dict[str, Any]:
     }
 
 
-def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: Mapping[str, Any] | None = None) -> tuple[str, str | None, str | None, str | None, Mapping[str, Any]]:
+def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: Mapping[str, Any] | None = None) -> tuple[str, str | None, str | None, str | None, Mapping[str, Any], str | None, float | None]:
     try:
         kwargs: dict[str, Any] = {"enable_search": False}
         if model_options is not None:
             kwargs["model_options"] = model_options
         result: LLMResult = provider.chat(messages, **kwargs)
     except Exception as exc:  # exception text may contain an upstream URL or credential
-        return "", None, None, f"模型调用异常：{type(exc).__name__}", {}
+        return "", None, None, f"模型调用异常：{type(exc).__name__}", {}, None, None
     usage = _usage(result)
     if not result.ok:
-        return "", result.provider or None, result.model or None, "模型调用失败", usage
+        code = result.error_code if result.error_code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
+        return "", result.provider or None, result.model or None, failure_message(code), usage, code, result.retry_after_seconds
     if not isinstance(result.content, str) or not result.content.strip():
-        return "", result.provider or None, result.model or None, "模型未返回正文", usage
-    return result.content.strip(), result.provider or None, result.model or None, None, usage
+        return "", result.provider or None, result.model or None, "模型未返回正文", usage, None, None
+    return result.content.strip(), result.provider or None, result.model or None, None, usage, None, None
+
+
+def _decode_analysis(text):
+    try:
+        raw = json.loads(text)
+        full = raw['fullText']
+        summary = raw['summary']
+        if not isinstance(full, str) or not full.strip() or not isinstance(summary, dict):
+            raise ValueError()
+        for key in ('commonFacts', 'disagreements', 'unknowns'):
+            values = summary[key]
+            if not isinstance(values, list) or not all(isinstance(value, str) and value.strip() for value in values):
+                raise ValueError()
+        return full, {key: summary[key] for key in ('commonFacts', 'disagreements', 'unknowns')}, None
+    except (ValueError, TypeError, KeyError):
+        return text, None, '分析输出缺少有效的全文或共同事实／分歧／未知摘要'
 
 
 def run_pro(
@@ -440,14 +468,18 @@ def run_pro(
 ) -> AnalysisArtifact:
     """Run and return only the first role, so a worker can durably checkpoint it before con."""
     observation_id, candidate_id, refs, lineage, evidence, constraints = _context(context, cutoff_at=cutoff_at)
-    text, provider_name, model, error, usage = _call(provider, pro_messages(
+    text, provider_name, model, error, usage, error_code, retry_after = _call(provider, pro_messages(
         observation_id=observation_id, candidate_id=candidate_id, cutoff_at=cutoff_at,
         source_refs=refs, input_lineage=lineage, evidence=evidence, user_constraints=constraints,
     ), model_options=model_options)
+    summary = None
+    if error is None:
+        text, summary, error = _decode_analysis(text)
     return _artifact(
         observation_id=observation_id, revision=revision, role="pro",
         status="failed" if error else "completed", cutoff_at=cutoff_at, refs=refs, lineage=lineage,
-        full_text=text, provider=provider_name, model=model, usage=usage, error=error,
+        full_text=text, provider=provider_name, model=model, usage=usage, error=error, summary=summary,
+        provider_error_code=error_code, retry_after_seconds=retry_after,
     )
 
 
@@ -467,15 +499,19 @@ def run_con(
         raise AnalysisInputError("正反双方必须读取同一份冻结资料和行情")
     lineage = {**lineage, "proAnalysis": {"analysisId": pro.analysis_id, "revision": pro.revision,
         "inputCutoffAt": pro.input_cutoff_at, "contentSha256": sha256(pro.full_text.encode("utf-8")).hexdigest()}}
-    text, provider_name, model, error, usage = _call(provider, con_messages(
+    text, provider_name, model, error, usage, error_code, retry_after = _call(provider, con_messages(
         observation_id=observation_id, candidate_id=candidate_id, cutoff_at=cutoff_at,
         source_refs=refs, input_lineage=lineage, evidence=evidence, pro_full_text=pro.full_text,
         user_constraints=constraints,
     ), model_options=model_options)
+    summary = None
+    if error is None:
+        text, summary, error = _decode_analysis(text)
     return _artifact(
         observation_id=observation_id, revision=target_revision, role="con",
         status="failed" if error else "completed", cutoff_at=cutoff_at, refs=refs, lineage=lineage,
-        full_text=text, provider=provider_name, model=model, usage=usage, error=error,
+        full_text=text, provider=provider_name, model=model, usage=usage, error=error, summary=summary,
+        provider_error_code=error_code, retry_after_seconds=retry_after,
     )
 
 

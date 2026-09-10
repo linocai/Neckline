@@ -1,0 +1,748 @@
+FFFFFFFFFFFFFF                                                           [100%]
+=================================== FAILURES ===================================
+_____ test_parent_recovery_preserves_child_terminal_and_retry_budget[402] ______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_parent_recovery_preserves0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10bc4a050>
+status = 402
+
+    @pytest.mark.parametrize('status', [402, 429])
+    def test_parent_recovery_preserves_child_terminal_and_retry_budget(tmp_path, monkeypatch, status):
+        calls = []
+        def resolve(**kwargs):
+            def respond(request):
+                calls.append(request.content)
+                return httpx.Response(status, headers={'Retry-After': '60'}, json={'error': {'message': 'offline failure'}})
+            transport = httpx.MockTransport(respond)
+            monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
+            provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture',
+                model='deepseek-v4-pro', name='fixture', api_url='https://api.deepseek.com/chat/completions',
+                read_timeout=1, use_streaming=False)
+            return ProviderResolution('configured', provider, 'fixture', None)
+        monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)
+        actual_finish = store.finish_task
+        def interrupt(**kwargs):
+            task = store.get_task(task_id=kwargs['task_id'], db_path=kwargs['db_path'])
+            if task.kind == 'morning_scan':
+                raise SystemExit('before parent terminal commit')
+            actual_finish(**kwargs)
+            if task.kind == 'morning_review' and kwargs['status'] == 'failed':
+                raise SystemExit('after child terminal commit')
+        monkeypatch.setattr(store, 'finish_task', interrupt)
+        with pytest.raises(SystemExit):
+            later_scan(tmp_path, monkeypatch, lambda payload, value: None)
+        db = tmp_path / 'b39-e2e.sqlite'
+        with sqlite3.connect(db) as conn:
+            parent_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
+            child_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+            frozen_windows = conn.execute('SELECT * FROM k10_company_windows').fetchall()
+        def reclaim():
+            with sqlite3.connect(db) as conn:
+                lease = conn.execute('SELECT lease_until FROM k10_tasks WHERE task_id=?', (parent_id,)).fetchone()[0]
+            at = datetime.fromisoformat(lease) + timedelta(seconds=1)
+            monkeypatch.setattr(pipeline, '_now', lambda: at)
+            return run_once(db_path=db, worker_id='b57-parent', lease_for=timedelta(minutes=5),
+                handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
+                clock=lambda: at, task_id=parent_id)
+        for _ in range(3):
+            with pytest.raises(SystemExit):
+                reclaim()
+        monkeypatch.setattr(store, 'finish_task', actual_finish)
+        parent = reclaim()
+        child = store.get_task(task_id=child_id, db_path=db)
+        expected = 1 if status == 402 else 2
+>       assert child.status == 'failed' and child.attempt_count == expected
+E       AssertionError: assert ('failed' == 'failed'
+E         
+E           failed and 5 == 1)
+E        +  where 5 = Task(task_id='morning_review_5f95845006fbd95a8b2c18ab1bf044e6', kind='morning_review', status='failed', attempt_count=...', 'parentScanId': 'scan_6fae2a70616f59fb90592ba1781ce69c', 'selectionState': 'unhandled', 'sourceStatus': 'complete'}).attempt_count
+
+tests/test_b57_review_regressions.py:64: AssertionError
+_____ test_parent_recovery_preserves_child_terminal_and_retry_budget[429] ______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_parent_recovery_preserves1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10aaac810>
+status = 429
+
+    @pytest.mark.parametrize('status', [402, 429])
+    def test_parent_recovery_preserves_child_terminal_and_retry_budget(tmp_path, monkeypatch, status):
+        calls = []
+        def resolve(**kwargs):
+            def respond(request):
+                calls.append(request.content)
+                return httpx.Response(status, headers={'Retry-After': '60'}, json={'error': {'message': 'offline failure'}})
+            transport = httpx.MockTransport(respond)
+            monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
+            provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture',
+                model='deepseek-v4-pro', name='fixture', api_url='https://api.deepseek.com/chat/completions',
+                read_timeout=1, use_streaming=False)
+            return ProviderResolution('configured', provider, 'fixture', None)
+        monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)
+        actual_finish = store.finish_task
+        def interrupt(**kwargs):
+            task = store.get_task(task_id=kwargs['task_id'], db_path=kwargs['db_path'])
+            if task.kind == 'morning_scan':
+                raise SystemExit('before parent terminal commit')
+            actual_finish(**kwargs)
+            if task.kind == 'morning_review' and kwargs['status'] == 'failed':
+                raise SystemExit('after child terminal commit')
+        monkeypatch.setattr(store, 'finish_task', interrupt)
+        with pytest.raises(SystemExit):
+            later_scan(tmp_path, monkeypatch, lambda payload, value: None)
+        db = tmp_path / 'b39-e2e.sqlite'
+        with sqlite3.connect(db) as conn:
+            parent_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
+            child_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+            frozen_windows = conn.execute('SELECT * FROM k10_company_windows').fetchall()
+        def reclaim():
+            with sqlite3.connect(db) as conn:
+                lease = conn.execute('SELECT lease_until FROM k10_tasks WHERE task_id=?', (parent_id,)).fetchone()[0]
+            at = datetime.fromisoformat(lease) + timedelta(seconds=1)
+            monkeypatch.setattr(pipeline, '_now', lambda: at)
+            return run_once(db_path=db, worker_id='b57-parent', lease_for=timedelta(minutes=5),
+                handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
+                clock=lambda: at, task_id=parent_id)
+        for _ in range(3):
+            with pytest.raises(SystemExit):
+                reclaim()
+        monkeypatch.setattr(store, 'finish_task', actual_finish)
+        parent = reclaim()
+        child = store.get_task(task_id=child_id, db_path=db)
+        expected = 1 if status == 402 else 2
+>       assert child.status == 'failed' and child.attempt_count == expected
+E       AssertionError: assert ('queued' == 'failed'
+E         
+E         - failed
+E         + queued)
+
+tests/test_b57_review_regressions.py:64: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  neckline.llm.openai_compat:openai_compat.py:413 fixture 调用第 1/1 次异常(将重试;本次已耗 0.0s): _RetryableUpstreamStatus
+WARNING  neckline.llm.openai_compat:openai_compat.py:413 fixture 调用第 1/1 次异常(将重试;本次已耗 0.0s): _RetryableUpstreamStatus
+WARNING  neckline.llm.openai_compat:openai_compat.py:413 fixture 调用第 1/1 次异常(将重试;本次已耗 0.0s): _RetryableUpstreamStatus
+WARNING  neckline.llm.openai_compat:openai_compat.py:413 fixture 调用第 1/1 次异常(将重试;本次已耗 0.0s): _RetryableUpstreamStatus
+WARNING  neckline.llm.openai_compat:openai_compat.py:413 fixture 调用第 1/1 次异常(将重试;本次已耗 0.0s): _RetryableUpstreamStatus
+______ test_early_scan_failure_is_current_daily_report[provider-morning] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10b3932d0>
+kind = 'morning', failure = 'provider'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+>       assert current['state'] == 'available'
+E       AssertionError: assert 'empty' == 'available'
+E         
+E         - available
+E         + empty
+
+tests/test_b57_review_regressions.py:116: AssertionError
+______ test_early_scan_failure_is_current_daily_report[provider-evening] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10f59f590>
+kind = 'evening', failure = 'provider'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+        assert current['state'] == 'available'
+>       assert current['report']['status'] == expected
+E       AssertionError: assert 'completed' == 'not_configured'
+E         
+E         - not_configured
+E         + completed
+
+tests/test_b57_review_regressions.py:117: AssertionError
+________ test_early_scan_failure_is_current_daily_report[token-morning] ________
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1100c1850>
+kind = 'morning', failure = 'token'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+>       assert current['state'] == 'available'
+E       AssertionError: assert 'empty' == 'available'
+E         
+E         - available
+E         + empty
+
+tests/test_b57_review_regressions.py:116: AssertionError
+________ test_early_scan_failure_is_current_daily_report[token-evening] ________
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10d931d90>
+kind = 'evening', failure = 'token'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+        assert current['state'] == 'available'
+>       assert current['report']['status'] == expected
+E       AssertionError: assert 'completed' == 'not_configured'
+E         
+E         - not_configured
+E         + completed
+
+tests/test_b57_review_regressions.py:117: AssertionError
+______ test_early_scan_failure_is_current_daily_report[calendar-morning] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur4')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10d17f650>
+kind = 'morning', failure = 'calendar'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+>       assert current['state'] == 'available'
+E       AssertionError: assert 'empty' == 'available'
+E         
+E         - available
+E         + empty
+
+tests/test_b57_review_regressions.py:116: AssertionError
+______ test_early_scan_failure_is_current_daily_report[calendar-evening] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur5')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c8dab90>
+kind = 'evening', failure = 'calendar'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+        assert current['state'] == 'available'
+>       assert current['report']['status'] == expected
+E       AssertionError: assert 'completed' == 'not_configured'
+E         
+E         - not_configured
+E         + completed
+
+tests/test_b57_review_regressions.py:117: AssertionError
+______ test_early_scan_failure_is_current_daily_report[metadata-morning] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur6')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10d069b10>
+kind = 'morning', failure = 'metadata'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+>       assert current['state'] == 'available'
+E       AssertionError: assert 'empty' == 'available'
+E         
+E         - available
+E         + empty
+
+tests/test_b57_review_regressions.py:116: AssertionError
+______ test_early_scan_failure_is_current_daily_report[metadata-evening] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur7')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ca46d50>
+kind = 'evening', failure = 'metadata'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+        assert current['state'] == 'available'
+>       assert current['report']['status'] == expected
+E       AssertionError: assert 'completed' == 'not_configured'
+E         
+E         - not_configured
+E         + completed
+
+tests/test_b57_review_regressions.py:117: AssertionError
+______ test_early_scan_failure_is_current_daily_report[execution-morning] ______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur8')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10f8a7c10>
+kind = 'morning', failure = 'execution'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+>       assert current['state'] == 'available'
+E       AssertionError: assert 'empty' == 'available'
+E         
+E         - available
+E         + empty
+
+tests/test_b57_review_regressions.py:116: AssertionError
+______ test_early_scan_failure_is_current_daily_report[execution-evening] ______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur9')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10b916c10>
+kind = 'evening', failure = 'execution'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+        assert current['state'] == 'available'
+>       assert current['report']['status'] == expected
+E       AssertionError: assert 'completed' == 'not_configured'
+E         
+E         - not_configured
+E         + completed
+
+tests/test_b57_review_regressions.py:117: AssertionError
+______ test_early_scan_failure_is_current_daily_report[exception-morning] ______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur10')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1104f5e10>
+kind = 'morning', failure = 'exception'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+>       assert current['state'] == 'available'
+E       AssertionError: assert 'empty' == 'available'
+E         
+E         - available
+E         + empty
+
+tests/test_b57_review_regressions.py:116: AssertionError
+______ test_early_scan_failure_is_current_daily_report[exception-evening] ______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1356/test_early_scan_failure_is_cur11')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10f6c7550>
+kind = 'evening', failure = 'exception'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    @pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
+    def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure):
+        db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        with client_for(db) as client:
+            old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+        before_calls = len(calls)
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        token = 'fixture-token'
+        if failure == 'provider':
+            monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        elif failure == 'token':
+            token = None
+        elif failure == 'calendar':
+            monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
+        elif failure == 'metadata':
+            def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
+            monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
+        elif failure == 'execution':
+            from neckline.k10 import worker
+            # Pre-handler validation failure, after the real producer has bound its inputs.
+            monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
+        else:
+            def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
+            monkeypatch.setattr(pipeline, 'execute_scan', crash)
+        task = run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
+            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
+                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        expected = 'failed' if failure == 'exception' else 'not_configured'
+        assert task.status == expected and len(calls) == before_calls
+        with client_for(db) as client:
+            current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
+            history = client.get('/api/v1/k10/v2/reports').json()
+        assert current['state'] == 'available'
+>       assert current['report']['status'] == expected
+E       AssertionError: assert 'completed' == 'failed'
+E         
+E         - failed
+E         + completed
+
+tests/test_b57_review_regressions.py:117: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  neckline.k10.worker:worker.py:272 K10 task failed: task_b6ea87a2d6bd3dd20ac7a3df6e2fafed (RuntimeError)
+=========================== short test summary info ============================
+FAILED tests/test_b57_review_regressions.py::test_parent_recovery_preserves_child_terminal_and_retry_budget[402]
+FAILED tests/test_b57_review_regressions.py::test_parent_recovery_preserves_child_terminal_and_retry_budget[429]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[provider-morning]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[provider-evening]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[token-morning]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[token-evening]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[calendar-morning]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[calendar-evening]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[metadata-morning]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[metadata-evening]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[execution-morning]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[execution-evening]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[exception-morning]
+FAILED tests/test_b57_review_regressions.py::test_early_scan_failure_is_current_daily_report[exception-evening]
+14 failed in 14.74s

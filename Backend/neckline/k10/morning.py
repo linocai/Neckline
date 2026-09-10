@@ -296,7 +296,7 @@ def build_morning_update(
 
 def record_morning_update(
     *, repository: MorningRepository, db_path: Path, update: MorningUpdate, opportunity_id: str,
-    created_at: str | None = None, occurred_at: str | None = None, update_id: str | None = None,
+    created_at: str | None = None, occurred_at: str | None = None, update_id: str | None = None, scan_id: str | None = None, material: bool = False,
 ) -> str:
     """Append a lifecycle event; withdrawal never alters the fixed D1/D2 window."""
     identifier = update_id or str(uuid4())
@@ -305,7 +305,7 @@ def record_morning_update(
     kind = "withdrawal" if update.reason_status == "invalidated" else ("risk" if update.requires_review else "evidence_update")
     repository.append_opportunity_update(
         lifecycle_event_id=identifier, opportunity_id=opportunity_id, kind=kind, reason=update.summary,
-        source_refs=update.source_refs, content=update.to_dict(), occurred_at=occurred_at or _utc_now(),
+        source_refs=update.source_refs, content={**update.to_dict(), "material": material, **({"scanId":scan_id} if scan_id else {})}, occurred_at=occurred_at or _utc_now(),
         created_at=created_at or _utc_now(), db_path=db_path,
     )
     return identifier

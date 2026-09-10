@@ -24,8 +24,8 @@ from neckline.settings_store import (
     set_push_kinds, set_tavily_api_key, update_provider,
 )
 
-VERSION = "v3.1.0"
-RELEASE_SET = "v3.1.0-b53"
+VERSION = "v3.2.0"
+RELEASE_SET = "v3.2.0-b57"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 

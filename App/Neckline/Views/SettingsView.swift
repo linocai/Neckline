@@ -139,7 +139,7 @@ struct SettingsView: View {
                             showConnectionEditor = true
                         }
                         SettingsDivider()
-                        SettingsRowContent(icon: "number.square", title: "Neckline \(appVersion)", detail: "Build \(appBuild) · K10-v1.4", badge: nil, showsChevron: false)
+                        SettingsRowContent(icon: "number.square", title: "Neckline \(appVersion)", detail: "Build \(appBuild) · K10-v2", badge: nil, showsChevron: false)
                     }
                 }
 
@@ -437,7 +437,7 @@ private struct ExecutionProgressCard: View {
             Text(progress.eventCounts.publishable.map { "统一排序后可发布 \($0) 家" } ?? "尚未完成统一排序，不显示可发布名额")
                 .font(NKFont.caption).foregroundStyle(NK.textSecondary)
             if let articles = progress.articleCounts {
-                Text("深读上限 \(articles.limit) 篇 · 已冻结入选 \(articles.selected) · 已准入 \(articles.admitted)")
+                Text("按事件深读 · 入选 \(articles.selected) · 已读取 \(articles.admitted)")
                     .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
                 Text("深读完成 \(articles.completed) · 缺正文 \(articles.missingBody) · 搜索核验：摘录 \(articles.tavilyExcerpt) / 新全文 \(articles.tavilyFullArticle)")
                     .font(NKFont.caption.monospacedDigit()).foregroundStyle(articles.missingBody > 0 ? NK.amber : NK.textSecondary)
@@ -560,6 +560,16 @@ private struct SettingsConfigurationRows: View {
     var body: some View {
         Group {
             if let configuration {
+                if let snapshot = configuration.universeSnapshotId {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("固定公司资料", systemImage: "building.2").font(NKFont.headline)
+                        Text(snapshot).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        if let profile = configuration.profileSnapshotId { Text(profile).font(NKFont.caption).foregroundStyle(NK.textSecondary) }
+                        if configuration.profileReviewStatus == "local_draft_awaiting_user" {
+                            Text("资料为本地初稿，来源与待核项按原样保留").font(NKFont.caption).foregroundStyle(NK.amber)
+                        }
+                    }.padding(.vertical, 8)
+                }
                 ForEach(configuration.scopes) { scope in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "slider.horizontal.3").foregroundStyle(NK.accent).frame(width: 24)
@@ -667,7 +677,7 @@ private struct ModelEditor: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                    V3PageHeader(title: "模型配置", subtitle: "K10-v1.4 固定使用 DeepSeek V4 Pro；密钥只写入服务器。")
+                    V3PageHeader(title: "模型配置", subtitle: "K10-v2 固定使用 DeepSeek V4 Pro；密钥只写入服务器。")
                     V3Card {
                         VStack(alignment: .leading, spacing: 10) {
                             if model.providers.isEmpty {

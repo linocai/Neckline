@@ -6,6 +6,7 @@ import pytest
 
 from neckline.k10.analysis import AnalysisInputError, augment_analysis_context, record_debate, run_and_record_debate, run_debate, run_pro
 from neckline.llm.base import LLMResult
+from tests.debate_fixture import debate_text
 
 
 class FakeProvider:
@@ -53,7 +54,7 @@ def _context(*, selected=True):
 
 
 def _ok(text: str):
-    return LLMResult(ok=True, content=text, provider="approved-provider", model="approved-model")
+    return LLMResult(ok=True, content=debate_text(text), provider="approved-provider", model="approved-model")
 
 
 def test_debate_runs_pro_then_con_with_same_cutoff_and_full_pro_text():

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class K10SchemaError(RuntimeError):
@@ -878,13 +878,17 @@ def initialize_schema(db_path: Path) -> int:
         elif version == 5:
             _apply_v6(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version == 6:
+        elif version in {6, 7}:
             pass
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
         if _version(conn) == 6:
             _apply_v7(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (7,?)", (_now(),))
+        if _version(conn) == 7:
+            from .v2_schema import apply
+            apply(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (8,?)", (_now(),))
     return SCHEMA_VERSION
 
 

@@ -4,12 +4,11 @@ Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI �
 **3.1.0 / 双端 Build 53 / K10-v1.4 / Schema 7**，后端发布集合为 `v3.1.0-b53`。K9 已退出活动生产。
 [下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.1.0-b53)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
 
-全部标题先由 DeepSeek 理解，经全局去重排序及只减不补的标题终检后，晚间最多深读 80 篇、晨间最多 40 篇。
-入选正文一次提取关键命题，随后按具体缺口使用 Tavily 搜索、审读和必要补读，再完成公司比较。未核传闻允许正常推荐，但必须保留“未核实”、来源和条件化分析。
+**当前生产已全面暂停。** 用户于 2026-09-09 10:21 CST 停用 API、worker、所有 timer 和运行开关；B53 安装、9 月 8 日晚报两份样本及晨报失败检查点保留，不重放报告，不恢复已退役的 2,472 篇事故批次。
 
-**首份正式晚报已发布，排程已恢复。** 9 月 8 日 21:00 截止的晚报于 9 月 9 日 02:22 完成；1062 个标题初筛、67 篇原正文＋13 篇补读、66 个事件执行完成，正式发布 2 家。D1=9 月 9 日、D2=9 月 10 日，当前均未处理。既有早报 09:00、晚报 21:00 定时启动。
-用户已弃用的 2,472 篇事故批次及关联任务已备份后定点取消，不会补跑。
-原标题协议和正文缺失字段问题均已定位修复，错误原因及每次恢复有记录；当前进度以 PROJECT_PLAN 为准。
+**本地已完成：3.2.0 / 双端 Build 57 / K10-v2 / Schema 8，尚未发布。** 固定 1,089 公司池与完整资料显式导入，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
+
+本轮只做临时库、确定性 transport、localhost API、Swift 解码与原生 QA；禁止真实模型／搜索／行情／推送调用和余额／权限探测。离线通过不代表真实供应商效果或实际 token 总量。当前完整状态与验证进展见主 Plan。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -18,14 +17,14 @@ Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI �
 ## V3 功能
 
 入口为 **机会 / 关注 / 选股表现 / 设置**。事件共同事实只讲一次，系统先给出主推、备选或并列，说明
-优先理由、差距和改变排序的条件。同公司同批次多催化共用公司卡与一次选择；晚间最多 30 家新机会公司。
+优先理由、差距和改变排序的条件。同公司同批次多催化共用公司卡与一次选择；晚间最多 30 家不同公司，旧催化仍可在每日重选后展示，但不重开两日窗口。
 留下才启动正方、反方各一轮，双方共享冻结证据，反方另读正方全文；全文、来源与修订可追溯。
 
 双端已按参考图重做白色轻卡、蓝色线性图标与文字层级。iPhone 逐张浏览公司卡，略过/留下固定在底部，
 浏览不提交选择；底栏为机会、关注、选股表现，设置从齿轮进入。macOS 使用公司列表与阅读区双栏，
 正反观点并排；原始资料与搜索摘录分开标识，正文引用可定位到冻结资料修订。
 
-仅创业板、无股价上限，排除 ST/*ST 和 SW2021 白酒Ⅱ（801125.SI）全部成员。21:00 为晚扫资料截止
+K10-v2 资格以已确认的 1,089 公司固定快照为准，运行期不按动态行业或 ST 信息重新增删名单。21:00 为晚扫资料截止
 （不含整点），次一交易日 09:00 为晨间截止（含整点）；发布、采集、分析、实际可查看和操作时间分别记录。
 全部正式主推与备选自动记录两日行情，与用户是否留下无关。D1 是推荐可查看后的第一个完整交易日，
 D2 为下一交易日；推荐因延迟错过预定 D1 的 09:30 开盘时点，从下一交易日起观察并标迟到，
@@ -39,7 +38,7 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 价格观察以 D1 开盘为参照，分别给出两日高低收与整个窗口的极值；除权资料不足时跨日指标留空。
 同 D1/D2、同评价版本的三组可以对照，晚间与开盘前晨间来源合并统计并保留各批次；同一事件涉及多家公司时另列事件关联，不能相加当作多次独立催化成功。
 
-全候选五段晨报已就绪，配套事件整体公司比较、带来源及缺口的历史同类资料、追加追问与正反版本阅读链。
+晨报独立展示公司更新、新增和重大变化，配套事件整体公司比较、带来源及缺口的历史同类资料、追加追问与正反版本阅读链。
 行情逐字段展示双源核验、单源回退或冲突原因；重叠机会保留实际命中记录，缺数与异常不会充作未命中。
 撤回与两日到期为终态，普通资料更新和补充分析不会重新激活旧机会。
 
@@ -47,16 +46,20 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 
 ## 配置与数据
 
-策略包为 [k10-v1.4.json](Backend/neckline/config/k10-v1.4.json)，全部模型继续使用 `deepseek-v4-pro`。
-执行控制为 [k10-execution-v3.json](Backend/neckline/config/k10-execution-v3.json)，显式绑定批准的标题筛选规则与 80/40 篇数限额。
-程序只做精确去重；标题 Agent 分批理解全部标题，再跨批合并同一事项并排序。不因来源、海外、未带创业板代码或利好词机械丢弃资料；保留独立催化与重要反证，不足不凑数。
-全局清单冻结后才允许正文模型调用。入选缺正文仍占名额且如实显示，不以其他文章替补；重试和恢复沿用同一清单。
-Tavily 只核验入选事件，每次搜索必须关联具体问题、查询意图、来源路径和预期判断变化；默认使用搜索摘录，必要时申请全文。全文不预留名额，只使用冻结清单之外的剩余额度，不挤占入选正文。
-来源事实未变可复用，正文版本、规则或模型输入改变则失效；时效、价格和两日判断仍重新核验。
-不设整轮或整日金额、token、模型调用、搜索调用总上限。逐次实际用量账、有限重试、缓存与持久暂停保留；未知调用结果单列，不伪装成功或可免费重试。
+当前开发策略包为 [k10-v2.json](Backend/neckline/config/k10-v2.json)，执行包为 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)，全部模型使用 `deepseek-v4-pro`。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
 
-Schema 7 支持生产 4→7 与本地 6→7，增加可恢复研究记录，保留既有标题、正文准入与实际用量审计，迁移默认持久暂停。设置页显示标题、正文、研究与执行状态以及完整公司比较；待核、排除和程序失败分别保留。
-缺执行规则或批准绑定时安全停止；历史 V1/V2 执行包不能绑定新的付费任务。
+初始化／升级顺序：确认目标和备份 → 受控 Schema 8 初始化／迁移 → 导入固定资料 → 登记配置修订 → 绑定策略快照 → 核对 API 配置响应。当前只允许在隔离本地库操作；生产迁移和恢复尚未授权。API 启动和 GET 不执行迁移。Schema 8 新增固定池、资料快照和日报卡账本，保留旧版正式机会、选择及 D1/D2 原记录。
+
+在 `Backend/` 使用 `python -m neckline.k10.cli`，按顺序执行以下子命令；`--db` 都传同一已核对的 Schema 8 库，修订号使用前两项登记命令实际返回值，不照抄旧生产修订：
+
+1. `import-v2-profiles`：传 `--db` 与同值 `--confirmed-target`，以及 `--universe-file`、`--profiles-dir`、`--universe-id k10-v2-initial-20260909`、`--profiles-id k10-v2-profiles-20260909`。输入分别是研究侧 `research/K10-v2初始股票池_20260909.json` 和 `artifacts/output/k10-company-profiles-v2-20260909/`；导入核验固定哈希及三份 1,089 公司集合。资料保留 `local_draft_awaiting_user` 和原始引用，导入不等于已核实或获准上传。
+2. `configure --config-id <策略配置ID> --file neckline/config/k10-v2.json` 与 `configure-execution --config-id <执行配置ID> --file neckline/config/k10-execution-v4.json`，均传 `--db`。
+3. `bind-v2-strategy --snapshot-id k10-v2-20260909`，传 `--db`、上述 `--config-id`／`--config-revision`、`--execution-config-id`／`--execution-config-revision`。启动绑定使用同一组 ID／修订；策略快照不可覆盖，调整配置时需显式更新策略快照 ID。
+
+标题 Agent 分批理解全部精确去重标题，跨批合并同一事项；不因来源、海外、未带公司代码或利好词机械删除资料。公司资料索引用于召回相关公司，无名称或关键词命中不能直接排除。
+研究以共享事件为单位，正文、公司档案、核验材料按实际问题取得并复用，不逐标题搜索。Tavily 每次搜索均关联问题、查询意图、来源路径和预期判断变化；搜索摘录和全文分别标识，必要时取全文。**没有 80／40 篇、正文或搜索总配额，也没有“剩余额度”准入。**
+来源事实未变可复用，正文版本、规则或模型输入改变则重新核对；时效、价格和两日判断不得由旧证据冒充。不设整轮或整日金额、token、模型调用、搜索调用总上限；有界并发、单次输出边界、有限重试、逐次用量账和持久暂停保留。未知调用结果单列，不伪装成功或可免费重试。
+402 余额不足终止任务；429 按冻结执行包和 `Retry-After` 延后受影响步骤，正方完成后不因反方重试而重跑。设置页显示当前明确绑定、公司资料来源状态、标题／正文／研究／执行状态与公司比较；待核、排除和程序失败分别保留。
 通知退避配置仍见 [notification-delivery-v1.json](Backend/neckline/config/notification-delivery-v1.json)。
 
 TuShare 长篇通讯为当前采集源；快讯、全量公告权限未开通。Tavily 用于重点核验，不冒充全市场来源，
@@ -64,9 +67,9 @@ TuShare 长篇通讯为当前采集源；快讯、全量公告权限未开通。
 B36 事故与先前付费测试仅作历史证据，详见 [B36 执行记录](archive/v3.0.4-b36_execution.md)；
 本轮仅复用 B38 冻结的 1,430 条有效标题和 37 篇历史正文做离线协议验证；不启动新的付费外呼，合成模型结果不作为真实筛选质量证据。
 
-生产策略配置修订 3 保留每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
+**暂停的 B53 历史配置（不是新版本配置步骤）：** 策略配置修订 3 保留每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
 用于有界回补晚到资料，记录实际回查范围和缺口。它不是无限历史覆盖，也不允许把新取得的资料回填为旧推荐。
-既有修订原样保留；API 和停用 timer 的显式绑定现为策略修订 3、执行修订 2，不得改写历史修订或用代码默认补齐。
+既有修订原样保留；当前停用 API／timer 的配置绑定为策略修订 3、执行修订 4，原晚报任务仍绑定执行修订 2，不得改写历史修订或用代码默认补齐。
 
 API 使用 `/api/v1/k10/`，通用连接/推送设置仍在 `/api/v1/settings`，设备注册为 `/api/v1/devices`。
 API 启动只验证鉴权和既有 schema；GET 不迁移、不启动模型。重任务由独立 K10 worker 执行，timer 只入队。
@@ -83,13 +86,13 @@ worker 自动冻结 D1 选择、采集共享的公司日行情并生成结果修
 修改 Swift 后，从 App 依次运行三条门禁：
 
 ```bash
-xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' -derivedDataPath /tmp/neckline-v3-qa/macos NK_BUNDLE_SUFFIX=.qa.livev14 CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa.livev14 CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa.livev14 CODE_SIGNING_ALLOWED=NO build-for-testing
+xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' -derivedDataPath /tmp/neckline-v3-qa/macos NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/neckline-v3-qa/ios NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build-for-testing
 ```
 
 Debug 参数 `-K10SyntheticUI` 使用独立演示数据和空凭据，不联网、不注册推送；不能用于宣称真实模型已验通。
-测试仅复用上述两个目录和 `top.linotsai.neckline.qa.livev14`，每平台最多一个运行实例，启动前先退出上一实例。
+测试仅复用上述两个目录和 `top.linotsai.neckline.qa`，每平台最多一个运行实例，启动前先退出上一实例。
 结束后退出 QA App、停止临时 API、移除临时 token，清理过期副本；保留生产客户端和签名归档。
 真实隔离 QA 显式设置 Debug 进程变量 `NK_DISABLE_PERSISTENT_CREDENTIALS=1`，此时只取进程
 `NK_API_TOKEN`，不读写持久凭据。`NK_QA_TAB`、`NK_QA_READING` 仅供 Debug 页面定位；
@@ -101,9 +104,9 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 源码提交 `76c0a9f97937065ed17a5e6f64f4ee8829bbb756`，不可变标签 `v3.1.0-b53`；后续发布记录提交不移动标签。
 Mac 与 iOS 归档均来自该提交，真实来源及严格签名证据见 `manifest.json`。
 服务器为 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
-API active+enabled，四范围配置与实际 DTO 通过，未鉴权请求为 401；APNs 密钥可读／可签名且 readiness 就绪，本轮未发送测试推送。
+**2026-09-09 10:21 CST 用户要求全面暂停，API、worker 与全部 Neckline timer 已 inactive+disabled，运行开关 closed。**服务器 API 暂不可访问，自动报告、行情更新及模型／搜索调用停止，未经新授权不恢复。原报告、失败检查点、凭据与客户端安装均保留。
 `/etc/neckline/k10.env` 显式绑定策略 `k10-v1.4-production` 修订 3、执行 `k10-execution-production` 修订 4。
-9 月 9 日 02:22 正式报告发布并通过实际 API→Swift 检查，02:22:59 恢复既有早晚 timer；控制 open、worker 与两个 timer 均 active+enabled，行情 timer 保持原态。未来任务绑定 `k10-execution-production@4`；已完成首轮任务仍保留修订 2＋显式 runtimeRepair，不重新执行。
+9 月 9 日 02:22 正式晚报发布并通过实际 API→Swift 检查；当日晨报因 DeepSeek 限流及余额不足失败。停机前备份与 unit 原态保存在 `/opt/neckline/data/backups/user-pause-20260909T022137Z/`，原配置绑定不变。已完成晚报仍保留修订 2＋显式 runtimeRepair，不重新执行；恢复时不得用停机前快照覆盖此后的数据。
 
 Mac 位于 `/Applications/Neckline.app`，Developer ID 严格验签、通用架构和单实例启动通过；安装包确认 Build 53；四范围配置和实际 API 状态通过服务器验收。
 Mac 尚未公证，网络下载后可能被 Gatekeeper 拦截；严格签名通过不代表公证通过。
@@ -119,7 +122,7 @@ GitHub 6 个资产下载后与本地逐一校验；后端 tar、wheel 和 runtim
 - 迁移后数据库 SHA256：`f4c2c7e6d1ad22daceb46240dd0eb964b852109f4c15407a497ea0d9b2737eb3`。
 
 回滚必须先停下所有写入者并保存最新现场；只有确认升级后没有新增业务写入，才可恢复同一恢复集的 runtime、wheel、数据库和绑定。
-API、客户端和行情 timer 已恢复运行，不能直接假定当前库仍等于发布快照；存在新写入时优先前向修复。
+生产后来已按用户指令停用；未来恢复前不能假定数据库仍等于旧发布快照，存在新写入时优先前向修复。
 保持 `/opt/neckline` 为 root:root / 0755、数据库为 neckline:neckline / 0600，复核 health、鉴权、配置、完整性与定时器。
 Mac 最近可恢复备份为 `/Users/linotsai/Lino/app_backups/Neckline-v3.1.0-build52-pre-b51-20260909.app`。B53 服务器完整备份位于 `/opt/neckline/data/backups/v3.1.0-b53-predeploy/`；代码部署前后数据库哈希一致。
 

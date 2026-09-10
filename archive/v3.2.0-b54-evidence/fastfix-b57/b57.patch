@@ -1,0 +1,868 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -21,7 +21,7 @@
+ ## Working rules
+ 
+ - **Current production state (2026-09-09 10:21 CST):** The user explicitly paused the entire system. B53 remains installed; durable run control is closed, API/worker and all Neckline timers are inactive+disabled, with no active tasks or external calls. Do not resume any service, schedule, model/search call or failed task without new user authorization. The September 8 evening report and its two samples remain intact (D1 September 9 / D2 September 10); the September 9 morning report failed with DeepSeek 429/402 and remains saved. Pre-pause backup and unit states: `/opt/neckline/data/backups/user-pause-20260909T022137Z/`. Never replay the completed evening report or recover the retired 2,472-article incident batch. See `PROJECT_PLAN.md`.
+-- **Current authorized development:** 3.2.0 / both platforms Build 56, following the latest `/Users/linotsai/Lino/whynotme/K10.md` (K10-v2). The fixed 1,089-company universe, removal of 80/40 full-text caps, labeled-unverified recommendation path and daily company selection supersede conflicting v1.4 implementation rules. Existing v1.4 publication evidence remains historical, not a new-version behavior contract.
++- **Current authorized development:** 3.2.0 / both platforms Build 57, following the latest `/Users/linotsai/Lino/whynotme/K10.md` (K10-v2). The fixed 1,089-company universe, removal of 80/40 full-text caps, labeled-unverified recommendation path and daily company selection supersede conflicting v1.4 implementation rules. Existing v1.4 publication evidence remains historical, not a new-version behavior contract.
+ - **No live-provider validation for this upgrade:** The user explicitly prohibits testing real DeepSeek/Tavily calls and will decide when to try the released system. Do not run real model/search/data-provider probes, account-balance checks, permission checks or report replays. Use existing local data, isolated databases, deterministic transports, local API/client decoding and native builds; enforce external-network denial in tests rather than relying on zero balance. Production stays paused. A local engineering pass is not evidence of actual provider success, stock-selection performance or a guaranteed daily token total. Current company profiles retain their original draft/provenance status and stay local during development.
+ 
+ - Run backend commands from `Backend/` and app commands from `App/`.
+--- a/App/Neckline.xcodeproj/project.pbxproj
++++ b/App/Neckline.xcodeproj/project.pbxproj
+@@ -414,7 +414,7 @@
+ 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+ 				COPY_PHASE_STRIP = NO;
+-				CURRENT_PROJECT_VERSION = 56;
++				CURRENT_PROJECT_VERSION = 57;
+ 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+ 				DEVELOPMENT_TEAM = HX73DFL88G;
+ 				ENABLE_NS_ASSERTIONS = NO;
+@@ -479,7 +479,7 @@
+ 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+ 				COPY_PHASE_STRIP = NO;
+-				CURRENT_PROJECT_VERSION = 56;
++				CURRENT_PROJECT_VERSION = 57;
+ 				DEBUG_INFORMATION_FORMAT = dwarf;
+ 				DEVELOPMENT_TEAM = HX73DFL88G;
+ 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+--- a/App/Neckline/App/AppModel.swift
++++ b/App/Neckline/App/AppModel.swift
+@@ -221,7 +221,35 @@
+         }
+     }
+     private func readDailyReport(_ service: any K10Servicing, window: String, previous: K10DailyReportResponse?) async throws -> (K10DailyReportResponse?, String?) {
+-        do { return (try await service.latestDailyReport(window: window), nil) }
++        do {
++            var response = try await service.latestDailyReport(window: window)
++            // Refresh all pages the user already loaded, using this report's immutable ID.
++            // Publish the complete result at once so the selected card never disappears
++            // between page requests. A new report starts with its own first page.
++            if window == "morning", var report = response.report,
++               let old = previous?.report, report.reportId == old.reportId {
++                var cursors = Set<String>()
++                var seen = Set(report.addedCards.map(\.cardId))
++                while report.addedCards.count < old.addedCards.count, let cursor = report.nextCursor {
++                    try Task.checkCancellation()
++                    guard cursors.insert(cursor).inserted else {
++                        throw K10APIError.decoding("晨间新增分页无法继续，已保留当前内容")
++                    }
++                    let page = try await service.dailyReport(id: report.reportId, cursor: cursor)
++                    guard let next = page.report, next.reportId == report.reportId, next.nextCursor != cursor else {
++                        throw K10APIError.decoding("晨间新增分页无法继续，已保留当前内容")
++                    }
++                    let additions = next.addedCards.filter { seen.insert($0.cardId).inserted }
++                    guard !additions.isEmpty else {
++                        throw K10APIError.decoding("晨间新增分页没有进展，已保留当前内容")
++                    }
++                    report.addedCards += additions
++                    report.nextCursor = next.nextCursor
++                }
++                response.report = report
++            }
++            return (response, nil)
++        }
+         catch is CancellationError { throw CancellationError() }
+         catch let error as K10APIError {
+             if case .unauthorized = error { throw error }
+--- a/App/NecklineTests/K10V3Tests.swift
++++ b/App/NecklineTests/K10V3Tests.swift
+@@ -962,6 +962,9 @@
+     private var nextDailyPage: K10DailyReportResponse?
+     private var dailyMorningOverride: K10DailyReportResponse?
+     private var dailyActionCalls = 0
++    private var dailySelections: [String: String] = [:]
++    private var dailyPageFailure: K10APIError?
++    private var dailyActionResponse: K10SelectionAction?
+ 
+     init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
+         self.batchID = batchID
+@@ -1004,13 +1007,26 @@
+     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
+         if let dailyFailure { throw dailyFailure }
+         if empty || dailyEmpty { return .init(schemaVersion: 8, state: "empty", reason: nil, report: nil) }
+-        if window == "morning", let dailyMorningOverride { return dailyMorningOverride }
++        if window == "morning", let dailyMorningOverride { return try applyingDailySelections(dailyMorningOverride) }
+         return try await fixture.latestDailyReport(window: window)
+     }
+     func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
++        if let dailyPageFailure { throw dailyPageFailure }
+         guard let nextDailyPage else { throw K10APIError.notFound("没有下一页") }
+-        return nextDailyPage
+-    }
++        return try applyingDailySelections(nextDailyPage)
++    }
++    private func applyingDailySelections(_ input: K10DailyReportResponse) throws -> K10DailyReportResponse {
++        var response = input
++        response.report?.addedCards = try (input.report?.addedCards ?? []).map { card in
++            guard let state = dailySelections[card.companyWindowId] else { return card }
++            var row = try JSONSerialization.jsonObject(with: JSONEncoder().encode(card)) as! [String: Any]
++            row["currentSelectionState"] = state
++            return try JSONDecoder().decode(K10DailyCard.self, from: JSONSerialization.data(withJSONObject: row))
++        }
++        return response
++    }
++    func setDailyActionResponse(_ response: K10SelectionAction) { dailyActionResponse = response }
++    func setDailyPageFailure(_ error: K10APIError?) { dailyPageFailure = error }
+     func setDailyFailure(_ error: K10APIError?) { dailyFailure = error }
+     func setDailyEmpty() { dailyEmpty = true }
+     func setDailyPages(first: K10DailyReportResponse, next: K10DailyReportResponse) { dailyMorningOverride = first; nextDailyPage = next }
+@@ -1024,6 +1040,8 @@
+     }
+     func act(companyWindowID: String, request: K10SelectionRequest) async throws -> K10SelectionAction {
+         dailyActionCalls += 1
++        dailySelections[companyWindowID] = ["keep": "kept", "skip": "skipped", "restore": "unhandled"][request.action]
++        if let dailyActionResponse { return dailyActionResponse }
+         return try await fixture.act(companyWindowID: companyWindowID, request: request)
+     }
+     func dailyActionCallCount() -> Int { dailyActionCalls }
+@@ -1422,4 +1440,117 @@
+         XCTAssertEqual(card.catalysts.first?.companyWindowId, card.companyWindowId)
+     }
+ 
++    @MainActor
++    private func b57MorningPages() async throws -> (ControlledK10Service, K10DailyReportResponse, K10DailyReportResponse, K10DailyCard) {
++        let service = ControlledK10Service(batchID: "b57-pagination")
++        var first = try await service.latestDailyReport(window: "morning")
++        let tail = try XCTUnwrap(first.report?.addedCards.first)
++        let template = try JSONEncoder().encode(tail)
++        first.report?.addedCards = try (1...30).map { index in
++            var row = try JSONSerialization.jsonObject(with: template) as! [String: Any]
++            row["cardId"] = "b57-card-\(index)"
++            row["companyCode"] = String(format: "300%03d.SZ", index)
++            row["companyWindowId"] = "b57-window-\(index)"
++            row["rank"] = index
++            return try JSONDecoder().decode(K10DailyCard.self, from: JSONSerialization.data(withJSONObject: row))
++        }
++        let firstCursor = first.report?.addedCards.last?.cardId
++        first.report?.nextCursor = firstCursor
++        var next = first
++        next.report?.addedCards = [tail]
++        next.report?.nextCursor = nil
++        await service.setDailyPages(first: first, next: next)
++        return (service, first, next, tail)
++    }
++
++    @MainActor
++    func testB57SecondPageSelectionRefreshPreservesLoadedCardsAndUpdatesState() async throws {
++        let (service, _, _, tail) = try await b57MorningPages()
++        let model = AppModel(serviceFactory: { service })
++        await model.refresh()
++        await model.loadMoreDailyCards()
++        let ids = try XCTUnwrap(model.dailyMorning?.report).addedCards.map(\.cardId)
++        XCTAssertEqual(ids.count, 31)
++        for (action, state) in [("skip", "skipped"), ("keep", "kept"), ("restore", "unhandled")] {
++            await model.act(action, card: tail)
++            let report = try XCTUnwrap(model.dailyMorning?.report)
++            XCTAssertEqual(report.addedCards.map(\.cardId), ids, "当前卡不能在刷新期间被第一页替换掉")
++            XCTAssertEqual(report.addedCards.last?.currentSelectionState, state)
++            XCTAssertNil(report.nextCursor)
++            XCTAssertNil(model.dailyReportErrors["morning"])
++        }
++    }
++
++    @MainActor
++    func testB57RefreshPageFailurePreservesRangeAndNewReportResetsIt() async throws {
++        let (service, first, next, _) = try await b57MorningPages()
++        let model = AppModel(serviceFactory: { service })
++        await model.refresh()
++        await model.loadMoreDailyCards()
++        let previous = model.dailyMorning
++        await service.setDailyPageFailure(.networkUnavailable("后续页暂时不可读"))
++        await model.refresh()
++        XCTAssertEqual(model.dailyMorning, previous)
++        XCTAssertNotNil(model.dailyReportErrors["morning"])
++        await service.setDailyPageFailure(nil)
++        var encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(first)) as! [String: Any]
++        var report = encoded["report"] as! [String: Any]
++        report["reportId"] = "b57-new-morning"
++        encoded["report"] = report
++        let new = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: encoded))
++        await service.setDailyPages(first: new, next: next)
++        await model.refresh()
++        XCTAssertEqual(model.dailyMorning?.report?.reportId, "b57-new-morning")
++        XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, 30)
++        XCTAssertNil(model.dailyReportErrors["morning"])
++    }
++
++    func testB57ActualEarlyFailureAndParentRecoveryResponsesDecode() throws {
++        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
++        for kind in ["morning", "evening"] {
++            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("b57_early_\(kind)_provider.json"))
++            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
++            XCTAssertEqual(response.report?.status, "not_configured")
++            XCTAssertTrue(try XCTUnwrap(response.reason?.message).contains("参数未配置"))
++            XCTAssertTrue(try XCTUnwrap(response.report?.cutoffAt).hasPrefix("2026-09-09"))
++            XCTAssertNil(response.report?.availableAt)
++        }
++        for status in [402, 429] {
++            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("b57_parent_\(status).json"))
++            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
++            XCTAssertEqual(response.report?.status, "partial")
++            XCTAssertEqual(response.report?.incompleteReviews?.first?.status, "failed")
++            XCTAssertTrue(try XCTUnwrap(response.report?.incompleteReviews?.first?.reason).contains(status == 402 ? "余额不足" : "重试上限"))
++        }
++    }
++
++    @MainActor
++    func testB57ActualPaginatedAPIResponsesSurviveActionRefresh() async throws {
++        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"])
++        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
++            try JSONDecoder().decode(type, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("b57_pages_" + name + ".json")))
++        }
++        let first = try read("first", as: K10DailyReportResponse.self)
++        let next = try read("next", as: K10DailyReportResponse.self)
++        let selected = try read("selected", as: K10DailyReportResponse.self)
++        let action = try read("action", as: K10SelectionAction.self)
++        let tail = try XCTUnwrap(next.report?.addedCards.first)
++        let service = ControlledK10Service(batchID: "b57-real-pages")
++        await service.setDailyPages(first: first, next: next)
++        let model = AppModel(serviceFactory: { service })
++        await model.refresh()
++        await model.loadMoreDailyCards()
++        XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, 31)
++        await service.setDailyPages(first: first, next: selected)
++        await service.setDailyActionResponse(action)
++        await model.act("skip", card: tail)
++        let refreshed = try XCTUnwrap(model.dailyMorning?.report)
++        XCTAssertEqual(refreshed.addedCards.count, 31)
++        XCTAssertEqual(refreshed.addedCards.last?.cardId, tail.cardId)
++        XCTAssertEqual(refreshed.addedCards.last?.currentSelectionState, "skipped")
++        XCTAssertEqual(refreshed.addedCards.last?.companyWindowId, tail.companyWindowId)
++        XCTAssertEqual(refreshed.addedCards.last?.d1TradeDate, tail.d1TradeDate)
++        XCTAssertNil(model.dailyReportErrors["morning"])
++    }
++
+ }
+--- a/App/project.yml
++++ b/App/project.yml
+@@ -10,7 +10,7 @@
+   base:
+     SWIFT_VERSION: "5.0"
+     MARKETING_VERSION: "3.2.0"
+-    CURRENT_PROJECT_VERSION: "56"
++    CURRENT_PROJECT_VERSION: "57"
+     K10_SYNTHETIC_UI: "NO"
+     # One reusable QA bundle per platform; release builds keep the empty suffix.
+     NK_BUNDLE_SUFFIX: ""
+--- a/Backend/neckline/api/app.py
++++ b/Backend/neckline/api/app.py
+@@ -25,7 +25,7 @@
+ )
+ 
+ VERSION = "v3.2.0"
+-RELEASE_SET = "v3.2.0-b56"
++RELEASE_SET = "v3.2.0-b57"
+ API_PREFIX = "/api/v1"
+ _DB_PATH_OVERRIDE: Optional[Path] = None
+ 
+--- a/Backend/neckline/k10/pipeline.py
++++ b/Backend/neckline/k10/pipeline.py
+@@ -1917,13 +1917,9 @@
+                            payload=payload, budget=budget, created_at=_text(now), db_path=parent.db_path,
+                            execution_binding=store.task_execution_profile(task_id=parent.task.task_id, db_path=parent.db_path))
+         task_ids.append(task_id)
+-        prior_task = store.get_task(task_id=task_id, db_path=parent.db_path)
+-        if prior_task is not None and prior_task.status in {"failed", "not_configured"}:
+-            # The parent scan keeps the same frozen match list.  An explicit retry of the
+-            # child is safe: its idempotency key and evidence refs remain unchanged, and the
+-            # worker still enforces its frozen maxAttempts budget.
+-            store.retry_task(task_id=task_id, expected_attempt_count=prior_task.attempt_count,
+-                             retried_at=_text(now), db_path=parent.db_path)
++        # Re-entering the parent is not authorization to reopen a terminal child.
++        # run_once only claims queued/due or expired-lease work; failed children
++        # keep their outcome until the user explicitly requests a retry.
+         child = run_once(db_path=parent.db_path, worker_id=f"{parent.task.task_id}:morning", lease_for=timedelta(minutes=10),
+                          handlers={"morning_review": morning_review_handler}, task_id=task_id, clock=_now)
+         existing = child or store.get_task(task_id=task_id, db_path=parent.db_path)
+@@ -2108,12 +2104,16 @@
+         if isinstance(gap, str) and gap and gap not in gaps:
+             gaps.append(gap)
+     stamp = _text(generated_at)
+-    report_id = "morning_report_" + sha256((scan_id + "\x1f" + stamp + "\x1f" + str(len(report_items))).encode()).hexdigest()[:32]
+     report_coverage = {"coverageStatus": coverage_status, "sourceStatus": source_status, "targetCount": len(targets),
+                        "reviewState": review_state, "taskIds": task_ids, "needsReviewCount": needs_review,
+                        "failedItemCount": failed_items, "gaps": gaps}
+     if additional_coverage:
+         report_coverage.update(additional_coverage)
++    # A retry may finish within the same timestamp resolution as the failure.
++    # Different outcomes need different immutable IDs even with the same item count.
++    identity = json.dumps({"scanId": scan_id, "generatedAt": stamp, "coverage": report_coverage,
++                           "groups": groups}, ensure_ascii=False, sort_keys=True)
++    report_id = "morning_report_" + sha256(identity.encode()).hexdigest()[:32]
+     # Child reviews can take ownership checks independently; require it again immediately
+     # before the report transaction so an expired parent never appends a stale artifact.
+     parent.require_lease()
+@@ -2796,7 +2796,7 @@
+     existing = store.get_scan(scan_id=scan_id, db_path=context.db_path)
+     if existing is None:
+         context.require_lease()
+-        store.create_scan(scan_id=scan_id, window_kind="morning", cutoff_at=context.input_cutoff_at,
++        store.create_scan(scan_id=scan_id, window_kind="morning", cutoff_at=store._utc_instant(context.input_cutoff_at),
+             config_id=frozen.get("configId"), config_revision=frozen.get("revision"), status="running",
+             coverage={"pipelineState": "morning_unavailable", "reason": reason}, created_at=_text(generated_at),
+             completed_at=None, db_path=context.db_path)
+@@ -2986,7 +2986,7 @@
+                 task_status="failed", failure_stage="discovery_failed",
+             )
+         raise
+-    if frozen["payload"].get("configVersion") == "k10-v2" and result.status != "completed":
++    if frozen["payload"].get("configVersion") == "k10-v2" and result.retry_at is not None:
+         from .v2_store import record_incomplete_report
+         failed_scan_id = result.checkpoint.get("scanId") if isinstance(result.checkpoint, Mapping) else None
+         if failed_scan_id:
+--- a/Backend/neckline/k10/store.py
++++ b/Backend/neckline/k10/store.py
+@@ -959,7 +959,8 @@
+         if old is not None:
+             # A recovered scan retains its original created/coverage values; only its immutable
+             # identity must match the retry request.
+-            if tuple(old[:4]) != tuple(row[:4]):
++            same_cutoff = old[1] == row[1] or _utc_instant(old[1]) == _utc_instant(row[1])
++            if (old[0], old[2], old[3]) != (row[0], row[2], row[3]) or not same_cutoff:
+                 raise K10Conflict("scan ID 已存在但冻结输入不同")
+             return
+         conn.execute(
+@@ -2699,7 +2700,9 @@
+             raise K10Conflict("任务租约已失效或不属于当前 worker")
+         conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
+ 
+-        from .v2_store import refresh_morning_coverage_for_task
++        from .v2_store import refresh_morning_coverage_for_task, record_scan_task_failure
++        record_scan_task_failure(conn, task_id=task_id, status=status, stage=stage,
++                                 checkpoint=checkpoint, created_at=now_text)
+         refresh_morning_coverage_for_task(conn,task_id=task_id)
+ 
+ 
+--- a/Backend/neckline/k10/v2_store.py
++++ b/Backend/neckline/k10/v2_store.py
+@@ -2,6 +2,7 @@
+ from __future__ import annotations
+ 
+ import json
++from datetime import datetime
+ from hashlib import sha256
+ from pathlib import Path
+ from typing import Any
+@@ -231,17 +232,66 @@
+     return report
+ 
+ 
++def _record_incomplete_report(conn, *, scan_id, snapshot_id, state, error_code, created_at):
++    row = conn.execute('SELECT window_kind,cutoff_at FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
++    if not row:
++        return
++    parent = conn.execute("SELECT report_id FROM k10_v2_report_runs WHERE window_kind='evening' AND available_at IS NOT NULL AND julianday(cutoff_at)<julianday(?) ORDER BY julianday(cutoff_at) DESC LIMIT 1", (row[1],)).fetchone() if row[0] == 'morning' else None
++    message = {'insufficient_balance': '余额不足，已停止本次任务',
++               'rate_limited': '供应商限流，等待重试' if state == 'retry_pending' else '供应商限流，已停止本次任务',
++               'not_configured': '今天没跑成 · 参数未配置'}.get(error_code, '今天没跑成 · 处理未完成')
++    error = {'reason': error_code or 'incomplete', 'message': message}
++    conn.execute('INSERT INTO k10_v2_report_runs VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(report_id) DO UPDATE SET status=excluded.status,error_json=excluded.error_json WHERE k10_v2_report_runs.available_at IS NULL',
++        ('report_'+scan_id, scan_id, snapshot_id, row[0], parent[0] if parent else None, row[1], None, None, state, _json(error), created_at))
++
++
+ def record_incomplete_report(*, db_path: Path, scan_id: str, snapshot_id: str, state: str, error_code: str | None, created_at: str):
+-    """Expose a failed/paused scan without replacing the preceding visible report."""
++    """Expose the incomplete run while retaining preceding reports in history."""
+     with write_connection(db_path) as conn:
+         require_schema(conn)
+-        row=conn.execute('SELECT window_kind,cutoff_at FROM k10_scans WHERE scan_id=?',(scan_id,)).fetchone()
+-        if not row:
+-            return
+-        parent=conn.execute("SELECT report_id FROM k10_v2_report_runs WHERE window_kind='evening' AND available_at IS NOT NULL AND julianday(cutoff_at)<julianday(?) ORDER BY julianday(cutoff_at) DESC LIMIT 1",(row[1],)).fetchone() if row[0]=='morning' else None
+-        error={'reason':error_code or 'incomplete','message':'余额不足，已停止本次任务' if error_code=='insufficient_balance' else '供应商限流，等待重试' if error_code=='rate_limited' else '今天没跑成 · 处理未完成'}
+-        conn.execute('INSERT INTO k10_v2_report_runs VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(report_id) DO UPDATE SET status=excluded.status,error_json=excluded.error_json WHERE k10_v2_report_runs.available_at IS NULL',
+-            ('report_'+scan_id,scan_id,snapshot_id,row[0],parent[0] if parent else None,row[1],None,None,state,_json(error),created_at))
++        _record_incomplete_report(conn, scan_id=scan_id, snapshot_id=snapshot_id, state=state,
++                                  error_code=error_code, created_at=created_at)
++
++
++def record_scan_task_failure(conn, *, task_id, status, stage, checkpoint, created_at):
++    """Project every scan failure in the same transaction as its task terminal state.
++
++    This also covers worker checks and failures before execute_scan creates a scan.
++    Only the task's exact frozen v2 binding can supply the report identity.
++    """
++    if status not in {'failed', 'not_configured'}:
++        return
++    task = conn.execute('SELECT kind,payload_json,input_cutoff_at FROM k10_tasks WHERE task_id=?', (task_id,)).fetchone()
++    if not task or task[0] not in {'evening_scan', 'morning_scan'}:
++        return
++    payload = json.loads(task[1])
++    kind = payload.get('windowKind')
++    if kind not in {'evening', 'morning'} or task[0] != kind + '_scan':
++        return
++    config_id, revision = payload.get('configId'), payload.get('configRevision')
++    config = conn.execute('SELECT payload_json FROM k10_run_config_revisions WHERE config_id=? AND revision=?', (config_id, revision)).fetchone()
++    if not config:
++        return
++    configuration = json.loads(config[0])
++    snapshot_id = configuration.get('strategySnapshotId')
++    if configuration.get('configVersion') != 'k10-v2' or not isinstance(snapshot_id, str):
++        return
++    if not conn.execute('SELECT 1 FROM k10_v2_strategy_snapshots WHERE snapshot_id=? AND config_id=? AND config_revision=?', (snapshot_id, config_id, revision)).fetchone():
++        return  # No invented strategy fallback; configuration API reports the missing binding.
++    try:
++        cutoff = datetime.fromisoformat(task[2])
++    except (TypeError, ValueError):
++        return
++    if cutoff.tzinfo is None:
++        return
++    scan_id = _id('scan', kind, cutoff.isoformat(), task_id)
++    conn.execute('INSERT INTO k10_scans VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(scan_id) DO NOTHING',
++        (scan_id, kind, store._utc_instant(task[2]), config_id, revision, status,
++         _json({'pipelineState': 'task_failed', 'failureStage': stage}), created_at, created_at))
++    conn.execute("UPDATE k10_scans SET status=?,completed_at=? WHERE scan_id=? AND status IN ('queued','running')", (status, created_at, scan_id))
++    code = 'not_configured' if status == 'not_configured' else checkpoint.get('safeErrorCode')
++    _record_incomplete_report(conn, scan_id=scan_id, snapshot_id=snapshot_id, state=status,
++                              error_code=code, created_at=created_at)
+ 
+ 
+ def read_morning_result(*, task_id, input_sha256, db_path):
+--- a/Backend/tests/k10_v320_b57_fixture.py
++++ b/Backend/tests/k10_v320_b57_fixture.py
+@@ -0,0 +1,32 @@
++"""Export B57 actual API envelopes from isolated regression producers."""
++from pathlib import Path
++import shutil
++import pytest
++from tests.test_b57_review_regressions import (
++    test_parent_recovery_preserves_child_terminal_and_retry_budget,
++    test_early_scan_failure_is_current_daily_report,
++    test_actual_paginated_morning_api_preserves_selection_and_window,
++)
++
++
++def export_b57(root, output):
++    output.mkdir(parents=True, exist_ok=True)
++    cases = [(f'parent_{status}', test_parent_recovery_preserves_child_terminal_and_retry_budget, {'status': status}) for status in (402, 429)]
++    cases += [(kind, test_early_scan_failure_is_current_daily_report, {'kind': kind, 'failure': 'provider'}) for kind in ('morning', 'evening')]
++    cases += [('pagination', test_actual_paginated_morning_api_preserves_selection_and_window, {})]
++    for name, run, args in cases:
++        path = root / name
++        path.mkdir(parents=True)
++        with pytest.MonkeyPatch.context() as mp:
++            run(path, mp, **args)
++        for source in path.glob('b57_*.json'):
++            shutil.copy2(source, output/source.name)
++
++
++if __name__ == '__main__':
++    import argparse
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--root', type=Path, required=True)
++    parser.add_argument('--output', type=Path, required=True)
++    args = parser.parse_args()
++    export_b57(args.root, args.output)
+--- a/Backend/tests/k10_v320_fixture.py
++++ b/Backend/tests/k10_v320_fixture.py
+@@ -19,7 +19,7 @@
+ SOURCE = Path('/Users/linotsai/Lino/whynotme')
+ 
+ 
+-def build_fixture(path: Path):
++def build_fixture(path: Path, *, morning_additions: int | None = None):
+     build_history(path)
+     import_profiles(universe_file=SOURCE/'research/K10-v2初始股票池_20260909.json',
+         profiles_dir=SOURCE/'artifacts/output/k10-company-profiles-v2-20260909', db_path=path,
+@@ -80,7 +80,12 @@
+         company_window_id=old_window['companyWindowId'],idempotency_key='v2-old-keep',task_input_version='v2-fixture',
+         task_input_cutoff_at='2026-09-08T21:05:00+08:00',task_payload={},task_budget={},created_at='2026-09-08T22:00:00+08:00',db_path=path)
+     store.freeze_company_window_selection(company_window_id=old_window['companyWindowId'],frozen_at='2026-09-09T09:30:00+08:00',db_path=path)
+-    morning=publish('morning','morning','2026-09-09T09:15:00+08:00',['300002.SZ','300005.SZ','300002.SZ'],evening,mixed=True)
++    morning_companies = ['300002.SZ', '300005.SZ', '300002.SZ']
++    if morning_additions is not None:
++        with sqlite3.connect(path) as conn:
++            codes = [row[0] for row in conn.execute("SELECT company_code FROM k10_v2_universe_members WHERE snapshot_id=? AND company_code NOT IN ('300002.SZ','300004.SZ') ORDER BY company_code LIMIT ?", (UNIVERSE_ID, morning_additions))]
++        morning_companies = ['300002.SZ'] + codes
++    morning=publish('morning','morning','2026-09-09T09:15:00+08:00',morning_companies,evening,mixed=True)
+     return {'evening':evening,'morning':morning}
+ 
+ 
+--- a/Backend/tests/test_b56_review_regressions.py
++++ b/Backend/tests/test_b56_review_regressions.py
+@@ -320,7 +320,7 @@
+     from neckline.api.app import app
+     # No startup or operational database access is needed by this public endpoint.
+     response=TestClient(app).get('/api/v1/health')
+-    assert response.status_code==200 and response.json()['releaseSet']=='v3.2.0-b56'
++    assert response.status_code==200 and response.json()['releaseSet']=='v3.2.0-b57'
+     root=Path(__file__).parents[2]
+     for name in ('k10-v2.json','k10-execution-v4.json'):
+         assert (root/'Backend/neckline/config'/name).is_file()
+--- a/Backend/tests/test_b57_review_regressions.py
++++ b/Backend/tests/test_b57_review_regressions.py
+@@ -0,0 +1,245 @@
++"""B56 independent counterexamples, using real producers and offline transports."""
++import json
++import sqlite3
++from datetime import date, datetime, timedelta
++
++import httpx
++import pytest
++
++from neckline.k10 import morning_runtime, pipeline, store
++from neckline.k10.cli import enqueue_scan
++from neckline.k10.metering import MeteredProvider
++from neckline.k10.providers import ProviderResolution
++from neckline.k10.worker import run_once
++from neckline.k10.windows import SHANGHAI
++from tests.test_b54_review_regressions import client_for, later_scan
++import tests.test_v310_pipeline_e2e as e2e
++
++
++@pytest.mark.parametrize('status', [402, 429])
++def test_parent_recovery_preserves_child_terminal_and_retry_budget(tmp_path, monkeypatch, status):
++    calls = []
++    def resolve(**kwargs):
++        def respond(request):
++            calls.append(request.content)
++            return httpx.Response(status, headers={'Retry-After': '60'}, json={'error': {'message': 'offline failure'}})
++        transport = httpx.MockTransport(respond)
++        monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
++        provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture',
++            model='deepseek-v4-pro', name='fixture', api_url='https://api.deepseek.com/chat/completions',
++            read_timeout=1, use_streaming=False)
++        return ProviderResolution('configured', provider, 'fixture', None)
++    monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)
++    actual_finish = store.finish_task
++    def interrupt(**kwargs):
++        task = store.get_task(task_id=kwargs['task_id'], db_path=kwargs['db_path'])
++        if task.kind == 'morning_scan':
++            raise SystemExit('before parent terminal commit')
++        actual_finish(**kwargs)
++        if task.kind == 'morning_review' and kwargs['status'] == 'failed':
++            raise SystemExit('after child terminal commit')
++    monkeypatch.setattr(store, 'finish_task', interrupt)
++    with pytest.raises(SystemExit):
++        later_scan(tmp_path, monkeypatch, lambda payload, value: None)
++    db = tmp_path / 'b39-e2e.sqlite'
++    with sqlite3.connect(db) as conn:
++        parent_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
++        child_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
++        frozen_windows = conn.execute('SELECT * FROM k10_company_windows').fetchall()
++    def reclaim():
++        with sqlite3.connect(db) as conn:
++            lease = conn.execute('SELECT lease_until FROM k10_tasks WHERE task_id=?', (parent_id,)).fetchone()[0]
++        at = datetime.fromisoformat(lease) + timedelta(seconds=1)
++        monkeypatch.setattr(pipeline, '_now', lambda: at)
++        return run_once(db_path=db, worker_id='b57-parent', lease_for=timedelta(minutes=5),
++            handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
++            clock=lambda: at, task_id=parent_id)
++    for _ in range(3):
++        with pytest.raises(SystemExit):
++            reclaim()
++    monkeypatch.setattr(store, 'finish_task', actual_finish)
++    parent = reclaim()
++    child = store.get_task(task_id=child_id, db_path=db)
++    expected = 1 if status == 402 else 2
++    assert child.status == 'failed' and child.attempt_count == expected
++    assert len(calls) == expected, 'parent recovery must not authorize additional failed-child calls'
++    assert parent.status == 'completed'
++    with sqlite3.connect(db) as conn:
++        assert conn.execute('SELECT * FROM k10_company_windows').fetchall() == frozen_windows
++        assert conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0] == 1
++        assert conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?', (child_id,)).fetchone()[0] == 0
++    with client_for(db) as client:
++        report = client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
++    assert report['report']['status'] == 'partial'
++    assert report['report']['incompleteReviews'][0]['status'] == 'failed'
++    assert ('余额不足' if status == 402 else '重试上限') in report['report']['incompleteReviews'][0]['reason']
++    (tmp_path / f'b57_parent_{status}.json').write_text(json.dumps(report, ensure_ascii=False))
++
++
++@pytest.mark.parametrize('kind', ['morning', 'evening'])
++@pytest.mark.parametrize('failure', ['provider', 'token', 'calendar', 'metadata', 'execution', 'exception'])
++def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, failure, interrupt=False):
++    db, _, _, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
++    with client_for(db) as client:
++        old = client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
++    before_calls = len(calls)
++    at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
++    monkeypatch.setattr(pipeline, '_now', lambda: at)
++    tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
++        execution_config_id='b39-execution', execution_config_revision=1, now=at)
++    token = 'fixture-token'
++    if failure == 'provider':
++        monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
++    elif failure == 'token':
++        token = None
++    elif failure == 'calendar':
++        monkeypatch.setattr(pipeline, 'official_is_trading_day', lambda *args, **kwargs: None)
++    elif failure == 'metadata':
++        def invalid(*args, **kwargs): raise pipeline.PipelineError('资料校验配置不完整')
++        monkeypatch.setattr(pipeline, '_metadata_resolver_from_configuration', invalid)
++    elif failure == 'execution':
++        from neckline.k10 import worker
++        # Pre-handler validation failure, after the real producer has bound its inputs.
++        monkeypatch.setattr(worker, '_v3_execution_ready', lambda context: False)
++    else:
++        def crash(*args, **kwargs): raise RuntimeError('untrusted provider body must not be exposed')
++        monkeypatch.setattr(pipeline, 'execute_scan', crash)
++    def work():
++        return run_once(db_path=db, worker_id='b57-early', lease_for=timedelta(minutes=5),
++            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token=token,
++                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
++    if interrupt:
++        from neckline.k10 import v2_store
++        original = v2_store.record_scan_task_failure
++        def crash_after_projection(*args, **kwargs):
++            original(*args, **kwargs)
++            raise SystemExit('between report projection and terminal transaction commit')
++        monkeypatch.setattr(v2_store, 'record_scan_task_failure', crash_after_projection)
++        with pytest.raises(SystemExit): work()
++        assert store.get_task(task_id=tid, db_path=db).status == 'running'
++        with sqlite3.connect(db) as conn:
++            assert conn.execute('SELECT count(*) FROM k10_v2_report_runs').fetchone()[0] == 1
++            lease = conn.execute('SELECT lease_until FROM k10_tasks WHERE task_id=?', (tid,)).fetchone()[0]
++        at = datetime.fromisoformat(lease) + timedelta(seconds=1)
++        monkeypatch.setattr(v2_store, 'record_scan_task_failure', original)
++    task = work()
++    expected = 'failed' if failure == 'exception' else 'not_configured'
++    assert task.status == expected and len(calls) == before_calls
++    with client_for(db) as client:
++        current = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
++        historical = client.get('/api/v1/k10/v2/reports/'+old['report']['reportId']).json()
++        history = client.get('/api/v1/k10/v2/reports').json()
++    assert current['state'] == 'available'
++    assert current['report']['status'] == expected
++    assert current['report']['cutoffAt'].startswith('2026-09-09')
++    assert current['report']['availableAt'] is None
++    assert all(not current['report'][key] for key in ('eveningCards', 'updatedCards', 'addedCards'))
++    assert current['reason'] and '今天没跑成' in current['reason']['message']
++    if expected == 'not_configured': assert '参数未配置' in current['reason']['message']
++    assert 'untrusted provider body' not in json.dumps(current)
++    assert historical == old
++    assert len(history['items']) == 2
++    with sqlite3.connect(db) as conn:
++        assert conn.execute('SELECT count(*) FROM k10_v2_report_runs').fetchone()[0] == 2
++    (tmp_path / f'b57_early_{kind}_{failure}.json').write_text(json.dumps(current, ensure_ascii=False))
++
++
++@pytest.mark.parametrize('kind', ['morning', 'evening'])
++def test_failure_report_and_terminal_task_commit_atomically(tmp_path, monkeypatch, kind):
++    test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind, 'provider', interrupt=True)
++
++
++
++def test_actual_paginated_morning_api_preserves_selection_and_window(tmp_path, monkeypatch):
++    from fastapi.testclient import TestClient
++    from tests.k10_v320_fixture import build_fixture, create_app
++    from tests.test_k10_api import _freeze_k10_clocks
++    db = tmp_path / 'pagination.sqlite'
++    build_fixture(db, morning_additions=31)
++    _freeze_k10_clocks(monkeypatch, '2026-09-09T09:20:00+08:00')
++    with TestClient(create_app(db)) as client:
++        first = client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
++        report_id = first['report']['reportId']
++        cursor = first['report']['nextCursor']
++        path = '/api/v1/k10/v2/reports/' + report_id
++        next_page = client.get(path, params={'cursor': cursor}).json()
++        assert len(first['report']['addedCards']) == 30 and len(next_page['report']['addedCards']) == 1
++        tail = next_page['report']['addedCards'][0]
++        skipped = client.post('/api/v1/k10/company-windows/'+tail['companyWindowId']+'/selection',
++            json={'action': 'skip', 'idempotencyKey': 'b57-tail-skip'})
++        assert skipped.status_code == 200, skipped.text
++        refreshed = client.get(path, params={'cursor': cursor}).json()
++        updated = refreshed['report']['addedCards'][0]
++        assert updated['cardId'] == tail['cardId'] and updated['currentSelectionState'] == 'skipped'
++        assert (updated['companyWindowId'], updated['d1TradeDate'], updated['d2TradeDate']) == (tail['companyWindowId'], tail['d1TradeDate'], tail['d2TradeDate'])
++        for name, response in [('first', first), ('next', next_page), ('selected', refreshed), ('action', skipped.json())]:
++            (tmp_path/f'b57_pages_{name}.json').write_text(json.dumps(response, ensure_ascii=False))
++
++
++@pytest.mark.parametrize('kind', ['morning', 'evening'])
++def test_early_failure_then_real_api_retry_reuses_same_scan(tmp_path, monkeypatch, kind):
++    from neckline.k10.sources import SourceFetchResult
++    import neckline.api.k10 as api
++    db, _, _, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
++    with sqlite3.connect(db) as conn:
++        conn.executemany("INSERT INTO trade_cal VALUES ('SSE',?,1)", [('20260911',), ('20260914',), ('20260915',)])
++    original = pipeline.resolve_deepseek_v4_pro
++    at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
++    monkeypatch.setattr(api, '_now', lambda: at.isoformat())
++    monkeypatch.setattr(pipeline, '_now', lambda: at)
++    monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
++    tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
++        execution_config_id='b39-execution', execution_config_revision=1, now=at)
++    def work():
++        return run_once(db_path=db, worker_id='b57-explicit-retry', lease_for=timedelta(minutes=5),
++            handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token='fixture-token',
++                parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
++    failed = work()
++    assert failed.status == 'not_configured'
++    with client_for(db) as client:
++        before = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
++        retried = client.post('/api/v1/k10/jobs/'+tid+'/retry', json={'expectedAttemptCount': failed.attempt_count})
++        assert retried.status_code == 200, retried.text
++    with sqlite3.connect(db) as conn:
++        failure_history = conn.execute('SELECT * FROM k10_morning_reports ORDER BY revision').fetchall()
++    monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', original)
++    class EmptyNews(e2e._News):
++        def fetch_incremental(self, request):
++            return SourceFetchResult(documents=(), next_cursor=None, success_watermark=request.window.cutoff_at,
++                pages_fetched=1, pages_expected=1, exhausted=True)
++    monkeypatch.setattr(pipeline, 'TuShareMajorNewsAdapter', EmptyNews)
++    recovered = work()
++    with sqlite3.connect(db) as conn:
++        terminal = conn.execute('SELECT status,stage,error_text FROM k10_tasks WHERE task_id=?', (tid,)).fetchone()
++    assert recovered.status == 'completed', terminal
++    with client_for(db) as client:
++        after = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
++    assert before['report']['reportId'] == after['report']['reportId']
++    assert after['report']['status'] == 'completed' and after['report']['availableAt'] is not None
++    assert after['reason'] is None
++    with sqlite3.connect(db) as conn:
++        assert conn.execute('SELECT count(*) FROM k10_v2_report_runs').fetchone()[0] == 2
++        if kind == 'morning':
++            history = conn.execute('SELECT * FROM k10_morning_reports ORDER BY revision').fetchall()
++            assert len(failure_history) == 1 and len(history) == 2
++            assert history[0] == failure_history[0], 'same-second recovery must append, not rewrite failure history'
++    (tmp_path/f'b57_early_{kind}_recovered.json').write_text(json.dumps(after, ensure_ascii=False))
++
++
++@pytest.mark.parametrize('equivalent', ['2026-09-09T13:00:00+00:00', '2026-09-09T13:00:00Z'])
++def test_scan_cutoff_identity_uses_instant_but_preserves_other_inputs(tmp_path, equivalent):
++    from neckline.k10.schema import initialize_schema
++    db = tmp_path/'identity.sqlite'
++    initialize_schema(db)
++    args = dict(scan_id='same-scan', window_kind='evening', cutoff_at='2026-09-09T21:00:00+08:00',
++        config_id=None, config_revision=None, status='running', coverage={}, created_at='2026-09-09T21:01:00+08:00',
++        completed_at=None, db_path=db)
++    store.create_scan(**args)
++    original = store.get_scan(scan_id='same-scan', db_path=db)
++    store.create_scan(**{**args, 'cutoff_at': equivalent})
++    assert store.get_scan(scan_id='same-scan', db_path=db) == original
++    for change in ({'cutoff_at': '2026-09-09T13:00:01Z'}, {'cutoff_at': '2026-09-09T13:00:00'},
++                   {'window_kind': 'morning'}, {'config_id': 'different'}, {'config_revision': 2}):
++        with pytest.raises(store.K10Conflict):
++            store.create_scan(**{**args, **change})
++        assert store.get_scan(scan_id='same-scan', db_path=db) == original
+--- a/Backend/tests/test_k10_pipeline.py
++++ b/Backend/tests/test_k10_pipeline.py
+@@ -576,7 +576,7 @@
+     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
+ 
+ 
+-def test_persisted_morning_match_retries_failed_child_on_parent_replay(tmp_path, monkeypatch):
++def test_persisted_morning_match_requires_explicit_retry_for_terminal_child(tmp_path, monkeypatch):
+     path = tmp_path / "morning-child-retry.sqlite"
+     initialize_schema(path)
+     _frozen_config(path)
+@@ -595,7 +595,8 @@
+         def runner(*, db_path, worker_id, lease_for, handlers, task_id, clock):
+             now = CREATED.astimezone(timezone.utc)
+             task = store.claim_task_by_id(task_id=task_id, worker_id=worker_id, now=now, lease_for=timedelta(minutes=10), db_path=db_path)
+-            assert task is not None
++            if task is None:
++                return None
+             store.finish_task(task_id=task_id, worker_id=worker_id, status=status, stage="fixture", checkpoint={}, error_text=None,
+                               finished_at=now, db_path=db_path)
+             return store.get_task(task_id=task_id, db_path=db_path)
+@@ -607,7 +608,14 @@
+     monkeypatch.setattr(pipeline, "run_once", finish("completed"))
+     second, replay_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
+                                                config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
+-    assert second == "completed" and replay_ids == ids
++    terminal = store.get_task(task_id=ids[0], db_path=path)
++    assert second == "partial" and replay_ids == ids
++    assert terminal.status == "failed" and terminal.attempt_count == 1
++    store.retry_task(task_id=ids[0], expected_attempt_count=terminal.attempt_count,
++                     retried_at=CREATED.isoformat(), db_path=path)
++    third, explicit_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
++        config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
++    assert third == "completed" and explicit_ids == ids
+     assert store.get_task(task_id=ids[0], db_path=path).status == "completed"
+ 
+ 
+--- a/PROJECT_PLAN.md
++++ b/PROJECT_PLAN.md
+@@ -1,4 +1,4 @@
+-# Neckline · 3.2.0 / 双端 Build 56 · K10-v2
++# Neckline · 3.2.0 / 双端 Build 57 · K10-v2
+ 
+ 本文件是工程控制面。本轮详细契约与验收证据写入 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。现行策略唯一依据为 [`whynotme/K10.md`](../whynotme/K10.md)；生产代码不得导入研究仓。
+ 
+@@ -8,7 +8,7 @@
+ 
+ ## 稳定技术决定
+ 
+-- 目标为 **3.2.0 / 双端 Build 56 / Schema 8 / K10-v2**。版本三处和客户端 Build 必须一致；生产仍为 3.1.0 Build 53 / Schema 7，未获发布或恢复授权。
++- 目标为 **3.2.0 / 双端 Build 57 / Schema 8 / K10-v2**。版本三处和客户端 Build 必须一致；生产仍为 3.1.0 Build 53 / Schema 7，未获发布或恢复授权。
+ - K10-v2 固定使用 `K10-v2初始股票池_20260909.json` 的 1,089 只公司。导入器显式接收 `--universe-file` 和 `--profiles-dir`，校验名单、完整资料、索引与原始证据后原子写入工程侧数据；运行期只读该快照，不读取或 Python 导入 `whynotme`。资料的 `local_draft_awaiting_user` 来源状态、引用、报告期和缺口原样保留，缺项不排除公司。
+ - Schema 8 只新增 v2 的池／资料快照与日推荐卡账本；现有 K10-v1.4 的已发布推荐、选择和证据冻结保留且不可重写。旧 D1/D2 仍可在日后获恢复授权后追加行情事实和评价修订，但不重置窗口或回改选择；v2 新卡借用既有机会／公司窗口账本。
+ - 所有精确去重标题均经批量模型短筛；本地索引只帮助召回相关公司，名称或关键词未命中不能硬删。无 80／40、正文、搜索、文章、初选公司、题材、涨幅或 token 总配额；正文／补查按共享事件和实际缺口进行，跨批归并并复用资料与证据。删除 80／40 的活跃生产、校验和测试契约，不保留兼容运行路径。
+@@ -19,17 +19,18 @@
+ 
+ ## 当前状态
+ 
++- Build 57 快修进行中；施工基线为 B56 快照 `98d00210…11203`（全部 App／Backend 源码），Git HEAD 仍是 `71d0e1a`；执行与证据续写版本记录第 19 节。
+ - main 基线为 `71d0e1a`；已发布 `v3.1.0-b53` 指向 `76c0a9f`。生产 run control closed，API／worker／所有 timer 均停用；旧报告及失败检查点保留，未授权恢复或发布。
+ - K10-v2 规范哈希 `44817df…2dd3d`，固定池／完整资料／筛选索引各 1,089 条；资料保留本地初稿来源状态，未上传、未标记已核或已批准。
+-- **3.2.0 / 双端 Build 56 快修完成并通过独立复查，尚未发布。** 修复新阶段延续错绑旧窗口、正反／晨间 402/429 契约漏接、过期期限与中断恢复；当前配置指引及健康发布集标识已同步。详细证据见版本记录第 17 节。
++- **3.2.0 / 双端 Build 57 快修完成，随后全范围独立复审新增 3 项 P2 待修，尚未发布。** 修复新阶段延续错绑旧窗口、正反／晨间 402/429 契约漏接、过期期限与中断恢复；当前配置指引及健康发布集标识已同步。详细证据见版本记录第 17 节。
+ - 最终 Backend **1073 passed**（21 个既有 Polars warnings）；macOS、iOS、iOS build-for-testing 均通过。XCTest **46 通过／5 个历史专测跳过／0 失败**；新增 10 份真实隔离 API DTO 解码，双端抽查阶段延续、晨间失败、正方完成而反方余额不足页面。最后恢复补丁仅改后端内部，已跑完整后端门禁。
+-- Reviewer 对原四项修复及其直接影响完成检查；随后新增的两项恢复 P2 已修并独立关闭，最终 **33 项回归通过，未发现可报告问题**。固定目标 `3759cc57…ec8d6ec`，业务源码无漂移；范围和未覆盖项见版本记录。
++- 上轮局部复查在 `3759cc57…ec8d6ec` 关闭既有问题，33 项回归通过。本轮从已部署 B53 覆盖至完整 B56，固定目标 `98d00210…11203`，确认父扫描恢复重试终态 402、早期失败未进入日报、晨间第二页操作后丢失已加载范围三项 P2；源码无漂移，详见版本记录第 18 节。
+ - QA API 与双端实例已关闭，QA 安装及本轮临时库已清理，主模拟器 Shutdown；生产 Mac 仍是 3.1.0（53）。全程未调用真实供应商、探测余额／权限、重放旧报告或操作生产。
+ - B54–B56 实现及证据均未提交；真实供应商成功率、费用和选股效果未覆盖，离线通过不能代替实际运行结果。
+ 
+ ## 当前 Plan
+ 
+-本轮快修已完成，无待施工或待复查块。记录入口为 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md) 第 17 节。发布、生产迁移及恢复不在本轮授权内。
++本轮已授权快修三项 P2，保持 3.2.0，Build 递增至 57；先固化复现，再实施和离线验证，修复后独立复查。复现与定位见 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md) 第 18 节。既有快修结果见第 17 节。发布、生产迁移及恢复不在本轮授权内。
+ 
+ ## 待用户决定
+ 
+@@ -37,6 +38,7 @@
+ 
+ ## Backlog
+ 
++- 本轮复审新增三项 P2 待后续修复，保留原始复现并转成回归后关闭；见当前版本记录第 18 节。
+ - 发布、生产 Schema 8 切换、恢复运行和真实供应商验证仍需另行授权，不把离线结果表述为实际效果或 token 成本达标。
+ 
+ ## 里程碑索引
+@@ -45,4 +47,4 @@
+ - 3.0.5 / Build 37：未发布方案，已替代，见 [archive/v3.0.5-b37_execution.md](archive/v3.0.5-b37_execution.md)。
+ - 3.0.6 / Build 38：标题初筛与 80／40 的旧实现，已替代，见 [archive/v3.0.6-b38_execution.md](archive/v3.0.6-b38_execution.md)。
+ - 3.1.0 / Build 39–53：已发布 K10-v1.4，首份晚报、失败诊断与停机证据见 [archive/v3.1.0-b39_execution.md](archive/v3.1.0-b39_execution.md)。
+-- 3.2.0 / Build 54–56：一致性与恢复问题完成修复并独立关闭，未发布，见 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。
++- 3.2.0 / Build 54–56：既有快修已完成，再次全范围独立复审新增三项 P2 待修，未发布，见 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。
+--- a/README.md
++++ b/README.md
+@@ -6,7 +6,7 @@
+ 
+ **当前生产已全面暂停。** 用户于 2026-09-09 10:21 CST 停用 API、worker、所有 timer 和运行开关；B53 安装、9 月 8 日晚报两份样本及晨报失败检查点保留，不重放报告，不恢复已退役的 2,472 篇事故批次。
+ 
+-**本地已完成：3.2.0 / 双端 Build 56 / K10-v2 / Schema 8，尚未发布。** 固定 1,089 公司池与完整资料显式导入，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
++**本地快修中：3.2.0 / 双端 Build 57 / K10-v2 / Schema 8，尚未发布。** 固定 1,089 公司池与完整资料显式导入，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
+ 
+ 本轮只做临时库、确定性 transport、localhost API、Swift 解码与原生 QA；禁止真实模型／搜索／行情／推送调用和余额／权限探测。离线通过不代表真实供应商效果或实际 token 总量。当前完整状态与验证进展见主 Plan。
+ 
+--- a/archive/v3.2.0-b54_execution.md
++++ b/archive/v3.2.0-b54_execution.md
+@@ -334,3 +334,21 @@
+ - 证据集中在 [fastfix-b56](v3.2.0-b54-evidence/fastfix-b56/)：完整改动及恢复追加 patch、固定 manifest、原始复审反例、测试／构建日志、XCTest 摘要、10 份 DTO 和双端截图。
+ - QA API、Mac QA 进程、iOS QA 已退出；QA iOS 安装移除，本轮临时场景库清理，共享主模拟器 Shutdown。生产 Mac 仍为 3.1.0（53），未改生产配置／服务／数据库、未真实调用供应商或 APNs、未推送／提交／打标签／发布。
+ - 下一步仅在新授权后进入发布／迁移／恢复；不要把离线验证当作真实接口成功、选股表现或日 token 保证。
++
++
++## 18. Build 56 再次全范围独立复审（2026-09-10，三项 P2 待修）
++
++用户本轮只要求独立复审。新 Reviewer 从部署 tag `v3.1.0-b53`（`76c0a9f97937065ed17a5e6f64f4ee8829bbb756`）审至 B56 全部暂存／未暂存／未跟踪工程改动，按当前 K10-v2 和 Plan 检查主要调用边界；不沿用第 17 节局部复查作为整体通过结论。
++
++目标为临时快照 `neckline-b56-independent-_01xfg51`，294 个明确文件，manifest SHA-256 **`98d00210b06c570d274c972f37d784081ee59a9ac422bd119253cd6c68411203`**。Reviewer 结束时核对全部匹配；收口仅更新记录和保留复现，未修改 App／Backend 源码。
++
++1. **P2 · 父扫描恢复重新激活终态 402 子任务。** `Backend/neckline/k10/pipeline.py:1921–1926` 对 failed／not_configured 子任务无条件调用 `retry_task`。真实 CLI later_scan → worker，在晨间子任务已提交余额不足失败后中断父任务，重复自然恢复父任务即可使调用 1→3，超过执行包 networkMaxAttempts=2，未人工重试。应复用终态子结果及原预算，人工重试另走显式入口。7 小时后的固定期限仍阻止外呼，未发现绕过期限。
++2. **P2 · 扫描早退没有写入 v2 日报失败状态。** `pipeline.py:2927–2931` 等早退绕过 `2989` 后 execute_scan 结果投影。离线 provider resolution 设为未配置后，9 月 9 日晨任务 not_configured，v2/latest 却 empty／尚无日报；同日晚任务失败但接口仍是 9 月 8 日 completed、reason=null，配置 scopes 仍 configured。应将所有扫描终态归于统一收尾，使用户能看到本轮失败及原因。
++3. **P2 · 晨间分页在选择刷新后退回第一页。** `App/Neckline/App/AppModel.swift:192` 用第一页替换当前已加载晨报，`282–283` 的选择动作触发刷新。用当前 AppModel／APIClient／Models 编译的独立 Swift 驱动证明：31 张 → 略过第 31 张 → 30 张，当前卡消失，View 的 onChange 随即重置位置。相同 reportId 刷新应保留已加载范围并更新选择状态。
++
++最小复现及固定 manifest 保留于 [independent-review](v3.2.0-b54-evidence/fastfix-b56/independent-review/)。本轮使用隔离数据、确定性响应和离线拦截，未真实调用供应商、访问生产或启动 App／模拟器；未重复全量门禁及原生视觉验收。上轮 1073 项后端、三项构建和 46 项客户端测试的记录已核对，但这些通过不能覆盖本轮新增反例。三个问题均未施工，版本保持 3.2.0（56），生产继续暂停。
++
++
++## 19. Build 57 · 三项复审问题快修（进行中）
++
++用户授权快修，3.2.0 不变，双端 Build 57。施工基线：第 18 节固定 B56 快照 `98d00210b06c570d274c972f37d784081ee59a9ac422bd119253cd6c68411203`，包含全部未提交实现；Git HEAD `71d0e1a`，生产仍 B53 暂停。范围只含第 18 节三项根因及直接影响，不发布、不恢复、不真实调用供应商。

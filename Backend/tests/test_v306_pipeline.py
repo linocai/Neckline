@@ -67,10 +67,10 @@ def _mock_http(monkeypatch, *, invalid_batch=False, sole_output=False, remove_la
                       "removed": [{"i": payload["items"][-1]["i"], "reason": "不足以支持新增实质事实", "duplicateOf": None}] if remove_last else []}
             if invalid_review:
                 result["kept"].pop()
-        elif "articleLimit" in payload:
+        elif "inputCount" in payload:
             stage = "global"
             indexes = [row["i"] for row in payload["items"]]
-            limit = payload["articleLimit"]
+            limit = payload["inputCount"]
             result = {"selected": [{"i": i, "selectedRank": rank + 1, "reason": "全局比较入选"}
                                     for rank, i in enumerate(indexes[:limit])],
                       "merged": [], "selectionComplete": True, "reviewedCount": len(indexes)}
@@ -105,8 +105,8 @@ def _mock_http(monkeypatch, *, invalid_batch=False, sole_output=False, remove_la
     return calls
 
 
-@pytest.mark.parametrize(("window", "limit"), [("evening", 80), ("morning", 40)])
-def test_actual_http_title_pipeline_freezes_quota_and_resumes_without_replay(tmp_path, monkeypatch, window, limit):
+@pytest.mark.parametrize(("window", "limit"), [("evening", 95), ("morning", 95)])
+def test_actual_http_title_pipeline_has_no_body_quota_and_resumes_without_replay(tmp_path, monkeypatch, window, limit):
     path = tmp_path / "title-pipeline.sqlite"
     documents, binding, model = _setup(path)
     calls = _mock_http(monkeypatch)
@@ -117,7 +117,7 @@ def test_actual_http_title_pipeline_freezes_quota_and_resumes_without_replay(tmp
     assert sum(row["disposition"] == "exact_duplicate" for row in store.read_title_triage_items(task_id="titles", db_path=path)) == 1
     # Selected articles reserve all slots even before the first body is read.
     assert store.admit_article(task_id="titles", document_id="extra-web-body", revision=1,
-        admission_kind="tavily_full_article", created_at=NOW, db_path=path)["state"] == "limit_reached"
+        admission_kind="tavily_full_article", created_at=NOW, db_path=path)["state"] == "admitted"
     for document in selected:
         assert model.understand(document=prepare_document_for_analysis(document)) == ()
     assert sum(stage == "body" for stage, _ in calls) == limit
@@ -217,7 +217,7 @@ def test_title_final_review_only_removes_without_refill_and_is_reused_on_resume(
     calls = _mock_http(monkeypatch, remove_last=True)
     selected = select_title_documents(documents=documents, window_kind="morning", task_id="titles",
         execution_profile=binding, model=model, db_path=path)
-    assert len(selected) == 39
+    assert len(selected) == 43
     assert sum(stage == "review" for stage, _ in calls) == 1
     assert all(stage != "body" for stage, _ in calls)
     before = len(calls)

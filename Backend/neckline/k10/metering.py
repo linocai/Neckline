@@ -10,7 +10,7 @@ import logging
 import json
 from pathlib import Path
 from time import monotonic
-from typing import Iterator, Mapping
+from typing import Callable, Iterator, Mapping
 from zoneinfo import ZoneInfo
 
 from neckline.llm.openai_compat import OpenAICompatProvider
@@ -35,6 +35,7 @@ class ProviderSpendContext:
     attempt: int
     kind: str = "model"
     full_text: bool = False
+    clock: Callable[[], datetime] | None = None
 
 
 _SPEND_CONTEXT: ContextVar[ProviderSpendContext | None] = ContextVar("k10_provider_spend", default=None)
@@ -45,6 +46,7 @@ _SAFE_PROVIDER_FAILURES = frozenset({
     "provider_configuration", "provider_dependency", "provider_transport", "provider_http_error",
     "response_json_invalid", "response_structure_invalid", "response_truncated", "response_empty",
     "response_filtered", "provider_tool_limit",
+    "insufficient_balance", "rate_limited",
 })
 
 
@@ -82,11 +84,12 @@ class MeteredProvider(OpenAICompatProvider):
     def spend_context(
         self, *, task_id: str, stage: str, item_key: str, attempt: int,
         kind: str = "model", full_text: bool = False,
+        clock: Callable[[], datetime] | None = None,
     ) -> Iterator[None]:
         """Bind a task/stage explicitly around exactly one provider request."""
         if not task_id or not stage or not item_key or isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise ValueError("K10 provider spend context is incomplete")
-        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text))
+        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text, clock))
         try:
             yield
         finally:
@@ -114,7 +117,7 @@ class MeteredProvider(OpenAICompatProvider):
     def _preflight_request(self, *, context: ProviderSpendContext, args: tuple[object, ...], kwargs: Mapping[str, object]) -> tuple[str | None, str | None]:
         """Validate protocol bounds, not a total token or spend allowance."""
         payload = self._spend_payload
-        if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v3":
+        if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v4":
             return None, "execution_not_configured"
         input_sha256 = self._request_input_sha256(args, kwargs)
         options = kwargs.get("model_options")
@@ -164,8 +167,13 @@ class MeteredProvider(OpenAICompatProvider):
                     "promptTokens": int(values[0]), "completionTokens": int(values[1]), "totalTokens": int(values[2]),
                     "searchRequests": None, "searchCredits": None,
                 }
+        context = _SPEND_CONTEXT.get()
+        scoped = context is not None and context.stage in {"analysisPro", "analysisCon", "morning"}
+        settled_at = context.clock().isoformat() if scoped and context.clock is not None else _safe_now()
         store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=actual,
-                                      error_code=error_code, settled_at=_safe_now(), db_path=self._ledger_db)
+                                      error_code=error_code, settled_at=settled_at, db_path=self._ledger_db,
+                                      record_provider_failure=scoped,
+                                      retry_after_seconds=getattr(result, "retry_after_seconds", None))
 
     def chat(self, *args, **kwargs):
         attempt_id, blocked = self._begin_attempt(args=args, kwargs=kwargs)
@@ -213,11 +221,12 @@ def bind_provider_execution_spending(*, provider: object, task_id: str,
 def provider_spend_context(
     *, provider: object, task_id: str, stage: str, item_key: str, attempt: int,
     kind: str = "model", full_text: bool = False,
+    clock: Callable[[], datetime] | None = None,
 ):
     """Return an explicit context manager; never leak task context to threads."""
     if isinstance(provider, MeteredProvider):
         return provider.spend_context(task_id=task_id, stage=stage, item_key=item_key, attempt=attempt,
-                                      kind=kind, full_text=full_text)
+                                      kind=kind, full_text=full_text, clock=clock)
     return nullcontext()
 
 
@@ -229,7 +238,7 @@ def execution_model_options(
     discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
     choices = discovery.get("modelOptions") if isinstance(discovery, Mapping) else None
     base = choices.get(option_stage) if isinstance(choices, Mapping) else None
-    if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v3" or not isinstance(base, Mapping):
+    if not isinstance(payload, Mapping) or payload.get("executionVersion") != "k10-execution-v4" or not isinstance(base, Mapping):
         return None
     # Config validation owns the complete shape; copy only after this local
     # guard so a malformed frozen row cannot reach the wire client.

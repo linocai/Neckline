@@ -63,6 +63,11 @@ class PipelineError(RuntimeError):
         self.code = code
 
 
+class ProviderThrottleYield(DiscoverySliceYield):
+    def __init__(self, delay):
+        self.delay = delay
+
+
 _TS_CODE = re.compile(r"^\d{6}\.(?:SZ|SH|BJ)$")
 _HK_CODE = re.compile(r"^\d{4,5}\.HK$")
 
@@ -142,6 +147,9 @@ def _metadata_resolver_from_configuration(configuration: Mapping[str, Any]) -> P
 
 class DeepSeekDiscoveryModel(DiscoveryModel):
     """真实 DeepSeek V4 Pro 结构化调用；原始资料始终作为不可信数据传入。"""
+    def set_company_profiles(self, *, db_path, profiles_id):
+        self._company_profiles_binding = (db_path, profiles_id)
+
     def __init__(self, provider: LLMProvider, *, market_context_loader: Callable[[str], Mapping[str, Any]] | None = None,
                  historical_context_loader: Callable[..., Mapping[str, Any]] | None = None,
                  historical_local_context_loader: Callable[..., Mapping[str, Any]] | None = None) -> None:
@@ -188,7 +196,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
     def set_execution_policy(self, policy: Mapping[str, Any]) -> None:
         """Bind a validated execution pack.  Production never fills one in locally."""
         if isinstance(policy, Mapping) and "titleTriagePolicy" in policy:
-            if not validate_execution_config({"executionVersion": "k10-execution-v3", "discovery": policy}).ready:
+            if not validate_execution_config({"executionVersion": "k10-execution-v4", "discovery": policy}).ready:
                 raise PipelineError("标题筛选执行配置无效", code="execution_policy_invalid")
             self._execution_policy = dict(policy)
             return
@@ -330,15 +338,38 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             content += "\n请重新输出与上述输出契约一致的完整 JSON 对象；检查外层字段、字段类型和引用。"
             content += ("研究阶段只提交本 action 要求的变化；公司比较仍须完整覆盖指定公司。"
                         if "outputContract" in payload else "不得省略或新增要求覆盖的输入对象。")
+        if getattr(self, "_terminal_provider_error", None) is not None:
+            raise PipelineError("余额不足，已停止后续模型调用", code="insufficient_balance")
         result: LLMResult = self.provider.chat([ChatMessage(role="system", content=system),
                                                 ChatMessage(role="user", content=f"任务:{operation}\n{content}")],
                                                enable_search=False, response_format={"type":"json_object"},
                                                model_options=model_options, **normalization)
+        if result.error_code == "insufficient_balance":
+            self._terminal_provider_error = result.error_code
+        self._thread_usage.retry_after_seconds = result.retry_after_seconds
         record = {"operation": operation, "provider": result.provider, "model": result.model,
                                    "inputTokens": result.prompt_tokens, "outputTokens": result.completion_tokens,
                                    "totalTokens": result.total_tokens, "usageUnavailable": result.usage_unavailable,
                                    "finishReason": result.finish_reason, "errorCode": result.error_code,
                                    "jsonDiagnostics": result.json_diagnostics}
+        binding = getattr(self, "_company_profiles_binding", None)
+        audit = getattr(self._thread_usage, "audit_context", None)
+        if binding is not None and audit is not None:
+            from .schema import write_connection
+            profiles = []
+            def collect(node):
+                if isinstance(node, Mapping):
+                    for key, value in node.items():
+                        if key == "companyProfiles" and isinstance(value, list): profiles.extend(value)
+                        else: collect(value)
+                elif isinstance(node, list):
+                    for value in node: collect(value)
+            collect(payload)
+            profile_text = json.dumps(profiles, ensure_ascii=False, sort_keys=True)
+            record.update(inputCharacters=len(content), profileCharacters=len(profile_text), profileCount=len(profiles))
+            with write_connection(binding[0]) as conn:
+                attempt = conn.execute("SELECT coalesce(max(attempt),0)+1 FROM k10_v2_stage_input_usage WHERE task_id=? AND operation=? AND item_key=?", audit).fetchone()[0]
+                conn.execute("INSERT INTO k10_v2_stage_input_usage VALUES (?,?,?,?,?,?,?,?,?)", (*audit, attempt, len(content), len(profile_text), len(profiles), sha256(content.encode()).hexdigest(), sha256(profile_text.encode()).hexdigest()))
         self.usage_records.append(record)
         self._thread_usage.last = record
         return result
@@ -484,7 +515,15 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                 or not isinstance(historical_context.get("historicalCases"), list)
                 or not isinstance(historical_context.get("historicalCoverage"), Mapping)):
             raise PipelineError("历史案例上下文无效", code="historical_context_invalid")
-        return {"marketContext": market_context, "historicalCases": historical_context["historicalCases"],
+        profile_context = {}
+        binding = getattr(self, "_company_profiles_binding", None)
+        if binding is not None:
+            from .v2_profiles import retrieve_company_context
+            profile_context = retrieve_company_context(db_path=binding[0], profiles_id=binding[1],
+                query=event.headline + " " + json.dumps(event.facts, ensure_ascii=False),
+                hinted_codes=[mapping.company_code for mapping in mappings])
+            profile_context.pop("fixedPool", None)
+        return {**profile_context, "marketContext": market_context, "historicalCases": historical_context["historicalCases"],
                 "historicalCoverage": historical_context["historicalCoverage"]}
 
     def _understand_request_spec(self, *, document: DiscoveryDocument, text: str, text_mode: str,
@@ -519,6 +558,11 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                           "claimId、text、decisionImpact、location 均须为非空字符串；枚举只能从示意所列值中选一个。")
             operation += ("每个事件必须包含 canonicalKey、stageKey、eventState、headline、eventKind 非空字符串及 facts 对象。"
                           "facts 放该事件的当前事实和背景，不能为 null，不能因 claims 已列事实而省略 facts；没有额外事实时可用空对象。")
+        binding = getattr(self, "_company_profiles_binding", None)
+        if binding is not None:
+            from .v2_profiles import retrieve_company_context
+            payload["companyScope"] = retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=text)
+            operation += "固定池和本地资料仅作主体关联线索；保留池外主体事实背景，但后续尽调对象必须是有合理关联的池内公司。"
         return operation, payload
 
     @staticmethod
@@ -795,6 +839,9 @@ class _CheckpointedDiscoveryModel:
         self._policy = payload["discovery"]
         self.fact_cache_hits = 0
         if isinstance(base, DeepSeekDiscoveryModel):
+            from neckline.llm.openai_compat import OpenAICompatProvider
+            if isinstance(base.provider, OpenAICompatProvider):
+                base.provider.defer_rate_limits = True
             bind_provider_execution_spending(provider=base.provider, task_id=task_id,
                                              execution_profile=execution_profile)
 
@@ -1076,6 +1123,7 @@ class _CheckpointedDiscoveryModel:
             thread_usage = getattr(self._base, "_thread_usage", None)
             if thread_usage is not None:
                 thread_usage.last = None
+                thread_usage.audit_context = (self._task_id, operation, item_key)
             def current_usage():
                 if thread_usage is not None:
                     value = getattr(thread_usage, "last", None)
@@ -1154,7 +1202,11 @@ class _CheckpointedDiscoveryModel:
             # digest and may make one new request.
             retryable = ("json" in code or code.startswith("provider_")
                          or code in {"response_empty", "response_filtered", "model_network_failed"})
-            if not retryable or code.endswith("_exhausted"):
+            if code == "rate_limited" and result.attempt_count < int(self._policy["networkMaxAttempts"]):
+                explicit = getattr(getattr(self._base, "_thread_usage", None), "retry_after_seconds", None)
+                delay = explicit if explicit is not None else self._policy["retryBackoffSeconds"][min(result.attempt_count - 1, len(self._policy["retryBackoffSeconds"]) - 1)]
+                raise ProviderThrottleYield(delay)
+            if code in {"insufficient_balance", "rate_limited"} or not retryable or code.endswith("_exhausted"):
                 break
         assert result is not None
         if result.status != "completed" or result.value is None:
@@ -1732,10 +1784,18 @@ def _publish_scan(*, run, scan_id: str, kind: str, db_path: Path, created_at: st
     if leaseguard is not None:
         leaseguard()
     writer.publish_updates(at=updated_at)
+    scan = store.get_scan(scan_id=scan_id, db_path=db_path)
+    config = store.read_run_config(config_id=scan["configId"], revision=scan["configRevision"], db_path=db_path) if scan.get("configId") else None
+    is_v2 = config is not None and config["payload"].get("configVersion") == "k10-v2"
+    all_inputs = tuple(replace(item, source_marker=kind) for item in writer.publication_inputs)
+    def publish_report(conn, available_at):
+        from .v2_store import publish_cards
+        publish_cards(conn, report_id="report_" + scan_id, scan_id=scan_id, kind=kind,
+                      snapshot_id=config["payload"]["strategySnapshotId"], inputs=all_inputs, available_at=available_at)
     return store.publish_opportunities(
         batch_id="publication_" + scan_id, scan_id=scan_id, publication_kind=kind,
-        inputs=tuple(replace(item, source_marker=kind) for item in writer.publication_inputs),
-        db_path=db_path, clock=clock,
+        inputs=tuple(item for item in all_inputs if item.comparison["classification"]["kind"] in {"initial", "independent", "material_stage"}),
+        db_path=db_path, clock=clock, publication_hook=publish_report if is_v2 else None,
     )
 
 
@@ -1819,7 +1879,7 @@ def _morning_fallback_item(*, scan_id: str, target: Mapping[str, Any], cutoff_at
 
 def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, Any]], configuration: Mapping[str, Any],
                          config_id: str, config_revision: int, source_status: str, now: datetime,
-                         report_items: list[dict[str, Any]] | None = None) -> tuple[str, list[str]]:
+                         report_items: list[dict[str, Any]] | None = None, scan_id: str | None = None) -> tuple[str, list[str]]:
     """Persist and sequentially execute only this scan's frozen child reviews before its terminal state."""
     from .morning_runtime import morning_review_handler
 
@@ -1845,7 +1905,7 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
         identity = json.dumps({"candidateId": candidate["candidateId"], "eventId": match["eventId"], "cutoff": parent.input_cutoff_at, "refs": refs}, ensure_ascii=False, sort_keys=True)
         digest = sha256(identity.encode()).hexdigest()[:32]
         task_id = f"morning_review_{digest}"
-        payload = {"candidateId": candidate["candidateId"], "observationId": observations.get(candidate["candidateId"]),
+        payload = {"parentScanId": scan_id, "candidateId": candidate["candidateId"], "observationId": observations.get(candidate["candidateId"]),
                    "originalCutoffAt": scan["cutoffAt"], "morningEvidenceRefs": refs,
                    "independentVerificationRefs": _morning_refs(match.get("independentVerificationRefs")),
                    "companyWindowId": match.get("companyWindowId"), "displayRank": match.get("displayRank"),
@@ -1854,15 +1914,12 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
                    "configId": config_id, "configRevision": config_revision}
         store.enqueue_task(task_id=task_id, kind="morning_review", idempotency_key=f"morning_review:{digest}",
                            input_version=f"{config_id}@{config_revision}", input_cutoff_at=parent.input_cutoff_at,
-                           payload=payload, budget=budget, created_at=_text(now), db_path=parent.db_path)
+                           payload=payload, budget=budget, created_at=_text(now), db_path=parent.db_path,
+                           execution_binding=store.task_execution_profile(task_id=parent.task.task_id, db_path=parent.db_path))
         task_ids.append(task_id)
-        prior_task = store.get_task(task_id=task_id, db_path=parent.db_path)
-        if prior_task is not None and prior_task.status in {"failed", "not_configured"}:
-            # The parent scan keeps the same frozen match list.  An explicit retry of the
-            # child is safe: its idempotency key and evidence refs remain unchanged, and the
-            # worker still enforces its frozen maxAttempts budget.
-            store.retry_task(task_id=task_id, expected_attempt_count=prior_task.attempt_count,
-                             retried_at=_text(now), db_path=parent.db_path)
+        # Re-entering the parent is not authorization to reopen a terminal child.
+        # run_once only claims queued/due or expired-lease work; failed children
+        # keep their outcome until the user explicitly requests a retry.
         child = run_once(db_path=parent.db_path, worker_id=f"{parent.task.task_id}:morning", lease_for=timedelta(minutes=10),
                          handlers={"morning_review": morning_review_handler}, task_id=task_id, clock=_now)
         existing = child or store.get_task(task_id=task_id, db_path=parent.db_path)
@@ -2018,7 +2075,7 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
     parent.require_lease()
     review_state, task_ids = _run_morning_reviews(parent=parent, matches=runnable, configuration=configuration,
         config_id=config_id, config_revision=config_revision, source_status=source_status, now=generated_at,
-        report_items=report_items)
+        report_items=report_items, scan_id=scan_id)
     known = {item.get("opportunityId") for item in report_items}
     for target in targets:
         if target.get("opportunityId") not in known:
@@ -2047,12 +2104,16 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
         if isinstance(gap, str) and gap and gap not in gaps:
             gaps.append(gap)
     stamp = _text(generated_at)
-    report_id = "morning_report_" + sha256((scan_id + "\x1f" + stamp + "\x1f" + str(len(report_items))).encode()).hexdigest()[:32]
     report_coverage = {"coverageStatus": coverage_status, "sourceStatus": source_status, "targetCount": len(targets),
                        "reviewState": review_state, "taskIds": task_ids, "needsReviewCount": needs_review,
                        "failedItemCount": failed_items, "gaps": gaps}
     if additional_coverage:
         report_coverage.update(additional_coverage)
+    # A retry may finish within the same timestamp resolution as the failure.
+    # Different outcomes need different immutable IDs even with the same item count.
+    identity = json.dumps({"scanId": scan_id, "generatedAt": stamp, "coverage": report_coverage,
+                           "groups": groups}, ensure_ascii=False, sort_keys=True)
+    report_id = "morning_report_" + sha256(identity.encode()).hexdigest()[:32]
     # Child reviews can take ownership checks independently; require it again immediately
     # before the report transaction so an expired parent never appends a stale artifact.
     parent.require_lease()
@@ -2111,6 +2172,15 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         raise ValueError("未知扫描窗口")
     if not validate_run_config(configuration, scope="discovery").ready:
         return TaskResult("not_configured", "configuration", error="发现模型或策略配置未就绪")
+    if configuration.get("configVersion") == "k10-v2":
+        from .v2_store import binding_status, FixedCompanyPool
+        frozen_config = store.read_run_config(config_id=config_id, revision=config_revision, db_path=db_path) if config_id else None
+        if binding_status(db_path=db_path, config=frozen_config, execution=execution_profile)["state"] != "configured":
+            return TaskResult("not_configured", "strategy_snapshot", error="今天没跑成 · 参数未配置")
+        metadata = FixedCompanyPool(db_path=db_path, profiles_id=configuration["profileSnapshotId"])
+        setter = getattr(model, "set_company_profiles", None)
+        if callable(setter):
+            setter(db_path=db_path, profiles_id=configuration["profileSnapshotId"])
     base_leaseguard = leaseguard
     profile_payload: Mapping[str, Any] | None = None
     if execution_profile is not None:
@@ -2378,7 +2448,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
 
     recovered_understanding: Mapping[EvidenceRef, Sequence[EventDraft]] | None = None
     discovery_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
-    title_enabled = isinstance(profile_payload, Mapping) and profile_payload.get("executionVersion") == "k10-execution-v3"
+    title_enabled = isinstance(profile_payload, Mapping) and profile_payload.get("executionVersion") == "k10-execution-v4"
     if task_id is not None and execution_profile is not None:
         profile_id, profile_revision, binding_kind = (execution_profile.get("configId"), execution_profile.get("revision"),
                                                       execution_profile.get("bindingKind"))
@@ -2559,10 +2629,9 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                 previous_opportunities=prior_opportunities, understood_by_document=recovered_understanding,
                                 checkpoint=discovery_checkpoint,
                                 selected_source_refs=([doc.evidence_ref for doc in documents] if title_enabled else None),
-                                article_limit=(profile_payload["discovery"]["articleLimits"][kind] if title_enabled else None),
                                 understand_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
                                                         if title_enabled else None),
-                                document_batch_size=(profile_payload["discovery"]["articleLimits"][kind]
+                                document_batch_size=(profile_payload["discovery"]["deepReadConcurrency"]
                                                      if title_enabled else None),
                                 investigate=investigate if title_enabled else None,
                                 investigation_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
@@ -2600,15 +2669,15 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         return TaskResult("failed", "deadline", {"scanId": scan_id, "ingestionState": ingestion.state,
                                                     "safeErrorCode": "DISCOVERY_DEADLINE"},
                           "发现任务已达到固定完成时限")
-    except DiscoverySliceYield:
+    except DiscoverySliceYield as yielded:
         if profile_payload is None or not isinstance(profile_payload.get("discovery"), Mapping):
             raise PipelineError("发现执行包分片配置无效", code="execution_policy_invalid")
-        delay = profile_payload["discovery"].get("continuationDelaySeconds")
-        if isinstance(delay, bool) or not isinstance(delay, int) or delay < 1:
+        delay = yielded.delay if isinstance(yielded, ProviderThrottleYield) else profile_payload["discovery"].get("continuationDelaySeconds")
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < (0 if isinstance(yielded, ProviderThrottleYield) else 1):
             raise PipelineError("发现执行包续跑延迟无效", code="execution_policy_invalid")
         return TaskResult("failed", "discovery_slice", {"scanId": scan_id, "ingestionState": ingestion.state},
                           "发现任务分片继续", retry_at=_now() + timedelta(seconds=delay),
-                          retry_kind="continuation", safe_error_code="DISCOVERY_SLICE")
+                          retry_kind="failure" if isinstance(yielded, ProviderThrottleYield) else "continuation", safe_error_code="rate_limited" if isinstance(yielded, ProviderThrottleYield) else "DISCOVERY_SLICE")
     except FrozenDiscoveryDraftCompatibilityError as exc:
         # Keep the immutable documents and draft readable for an explicit operator rerun.  A
         # recovered worker must finish the running scan instead of leaving it lease-stuck, but
@@ -2680,6 +2749,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     research_terminal_error = "research_snapshot_missing"
                 elif any(snapshot.execution_status != "ok" for snapshot in snapshots):
                     research_terminal_error = "research_execution_failed"
+    if getattr(model, '_terminal_provider_error', None) == 'insufficient_balance':
+        research_terminal_error = 'insufficient_balance'
     if research_terminal_error is not None:
         final_coverage["researchExecutionState"] = "failed"
         final_coverage["researchFailure"] = research_terminal_error
@@ -2725,7 +2796,7 @@ def _append_unavailable_morning_report(*, context: TaskContext, cutoff: datetime
     existing = store.get_scan(scan_id=scan_id, db_path=context.db_path)
     if existing is None:
         context.require_lease()
-        store.create_scan(scan_id=scan_id, window_kind="morning", cutoff_at=context.input_cutoff_at,
+        store.create_scan(scan_id=scan_id, window_kind="morning", cutoff_at=store._utc_instant(context.input_cutoff_at),
             config_id=frozen.get("configId"), config_revision=frozen.get("revision"), status="running",
             coverage={"pipelineState": "morning_unavailable", "reason": reason}, created_at=_text(generated_at),
             completed_at=None, db_path=context.db_path)
@@ -2810,7 +2881,7 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     execution_profile = context.execution_profile
     execution_payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
     if (not isinstance(execution_payload, Mapping)
-            or execution_payload.get("executionVersion") != "k10-execution-v3"
+            or execution_payload.get("executionVersion") != "k10-execution-v4"
             or not validate_execution_config(execution_payload).ready):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
@@ -2915,6 +2986,13 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
                 task_status="failed", failure_stage="discovery_failed",
             )
         raise
+    if frozen["payload"].get("configVersion") == "k10-v2" and result.retry_at is not None:
+        from .v2_store import record_incomplete_report
+        failed_scan_id = result.checkpoint.get("scanId") if isinstance(result.checkpoint, Mapping) else None
+        if failed_scan_id:
+            record_incomplete_report(db_path=context.db_path, scan_id=failed_scan_id,
+                snapshot_id=frozen["payload"]["strategySnapshotId"], state="retry_pending" if result.retry_at else result.status,
+                error_code=result.safe_error_code or result.checkpoint.get("safeErrorCode"), created_at=_text(now()))
     # A slice is still the same running scan. Preserve its scheduled continuation;
     # assembling a morning report here would require a terminal scan and turn a
     # normal yield into a terminal morning_report failure.

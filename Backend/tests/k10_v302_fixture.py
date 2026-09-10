@@ -31,6 +31,7 @@ from neckline.data.tushare_client import TushareResult
 from neckline.k10.schema import initialize_schema
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.llm.base import LLMResult
+from tests.debate_fixture import debate_text
 
 from .k10_v306_fixture import append_approved_execution_profile
 
@@ -251,7 +252,7 @@ def _run_analyses(path: Path, window: dict[str, Any]) -> None:
         task_input_version="fixture-config", task_input_cutoff_at=FIRST_AVAILABLE, task_payload=payload,
         task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-08-31T09:00:00+08:00", db_path=path)
     _bind_v305_execution(path, task_id=observed.task_id, bound_at="2026-08-31T09:00:00+08:00")
-    resolver = lambda **_: ProviderResolution("configured", _Provider(["第一版正方全文", "第一版反方全文"]), "fixture", None)
+    resolver = lambda **_: ProviderResolution("configured", _Provider([debate_text("第一版正方全文"), debate_text("第一版反方全文")]), "fixture", None)
     completed = run_once(db_path=path, worker_id="fixture-analysis-1", lease_for=timedelta(minutes=5),
         handlers={"analysis": runtime.production_analysis_handler(provider_resolver=resolver)},
         clock=lambda: datetime.fromisoformat("2026-08-31T01:01:00+00:00"), task_id=observed.task_id)
@@ -271,7 +272,7 @@ def _run_analyses(path: Path, window: dict[str, Any]) -> None:
         input_cutoff_at="2026-09-04T16:00:00+08:00", task_input_version="fixture-config", task_payload=payload,
         task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-09-04T16:00:00+08:00", db_path=path)
     _bind_v305_execution(path, task_id=str(request["taskId"]), bound_at="2026-09-04T16:00:00+08:00")
-    resolver = lambda **_: ProviderResolution("configured", _Provider(["第二版正方全文", "第二版反方全文"]), "fixture", None)
+    resolver = lambda **_: ProviderResolution("configured", _Provider([debate_text("第二版正方全文"), debate_text("第二版反方全文")]), "fixture", None)
     completed = run_once(db_path=path, worker_id="fixture-analysis-2", lease_for=timedelta(minutes=5),
         handlers={"analysis": runtime.production_analysis_handler(provider_resolver=resolver)},
         clock=lambda: datetime.fromisoformat("2026-09-04T08:01:00+00:00"), task_id=request["taskId"])

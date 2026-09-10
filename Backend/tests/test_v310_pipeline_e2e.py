@@ -80,7 +80,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
                     title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
-                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None):
+                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -91,6 +91,16 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
         message = wire["messages"][-1]["content"]
         payload = json.loads(message.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
         action = payload.get("action")
+        if provider_status and 'http_'+str(provider_status) not in calls and ((failure_action is None and not calls) or action == failure_action):
+            calls.append('http_'+str(provider_status))
+            return httpx.Response(provider_status,headers={'Retry-After':'0'},json={'error':{'message':'synthetic failure'}})
+
+        if v2 and action:
+            scope = payload['evidencePacket']['companyScope']
+            assert len(scope['fixedPool']) == 1089
+            assert '300002.SZ' in scope['candidateCompanyCodes']
+            assert scope['companyProfiles'] and all(row['review_status']=='local_draft_awaiting_user' for row in scope['companyProfiles'])
+            assert all('evidence' not in row and 'notes' not in row for row in scope['companyProfiles'])
         if action:
             calls.append("research:" + action)
             if (malformed_action == action
@@ -160,14 +170,14 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
         elif payload.get("operation") == "titleSelectionReview":
             calls.append("titleReview")
             result = {"complete": True, "kept": [{"i": row["i"], "reason": "有实质新增"} for row in payload["items"]], "removed": []}
-        elif "articleLimit" in payload:
+        elif "inputCount" in payload:
             calls.append("titleGlobal")
             result = {"selectionComplete": True, "reviewedCount": len(payload["items"]),
                       "selected": [{"i": row["i"], "selectedRank": index + 1, "reason": "入选"}
                                    for index, row in enumerate(payload["items"])], "merged": []}
         elif "items" in payload:
             calls.append("titleBatch")
-            result = {"items": [{"i": index, "status": "candidate", "matterKey": "project", "stageKey": "new", "reason": "项目送样"}
+            result = {"items": [{"i": index, "status": "candidate", "matterKey": "project", "stageKey": "new", "reason": "项目送样", **({"companyCodes":["300002.SZ"]} if v2 else {})}
                                  for index, _ in enumerate(payload["items"])]}
             if title_response == "array":
                 result = result["items"]
@@ -224,6 +234,10 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
         if action == truncate_action and calls.count("research:" + str(action)) == 2:
             assert "上次达到输出长度限制" in message
             assert "增量变化" in message
+        if v2 and action:
+            result = json.loads(json.dumps(result).replace("300003.SZ","300005.SZ").replace("300002.SZ","300004.SZ").replace("300001.SZ","300002.SZ"))
+        if outside_pool and action == "plan_gaps":
+            result["questions"][0]["companyCodes"] = ["600000.SH"]
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": json.dumps(result)}, "finish_reason": "length" if truncated else "stop"}],
                                          "usage": {"prompt_tokens": 3, "completion_tokens": 3, "total_tokens": 6}})
 
@@ -235,7 +249,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None):
+         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None):
     monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
@@ -248,17 +262,26 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
             ((DAY + timedelta(days=2)).strftime("%Y%m%d"),),
         ])
     store.set_run_control(state="open", reason_code="fixture", changed_at=NOW.isoformat(), changed_by="test", db_path=db_path)
-    config_id, config_revision = "b39", store.append_run_config(config_id="b39", payload=_config(), created_at=NOW.isoformat(), db_path=db_path)
+    config_id, config_revision = "b39", store.append_run_config(config_id="b39", payload=(json.loads((Path(__file__).parents[1]/"neckline/config/k10-v2.json").read_text()) if v2 else _config()), created_at=NOW.isoformat(), db_path=db_path)
     execution_id, execution_revision = append_approved_execution_profile(db_path=db_path, created_at=NOW.isoformat(), config_id="b39-execution")
+    if v2:
+        from neckline.k10.v2_profiles import import_profiles, UNIVERSE_ID, PROFILES_ID
+        from neckline.k10.v2_store import bind_strategy
+        source=Path('/Users/linotsai/Lino/whynotme')
+        import_profiles(universe_file=source/'research/K10-v2初始股票池_20260909.json',profiles_dir=source/'artifacts/output/k10-company-profiles-v2-20260909',
+            db_path=db_path,confirmed_target=db_path,universe_id=UNIVERSE_ID,profiles_id=PROFILES_ID,imported_at=NOW.isoformat())
+        bind_strategy(db_path=db_path,snapshot_id='k10-v2-20260909',config_id=config_id,config_revision=config_revision,
+            execution_config_id=execution_id,execution_config_revision=execution_revision,created_at=NOW.isoformat())
     task_id = enqueue_scan(db_path=db_path, kind="evening", trading_day=DAY, config_id=config_id, config_revision=config_revision,
                            execution_config_id=execution_id, execution_config_revision=execution_revision, now=NOW,
                            bootstrap_cutoff=(evening_cutoff(DAY) - timedelta(hours=2)).isoformat())
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
                             title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
-                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate)
+                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate, v2=v2, provider_status=provider_status, outside_pool=outside_pool, failure_action=failure_action)
     provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
+    provider.max_attempts = 1
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))
     monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", _News)
     gateway = _Gateway()
@@ -342,7 +365,7 @@ def test_cli_worker_authorized_same_task_recovery_reuses_frozen_work_and_retries
     scan = store.get_scan(scan_id=execution["checkpoint"]["scanId"], db_path=db_path)
     assert scan is not None
     with sqlite3.connect(db_path) as conn:
-        before_admissions = conn.execute("SELECT COUNT(*) FROM k10_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0]
+        before_admissions = conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0]
         before_fulltext = conn.execute(
             "SELECT COUNT(*) FROM k10_external_attempts WHERE task_id=? AND stage='fullText'", (task_id,)
         ).fetchone()[0]
@@ -367,7 +390,7 @@ def test_cli_worker_authorized_same_task_recovery_reuses_frozen_work_and_retries
     assert resumed_calls[0] == "research:close_research"  # explicit retry of the known failed action
     assert gateway.search_paths == ["path-1", "path-2"]
     with sqlite3.connect(db_path) as conn:
-        after_admissions = conn.execute("SELECT COUNT(*) FROM k10_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0]
+        after_admissions = conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE task_id=?", (task_id,)).fetchone()[0]
         after_fulltext = conn.execute(
             "SELECT COUNT(*) FROM k10_external_attempts WHERE task_id=? AND stage='fullText'", (task_id,)
         ).fetchone()[0]

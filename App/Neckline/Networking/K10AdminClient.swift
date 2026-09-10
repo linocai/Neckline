@@ -17,7 +17,7 @@ actor K10AdminClient: K10AdminServicing {
     private let session: URLSession
 
     init(baseURL: URL, token: String, session: URLSession = .shared) {
-        self.baseURL = baseURL; self.token = token; self.session = session
+        self.baseURL = baseURL; self.token = token; self.session = K10NetworkIsolation.session(session)
     }
 
     func providers() async throws -> [K10Provider] { let page: K10ProviderList = try await request("/api/v1/settings/providers", method: "GET", body: Optional<Data>.none); return page.items }
@@ -37,6 +37,7 @@ actor K10AdminClient: K10AdminServicing {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { throw K10APIError.server(0, "服务地址无效") }
         components.path = path
         guard let url = components.url else { throw K10APIError.server(0, "请求地址无效") }
+        try K10NetworkIsolation.validate(url)
         var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 15
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }

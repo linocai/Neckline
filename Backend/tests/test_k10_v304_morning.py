@@ -89,8 +89,9 @@ def test_v304_withdrawal_preserves_independent_refs_without_relabelling_morning_
     assert {ref["documentId"] for ref in visible} == {"doc-v304-morning", "doc-v304-independent"}
 
 
-def _runtime_context(*, independent_refs, cutoff: str = "2026-09-07T01:00:00+00:00") -> TaskContext:
-    return TaskContext(
+def _runtime_context(*, path, independent_refs, cutoff: str = "2026-09-07T01:00:00+00:00") -> TaskContext:
+    from tests.morning_context_fixture import persist_context
+    return persist_context(TaskContext(
         Task("morning-v304", "morning_review", "queued", 1, None, None, {
             "candidateId": "candidate-v304", "originalCutoffAt": "2026-09-06T12:00:00+00:00",
             "morningEvidenceRefs": [{"documentId": "doc-v304-morning", "revision": 1}],
@@ -98,8 +99,8 @@ def _runtime_context(*, independent_refs, cutoff: str = "2026-09-07T01:00:00+00:
             "companyWindowId": "window-v304", "displayRank": 1, "selectionState": "unhandled",
             "lifecycle": "active", "isNew": False, "sourceStatus": "complete",
             "configId": "cfg", "configRevision": 1,
-        }), {}, {}, "v", cutoff, Path("/tmp/morning-v304-handler.sqlite"), Event(),
-    )
+        }), {}, {}, "v", cutoff, path, Event(),
+    ))
 
 
 def _install_runtime_fakes(monkeypatch, *, response):
@@ -126,7 +127,7 @@ def test_v304_runtime_rejects_invalidated_claim_with_only_unrelated_independent_
         "material": True, "reasonStatus": "invalidated", "observationStatus": "needs_review", "summary": "撤回",
         "materialContraryEvidence": [{"documentId": "doc-v304-morning", "revision": 1, "claim": "普通晨间反证"}],
     })
-    result = runtime.morning_review_handler(_runtime_context(independent_refs=[{"documentId": "doc-v304-independent", "revision": 1}]))
+    result = runtime.morning_review_handler(_runtime_context(path=tmp_path/"morning.sqlite", independent_refs=[{"documentId": "doc-v304-independent", "revision": 1}]))
     assert result.status == "failed"
     assert result.stage == "model"
     assert "直接引用独立核验资料" in result.error
@@ -138,7 +139,7 @@ def test_v304_runtime_keeps_pending_morning_contrary_visible_before_independent_
         "materialContraryEvidence": [{"documentId": "doc-v304-morning", "revision": 1, "claim": "尚待独立核验"}],
     })
     monkeypatch.setattr(runtime, "record_morning_update", lambda **_: "lifecycle-v304")
-    result = runtime.morning_review_handler(_runtime_context(independent_refs=[]))
+    result = runtime.morning_review_handler(_runtime_context(path=tmp_path/"morning.sqlite", independent_refs=[]))
     assert result.status == "completed"
     assert result.checkpoint["reportSection"] == "needs_review"
     assert result.checkpoint["reportItem"]["content"]["independentVerificationRefs"] == []

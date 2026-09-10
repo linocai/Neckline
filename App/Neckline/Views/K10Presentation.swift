@@ -65,6 +65,8 @@ func k10AnomalyReasonText(_ value: String) -> String {
     return fields.isEmpty ? "不同来源数值存在冲突" : "不同来源的\(fields)数值存在冲突"
 }
 func k10CoverageGapText(_ value: String) -> String {
+    if value.hasPrefix("morning_source_") { return "晨间资料覆盖不完整，复核结论仍有资料缺口" }
+    if value.hasPrefix("morning_review_") { return "部分晨间复核尚未完成，已完成内容保留" }
     let known = [
         "historical_success_case_missing":"历史成功案例缺失", "historical_flat_case_missing":"历史平淡案例缺失",
         "historical_failure_case_missing":"历史失败案例缺失", "independent_verification_missing":"独立核验资料缺失",
@@ -80,6 +82,10 @@ func k10ExecutionStageText(_ value: String) -> String {
 
 func k10ExecutionFailureText(_ value: String) -> String {
     let known = [
+        "insufficient_balance": "模型服务余额不足，任务已停止并保留进度",
+        "rate_limited": "模型服务限流，按重试安排继续",
+        "provider_http_402": "模型服务余额不足，任务已停止并保留进度",
+        "provider_http_429": "模型服务限流，按重试安排继续",
         "model_output_invalid": "模型返回格式待修复", "model_response_unreadable": "模型响应无法读取",
         "model_response_incomplete": "模型响应不完整", "network_retry_exhausted": "网络重试已用尽",
         "source_unavailable": "资料来源暂不可用", "credentials_missing": "推送凭证未配置",

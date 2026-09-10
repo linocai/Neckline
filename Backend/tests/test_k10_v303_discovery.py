@@ -128,7 +128,7 @@ def _seed_open_opportunity(path, *, stage: str = "approval") -> dict:
             source_marker="evening", related_opportunity_id=None,
         ),), db_path=path, clock=lambda: NOW,
     )
-    old = store.list_opportunities(db_path=path)[0]
+    old = store.list_opportunities(db_path=path, as_of=NOW)[0]
     return {**old, "canonicalKey": "event-shared"}
 
 

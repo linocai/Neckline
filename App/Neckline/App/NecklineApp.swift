@@ -35,6 +35,20 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
 
     init() {
         #if DEBUG
+        if let raw = ProcessInfo.processInfo.environment["NK_QA_API_URL"] {
+            precondition(ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1")
+            guard let url = URL(string: raw), ["127.0.0.1", "localhost", "::1"].contains(url.host ?? "") else {
+                preconditionFailure("Local QA requires a loopback API URL")
+            }
+            let suite = "top.linotsai.neckline.qa.local-api"
+            let defaults = UserDefaults(suiteName: suite)!
+            defaults.removePersistentDomain(forName: suite)
+            let localConfig = AppConfig(defaults: defaults, tokenStore: K10SyntheticTokenStore(), loadPersistentCredentials: false)
+            localConfig.baseURLOverride = url.absoluteString
+            _config = StateObject(wrappedValue: localConfig)
+            _model = State(initialValue: AppModel())
+            return
+        }
         if Self.usesSyntheticUI {
             let suite = "top.linotsai.neckline.synthetic-ui"
             let defaults = UserDefaults(suiteName: suite)!
@@ -82,6 +96,7 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
     private func applyQARoute() {
         guard ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1" else { return }
         if let name = ProcessInfo.processInfo.environment["NK_QA_TAB"], let tab = AppTab(rawValue: name) { model.tab = tab }
+        if let window = ProcessInfo.processInfo.environment["NK_QA_DAILY_WINDOW"], ["evening", "morning"].contains(window) { model.dailyWindow = window }
         if ProcessInfo.processInfo.environment["NK_QA_READING"] == "1",
            let window = model.companyWindows.first(where: { model.selection(for: $0)?.state == "kept" }) {
             model.tab = .focus

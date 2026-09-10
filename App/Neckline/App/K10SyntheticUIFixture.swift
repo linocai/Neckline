@@ -126,7 +126,7 @@ actor K10SyntheticUIService: K10Servicing {
 
     init(presentsB39State: Bool = false) { self.presentsB39State = presentsB39State }
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.1.0 Build 39") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.2.0 Build 54") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"
@@ -142,7 +142,7 @@ actor K10SyntheticUIService: K10Servicing {
             nextRetryAt: nil, safeFailures: [],
             runControl: K10ExecutionRunControl(state: "paused", reasonCode: "user_paused", changedAt: cutoff),
             titleCounts: K10ExecutionTitleCounts(received: 30, exactDeduplicated: 2, triaged: 28, merged: 5, notSelected: 19, protected: 1, partial: 0),
-            articleCounts: K10ExecutionArticleCounts(limit: 80, selected: 4, admitted: 4, completed: 3, missingBody: 1, tavilyExcerpt: 2, tavilyFullArticle: 0),
+            articleCounts: K10ExecutionArticleCounts(limit: nil, selected: 4, admitted: 4, completed: 3, missingBody: 1, tavilyExcerpt: 2, tavilyFullArticle: 0),
             attemptCounts: K10ExecutionAttemptCounts(started: 8, succeeded: 7, failed: 0, unknown: 1),
             factCacheHits: 2,
         ) : nil
@@ -191,9 +191,41 @@ actor K10SyntheticUIService: K10Servicing {
         if presentsEmptyState { return [] }
         let eveningAction = actions[Self.first.companyWindowId] ?? WindowAction()
         let lateAction = actions[Self.late.companyWindowId] ?? WindowAction()
-        let evening = makeEveningWindow(action: eveningAction)
-        let morningLate = makeLateWindow(action: lateAction)
+        var evening = makeEveningWindow(action: eveningAction)
+        var morningLate = makeLateWindow(action: lateAction)
+        evening.strategyVersion = "K10-v2"
+        morningLate.strategyVersion = "K10-v2"
         return [evening, morningLate]
+    }
+
+    func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
+        if presentsEmptyState { return K10DailyReportResponse(schemaVersion: 8, state: "empty", reason: nil, report: nil) }
+        let windows = try await companyWindows()
+        let evening = window == "evening"
+        let relevant = windows.filter { evening ? $0.id == Self.first.companyWindowId : true }
+        let cards = relevant.enumerated().map { index, company in
+            K10DailyCard(
+                cardId: "daily-\(window)-\(company.companyCode)", companyCode: company.companyCode,
+                companyName: company.companyName ?? company.companyCode, rank: index + 1,
+                section: evening ? "evening" : (company.id == Self.first.companyWindowId ? "updated" : "added"),
+                companyWindowId: company.id, currentSelectionState: company.currentSelectionState ?? "unhandled",
+                d1TradeDate: company.d1TradeDate, d2TradeDate: company.d2TradeDate, sampleClass: company.sampleClass,
+                strategyVersion: "K10-v2", summary: "合成资料：验证环节出现新进展，相关产品已有公开记录，公司关联仍需区分实际业务与市场传闻。",
+                twoDayReason: "接下来两日关注验证结果是否出现实质披露；旧消息再次展示不重开成绩窗口。",
+                uncertainty: ["尚未取得公司正式确认；该信息按未核实消息展示。"], sourceRefs: [Self.source],
+                catalysts: company.opportunities.map { opportunity in
+                    K10CardCatalyst(eventId: opportunity.eventId, eventRevision: opportunity.eventRevision,
+                        opportunityId: opportunity.id, companyWindowId: company.id, headline: "新工艺进入验证阶段",
+                        summary: "共同事件事实只记录一次；这条催化保留自己的依据与原始观察窗口。",
+                        classification: "continuation", verificationStatus: "unverified")
+                }, priceReaction: "合成行情：D1 收盘 12.00；仅为价格观察，不是假定成交收益。")
+        }
+        let report = K10DailyReport(reportId: "daily-\(window)", strategyVersion: "K10-v2", strategySnapshotId: "synthetic-v2",
+            windowKind: window, parentReportId: evening ? nil : "daily-evening", cutoffAt: evening ? "2026-09-06T21:00:00+08:00" : "2026-09-07T09:00:00+08:00",
+            verificationCutoffAt: "2026-09-07T09:10:00+08:00", availableAt: evening ? "2026-09-06T21:10:00+08:00" : "2026-09-07T09:40:00+08:00",
+            status: "completed", eveningCards: evening ? cards : [], updatedCards: cards.filter { $0.section == "updated" },
+            addedCards: cards.filter { $0.section == "added" }, nextCursor: nil)
+        return K10DailyReportResponse(schemaVersion: 8, state: "available", reason: nil, report: report)
     }
 
     func opportunity(id: String) async throws -> K10OpportunityDetail {

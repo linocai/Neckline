@@ -43,7 +43,7 @@ def select_title_documents(
     """
     policy = execution_profile["payload"]["discovery"]
     approved = policy["titleTriagePolicy"]
-    article_limit = policy["articleLimits"][window_kind]
+    input_count = len(documents)
     batch_size = policy["titleBatchSize"]
     batch_concurrency = policy["titleTriageConcurrency"]
     if (isinstance(batch_concurrency, bool) or not isinstance(batch_concurrency, int)
@@ -72,14 +72,14 @@ def select_title_documents(
     store.freeze_title_triage_manifest(
         task_id=task_id, input_manifest_sha256=_digest(input_refs), window_kind=window_kind,
         policy_id=approved["policyId"], policy_revision=approved["revision"],
-        policy_content_sha256=approved["contentSha256"], article_limit=article_limit,
+        policy_content_sha256=approved["contentSha256"], input_count=input_count,
         input_refs=input_refs, batch_count=(len(titles) + batch_size - 1) // batch_size,
         title_status="frozen", created_at=_now(), db_path=db_path,
     )
     frozen = store.read_title_selection_manifest(task_id=task_id, db_path=db_path)
     if frozen is not None:
         selected = frozen["selectedRefs"]
-        if len(selected) > article_limit or any((r["documentId"], r["revision"]) not in by_ref for r in selected):
+        if len(selected) > input_count or any((r["documentId"], r["revision"]) not in by_ref for r in selected):
             raise TitleTriageProtocolError("冻结的正文名单不匹配本轮来源")
         return tuple(by_ref[(row["documentId"], row["revision"])] for row in selected)
 
@@ -103,8 +103,33 @@ def select_title_documents(
 
     def batch_call(items):
         instruction, payload = batch_request_spec(items, title_policy)
+        binding = getattr(model, "_company_profiles_binding", None)
+        if binding is None:
+            binding = getattr(getattr(model, "_base", None), "_company_profiles_binding", None)
+        if binding is not None:
+            from .v2_profiles import read_profiles, retrieve_company_context
+            index = read_profiles(db_path=binding[0], profiles_id=binding[1], index_only=True)
+            text = " ".join(item.title for item in items).casefold()
+            routing = retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=text)
+            recalled = [row for row in index if row["ts_code"] in routing["candidateCompanyCodes"]]
+            payload = {**payload, "fixedPool": [{"companyCode": row["ts_code"], "name": row["name"]} for row in index], "recalledCompanyIndex": recalled}
+            payload["output"]["items"][0]["companyCodes"] = ["possible fixedPool company code"]
+            instruction += "companyCodes返回可能关联的池内公司，可为空；无合理关联时说明。只研究fixedPool内公司。索引未命中不能跳过标题；依据语义识别合理关联，需要正文则保留。索引是待核线索而非事实。不得逐标题搜索。"
         raw = operation("titleBatch", instruction, payload, lambda value: normalize_batch_result(value, items))
-        return validate_batch_result(raw, items)
+        results = validate_batch_result(raw, items)
+        if binding is not None:
+            from .schema import write_connection
+            allowed_codes = {row["ts_code"] for row in index}
+            with write_connection(db_path) as conn:
+                for result in results:
+                    if not set(result.company_codes) <= allowed_codes:
+                        raise TitleTriageProtocolError("标题模型引用池外公司")
+                    content = json.dumps(list(result.company_codes), sort_keys=True)
+                    existing = conn.execute("SELECT company_codes_json FROM k10_v2_title_company_hints WHERE task_id=? AND document_id=? AND revision=?", (task_id,result.document_id,result.revision)).fetchone()
+                    if existing and existing[0] != content:
+                        raise TitleTriageProtocolError("冻结标题公司线索不可覆盖")
+                    conn.execute("INSERT OR IGNORE INTO k10_v2_title_company_hints VALUES (?,?,?,?)", (task_id,result.document_id,result.revision,content))
+        return results
 
     def reconcile_call(items, results, limit):
         instruction, payload = reconcile_request_spec(items, results, limit, title_policy)

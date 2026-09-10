@@ -24,10 +24,15 @@ class _RetryableUpstreamStatus(RuntimeError):
         super().__init__(f"上游 {status_code}")
         self.status_code = status_code
         try:
-            parsed = float(retry_after) if retry_after is not None else 2.0
+            parsed = float(retry_after) if retry_after is not None else None
         except (TypeError, ValueError):
-            parsed = 2.0
-        self.retry_after_seconds = max(0.0, parsed)
+            from datetime import datetime, timezone
+            from email.utils import parsedate_to_datetime
+            try:
+                parsed = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                parsed = None
+        self.retry_after_seconds = max(0.0, parsed) if parsed is not None else None
 
 
 _RETRYABLE_UPSTREAM_CODES = {"1302", "1305"}
@@ -120,6 +125,10 @@ def _model_options(options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
 
 
 def _failure_code(reason: str) -> str:
+    if reason.startswith("上游 402") or reason.startswith("上游 429/1113"):
+        return "insufficient_balance"
+    if reason.startswith("上游 429"):
+        return "rate_limited"
     if reason.startswith("上游 "):
         status = reason.removeprefix("上游 ").split("/", 1)[0]
         return "provider_http_" + status if status.isdigit() and len(status) == 3 else "provider_http_error"
@@ -270,7 +279,7 @@ class OpenAICompatProvider(LLMProvider):
                 payload["tools"] = tools
             body, err = self._post(payload, transport)
             if err is not None:
-                return LLMResult(ok=False, reason=err, error_code=_failure_code(err),
+                return LLMResult(ok=False, reason=err, error_code=_failure_code(err), retry_after_seconds=getattr(self, "_last_retry_after_seconds", None),
                                  provider=self.name, model=self.model, raw_responses=raw_responses,
                                  **_actual_usage(raw_responses))
             raw_responses.append(body)
@@ -393,8 +402,10 @@ class OpenAICompatProvider(LLMProvider):
                 break
             except Exception as e:  # noqa: BLE001  超时/网络/连接异常 → 换新连接重试
                 last_exc = e
+                if isinstance(e, _RetryableUpstreamStatus) and getattr(self, "defer_rate_limits", False):
+                    break
                 retry_delay = (
-                    min(e.retry_after_seconds, self.read_timeout)
+                    min(e.retry_after_seconds if e.retry_after_seconds is not None else 2.0, self.read_timeout)
                     if isinstance(e, _RetryableUpstreamStatus) else 0.0
                 )
                 # ⚠ 流式下把**这次已经流了多久**也打出来:它是判「是真卡死(≈ 一个
@@ -407,7 +418,8 @@ class OpenAICompatProvider(LLMProvider):
                 if attempt < self.max_attempts and retry_delay:
                     time.sleep(retry_delay)
         if outcome is None:
-            reason = f"调用异常 {type(last_exc).__name__}" if last_exc is not None else "调用异常"
+            reason = str(last_exc) if isinstance(last_exc, _RetryableUpstreamStatus) else f"调用异常 {type(last_exc).__name__}" if last_exc is not None else "调用异常"
+            self._last_retry_after_seconds = last_exc.retry_after_seconds if isinstance(last_exc, _RetryableUpstreamStatus) else None
             return None, reason
         return outcome
 
@@ -415,7 +427,7 @@ class OpenAICompatProvider(LLMProvider):
         """等待完整的非流式 JSON 响应；读超时由 `_post` 的 httpx 客户端执行。"""
         resp = client.post(self.api_url, json=payload, headers=self._headers())
         business_code = _upstream_business_code(resp) if resp.status_code != 200 else None
-        if resp.status_code == 429 and business_code in _RETRYABLE_UPSTREAM_CODES:
+        if resp.status_code == 429 and business_code != "1113":
             raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
         if resp.status_code != 200:
             suffix = f"/{business_code}" if business_code else ""
@@ -434,7 +446,7 @@ class OpenAICompatProvider(LLMProvider):
             if resp.status_code != 200:
                 resp.read()
             business_code = _upstream_business_code(resp) if resp.status_code != 200 else None
-            if resp.status_code == 429 and business_code in _RETRYABLE_UPSTREAM_CODES:
+            if resp.status_code == 429 and business_code != "1113":
                 raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
             if resp.status_code != 200:
                 suffix = f"/{business_code}" if business_code else ""

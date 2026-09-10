@@ -231,5 +231,11 @@ def validate_classification(
     if kind in NEW_KINDS and exact is not None:
         result.update(kind="continuation", relatedOpportunityId=exact["opportunityId"],
                       reason="相同催化/阶段已推荐；本次证据追加到原机会。" + result["reason"])
-    result["opportunityKey"] = semantic_key
+    if result["kind"] in UPDATE_KINDS and result.get("relatedOpportunityId") is not None:
+        # An update inherits the explicitly chosen opportunity's identity, including
+        # a material-stage suffix; the generic event key may name an older window.
+        predecessor = next(old for old in previous if old.get("opportunityId") == result["relatedOpportunityId"])
+        result["opportunityKey"] = predecessor["opportunityKey"]
+    else:
+        result["opportunityKey"] = semantic_key
     return result

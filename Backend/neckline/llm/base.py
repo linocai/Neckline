@@ -63,6 +63,7 @@ class LLMResult:
     tavily_credits: Optional[int] = None
     # Safe transport/shape diagnostics; never contain response text or credentials.
     error_code: Optional[str] = None
+    retry_after_seconds: Optional[float] = None
     finish_reason: Optional[str] = None
     json_diagnostics: Dict[str, Any] = field(default_factory=dict)
 

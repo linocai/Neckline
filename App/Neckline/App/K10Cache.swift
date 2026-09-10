@@ -7,6 +7,8 @@ struct K10CacheSnapshot: Codable {
     let companyWindows: [K10CompanyWindow]
     let selections: [K10SelectionDetail]
     let results: K10Results?
+    var dailyEvening: K10DailyReportResponse? = nil
+    var dailyMorning: K10DailyReportResponse? = nil
 }
 
 enum K10Cache {

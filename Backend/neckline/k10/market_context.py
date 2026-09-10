@@ -135,3 +135,39 @@ def attach_frozen_market_context(*, observation_context: Mapping[str, Any], mark
 
 
 __all__ = ["MarketContextError", "attach_frozen_market_context", "collect_market_context", "frozen_analysis_market_context"]
+
+
+def card_price_context(values, *, company_code: str, cutoff_at: str):
+    """Readable publication-time projection; never fetch or backfill on GET."""
+    snapshots = []
+    for value in values:
+        try:
+            snapshot = frozen_analysis_market_context(value, cutoff_at=cutoff_at)
+        except MarketContextError:
+            continue
+        if snapshot['status'] not in {'available', 'partial'} or not snapshot['sourceRefs']:
+            continue
+        as_of = _cutoff(snapshot['asOf'])
+        days = []
+        for day in snapshot['recentDays']:
+            try:
+                close_at = datetime.fromisoformat(str(day['tradeDate']) + 'T15:00:00+08:00')
+            except (KeyError, ValueError):
+                continue
+            pct = _number(day.get('pctChg'))
+            close, prior = _number(day.get('close')), _number(day.get('preClose'))
+            if pct is None and close is not None and prior is not None and prior > 0:
+                pct = (close / prior - 1) * 100
+            if close_at <= as_of and pct is not None:
+                days.append({**day, 'pctChg': pct})
+        if days:
+            day = max(days, key=lambda item: item['tradeDate'])
+            snapshots.append((day['tradeDate'], as_of, snapshot, day))
+    if not snapshots:
+        return '已有价格反应：暂无截止时点前可核的涨跌资料。', None
+    _, _, snapshot, day = max(snapshots, key=lambda item: (item[0], item[1]))
+    context = {'asOf': snapshot['asOf'], 'collectedAt': snapshot.get('collectedAt'),
+               'tradeDate': day['tradeDate'], 'pctChg': day['pctChg'],
+               'sourceRefs': snapshot['sourceRefs']}
+    text = f"已有价格反应：{day['tradeDate']} 收盘较前收盘 {day['pctChg']:+.2f}%。仅为行情观察，不能确认消息或归因。"
+    return text, context

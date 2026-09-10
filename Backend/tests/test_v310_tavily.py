@@ -28,7 +28,7 @@ def _frozen(path, task_id, count, limit=40):
     policy = store.read_title_triage_policy(policy_id=f"{task_id}-execution-policy", revision=1, db_path=path)
     store.freeze_title_triage_manifest(task_id=task_id, input_manifest_sha256=store._hash(refs),
         window_kind="morning" if limit == 40 else "evening", policy_id=policy["policyId"], policy_revision=1,
-        policy_content_sha256=policy["contentSha256"], article_limit=limit, input_refs=refs,
+        policy_content_sha256=policy["contentSha256"], input_count=len(refs), input_refs=refs,
         batch_count=1, title_status="frozen", created_at=NOW.isoformat(), db_path=path)
     for i, ref in enumerate(refs):
         store.record_title_triage_item(task_id=task_id, document_id=ref["documentId"], revision=1,
@@ -50,7 +50,7 @@ class _SearchExtract(_Search):
         self.urls.append(url)
         if self.path:
             with sqlite3.connect(self.path) as conn:
-                assert conn.execute("SELECT COUNT(*) FROM k10_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == 1
+                assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == 1
         return TavilyExtractResponse(True, url, "原始公示：仅取得入围资格，尚未签约或形成订单。", 1, "extract-1")
 
 
@@ -95,8 +95,8 @@ def test_invalid_or_mismatched_question_is_rejected_before_http(tmp_path):
     assert client.calls == 0
 
 
-@pytest.mark.parametrize("limit", [40, 80])
-def test_fulltext_does_not_take_frozen_slots_or_call_extract_at_limit(tmp_path, limit):
+@pytest.mark.parametrize("limit", [41, 101])
+def test_fulltext_is_not_limited_by_the_title_input_count(tmp_path, limit):
     path = tmp_path / "full.sqlite"
     client = _SearchExtract(path)
     gateway, task = _gateway(path, client)
@@ -105,11 +105,11 @@ def test_fulltext_does_not_take_frozen_slots_or_call_extract_at_limit(tmp_path, 
         question=QUESTION, query_path=PATH).eligible_documents[0]
     result = gateway.fetch_fulltext(event=_event(), document=document, question=QUESTION,
         request=_request(document), cutoff_at=NOW)
-    assert result.state == "pending" and result.coverage["reason"] == "article_limit_reached"
-    assert result.coverage["admissionState"] == "rejected"
-    assert client.extract_calls == 0
+    assert result.state == "available"
+    assert result.coverage["admissionState"] == "fulfilled"
+    assert client.extract_calls == 1
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM k10_article_admissions").fetchone()[0] == limit
+        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions").fetchone()[0] == limit + 1
 
 
 def test_fulltext_admitted_before_request_and_restart_reuses_real_body(tmp_path):
@@ -133,8 +133,8 @@ def test_fulltext_admitted_before_request_and_restart_reuses_real_body(tmp_path)
     assert again.documents[0].original_text == result.documents[0].original_text
     assert store.external_attempt_summary(task_id=task, db_path=path)["actualUsage"]["searchCredits"] == 3
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM k10_article_admissions").fetchone()[0] == 38
-        assert conn.execute("SELECT state FROM k10_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == "completed"
+        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions").fetchone()[0] == 38
+        assert conn.execute("SELECT state FROM k10_v2_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == "completed"
 
 
 def test_fulltext_unavailable_keeps_slot_and_is_a_gap_not_refutation(tmp_path):
@@ -148,7 +148,7 @@ def test_fulltext_unavailable_keeps_slot_and_is_a_gap_not_refutation(tmp_path):
     assert not result.documents and result.coverage["reason"] == "tavily_fulltext_unavailable"
     assert result.coverage["requestState"] == "completed"
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT state FROM k10_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == "missing_body"
+        assert conn.execute("SELECT state FROM k10_v2_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == "missing_body"
 
 
 def test_another_question_reuses_one_admitted_article_without_extract_or_another_slot(tmp_path):
@@ -170,7 +170,7 @@ def test_another_question_reuses_one_admitted_article_without_extract_or_another
     assert again.documents[0].evidence_ref == first.documents[0].evidence_ref
     assert client.extract_calls == 1
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM k10_article_admissions").fetchone()[0] == 38
+        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions").fetchone()[0] == 38
 
 
 def test_restart_after_body_persisted_before_article_outcome_does_not_pay_again(tmp_path, monkeypatch):
@@ -194,7 +194,7 @@ def test_restart_after_body_persisted_before_article_outcome_does_not_pay_again(
     assert client.extract_calls == 1
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_execution_item_checkpoints WHERE status!='completed'").fetchone()[0] == 0
-        assert conn.execute("SELECT state FROM k10_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == "completed"
+        assert conn.execute("SELECT state FROM k10_v2_article_admissions WHERE admission_kind='tavily_full_article'").fetchone()[0] == "completed"
 
 
 def test_extract_transport_requests_whole_source_not_query_chunks_and_tracks_credits():

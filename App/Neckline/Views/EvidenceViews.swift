@@ -14,6 +14,7 @@ struct OpportunitySheet: View {
                         title: detail.companyName ?? detail.companyCode,
                         subtitle: detail.eventHeadline ?? "共同事件与公司比较"
                     )
+                    Text(detail.strategyVersion ?? "策略版本未记录").font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     OpportunitySummary(detail: detail)
 
                     V3SectionTitle(title: "共同事实", icon: "checklist")

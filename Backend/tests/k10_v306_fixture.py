@@ -18,12 +18,11 @@ def execution_payload(*, policy_id: str = "v306-title-policy") -> tuple[dict, di
     stages = ("titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize",
               "morning", "analysisPro", "analysisCon", "investigation")
     return policy, {
-        "executionVersion": "k10-execution-v3",
+        "executionVersion": "k10-execution-v4",
         "discovery": {
             "model": "deepseek-v4-pro",
             "titleTriagePolicy": {"policyId": policy_id, "revision": 1, "contentSha256": policy_hash,
                                   "approvalState": "approved", "content": policy},
-            "articleLimits": {"evening": 80, "morning": 40},
             "titleBatchSize": 2, "titleTriageConcurrency": 1, "deepReadConcurrency": 1,
             "networkMaxAttempts": 2, "jsonRepairMaxAttempts": 1, "retryBackoffSeconds": [1],
             "taskSliceSeconds": 60, "completionDeadlineSeconds": 7200, "continuationDelaySeconds": 1,

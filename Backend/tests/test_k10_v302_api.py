@@ -81,7 +81,9 @@ def test_followup_api_requires_complete_parent_and_preserves_request_and_window(
     window = store.list_company_windows(db_path=path)[0]
     window_id = window['companyWindowId']
     monkeypatch.setattr(api, '_now', lambda: '2026-09-07T00:30:00+00:00')
-    with _client(path) as client:
+    from tests.k10_v306_fixture import append_approved_execution_profile
+    append_approved_execution_profile(db_path=path,created_at=NOW,config_id="api-v306-execution")
+    with _client(path, execution_config_binding=("api-v306-execution",1,None)) as client:
         prefix = '/api/v1/k10/company-windows/' + window_id
         command = {'kind':'user_question','question':'新资料会改变排序吗？','sourceRefs':[], 'idempotencyKey':'question-1'}
         assert client.post(prefix + '/analysis-requests', json=command).status_code == 409
@@ -143,7 +145,9 @@ def test_partial_analysis_and_legacy_morning_rows_do_not_break_public_readers(tm
     _freeze_k10_clocks(monkeypatch, '2026-09-07T00:30:00+00:00')
     window=store.list_company_windows(db_path=path)[0]
     prefix='/api/v1/k10/company-windows/'+window['companyWindowId']
-    with _client(path) as client:
+    from tests.k10_v306_fixture import append_approved_execution_profile
+    append_approved_execution_profile(db_path=path,created_at=NOW,config_id="api-v306-execution")
+    with _client(path, execution_config_binding=("api-v306-execution",1,None)) as client:
         selected=client.post(prefix+'/selection',json={'action':'keep','idempotencyKey':'keep'}).json()
         for role,revision in [('pro',1),('morning',99)]:
             store.append_analysis_revision(analysis_id=role,observation_id=selected['observationId'],revision=revision,analysis_kind=role,

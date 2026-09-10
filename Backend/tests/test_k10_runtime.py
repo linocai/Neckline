@@ -9,6 +9,7 @@ from neckline.k10 import runtime, store
 from neckline.k10.providers import ProviderResolution
 from neckline.k10.worker import TaskContext
 from neckline.llm.base import LLMResult
+from tests.debate_fixture import debate_text
 
 
 NOW = "2026-09-06T13:00:00+00:00"
@@ -62,7 +63,7 @@ def _context(task, path, checkpoint=None, *, cutoff=NOW):
 
 
 def _ok(text, *, cache=2):
-    return LLMResult(ok=True, content=text, provider="deepseek", model="deepseek-v4-pro", prompt_tokens=10,
+    return LLMResult(ok=True, content=debate_text(text), provider="deepseek", model="deepseek-v4-pro", prompt_tokens=10,
                      completion_tokens=5, total_tokens=15, usage_unavailable=False,
                      raw_usage={"responses": [{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
                                                 "prompt_cache_hit_tokens": cache}]})

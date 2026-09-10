@@ -1,0 +1,172 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_______ test_early_failure_then_real_api_retry_reuses_same_scan[morning] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1362/test_early_failure_then_real_a0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x109c061d0>
+kind = 'morning'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    def test_early_failure_then_real_api_retry_reuses_same_scan(tmp_path, monkeypatch, kind):
+        from neckline.k10.sources import SourceFetchResult
+        from tests.test_k10_api import _freeze_k10_clocks
+        db, _, _, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        original = pipeline.resolve_deepseek_v4_pro
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        _freeze_k10_clocks(monkeypatch, at.isoformat())
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        def work():
+            return run_once(db_path=db, worker_id='b57-explicit-retry', lease_for=timedelta(minutes=5),
+                handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token='fixture-token',
+                    parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        failed = work()
+        assert failed.status == 'not_configured'
+        with client_for(db) as client:
+            before = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            retried = client.post('/api/v1/k10/jobs/'+tid+'/retry', json={'expectedAttemptCount': failed.attempt_count})
+            assert retried.status_code == 200, retried.text
+        monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', original)
+        class EmptyNews(e2e._News):
+            def fetch_incremental(self, request):
+                return SourceFetchResult(documents=(), next_cursor=None, success_watermark=request.window.cutoff_at,
+                    pages_fetched=1, pages_expected=1, exhausted=True)
+        monkeypatch.setattr(pipeline, 'TuShareMajorNewsAdapter', EmptyNews)
+>       recovered = work()
+                    ^^^^^^
+
+tests/test_b57_review_regressions.py:207: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_b57_review_regressions.py:192: in work
+    return run_once(db_path=db, worker_id='b57-explicit-retry', lease_for=timedelta(minutes=5),
+neckline/k10/worker.py:263: in run_once
+    result = recovered if recovered is not None else handler(context)
+                                                     ^^^^^^^^^^^^^^^^
+tests/test_b57_review_regressions.py:193: in <lambda>
+    handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token='fixture-token',
+neckline/k10/pipeline.py:2962: in production_scan_handler
+    result = execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,
+neckline/k10/pipeline.py:2394: in execute_scan
+    ingestion = ingest_to_sqlite(db_path=db_path, scan_id=scan_id, window=window, adapters=(adapter,),
+neckline/k10/ingestion.py:223: in ingest_to_sqlite
+    create_scan(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+scan_id = 'scan_6fae2a70616f59fb90592ba1781ce69c', window_kind = 'morning'
+cutoff_at = '2026-09-09T01:00:00+00:00', config_id = 'b39', config_revision = 1
+status = 'running'
+coverage = {'sourceOutcomes': [], 'state': 'running', 'window': {'kind': 'morning', 'startAt': '2026-09-08T01:00:00+00:00', 'cuto...': True, ...}, 'sourceInputs': {'tushare-major-news': {'watermark': '2026-09-08T13:00:00+00:00', 'cursor': 'fixture'}}}
+created_at = '2026-09-09T01:10:00+00:00', completed_at = None
+db_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1362/test_early_failure_then_real_a0/b39-e2e.sqlite')
+
+    def create_scan(
+        *, scan_id: str, window_kind: str, cutoff_at: str, config_id: Optional[str],
+        config_revision: Optional[int], status: str, coverage: Mapping[str, Any], created_at: str,
+        completed_at: Optional[str], db_path: Path,
+    ) -> None:
+        if window_kind not in {"evening", "morning"}:
+            raise ValueError("window_kind 必须是 evening 或 morning")
+        with write_connection(db_path) as conn:
+            _require_write_schema(conn)
+            row = (window_kind, cutoff_at, config_id, config_revision, status, _json(coverage), created_at, completed_at)
+            old = conn.execute(
+                "SELECT window_kind,cutoff_at,config_id,config_revision,status,coverage_json,created_at,completed_at "
+                "FROM k10_scans WHERE scan_id=?", (scan_id,)
+            ).fetchone()
+            if old is not None:
+                # A recovered scan retains its original created/coverage values; only its immutable
+                # identity must match the retry request.
+                if tuple(old[:4]) != tuple(row[:4]):
+>                   raise K10Conflict("scan ID 已存在但冻结输入不同")
+E                   neckline.k10.store.K10Conflict: scan ID 已存在但冻结输入不同
+
+neckline/k10/store.py:963: K10Conflict
+_______ test_early_failure_then_real_api_retry_reuses_same_scan[evening] _______
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1362/test_early_failure_then_real_a1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10db10d90>
+kind = 'evening'
+
+    @pytest.mark.parametrize('kind', ['morning', 'evening'])
+    def test_early_failure_then_real_api_retry_reuses_same_scan(tmp_path, monkeypatch, kind):
+        from neckline.k10.sources import SourceFetchResult
+        from tests.test_k10_api import _freeze_k10_clocks
+        db, _, _, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+        original = pipeline.resolve_deepseek_v4_pro
+        at = datetime(2026, 9, 9, 9 if kind == 'morning' else 22, 10, tzinfo=SHANGHAI)
+        _freeze_k10_clocks(monkeypatch, at.isoformat())
+        monkeypatch.setattr(pipeline, '_now', lambda: at)
+        monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('not_configured', None, None, '模型密钥未配置'))
+        tid = enqueue_scan(db_path=db, kind=kind, trading_day=date(2026, 9, 9), config_id='b39', config_revision=1,
+            execution_config_id='b39-execution', execution_config_revision=1, now=at)
+        def work():
+            return run_once(db_path=db, worker_id='b57-explicit-retry', lease_for=timedelta(minutes=5),
+                handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token='fixture-token',
+                    parquet_dir=tmp_path/'parquet', now=lambda: at)}, clock=lambda: at, task_id=tid)
+        failed = work()
+        assert failed.status == 'not_configured'
+        with client_for(db) as client:
+            before = client.get('/api/v1/k10/v2/reports/latest?window='+kind).json()
+            retried = client.post('/api/v1/k10/jobs/'+tid+'/retry', json={'expectedAttemptCount': failed.attempt_count})
+            assert retried.status_code == 200, retried.text
+        monkeypatch.setattr(pipeline, 'resolve_deepseek_v4_pro', original)
+        class EmptyNews(e2e._News):
+            def fetch_incremental(self, request):
+                return SourceFetchResult(documents=(), next_cursor=None, success_watermark=request.window.cutoff_at,
+                    pages_fetched=1, pages_expected=1, exhausted=True)
+        monkeypatch.setattr(pipeline, 'TuShareMajorNewsAdapter', EmptyNews)
+>       recovered = work()
+                    ^^^^^^
+
+tests/test_b57_review_regressions.py:207: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_b57_review_regressions.py:192: in work
+    return run_once(db_path=db, worker_id='b57-explicit-retry', lease_for=timedelta(minutes=5),
+neckline/k10/worker.py:263: in run_once
+    result = recovered if recovered is not None else handler(context)
+                                                     ^^^^^^^^^^^^^^^^
+tests/test_b57_review_regressions.py:193: in <lambda>
+    handlers={kind+'_scan': lambda ctx: pipeline.production_scan_handler(ctx, tushare_token='fixture-token',
+neckline/k10/pipeline.py:2962: in production_scan_handler
+    result = execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,
+neckline/k10/pipeline.py:2394: in execute_scan
+    ingestion = ingest_to_sqlite(db_path=db_path, scan_id=scan_id, window=window, adapters=(adapter,),
+neckline/k10/ingestion.py:223: in ingest_to_sqlite
+    create_scan(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+scan_id = 'scan_582f28a1ecbd01a598c9561c6104de14', window_kind = 'evening'
+cutoff_at = '2026-09-09T13:00:00+00:00', config_id = 'b39', config_revision = 1
+status = 'running'
+coverage = {'sourceOutcomes': [], 'state': 'running', 'window': {'kind': 'evening', 'startAt': '2026-09-08T13:00:00+00:00', 'cuto...': True, ...}, 'sourceInputs': {'tushare-major-news': {'watermark': '2026-09-08T13:00:00+00:00', 'cursor': 'fixture'}}}
+created_at = '2026-09-09T14:10:00+00:00', completed_at = None
+db_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1362/test_early_failure_then_real_a1/b39-e2e.sqlite')
+
+    def create_scan(
+        *, scan_id: str, window_kind: str, cutoff_at: str, config_id: Optional[str],
+        config_revision: Optional[int], status: str, coverage: Mapping[str, Any], created_at: str,
+        completed_at: Optional[str], db_path: Path,
+    ) -> None:
+        if window_kind not in {"evening", "morning"}:
+            raise ValueError("window_kind 必须是 evening 或 morning")
+        with write_connection(db_path) as conn:
+            _require_write_schema(conn)
+            row = (window_kind, cutoff_at, config_id, config_revision, status, _json(coverage), created_at, completed_at)
+            old = conn.execute(
+                "SELECT window_kind,cutoff_at,config_id,config_revision,status,coverage_json,created_at,completed_at "
+                "FROM k10_scans WHERE scan_id=?", (scan_id,)
+            ).fetchone()
+            if old is not None:
+                # A recovered scan retains its original created/coverage values; only its immutable
+                # identity must match the retry request.
+                if tuple(old[:4]) != tuple(row[:4]):
+>                   raise K10Conflict("scan ID 已存在但冻结输入不同")
+E                   neckline.k10.store.K10Conflict: scan ID 已存在但冻结输入不同
+
+neckline/k10/store.py:963: K10Conflict
+=========================== short test summary info ============================
+FAILED tests/test_b57_review_regressions.py::test_early_failure_then_real_api_retry_reuses_same_scan[morning]
+FAILED tests/test_b57_review_regressions.py::test_early_failure_then_real_api_retry_reuses_same_scan[evening]
+2 failed, 17 deselected in 3.32s

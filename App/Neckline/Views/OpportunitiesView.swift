@@ -3,662 +3,382 @@ import Foundation
 
 struct OpportunitiesView: View {
     @Bindable var model: AppModel
-    @State private var phoneIndex = 0
-    @State private var macSelectedWindowID: String?
+    @State private var selectedCardID: String?
+    private var segment: String { model.dailyWindow }
     @State private var showsHistory = false
+
+    private var cards: [K10DailyCard] {
+        segment == "evening" ? model.eveningCards : (model.dailyMorning?.report?.addedCards ?? [])
+    }
+    private var selectedCard: K10DailyCard? { cards.first { $0.cardId == selectedCardID } ?? cards.first }
+    private var report: K10DailyReport? { segment == "evening" ? model.dailyEvening?.report : model.dailyMorning?.report }
+    private var response: K10DailyReportResponse? { segment == "evening" ? model.dailyEvening : model.dailyMorning }
 
     var body: some View {
         Group {
-            if case .ready = model.state {
-                content
-            } else if case .offline = model.state {
-                content
-            } else {
-                K10Loading(state: model.state)
-            }
+            if case .ready = model.state { content }
+            else if case .offline = model.state { content }
+            else { K10Loading(state: model.state) }
         }
         .navigationTitle("机会")
-        .task {
-            if case .idle = model.state { await model.refresh() }
+        .task { if case .idle = model.state { await model.refresh() } }
+        .onChange(of: segment) { _, _ in
+            if !cards.contains(where: { $0.id == selectedCardID }) { selectedCardID = nil }
         }
-        .onChange(of: openWindows.map(\.companyWindowId)) { _, ids in
-            phoneIndex = min(phoneIndex, max(ids.count - 1, 0))
-            if let selected = macSelectedWindowID, !ids.contains(selected) {
-                macSelectedWindowID = ids.first
-            } else if macSelectedWindowID == nil {
-                macSelectedWindowID = ids.first
-            }
+        .onChange(of: cards.map(\.cardId)) { _, ids in
+            if let selectedCardID, !ids.contains(selectedCardID) { self.selectedCardID = nil }
         }
     }
 
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                OpportunityHeader(
-                    openCount: openWindows.count,
-                    totalCount: model.companyWindows.count,
-                    availableAt: model.lastAvailableAt,
-                    offline: model.offline,
-                    openSettings: { model.tab = .settings }
-                )
-
-                if let error = model.morningReportLoadError {
-                    MorningReportRefreshNotice(report: model.morningReport, error: error, model: model)
-                }
-                if let morningReport = model.morningReport {
-                    MorningReportCard(report: morningReport, model: model)
-                }
-
+                header
+                reportNotices
                 #if os(macOS)
-                desktopContent
+                if !cards.isEmpty {
+                    HStack(alignment: .top, spacing: NKSpace.pagePad) {
+                        cardList.frame(width: 260)
+                        if let selectedCard {
+                            cardDeck(selectedCard).frame(maxWidth: 760)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } else { emptyState }
                 #else
-                phoneContent
+                if let selectedCard { cardDeck(selectedCard) }
+                else { emptyState }
                 #endif
-
-                historySection
+                if segment == "morning", model.dailyMorning?.report?.nextCursor != nil {
+                    Button(model.loadingMoreDailyCards ? "正在读取…" : "继续读取晨间新增") { Task { await model.loadMoreDailyCards() } }
+                        .buttonStyle(V3SecondaryButtonStyle()).disabled(model.offline || model.loadingMoreDailyCards)
+                }
+                DisclosureGroup("历史观察窗口（\(model.companyWindows.count)）", isExpanded: $showsHistory) {
+                    LazyVStack(spacing: NKSpace.blockGap) {
+                        ForEach(model.companyWindows) { HistoryWindowRow(window: $0, model: model) }
+                    }.padding(.top, NKSpace.blockGap)
+                }.font(NKFont.callout).foregroundStyle(NK.textSecondary)
             }
             .padding(.horizontal, NKSpace.pagePad)
             .padding(.top, NKSpace.pagePad)
             .padding(.bottom, NKSpace.pagePadBottom)
         }
         .background(NK.pageBg)
-        #if os(iOS)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let window = openWindows[safe: boundedPhoneIndex] {
-                VStack(spacing: 10) {
-                    SelectionButtons(
-                        window: window,
-                        state: window.currentSelectionState ?? "unhandled",
-                        model: model
-                    )
-                }
-                .padding(.horizontal, NKSpace.pagePad)
-                .padding(.vertical, 12)
-                .background(NK.pageBg)
-                .overlay(alignment: .top) { Rectangle().fill(NK.hairline).frame(height: 0.5) }
-            }
-        }
-        #endif
-    }
-
-    #if os(macOS)
-    @ViewBuilder private var desktopContent: some View {
-        if openWindows.isEmpty {
-            OpportunityCompletionState(hasHistory: !historyWindows.isEmpty, model: model, revealHistory: { showsHistory = true })
-        } else {
-            HStack(alignment: .top, spacing: 0) {
-                OpportunityWindowList(
-                    windows: openWindows,
-                    selectedID: $macSelectedWindowID,
-                    model: model
-                )
-                .frame(width: 286)
-
-                Divider().overlay(NK.hairline)
-
-                if let selected = selectedDesktopWindow {
-                    CompanyWindowCard(
-                        window: selected,
-                        model: model,
-                        ordinal: openWindows.firstIndex(where: { $0.id == selected.id }).map { $0 + 1 },
-                        total: openWindows.count,
-                        onPrevious: moveDesktopBackward,
-                        onNext: moveDesktopForward
-                    )
+            if let selectedCard {
+                DailyCardActions(card: selectedCard, model: model)
                     .frame(maxWidth: 760)
-                    .padding(.leading, NKSpace.pagePad)
+                    .padding(.horizontal, NKSpace.pagePad).padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(NK.pageBg)
+                    .overlay(alignment: .top) { Rectangle().fill(NK.hairline).frame(height: 0.5) }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                V3PageHeader(title: segment == "evening" ? "今晚的机会" : "晨间新增", subtitle: "K10-v2 · 每日选择 · 固定两日观察")
+            }
+            Picker("推荐来源", selection: $model.dailyWindow) {
+                Text("晚间推荐 · \(model.eveningCards.count)").tag("evening")
+                Text("晨间新增 · \(model.dailyMorning?.report?.addedCards.count ?? 0)").tag("morning")
+            }.pickerStyle(.segmented)
+            if let report = selectedCard?.section == "updated" ? model.dailyMorning?.report : report {
+                Text("消息截至 \(k10DisplayTime(report.cutoffAt)) · 可查看 \(report.availableAt.map(k10DisplayTime) ?? "尚未发布")")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                if let verification = report.verificationCutoffAt {
+                    Text("查证截至 \(k10DisplayTime(verification))").font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(NK.listBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
-            .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(NK.hairline, lineWidth: 0.5))
         }
     }
-    #else
-    @ViewBuilder private var phoneContent: some View {
-        if openWindows.isEmpty {
-            OpportunityCompletionState(hasHistory: !historyWindows.isEmpty, model: model, revealHistory: { showsHistory = true })
-        } else if let window = openWindows[safe: boundedPhoneIndex] {
-            VStack(alignment: .leading, spacing: NKSpace.blockGap) {
-                CompanyWindowCard(
-                    window: window,
-                    model: model,
-                    ordinal: boundedPhoneIndex + 1,
-                    total: openWindows.count,
-                    onPrevious: movePhoneBackward,
-                    onNext: movePhoneForward,
-                    showsSelection: false
-                )
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 32)
-                        .onEnded { value in
-                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                            if value.translation.width < 0 { movePhoneForward() }
-                            else { movePhoneBackward() }
-                        }
-                )
+
+    @ViewBuilder private var reportNotices: some View {
+        if model.offline { NoticeLine(icon: "wifi.slash", text: "离线快照 · 仅供查看，恢复连接后再提交选择", tone: NK.amber) }
+        ForEach(["evening", "morning"], id: \.self) { window in
+            if let error = model.dailyReportErrors[window] {
+                NoticeLine(icon: "arrow.clockwise", text: "\(window == "evening" ? "晚报" : "晨报")读取失败：\(error)。已取得的内容仍保留。", tone: NK.amber)
+                Button("重新读取") { Task { await model.refresh() } }.font(NKFont.caption).foregroundStyle(NK.accent)
             }
         }
-    }
-    #endif
-
-    @ViewBuilder private var historySection: some View {
-        if !historyWindows.isEmpty {
-            DisclosureGroup(isExpanded: $showsHistory) {
-                LazyVStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                    ForEach(historyWindows) { window in
-                        HistoryWindowRow(window: window, model: model)
+        if !cards.isEmpty, let reason = response?.reason { NoticeLine(icon: "exclamationmark.circle", text: reason.message, tone: NK.amber) }
+        if let report, !["completed", "published", "available"].contains(report.status) {
+            NoticeLine(icon: "clock", text: "本轮状态：\(k10StatusText(report.status))，已完成内容可查看", tone: NK.amber)
+        }
+        if let incomplete = report?.incompleteReviews, !incomplete.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("晨间复核未完成").font(NKFont.headline)
+                ForEach(incomplete) { item in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.companyWindows.first { $0.companyWindowId == item.companyWindowId }?.companyName ?? item.companyCode)
+                            .font(NKFont.callout.weight(.medium))
+                        Text(item.reason).font(NKFont.caption).foregroundStyle(NK.amber)
                     }
                 }
-                .padding(.top, NKSpace.blockGap)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .foregroundStyle(NK.textSecondary)
-                    Text("已处理与历史")
-                        .font(NKFont.headline)
-                    Text("\(historyWindows.count)")
-                        .font(NKFont.caption.monospacedDigit())
-                        .foregroundStyle(NK.textSecondary)
-                }
-            }
-            .padding(NKSpace.cardPad)
-            .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
-            .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(NK.hairline, lineWidth: 0.5))
-        }
-    }
-
-    private func isBrowsable(_ window: K10CompanyWindow) -> Bool {
-        window.opportunities.contains { ["published", "evidence_update", "risk"].contains($0.lifecycle) }
-    }
-
-    private func ordered(_ windows: [K10CompanyWindow]) -> [K10CompanyWindow] { windows }
-
-    private var openWindows: [K10CompanyWindow] {
-        ordered(model.companyWindows.filter { ($0.currentSelectionState ?? "unhandled") == "unhandled" && isBrowsable($0) })
-    }
-
-    private var historyWindows: [K10CompanyWindow] {
-        ordered(model.companyWindows.filter { !((($0.currentSelectionState ?? "unhandled") == "unhandled") && isBrowsable($0)) })
-    }
-
-    private var boundedPhoneIndex: Int { min(phoneIndex, max(openWindows.count - 1, 0)) }
-
-    private func movePhoneBackward() { guard !openWindows.isEmpty else { return }; phoneIndex = max(phoneIndex - 1, 0) }
-    private func movePhoneForward() { guard !openWindows.isEmpty else { return }; phoneIndex = min(phoneIndex + 1, openWindows.count - 1) }
-
-    #if os(macOS)
-    private var selectedDesktopWindow: K10CompanyWindow? {
-        guard !openWindows.isEmpty else { return nil }
-        return openWindows.first(where: { $0.companyWindowId == macSelectedWindowID }) ?? openWindows.first
-    }
-    private func moveDesktopBackward() { moveDesktop(by: -1) }
-    private func moveDesktopForward() { moveDesktop(by: 1) }
-    private func moveDesktop(by delta: Int) {
-        guard let selected = selectedDesktopWindow, let index = openWindows.firstIndex(where: { $0.id == selected.id }) else { return }
-        let next = min(max(index + delta, 0), openWindows.count - 1)
-        macSelectedWindowID = openWindows[next].companyWindowId
-    }
-    #endif
-}
-
-private struct MorningReportRefreshNotice: View {
-    let report: K10MorningReport?
-    let error: String
-    @Bindable var model: AppModel
-
-    var body: some View {
-        V3Card {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(NK.amber)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("晨报暂未刷新").font(NKFont.headline)
-                    Text(detail).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    Text(error).font(NKFont.caption).foregroundStyle(NK.amber)
-                }
-                Spacer(minLength: 8)
-                Button("重试") { Task { await model.refresh() } }
-                    .buttonStyle(V3SecondaryButtonStyle())
+                Text("这些机会尚未完成晨间复核，请结合原报告阅读。")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }.padding(NKSpace.cardPad).frame(maxWidth: .infinity, alignment: .leading)
+                .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
+        } else if let gaps = report?.coverageGaps {
+            ForEach(Array(gaps.enumerated()), id: \.offset) { _, gap in
+                NoticeLine(icon: "exclamationmark.circle", text: k10CoverageGapText(gap), tone: NK.amber)
             }
         }
-        .accessibilityLabel("晨报暂未刷新，可重试")
-    }
-
-    private var detail: String {
-        report.map { "仍显示截止 \(k10DisplayTime($0.cutoffAt)) 的上一份晨报。" }
-            ?? "暂未取得可显示的晨报，稍后可重试。"
-    }
-}
-
-private struct MorningReportCard: View {
-    let report: K10MorningReport
-    @Bindable var model: AppModel
-    @State private var expanded = true
-
-    private let sections: [(String, String, String)] = [
-        ("major_contrary", "重大反证与撤回", "exclamationmark.triangle.fill"),
-        ("thesis_changed", "论点改变", "arrow.triangle.2.circlepath"),
-        ("continuing_or_expiring", "继续观察或到期", "clock.arrow.circlepath"),
-        ("new", "晨间新增", "sparkles"),
-        ("needs_review", "待核资料", "questionmark.circle")
-    ]
-
-    var body: some View {
-        V3Card {
-            VStack(alignment: .leading, spacing: NKSpace.blockGap) {
-                Button { expanded.toggle() } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "sun.max.fill").foregroundStyle(NK.accent)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("晨报").font(NKFont.title3)
-                            Text("截止 \(k10DisplayTime(report.cutoffAt)) · 完成 \(k10DisplayTime(report.createdAt)) · 覆盖 \(coverageText)")
-                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                        }
-                        Spacer()
-                        V3Pill(text: report.status)
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    }
-                }.buttonStyle(.plain)
-                if expanded {
-                    if !report.coverageGaps.isEmpty {
-                        Label("待核：\(report.coverageGaps.map(k10CoverageGapText).joined(separator: "、"))", systemImage: "questionmark.circle")
-                            .font(NKFont.caption).foregroundStyle(NK.amber)
-                    }
-                    ForEach(sections, id: \.0) { section in
-                        let items = report.items.filter { $0.section == section.0 }
-                        if !items.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label(section.1, systemImage: section.2).font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                                ForEach(items.sorted { ($0.displayRank ?? .max, $0.itemId) < ($1.displayRank ?? .max, $1.itemId) }) { item in
-                                    MorningReportRow(item: item, model: model)
-                                }
+        if !model.dailyLifecycleUpdates.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("机会变化").font(NKFont.headline)
+                ForEach(model.dailyLifecycleUpdates) { update in
+                    DailyLifecycleUpdateRow(update: update, model: model)
+                }
+            }.padding(NKSpace.cardPad).frame(maxWidth: .infinity, alignment: .leading)
+                .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
+        }
+        if let morning = model.dailyMorning?.report, !morning.updatedCards.isEmpty {
+            DisclosureGroup("晨间更新 · \(morning.updatedCards.count) 家") {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(morning.updatedCards) { card in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(card.companyName).font(NKFont.headline)
+                            Text(card.summary).font(NKFont.callout)
+                            ForEach(card.uncertainty, id: \.self) { Text($0).font(NKFont.caption).foregroundStyle(NK.amber) }
+                            if model.eveningCards.contains(where: { $0.companyCode == card.companyCode }) {
+                                Button("查看更新后的公司卡") {
+                                    model.dailyWindow = "evening"
+                                    selectedCardID = model.eveningCards.first { $0.companyCode == card.companyCode }?.cardId
+                                }.font(NKFont.caption).foregroundStyle(NK.accent)
+                            } else if let opportunity = card.catalysts.first?.opportunityId {
+                                Button("查看关联机会") { Task { await model.openOpportunity(id: opportunity) } }.font(NKFont.caption)
                             }
                         }
                     }
-                    if report.items.isEmpty {
-                        Text("本晨没有处于固定 D1/D2 窗口内的正式候选。")
-                            .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                    }
-                }
-            }
-        }
-        .accessibilityLabel("晨报，截止 \(k10DisplayTime(report.cutoffAt))")
-    }
-
-    private var coverageText: String { report.coverageStatus == "complete" ? "完整" : "待核" }
-}
-
-private struct MorningReportRow: View {
-    let item: K10MorningReportItem
-    @Bindable var model: AppModel
-    @State private var showsSources = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(item.companyName ?? item.companyCode ?? "正式候选").font(NKFont.callout.weight(.semibold))
-                if let rank = item.displayRank { Text("#\(rank)").font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary) }
-                if let selection = item.selectionState { V3Pill(text: selection) }
-                Spacer(minLength: 0)
-                Text(item.coverageStatus == "complete" ? "已核" : "待核").font(NKFont.caption).foregroundStyle(item.coverageStatus == "complete" ? NK.accent : NK.amber)
-            }
-            Text(item.summary).font(NKFont.callout)
-            if let disclosure = item.evidenceDisclosure {
-                EvidenceDisclosureBlock(disclosure: disclosure, model: model)
-            }
-            Text("完成 \(k10DisplayTime(item.createdAt)) · \(item.coverageStatus == "complete" ? "可核" : "等待核验") · \(deadlineText)")
-                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-            if !item.coverageGaps.isEmpty { Text("缺口：\(item.coverageGaps.map(k10CoverageGapText).joined(separator: "、"))").font(NKFont.caption).foregroundStyle(NK.amber) }
-            if !sources.isEmpty {
-                HStack(spacing: 8) {
-                    if !item.independentVerificationRefs.isEmpty {
-                        Label("含 \(item.independentVerificationRefs.count) 条独立核验", systemImage: "checkmark.seal")
-                            .font(NKFont.caption).foregroundStyle(NK.accent)
-                    }
-                    Button { showsSources.toggle() } label: {
-                        Label(showsSources ? "收起依据" : "查看依据（\(sources.count) 条）", systemImage: showsSources ? "chevron.up" : "doc.text")
-                    }
-                    .font(NKFont.caption.weight(.medium))
-                    .foregroundStyle(NK.accent)
-                    .buttonStyle(.plain)
-                }
-                if showsSources {
-                    ForEach(sources) { SourceReferenceLine(source: $0, model: model) }
-                }
-            }
-        }
-        .padding(10)
-        .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
-    }
-
-    private var deadlineText: String { item.deadlineAt.map { "窗口截止 \(k10DisplayTime($0))" } ?? "窗口截止待核" }
-    private var sources: [K10SourceReference] {
-        var seen = Set<String>()
-        return (item.independentVerificationRefs + item.sourceRefs).filter { seen.insert($0.id).inserted }
-    }
-}
-
-private struct OpportunityHeader: View {
-    let openCount: Int
-    let totalCount: Int
-    let availableAt: String?
-    let offline: Bool
-    let openSettings: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                V3PageHeader(
-                    title: openCount == 0 ? "本轮机会" : "发现机会",
-                    subtitle: subtitle
-                )
-                Spacer(minLength: 12)
-                Button("来源与覆盖", action: openSettings)
-                    .font(NKFont.callout)
-                    .foregroundStyle(NK.accent)
-            }
-
-            HStack(spacing: 8) {
-                Text(openCount == 0 ? "已保存 \(totalCount) 张公司卡" : "\(openCount) 张待选择 · \(totalCount) 张推荐记录")
-                    .font(NKFont.callout)
-                    .foregroundStyle(NK.textSecondary)
-                if offline { V3Pill(text: "离线只读") }
-            }
-
-            GeometryReader { proxy in
-                Capsule()
-                    .fill(NK.hairline)
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(NK.accent)
-                            .frame(width: progressWidth(in: proxy.size.width))
-                    }
-            }
-            .frame(height: 3)
-            .accessibilityLabel("待处理机会 \(openCount) 张，共 \(totalCount) 张")
+                }.padding(.top, 10)
+            }.padding(NKSpace.cardPad).background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
         }
     }
 
-    private var subtitle: String? {
-        guard let availableAt else { return "K10-v1.4 · 等待可查看的发布批次" }
-        return "更新于 \(k10DisplayTime(availableAt))"
-    }
-
-    private func progressWidth(in width: CGFloat) -> CGFloat {
-        guard totalCount > 0 else { return 0 }
-        return width * CGFloat(max(totalCount - openCount, 0)) / CGFloat(totalCount)
-    }
-}
-
-private struct OpportunityWindowList: View {
-    let windows: [K10CompanyWindow]
-    @Binding var selectedID: String?
-    @Bindable var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NKSpace.denseGap) {
-            V3SectionTitle(title: "公司机会", icon: "building.2")
-                .padding(.horizontal, NKSpace.cardPad)
-                .padding(.top, NKSpace.cardPad)
-
-            ForEach(windows) { window in
-                let selected = selectedID == window.companyWindowId
-                Button {
-                    selectedID = window.companyWindowId
-                } label: {
-                    HStack(spacing: 10) {
-                        V3CompanyMark(code: window.companyCode, size: 36)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(window.companyName ?? window.companyCode)
-                                .font(NKFont.headline)
-                                .foregroundStyle(NK.textPrimary)
-                            Text(window.headline)
-                                .font(NKFont.caption)
-                                .foregroundStyle(NK.textSecondary)
-                                .lineLimit(1)
+    private var cardList: some View {
+        LazyVStack(spacing: 8) {
+            ForEach(cards) { card in
+                Button { selectedCardID = card.cardId } label: {
+                    HStack(alignment: .top, spacing: 9) {
+                        V3CompanyMark(code: card.companyCode, size: 34)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(card.companyName).font(NKFont.headline)
+                            Text(card.summary).font(NKFont.caption).foregroundStyle(NK.textSecondary).lineLimit(2)
+                            if !card.allowsSelection {
+                                Text("已撤回或到期").font(NKFont.caption).foregroundStyle(NK.amber)
+                            }
+                            Text(k10StatusText(card.currentSelectionState)).font(NKFont.caption).foregroundStyle(NK.accent)
                         }
                         Spacer(minLength: 0)
-                        if window.hasRisk {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(NKFont.caption)
-                                .foregroundStyle(NK.down)
-                        } else {
-                            Text(window.recommendationLabel)
-                                .font(NKFont.caption)
-                                .foregroundStyle(NK.accent)
-                        }
+                        Text("\(card.rank)").font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
                     }
-                    .padding(.horizontal, NKSpace.cardPad)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(selected ? NK.accent.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: NKRadius.inner))
-                    .overlay(alignment: .leading) {
-                        if selected { Capsule().fill(NK.accent).frame(width: 3) }
-                    }
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, NKSpace.listPadH)
+                    .padding(12)
+                    .background(selectedCard?.id == card.id ? NK.accent.opacity(0.07) : NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                    .overlay(RoundedRectangle(cornerRadius: NKRadius.inner).stroke(selectedCard?.id == card.id ? NK.accent.opacity(0.5) : NK.hairline, lineWidth: 0.5))
+                }.buttonStyle(.plain)
             }
-            Spacer(minLength: 10)
         }
-        .padding(.bottom, NKSpace.cardPad)
-    }
-}
-
-struct CompanyWindowCard: View {
-    let window: K10CompanyWindow
-    @Bindable var model: AppModel
-    let ordinal: Int?
-    let total: Int?
-    let onPrevious: (() -> Void)?
-    let onNext: (() -> Void)?
-    let showsSelection: Bool
-
-    init(
-        window: K10CompanyWindow,
-        model: AppModel,
-        ordinal: Int? = nil,
-        total: Int? = nil,
-        onPrevious: (() -> Void)? = nil,
-        onNext: (() -> Void)? = nil,
-        showsSelection: Bool = true
-    ) {
-        self.window = window
-        self.model = model
-        self.ordinal = ordinal
-        self.total = total
-        self.onPrevious = onPrevious
-        self.onNext = onNext
-        self.showsSelection = showsSelection
     }
 
-    private var lead: K10PublicationSample? {
-        window.samples.sorted { ($0.rank ?? .max) < ($1.rank ?? .max) }.first
+    private var emptyState: some View {
+        V3EmptyState(icon: "rectangle.stack", title: emptyTitle, message: emptyMessage)
     }
 
-    private var actionOpportunity: K10Opportunity? {
-        window.opportunities.first(where: { !["withdrawal", "expired"].contains($0.lifecycle) }) ?? window.opportunities.first
+    private var emptyTitle: String {
+        if response?.state == "not_configured" { return "今天没跑成 · 参数未配置" }
+        if model.dailyReportErrors[segment] != nil { return "暂时无法读取报告" }
+        guard let report else { return "等待首次报告" }
+        if ["completed", "published", "available"].contains(report.status) {
+            return segment == "morning" ? "本晨没有新增公司" : "本轮未推荐公司"
+        }
+        return "报告尚未完成"
     }
 
-    var body: some View {
+    private var emptyMessage: String {
+        if response?.state == "not_configured" { return "请到设置查看缺少的参数或公司资料，配置齐全后再运行。" }
+        if model.dailyReportErrors[segment] != nil { return "可以重新读取；读取失败不代表本轮没有机会。" }
+        if let reason = response?.reason { return reason.message }
+        if let report, ["completed", "published", "available"].contains(report.status) {
+            return segment == "morning" ? "已有公司的变化列在晨间更新中，原有选择继续保留。" : "本轮比较已完成，没有形成正式推荐。"
+        }
+        return "正式报告完成后在这里逐张查看，未操作的公司记为未处理。"
+    }
+
+    private func cardDeck(_ card: K10DailyCard) -> some View {
         VStack(spacing: 14) {
-            OpportunityCardStack {
-                V3Card {
-                    VStack(alignment: .leading, spacing: 14) {
-                        cardHeader
-                        Divider().overlay(NK.hairline)
-                        primaryStory
-                        signalSummary
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar")
-                            Text("D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))")
-                            Spacer(minLength: 0)
-                            if window.opportunities.contains(where: { $0.latePublication == true }) { V3Pill(text: "迟到") }
-                        }.font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                        if window.hasRisk {
-                            NoticeLine(icon: "exclamationmark.triangle", text: "有重要反证，先查看最新依据", tone: NK.down)
-                        }
-                        CardFooter(window: window, model: model, onOpen: openDetail)
-                    }
-                }
-            }
-            if showsSelection { selectionArea }
-            pagingControls
-        }
-    }
-
-    private var cardHeader: some View {
-        HStack(alignment: .top, spacing: 12) {
-            V3CompanyMark(code: window.companyCode)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(window.companyName ?? window.companyCode).font(NKFont.title3)
-                Text("\(window.companyCode) · 创业板").font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                HStack(spacing: 6) {
-                    V3Pill(text: window.recommendationLabel)
-                    if window.hasRisk { V3Pill(text: "风险更新") }
-                    if window.sampleClass == "overlap" { V3Pill(text: "重叠样本") }
-                }
-            }
-            Spacer(minLength: 4)
-            if let ordinal, let total {
-                Text("\(ordinal) / \(total)")
-                    .font(NKFont.monoValue)
-                    .foregroundStyle(NK.textSecondary)
-            }
-        }
-    }
-
-    private var primaryStory: some View {
-        Text(window.sourceTitle ?? window.headline)
-            .font(NKFont.headline)
-            .foregroundStyle(NK.textPrimary)
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var signalSummary: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SignalLine(icon: "doc.text", title: "新增事实", text: window.headline)
-            if let relation = window.relationSummary {
-                SignalLine(icon: "building.2", title: "公司关联", text: relation)
-            }
-            if let reason = lead?.comparison.twoDayReason ?? lead?.comparison.summary ?? lead?.comparison.rationale {
-                SignalLine(icon: "sparkle.magnifyingglass", title: "为什么关注", text: reason)
-            }
-            if let condition = lead?.comparison.rankChangeConditions {
-                SignalLine(icon: "arrow.up.arrow.down", title: "改变判断的条件", text: condition)
-            }
-        }
-    }
-
-    @ViewBuilder private var stateNotice: some View {
-        if window.hasRisk {
-            NoticeLine(icon: "exclamationmark.triangle.fill", text: "出现重要反证或风险更新；先查看依据，再决定是否留下。", tone: NK.down)
-        } else if window.sampleClass == "overlap" {
-            NoticeLine(icon: "square.on.square", text: "与既有窗口重叠，完整观察但不计入主样本命中率。", tone: NK.amber)
-        } else if window.opportunities.contains(where: { $0.latePublication == true }) {
-            NoticeLine(icon: "clock.badge.exclamationmark", text: "迟到发布：固定观察从下一交易日开始。", tone: NK.amber)
-        } else {
-            NoticeLine(icon: "calendar", text: "固定观察：D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))", tone: NK.textSecondary)
-        }
-    }
-
-    @ViewBuilder private var selectionArea: some View {
-        if actionOpportunity != nil {
-            SelectionButtons(
-                window: window,
-                state: window.currentSelectionState ?? model.selection(for: window)?.state ?? "unhandled",
-                model: model
-            )
-        }
-    }
-
-    @ViewBuilder private var pagingControls: some View {
-        if let onPrevious, let onNext, let ordinal, let total, total > 1 {
+            DailyCompanyCard(card: card, model: model)
             HStack {
-                Button(action: onPrevious) {
-                    Label("上一张", systemImage: "arrow.left")
-                }
-                .buttonStyle(.borderless)
-                .disabled(ordinal == 1)
-
+                Button { move(-1) } label: { Label("上一张", systemImage: "arrow.left") }
+                    .disabled(cards.first?.id == card.id)
                 Spacer()
-                Text("翻页不作选择")
-                    .font(NKFont.caption)
-                    .foregroundStyle(NK.textSecondary)
+                Text("\((cards.firstIndex { $0.id == card.id } ?? 0) + 1) / \(cards.count)").font(NKFont.caption.monospacedDigit())
                 Spacer()
-
-                Button(action: onNext) {
-                    Label("下一张", systemImage: "arrow.right")
-                }
-                .buttonStyle(.borderless)
-                .disabled(ordinal == total)
-            }
+                Button { move(1) } label: { Label("下一张", systemImage: "arrow.right") }
+                    .disabled(cards.last?.id == card.id)
+            }.font(NKFont.callout).foregroundStyle(NK.accent).buttonStyle(.plain)
+            Text("翻页不作选择 · 昨日入选不自动留下").font(NKFont.caption).foregroundStyle(NK.textSecondary)
         }
+        .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { value in
+            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+            move(value.translation.width < 0 ? 1 : -1)
+        })
     }
 
-    private func openDetail() {
-        guard let opportunity = actionOpportunity else { return }
-        Task { await model.open(opportunity) }
+    private func move(_ direction: Int) {
+        guard let card = selectedCard, let index = cards.firstIndex(where: { $0.id == card.id }) else { return }
+        selectedCardID = cards[min(max(index + direction, 0), cards.count - 1)].id
     }
 }
 
-struct CatalystList: View {
-    let window: K10CompanyWindow
+private struct DailyLifecycleUpdateRow: View {
+    let update: K10DailyLifecycleUpdate
     @Bindable var model: AppModel
-    var onOpen: ((K10Opportunity) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            V3SectionTitle(title: "同卡催化", icon: "rectangle.3.group")
-            ForEach(window.opportunities) { opportunity in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: opportunity.lifecycle == "risk" ? "exclamationmark.triangle" : "bolt")
-                        .font(NKFont.caption)
-                        .foregroundStyle(opportunity.lifecycle == "risk" ? NK.down : NK.accent)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(k10PublicationMarkerText(opportunity.sourceMarker) + "首发 · " + k10DisplayTime(opportunity.availableAt))
-                            .font(NKFont.callout)
-                        Text("资料修订 \(opportunity.eventRevision) · \(k10StatusText(opportunity.lifecycle))")
-                            .font(NKFont.caption)
-                            .foregroundStyle(NK.textSecondary)
+            HStack {
+                Text(update.companyName).font(NKFont.headline)
+                Spacer()
+                Text(update.label).font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.amber)
+            }
+            Text(update.reason).font(NKFont.callout).fixedSize(horizontal: false, vertical: true)
+            Text("\(update.companyCode) · \(k10DisplayTime(update.createdAt))").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            if let window = model.companyWindows.first(where: { $0.companyWindowId == update.companyWindowId }) {
+                Text("原窗口 D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+            Button("查看变化与原始依据") { Task { await model.openOpportunity(id: update.opportunityId) } }
+                .font(NKFont.caption).foregroundStyle(NK.accent).disabled(model.offline)
+            if !update.sourceRefs.isEmpty {
+                DisclosureGroup("来源（\(update.sourceRefs.count)）") {
+                    ForEach(update.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                }.font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+}
+
+private struct DailyCompanyCard: View {
+    let card: K10DailyCard
+    @Bindable var model: AppModel
+
+    var body: some View {
+        OpportunityCardStack {
+            V3Card {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .top, spacing: 12) {
+                        V3CompanyMark(code: card.companyCode)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(card.companyName).font(NKFont.title3)
+                            Text("\(card.companyCode) · \(card.strategyVersion)").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        }
+                        Spacer(minLength: 4)
+                        V3Pill(text: card.currentSelectionState)
                     }
-                    Spacer()
-                    Button("查看") {
-                        if let onOpen { onOpen(opportunity) } else { Task { await model.open(opportunity) } }
-                    }.font(NKFont.caption)
-                        .foregroundStyle(NK.accent)
+                    HStack(spacing: 7) {
+                        if card.isUnverified { V3Pill(text: "未核实") }
+                        if card.sampleClass == "overlap" { V3Pill(text: "重叠机会") }
+                        if card.section == "updated" { V3Pill(text: "晨间更新") }
+                        if card.section == "added" { V3Pill(text: "晨间新增") }
+                        if isLate { V3Pill(text: "迟到发布") }
+                    }
+                    if Set(card.catalysts.map(\.companyWindowId)).count > 1 {
+                        NoticeLine(icon: "arrow.triangle.branch", text: "本次选择对应新机会；原机会的选择与两日成绩继续保留。", tone: NK.accent)
+                    }
+                    ForEach(card.catalysts.filter { ["risk", "withdrawn", "expired"].contains($0.lifecycleState ?? "") }) { catalyst in
+                        NoticeLine(icon: "exclamationmark.circle", text: "\(catalyst.headline)：\(lifecycleLabel(catalyst.lifecycleState))", tone: NK.amber)
+                    }
+                    Divider().overlay(NK.hairline)
+                    Text(card.catalysts.first(where: { $0.companyWindowId == card.companyWindowId })?.headline ?? card.summary).font(NKFont.headline).fixedSize(horizontal: false, vertical: true)
+                    dailyLine("building.2", card.allowsSelection ? "公司关联与比较" : "原推荐理由", card.summary)
+                    dailyLine("sparkle.magnifyingglass", card.allowsSelection ? "为什么关注两日" : "原两日观察依据", card.twoDayReason)
+                    dailyLine("chart.line.uptrend.xyaxis", "已有价格反应", card.priceReaction ?? "此报告未保存价格反应资料。")
+                    if let price = card.priceContext {
+                        DisclosureGroup("行情依据 · 截至 \(k10DisplayTime(price.asOf))") {
+                            ForEach(price.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                        }.font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    }
+                    ForEach(card.uncertainty, id: \.self) { value in
+                        NoticeLine(icon: "questionmark.circle", text: value, tone: NK.amber)
+                    }
+                    Label("D1 \(k10DisplayTime(card.d1TradeDate)) · D2 \(k10DisplayTime(card.d2TradeDate))", systemImage: "calendar")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    DisclosureGroup("催化、比较与原始依据（\(card.catalysts.count)）") {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(card.catalysts) { catalyst in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(catalyst.headline).font(NKFont.headline)
+                                    Text(catalyst.summary).font(NKFont.callout)
+                                    if let lifecycle = catalyst.lifecycleState {
+                                        Text(lifecycleLabel(lifecycle)).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                    }
+                                    Text("\(classificationText(catalyst.classification)) · \(catalyst.verificationStatus == "unverified" ? "未核实" : k10StatusText(catalyst.verificationStatus))")
+                                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                    if let id = catalyst.opportunityId {
+                                        Button("查看完整比较与机会记录") { Task { await model.openOpportunity(id: id) } }.font(NKFont.caption).foregroundStyle(NK.accent)
+                                    }
+                                }
+                            }
+                            ForEach(card.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                        }.padding(.top, 10)
+                    }.font(NKFont.callout).foregroundStyle(NK.accent)
                 }
             }
         }
     }
+    private var isLate: Bool { card.latePublication == true || model.companyWindows.first { $0.id == card.companyWindowId }?.opportunities.contains { $0.latePublication == true } == true }
+    private func lifecycleLabel(_ value: String?) -> String {
+        ["active": "观察中", "risk": "存在重要风险", "withdrawn": "理由已撤回", "expired": "观察已到期"][value ?? ""] ?? "状态未知"
+    }
+    private func dailyLine(_ icon: String, _ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon).foregroundStyle(NK.accent).frame(width: 18)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label).font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.accent)
+                Text(value).font(NKFont.callout).foregroundStyle(NK.textPrimary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    private func classificationText(_ value: String) -> String {
+        ["initial": "首次机会", "material_stage": "新的实质阶段", "independent": "独立新催化", "continuation": "沿用原观察窗口", "needs_review": "资料待核", "invalidated": "理由已撤回"][value] ?? "分类未识别"
+    }
 }
 
-struct ComparisonBlock: View {
-    let sample: K10PublicationSample
-    let all: [K10PublicationSample]
+private struct DailyCardActions: View {
+    let card: K10DailyCard
     @Bindable var model: AppModel
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(spacing: 7) {
             HStack(spacing: 7) {
-                V3Pill(text: k10CategoryText(sample.category))
-                Text("公司比较")
-                    .font(NKFont.headline)
+                Text(card.allowsSelection ? "当前选择" : "历史记录").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                Text(card.companyName).font(NKFont.headline)
+                Spacer(minLength: 4)
+                if Set(card.catalysts.map(\.companyWindowId)).count > 1 {
+                    Text("对应新机会").font(NKFont.caption).foregroundStyle(NK.accent)
+                }
             }
-            if let summary = sample.comparison.summary {
-                Text(summary).font(NKFont.callout)
-            }
-            if let disclosure = sample.comparison.evidenceDisclosure {
-                EvidenceDisclosureBlock(disclosure: disclosure, model: model)
-            }
-            ComparisonDetails(comparison: sample.comparison, model: model)
-            if all.count > 1 {
-                Text("同一公司有 \(all.count) 条已发布催化，选择和两日成绩合并记录。")
-                    .font(NKFont.caption)
-                    .foregroundStyle(NK.textSecondary)
-            }
+            HStack(spacing: 10) {
+                if !card.allowsSelection {
+                    if card.currentSelectionState == "kept" {
+                        Button("取消关注") { Task { await model.act("withdraw", card: card) } }.buttonStyle(V3SecondaryButtonStyle())
+                    }
+                    if let opportunity = card.catalysts.first(where: { $0.companyWindowId == card.companyWindowId })?.opportunityId {
+                        Button("查看机会记录") { Task { await model.openOpportunity(id: opportunity) } }.buttonStyle(V3PrimaryButtonStyle())
+                    }
+                } else if card.currentSelectionState == "kept" {
+                    Button("取消关注") { Task { await model.act("withdraw", card: card) } }.buttonStyle(V3SecondaryButtonStyle())
+                    Button("查看正反分析") { model.tab = .focus; model.selectedWindow = model.companyWindows.first { $0.id == card.companyWindowId } }.buttonStyle(V3PrimaryButtonStyle())
+                } else if card.currentSelectionState == "skipped" {
+                    Text("已明确略过").font(NKFont.callout).foregroundStyle(NK.textSecondary).frame(maxWidth: .infinity)
+                    Button("找回") { Task { await model.act("restore", card: card) } }.buttonStyle(V3PrimaryButtonStyle())
+                } else {
+                    Button { Task { await model.act("skip", card: card) } } label: { Label("略过", systemImage: "xmark.circle") }.buttonStyle(V3SecondaryButtonStyle())
+                    Button { Task { await model.act("keep", card: card) } } label: { Label("留下观察", systemImage: "bookmark") }.buttonStyle(V3PrimaryButtonStyle())
+                }
+            }.disabled(model.offline)
+            Text(card.allowsSelection ? "留下后开始正反分析 · 未操作记为未处理" : "该机会已撤回或到期 · 原选择和两日成绩保留").font(NKFont.caption).foregroundStyle(NK.textSecondary)
         }
     }
 }
@@ -743,98 +463,6 @@ struct ComparisonDetails: View {
     }
 }
 
-struct SelectionButtons: View {
-    let window: K10CompanyWindow
-    let state: String
-    @Bindable var model: AppModel
-
-    var body: some View {
-        switch state {
-        case "kept":
-            HStack {
-                Button("查看关注") { model.tab = .focus }
-                    .buttonStyle(V3SecondaryButtonStyle())
-                Button("取消关注", role: .destructive) {
-                    Task { await model.act("withdraw", window: window) }
-                }
-                .buttonStyle(V3SecondaryButtonStyle())
-            }
-        case "skipped":
-            HStack {
-                Button("已明确略过") {}
-                    .disabled(true)
-                    .buttonStyle(V3SecondaryButtonStyle())
-                Button("找回") { Task { await model.act("restore", window: window) } }
-                    .buttonStyle(V3PrimaryButtonStyle())
-            }
-        default:
-            HStack(spacing: 10) {
-                Button { Task { await model.act("skip", window: window) } } label: { Label("略过", systemImage: "xmark.circle") }
-                    .buttonStyle(V3SecondaryButtonStyle())
-                Button { Task { await model.act("keep", window: window) } } label: { Label("留下", systemImage: "bookmark") }
-                    .buttonStyle(V3PrimaryButtonStyle())
-            }
-            Text("留下后开始正反分析 · 未操作记为未处理")
-            .font(NKFont.caption)
-            .foregroundStyle(NK.textSecondary)
-            .frame(maxWidth: .infinity)
-        }
-    }
-}
-
-private struct CardFooter: View {
-    let window: K10CompanyWindow
-    @Bindable var model: AppModel
-    let onOpen: () -> Void
-    @State private var showCatalysts = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Button(action: onOpen) {
-                Text("原始依据")
-            }
-            .font(NKFont.callout)
-            .foregroundStyle(NK.accent)
-
-            Spacer(minLength: 0)
-            Button { showCatalysts = true } label: {
-                Label("公司比较", systemImage: "arrow.right")
-            }
-            .font(NKFont.callout)
-            .foregroundStyle(NK.accent)
-
-        }
-        .buttonStyle(.plain)
-        .sheet(isPresented: $showCatalysts) { NavigationStack { CatalystDetailView(window: window, model: model) } }
-    }
-}
-
-private struct CatalystDetailView: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedDetail: K10OpportunityDetail?
-    let window: K10CompanyWindow
-    @Bindable var model: AppModel
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                V3PageHeader(title: window.companyName ?? window.companyCode, subtitle: "同公司催化、来源与比较")
-                V3Card { CatalystList(window: window, model: model, onOpen: { opportunity in
-                    Task { selectedDetail = await model.loadOpportunity(opportunity) }
-                }) }
-                if let lead = window.leadingSample {
-                    V3Card { ComparisonBlock(sample: lead, all: window.samples, model: model) }
-                }
-            }
-            .padding(NKSpace.pagePad)
-        }
-        .navigationTitle("机会详情")
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
-        .frame(idealWidth: 680, idealHeight: 720)
-        .sheet(item: $selectedDetail) { OpportunitySheet(detail: $0, model: model) }
-    }
-}
-
 private struct HistoryWindowRow: View {
     let window: K10CompanyWindow
     @Bindable var model: AppModel
@@ -856,6 +484,8 @@ private struct HistoryWindowRow: View {
                     .font(NKFont.callout)
                     .foregroundStyle(NK.textSecondary)
                     .lineLimit(2)
+                Text(window.strategyVersion ?? "策略版本未记录")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 Text("D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))")
                     .font(NKFont.caption)
                     .foregroundStyle(NK.textSecondary)
@@ -865,7 +495,7 @@ private struct HistoryWindowRow: View {
                     guard let opportunity = window.opportunities.first else { return }
                     Task { await model.open(opportunity) }
                 }
-                if window.currentSelectionState == "skipped" {
+                if window.currentSelectionState == "skipped", window.allowsSelection {
                     Button("找回") { Task { await model.act("restore", window: window) } }
                 }
             }
@@ -874,29 +504,6 @@ private struct HistoryWindowRow: View {
         }
         .padding(NKSpace.cardPad)
         .background(NK.disclosureBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
-    }
-}
-
-private struct OpportunityCompletionState: View {
-    let hasHistory: Bool
-    @Bindable var model: AppModel
-    let revealHistory: () -> Void
-
-    var body: some View {
-        V3EmptyState(
-            icon: "checkmark.circle",
-            title: hasHistory ? "暂时没有待选择的机会" : "等待新的机会",
-            message: hasHistory ? "留下的公司在关注页；过往推荐和固定两日记录都可以回看。" : "还没有可查看的正式推荐。请到设置查看来源覆盖与任务状态。"
-        )
-        VStack(spacing: 10) {
-            if hasHistory {
-                Button("查看已处理与历史", action: revealHistory)
-                    .buttonStyle(V3SecondaryButtonStyle())
-            }
-            Button("查看关注") { model.tab = .focus }
-                .buttonStyle(V3PrimaryButtonStyle())
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -915,25 +522,6 @@ private struct OpportunityCardStack<Content: View>: View {
                 .shadow(color: Color.black.opacity(0.07), radius: 14, y: 7)
         }
         .padding(.bottom, 9)
-    }
-}
-
-private struct SignalLine: View {
-    let icon: String
-    let title: String
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: icon)
-                .font(NKFont.callout.weight(.semibold))
-                .foregroundStyle(NK.accent)
-                .frame(width: 16, alignment: .center)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.accent)
-                Text(text).font(NKFont.callout).foregroundStyle(NK.textPrimary).lineLimit(2)
-            }
-        }
     }
 }
 
@@ -1011,11 +599,5 @@ private extension K10CompanyWindow {
         if hasRisk { return "风险或撤回更新" }
         if opportunities.contains(where: { $0.lifecycle == "expired" }) { return "观察已到期" }
         return "已处理"
-    }
-}
-
-private extension Collection {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }

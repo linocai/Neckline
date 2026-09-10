@@ -258,7 +258,7 @@ struct FocusReadingPane: View {
                     HStack {
                         V3Pill(text: detail.state)
                         Spacer()
-                        Text("K10-v1.4 · 资料截止随分析记录固定")
+                        Text("\(window.strategyVersion ?? "策略版本未记录") · 资料截止随分析记录固定")
                             .font(NKFont.caption)
                             .foregroundStyle(NK.textSecondary)
                     }
@@ -484,7 +484,6 @@ struct AnalysisBlock: View {
     private var isPro: Bool { analysis.role == "pro" }
     private var tone: Color { isPro ? NK.up : NK.down }
     private var title: String { isPro ? "正方观点" : "反方质疑" }
-    private var preview: String { firstMeaningfulSection(analysis.fullText ?? analysis.error ?? "尚未返回全文。") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: NKSpace.blockGap) {
@@ -509,17 +508,24 @@ struct AnalysisBlock: View {
                 EvidenceDisclosureBlock(disclosure: disclosure, model: model)
             }
 
-            if analysis.fullText != nil {
-                Text(expanded ? "完整观点" : "正文节选").font(NKFont.headline)
-                K10MarkdownText(markdown: expanded ? (analysis.fullText ?? "") : preview, sourceRefs: analysis.sourceRefs) { source in
-                    Task { document = await model.openDocument(source) }
+            if let summary = analysis.summary {
+                summarySection(isPro ? "事实依据" : "共同事实", values: summary.commonFacts)
+                summarySection(isPro ? "待反方检视的假设" : "主要分歧", values: summary.disagreements)
+                summarySection("未知项", values: summary.unknowns)
+            } else {
+                Text(analysis.error ?? "此版分析未保存结构化摘要，可展开查阅全文。")
+                    .font(NKFont.callout).foregroundStyle(NK.amber)
+            }
+
+            if let fullText = analysis.fullText, !fullText.isEmpty {
+                if expanded {
+                    Text("完整观点").font(NKFont.headline)
+                    K10MarkdownText(markdown: fullText, sourceRefs: analysis.sourceRefs) { source in
+                        Task { document = await model.openDocument(source) }
+                    }
                 }
                 Button(expanded ? "收起全文" : "阅读全文") { expanded.toggle() }
                     .buttonStyle(V3SecondaryButtonStyle())
-            } else {
-                Text(analysis.error ?? "模型尚未返回全文。")
-                    .font(NKFont.body)
-                    .foregroundStyle(analysis.status == "failed" ? NK.down : NK.textSecondary)
             }
 
             if expanded, !analysis.sourceRefs.isEmpty {
@@ -536,20 +542,18 @@ struct AnalysisBlock: View {
         .sheet(item: $document) { SourceDocumentSheet(document: $0, model: model) }
     }
 
-    private func firstMeaningfulSection(_ text: String) -> String {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
-        let chosen = lines.prefix(4).joined(separator: "\n")
-        let content = chosen.isEmpty ? text : chosen
-        guard content.count > 210 else { return content }
-        let prefix = String(content.prefix(210))
-        if let end = prefix.lastIndex(where: { "。；".contains($0) }), prefix.distance(from: prefix.startIndex, to: end) > 60 {
-            return String(prefix[...end]) + "…"
+    private func summarySection(_ title: String, values: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(NKFont.headline)
+            if values.isEmpty {
+                Text("本轮未列出此项。")
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            } else {
+                K10MarkdownText(markdown: values.map { "- " + $0 }.joined(separator: "\n"), sourceRefs: analysis.sourceRefs) { source in
+                    Task { document = await model.openDocument(source) }
+                }
+            }
         }
-        if let partialReference = prefix.range(of: "doc_", options: .backwards),
-           !prefix[partialReference.lowerBound...].contains(where: { $0.isWhitespace }) {
-            return String(prefix[..<partialReference.lowerBound]) + "…"
-        }
-        return prefix + "…"
     }
 }
 

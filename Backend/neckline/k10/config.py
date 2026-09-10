@@ -51,16 +51,27 @@ def validate_run_config(payload: Mapping[str, Any] | None, *, scope: str) -> Con
         return ConfigurationStatus("not_configured", _SCOPES[scope], ("缺少配置包",))
     missing = [key for key in _SCOPES[scope] if not _present(payload.get(key))]
     errors: list[str] = []
-    if payload.get("configVersion") != "k10-v1.4":
-        errors.append("configVersion 必须是 k10-v1.4")
-    if payload.get("universe") != "chinext":
-        errors.append("universe 必须明确为 chinext")
-    if payload.get("excludeBaijiu") is not True:
-        errors.append("excludeBaijiu 必须明确为 true")
-    hard = payload.get("hardExclusions")
-    expected_hard = {"approved": True, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]}
-    if not isinstance(hard, Mapping) or set(hard) != set(expected_hard) or any(hard.get(k) != v for k, v in expected_hard.items()):
-        errors.append("hardExclusions 必须精确为已批准的创业板、无价限、ST 与 801125.SI 白酒排除规则")
+    if payload.get("configVersion") == "k10-v2":
+        missing = [key for key in missing if key != "hardExclusions"]
+        expected = {"universe": "fixed_snapshot", "universeSnapshotId": "k10-v2-initial-20260909",
+                    "profileSnapshotId": "k10-v2-profiles-20260909"}
+        if any(payload.get(key) != value for key, value in expected.items()):
+            errors.append("K10-v2 必须显式绑定固定池与资料快照")
+        if not _present(payload.get("strategySnapshotId")):
+            missing.append("strategySnapshotId")
+        if "hardExclusions" in payload or "excludeBaijiu" in payload:
+            errors.append("K10-v2 不允许重新动态筛选固定池")
+    else:
+        if payload.get("configVersion") != "k10-v1.4":
+            errors.append("configVersion 必须是 k10-v1.4")
+        if payload.get("universe") != "chinext":
+            errors.append("universe 必须明确为 chinext")
+        if payload.get("excludeBaijiu") is not True:
+            errors.append("excludeBaijiu 必须明确为 true")
+        hard = payload.get("hardExclusions")
+        expected_hard = {"approved": True, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]}
+        if not isinstance(hard, Mapping) or set(hard) != set(expected_hard) or any(hard.get(k) != v for k, v in expected_hard.items()):
+            errors.append("hardExclusions 必须精确为已批准的创业板、无价限、ST 与 801125.SI 白酒排除规则")
     adapters = payload.get("sourceAdapters")
     if scope in {"candidate", "discovery", "morning"}:
         if not isinstance(adapters, list):
@@ -206,19 +217,19 @@ def validate_execution_config(payload: Mapping[str, Any] | None) -> Configuratio
         return ConfigurationStatus("not_configured", required, ("缺少执行配置包",))
     missing = tuple(key for key in required if not _present(payload.get(key)))
     errors: list[str] = []
-    if payload.get("executionVersion") != "k10-execution-v3":
-        errors.append("执行配置必须是 k10-execution-v3；V1/V2 只可读取历史，不能绑定运行")
+    if payload.get("executionVersion") != "k10-execution-v4":
+        errors.append("执行配置必须是 k10-execution-v4；V1/V2 只可读取历史，不能绑定运行")
     if set(payload) != set(required):
         errors.append("执行配置只能包含 executionVersion 与 discovery")
     discovery = payload.get("discovery")
     expected = {
-    "model", "titleTriagePolicy", "articleLimits", "titleBatchSize", "titleTriageConcurrency",
+    "model", "titleTriagePolicy", "titleBatchSize", "titleTriageConcurrency",
         "deepReadConcurrency", "networkMaxAttempts", "jsonRepairMaxAttempts", "retryBackoffSeconds",
         "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions",
         "investigationPromptContractRevision",
     }
     if not isinstance(discovery, Mapping) or set(discovery) != expected:
-        errors.append("discovery 必须精确声明标题 policy、80/40 正文限额和单请求执行边界")
+        errors.append("discovery 必须精确声明标题 policy 和单请求执行边界")
         return ConfigurationStatus("not_configured", missing, tuple(errors))
     if discovery.get("model") != _DEEPSEEK_V4_PRO:
         errors.append("discovery.model 必须精确为 deepseek-v4-pro")
@@ -241,11 +252,6 @@ def validate_execution_config(payload: Mapping[str, Any] | None) -> Configuratio
             errors.append("titleTriagePolicy 必须显式为 approved")
         if not _valid_title_policy_content(policy.get("content")):
             errors.append("titleTriagePolicy.content 必须完整声明全量标题、保留、合并、禁止硬排与全局冻结语义")
-    limits = discovery.get("articleLimits")
-    if not isinstance(limits, Mapping) or set(limits) != {"evening", "morning"}:
-        errors.append("articleLimits 必须精确声明 evening 与 morning")
-    elif limits.get("evening") != 80 or limits.get("morning") != 40:
-        errors.append("articleLimits 必须精确为 evening=80、morning=40")
     for name in ("titleBatchSize", "titleTriageConcurrency", "deepReadConcurrency", "networkMaxAttempts", "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds"):
         if not _positive_int(discovery.get(name)):
             errors.append(f"discovery.{name} 必须是正整数")

@@ -60,12 +60,11 @@ def _execution_config() -> dict:
         for stage in ("titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize", "morning", "analysisPro", "analysisCon", "investigation")
     }
     return {
-        "executionVersion": "k10-execution-v3",
+        "executionVersion": "k10-execution-v4",
         "discovery": {
             "model": "deepseek-v4-pro",
             "titleTriagePolicy": {"policyId": "api-fixture-policy", "revision": 1, "contentSha256": "0" * 64,
                                   "approvalState": "approved", "content": policy_content},
-            "articleLimits": {"evening": 80, "morning": 40},
             "titleBatchSize": 8, "titleTriageConcurrency": 1, "deepReadConcurrency": 1,
             "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0, "retryBackoffSeconds": [1],
             "taskSliceSeconds": 30, "completionDeadlineSeconds": 60, "continuationDelaySeconds": 1,
@@ -253,7 +252,7 @@ def test_configuration_uses_explicit_ready_binding_before_any_scan_and_never_wri
     body = response.json()
     assert body["configId"] == "current" and body["configRevision"] == 1
     assert {scope["scope"] for scope in body["scopes"]} == {"candidate", "discovery", "analysis", "evaluation"}
-    assert all(scope["state"] == "configured" for scope in body["scopes"])
+    assert all(scope["state"] == "not_configured" for scope in body["scopes"])
     assert store.list_scans(window_kind=None, db_path=path) == []
     assert sha256(path.read_bytes()).hexdigest() == before
 
@@ -306,7 +305,7 @@ def test_scan_progress_exposes_v306_title_article_and_safe_attempt_aggregates(
         task_id="v306-progress-task", input_manifest_sha256=_title_manifest_hash(refs), window_kind="evening",
         policy_id="api-fixture-policy", policy_revision=1,
         policy_content_sha256=store.read_title_triage_policy(policy_id="api-fixture-policy", revision=1, db_path=path)["contentSha256"],
-        article_limit=80, input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
+        input_count=len(refs), input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path,
     )
     store.record_title_triage_item(task_id="v306-progress-task", document_id="title-a", revision=1, batch_index=0,
                                    disposition="candidate", matter_key="matter-a", merged_ref=None, selection_rank=1,
@@ -360,7 +359,7 @@ def test_scan_progress_exposes_v306_title_article_and_safe_attempt_aggregates(
         "received": 2, "exactDeduplicated": 0, "triaged": 2, "merged": 1, "notSelected": 1, "protected": 0, "partial": 0,
     }
     assert initial_progress["articleCounts"] == {
-        "limit": 80, "selected": 1, "admitted": 2, "completed": 0, "missingBody": 1, "tavilyExcerpt": 2, "tavilyFullArticle": 1,
+        "limit": None, "selected": 1, "admitted": 2, "completed": 0, "missingBody": 1, "tavilyExcerpt": 2, "tavilyFullArticle": 1,
     }
     assert initial_progress["attemptCounts"] == {"started": 0, "succeeded": 1, "failed": 0, "unknown": 0}
     assert initial_progress["factCacheHits"] == 2
@@ -391,7 +390,7 @@ def test_configuration_uses_bound_revision_not_an_old_scan_or_another_config(tmp
     assert response.status_code == 200
     assert response.json()["configId"] == "current"
     assert response.json()["configRevision"] == current_revision
-    assert all(scope["state"] == "configured" for scope in response.json()["scopes"])
+    assert all(scope["state"] == "not_configured" for scope in response.json()["scopes"])
 
 
 @pytest.mark.parametrize(
@@ -436,7 +435,7 @@ def test_candidate_configuration_requires_current_explicit_execution_binding_onl
     scopes = {item["scope"]: item for item in body["scopes"]}
     assert scopes["candidate"]["state"] == "not_configured"
     assert any(error in message for message in scopes["candidate"]["errors"])
-    assert scopes["analysis"]["state"] == scopes["evaluation"]["state"] == "configured"
+    assert scopes["analysis"]["state"] == scopes["evaluation"]["state"] == "not_configured"
 
 
 def test_publications_project_company_cards_and_multifield_wire_contract(tmp_path: Path) -> None:
@@ -475,7 +474,9 @@ def test_keep_is_idempotent_and_selection_freeze_is_read_only(tmp_path: Path, mo
     path = tmp_path / "selection.sqlite"; _seed(path)
     action_at = "2026-09-07T01:20:00+00:00"  # 09:20 CST, before the 09:30 D1 freeze.
     _freeze_k10_clocks(monkeypatch, action_at)
-    with _client(path) as client:
+    from tests.k10_v306_fixture import append_approved_execution_profile
+    append_approved_execution_profile(db_path=path,created_at=NOW,config_id="api-v306-execution")
+    with _client(path, execution_config_binding=("api-v306-execution",1,None)) as client:
         window_id = client.get("/api/v1/k10/company-windows").json()["items"][0]["companyWindowId"]
         first = client.post(f"/api/v1/k10/company-windows/{window_id}/selection", json={"action": "keep", "idempotencyKey": "keep-1"})
         replay = client.post(f"/api/v1/k10/company-windows/{window_id}/selection", json={"action": "keep", "idempotencyKey": "keep-1"})

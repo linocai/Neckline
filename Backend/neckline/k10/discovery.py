@@ -672,7 +672,6 @@ def run_discovery(
     understand_concurrency: int | None = None,
     document_batch_size: int | None = None,
     selected_source_refs: Sequence[EvidenceRef] | None = None,
-    article_limit: int | None = None,
     investigate: InvestigationFunction | None = None,
     investigation_concurrency: int | None = None,
 ) -> DiscoveryRun:
@@ -702,17 +701,10 @@ def run_discovery(
     # V3 title triage freezes body admission before this module is permitted to
     # touch readable source text.  The caller must provide exactly those real
     # source revisions, never a larger list that this routine silently filters.
-    if (selected_source_refs is None) != (article_limit is None):
-        raise ValueError("正文发现必须同时提供 selected_source_refs 与 article_limit")
     if selected_source_refs is not None:
-        expected_limit = 80 if phase == "evening" else 40
-        if isinstance(article_limit, bool) or article_limit != expected_limit:
-            raise ValueError("正文发现 article_limit 必须匹配晚间80/晨间40")
         selected = tuple(selected_source_refs)
         if any(not isinstance(ref, EvidenceRef) for ref in selected) or len(set(selected)) != len(selected):
             raise ValueError("正文发现 selected_source_refs 必须是唯一真实 EvidenceRef")
-        if len(selected) > expected_limit:
-            raise ValueError("正文发现超过已冻结文章上限")
         by_ref = {document.evidence_ref: document for document in documents}
         if len(by_ref) != len(documents) or set(by_ref) != set(selected):
             raise ValueError("正文发现输入必须恰好等于已冻结入选文章")
@@ -750,7 +742,7 @@ def run_discovery(
     counts = {"input": len(documents), "exactDeduplicated": len(deduplication.duplicates),
               "understood": 0, "understandFailed": 0, "eventFailed": 0}
     if selected_source_refs is not None:
-        counts.update({"articleLimit": int(article_limit or 0), "articleAdmitted": len(prepared_documents)})
+        counts.update({"articleAdmitted": len(prepared_documents)})
     recovered = understood_by_document or {}
     pending_documents: list[DiscoveryDocument] = []
     for document in screened_documents:
@@ -1070,14 +1062,20 @@ def run_discovery(
                     if leaseguard is not None:
                         leaseguard()
                     comparison = event_candidates[mapping.company_code]
+                    company_verification = verification
+                    if comparison.research_snapshot_id is not None:
+                        company_state = comparison.differences.get('evidenceDisclosure', {}).get('verificationStatus')
+                        company_verification = replace(verification, state=company_state if company_state in {'verified','contradicted'} else 'needs_review')
+
                     _validate_refs(comparison.evidence_refs, available, label="候选比较")
-                    status = evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at))
+                    status = (metadata.eligibility(mapping.company_code) if hasattr(metadata, "eligibility") else
+                              evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at)))
                     classifier = getattr(model, "classify_opportunity", None)
                     if not callable(classifier):
                         raise ValueError("发现模型缺少机会延续/新催化分类")
                     prior = tuple(old for old in previous_opportunities if old.get("companyCode") == mapping.company_code)
                     decision = validate_classification(
-                        classifier(event=event, verification=verification, mapping=mapping,
+                        classifier(event=event, verification=company_verification, mapping=mapping,
                                    comparison=comparison, previous=prior),
                         canonical_key=event.canonical_key, stage_key=event.stage_key,
                         company_code=mapping.company_code, previous=prior,
@@ -1103,26 +1101,25 @@ def run_discovery(
                               if isinstance(comparison.differences, Mapping) else None)
                 completed_research_disclosure = False
                 if (isinstance(disclosure, Mapping) and comparison.differences.get("role") in {"primary", "alternative", "tied"}
-                        and isinstance(verification.coverage, Mapping) and isinstance(verification.coverage.get("researchSnapshotId"), str)
-                        and verification.state != "contradicted"):
+                        and company_verification.state != "contradicted"):
                     try:
                         validate_evidence_disclosure(disclosure)
                         completed_research_disclosure = True
                     except ComparisonValidationError:
                         pass
-                if decision["kind"] in NEW_KINDS and verification.state != "verified" and not completed_research_disclosure:
+                if decision["kind"] in NEW_KINDS and company_verification.state != "verified" and not completed_research_disclosure:
                     # A model cannot promote a source document into a formal opportunity by
                     # calling it ``initial``/``material_stage``/``independent`` while the
                     # independent check is still unresolved or has found contrary evidence.
                     # For a linked old opportunity this remains an update/risk record; for a
                     # first-seen item it is retained as pending below.
                     prefix = ("重点核验已发现反证，不能作为新机会发布。"
-                              if verification.state == "contradicted"
+                              if company_verification.state == "contradicted"
                               else "重点核验尚未完成，不能作为新机会发布。")
                     decision = {**decision, "kind": "needs_review", "reason": prefix + decision["reason"]}
-                if decision["kind"] == "invalidated" and verification.state not in {"verified", "contradicted"}:
+                if decision["kind"] == "invalidated" and company_verification.state not in {"verified", "contradicted"}:
                     decision = {**decision, "kind": "needs_review", "reason": "重大反证尚待核实。" + decision["reason"]}
-                candidate = DiscoveryCandidate(event, verification, mapping, comparison, status, decision)
+                candidate = DiscoveryCandidate(event, company_verification, mapping, comparison, status, decision)
                 if decision["kind"] == "background":
                     background.append(candidate)
                     continue
@@ -1152,6 +1149,11 @@ def run_discovery(
                     continue
                 if decision["kind"] not in NEW_KINDS:
                     updates.append(candidate)
+                    if configuration.get("configVersion") == "k10-v2" and decision["kind"] == "continuation" and status.eligible and comparison.differences.get("role") in {"primary", "alternative", "tied"} and comparison.rank is not None:
+                        all_candidates.append(candidate)
+                    continue
+                if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get('role') not in {'primary','alternative','tied'}:
+                    (pending if comparison.differences.get('role') == 'pending' else excluded).append(candidate)
                     continue
                 if status.eligible:
                     all_candidates.append(candidate)

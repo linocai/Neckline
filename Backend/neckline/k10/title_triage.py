@@ -21,7 +21,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 
 _STATUSES = frozenset({"candidate", "uncertain", "same_matter", "no_value", "correction_or_denial"})
 _DISPOSITIONS = frozenset({"selected", "merged", "not_selected", "no_value"})
-_LIMITS = {"evening": 80, "morning": 40}
+_WINDOWS = {"evening", "morning"}
 
 
 class TitleTriageProtocolError(ValueError):
@@ -94,8 +94,11 @@ class TitleTriageResult:
     matter_key: str
     stage_key: str
     reason: str
+    company_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.company_codes, tuple) or any(not isinstance(code, str) or not code for code in self.company_codes):
+            raise TitleTriageProtocolError("标题公司线索格式无效")
         if not isinstance(self.document_id, str) or not self.document_id:
             raise TitleTriageProtocolError("标题结果缺少 documentId")
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 1:
@@ -165,7 +168,7 @@ class TitleSelectionItem:
 class TitleSelection:
     state: str
     window_kind: str
-    article_limit: int
+    input_count: int
     input_refs: tuple[tuple[str, int], ...]
     batch_results: tuple[TitleTriageResult, ...]
     items: tuple[TitleSelectionItem, ...]
@@ -175,11 +178,11 @@ class TitleSelection:
     def __post_init__(self) -> None:
         if self.state != "frozen":
             raise TitleTriageProtocolError("标题选择必须冻结后才可使用")
-        if self.window_kind not in _LIMITS or self.article_limit != _LIMITS[self.window_kind]:
-            raise TitleTriageProtocolError("标题选择 articleLimit 不符合窗口")
+        if self.window_kind not in _WINDOWS or self.input_count != len(self.input_refs):
+            raise TitleTriageProtocolError("标题选择 inputCount 不符合窗口")
         if len(set(self.input_refs)) != len(self.input_refs):
             raise TitleTriageProtocolError("标题输入引用重复")
-        if len(set(self.selected_refs)) != len(self.selected_refs) or len(self.selected_refs) > self.article_limit:
+        if len(set(self.selected_refs)) != len(self.selected_refs) or len(self.selected_refs) > self.input_count:
             raise TitleTriageProtocolError("标题入选文章数无效")
         if tuple(item.ref for item in sorted((item for item in self.items if item.disposition == "selected"),
                                              key=lambda item: int(item.selected_rank or 0))) != self.selected_refs:
@@ -192,7 +195,7 @@ class BatchCall(Protocol):
 
 class ReconcileCall(Protocol):
     def __call__(self, items: tuple[TitleDTO, ...], results: tuple[TitleTriageResult, ...],
-                 article_limit: int) -> Sequence[TitleSelectionItem]: ...
+                 input_count: int) -> Sequence[TitleSelectionItem]: ...
 
 
 def title_batch_payload(items: Sequence[TitleDTO]) -> tuple[dict[str, object], ...]:
@@ -254,6 +257,7 @@ def _batch_result_from_mapping(raw: Mapping[str, object]) -> TitleTriageResult:
         raw.get("matterKey") if isinstance(raw.get("matterKey"), str) else "",
         raw.get("stageKey") if isinstance(raw.get("stageKey"), str) else "",
         raw.get("reason") if isinstance(raw.get("reason"), str) else "",
+        tuple(raw.get("companyCodes", [])),
     )
 
 
@@ -267,7 +271,7 @@ def normalize_batch_result(raw: Mapping[str, object], items: Sequence[TitleDTO])
         raise TitleTriageProtocolError("标题批次 items 必须是对象")
     indexed_keys = {"i", "status", "matterKey", "stageKey", "reason"}
     legacy_keys = {"documentId", "revision", "status", "matterKey", "stageKey", "reason"}
-    row_keys = [set(row) for row in rows]
+    row_keys = [set(row) - {"companyCodes"} for row in rows]
     if all(keys == indexed_keys for keys in row_keys):
         by_index: dict[int, Mapping[str, object]] = {}
         for row in rows:
@@ -282,7 +286,8 @@ def normalize_batch_result(raw: Mapping[str, object], items: Sequence[TitleDTO])
         canonical_rows = [
             {"documentId": item.document_id, "revision": item.revision,
              "status": by_index[index]["status"], "matterKey": by_index[index]["matterKey"],
-             "stageKey": by_index[index]["stageKey"], "reason": by_index[index]["reason"]}
+             "stageKey": by_index[index]["stageKey"], "reason": by_index[index]["reason"],
+             **({"companyCodes": by_index[index]["companyCodes"]} if "companyCodes" in by_index[index] else {})}
             for index, item in enumerate(frozen)
         ]
     elif all(keys == legacy_keys for keys in row_keys):
@@ -294,7 +299,8 @@ def normalize_batch_result(raw: Mapping[str, object], items: Sequence[TitleDTO])
     parsed = _validate_batch(batch=frozen, results=tuple(_batch_result_from_mapping(row) for row in canonical_rows))
     return {"items": [{"documentId": result.document_id, "revision": result.revision,
                        "status": result.status, "matterKey": result.matter_key,
-                       "stageKey": result.stage_key, "reason": result.reason} for result in parsed]}
+                       "stageKey": result.stage_key, "reason": result.reason,
+                       **({"companyCodes": list(result.company_codes)} if result.company_codes else {})} for result in parsed]}
 
 
 def validate_batch_result(raw: Mapping[str, object], items: Sequence[TitleDTO]) -> tuple[TitleTriageResult, ...]:
@@ -310,13 +316,13 @@ def _global_participants(items: tuple[TitleDTO, ...], results: tuple[TitleTriage
                  if by_ref[item.ref].status != "no_value")
 
 
-def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult], article_limit: int,
+def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult], input_count: int,
                            policy: Mapping[str, object]) -> tuple[str, dict[str, object]]:
     """Return the global-only reconciliation request after every batch is valid."""
     frozen = _validate_items(items)
     parsed = _validate_batch(batch=frozen, results=batch_results)
-    if article_limit not in _LIMITS.values():
-        raise TitleTriageProtocolError("标题全局选择 articleLimit 无效")
+    if input_count != len(items):
+        raise TitleTriageProtocolError("标题全局选择 inputCount 无效")
     if not isinstance(policy, Mapping) or not policy:
         raise TitleTriageProtocolError("标题初筛缺少已批准 policy")
     operation = (
@@ -333,7 +339,7 @@ def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[Ti
         "使用全部标题及逐条初筛结果做一次全局事项合并和排序。必须审阅全部参与标题并声明 selectionComplete=true，"
         "reviewedCount 必须等于输入参与标题数量。"
         "同一事项的无新增事实转载只保留最合适的真实来源文章；更正、取消、否认、重大反证和独立新阶段"
-        "不得作为普通转载合并。selected 最多 articleLimit 篇，按 selectedRank 从 1 连续编号；"
+        "不得作为普通转载合并。没有正文数量配额，按实际研究价值选取；按 selectedRank 从 1 连续编号；"
         "不够不凑数。只输出 selected 与 merged；其余已审阅标题由系统记录为未入选，不要重复输出。"
         "selected/merged 的 i 必须互斥；merged.into 必须指向 selected 的不同真实索引。"
         "输出协议额外要求：merged 的 i 和 into 两端 status 都必须不是 correction_or_denial。"
@@ -348,7 +354,7 @@ def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[Ti
     return operation, {
         "policy": {key: policy[key] for key in ("policyId", "revision", "contentSha256") if key in policy},
         "policyContent": dict(content),
-        "articleLimit": article_limit,
+        "inputCount": input_count,
         # Real source refs and verbose batch explanations stay in the local
         # ledger. Global comparison needs titles, provenance and semantic tags,
         # not another copy of long opaque IDs or the prior model's prose.
@@ -363,7 +369,7 @@ def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[Ti
 
 
 def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
-                               batch_results: Sequence[TitleTriageResult], article_limit: int) -> dict[str, object]:
+                               batch_results: Sequence[TitleTriageResult], input_count: int) -> dict[str, object]:
     """Normalize an explicit complete declaration to the canonical old ledger form.
 
     The current model response is deliberately compact: it proves it reviewed
@@ -426,13 +432,13 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
     else:
         raise TitleTriageProtocolError("全局标题 JSON 字段无效")
     # Do not accept a compact declaration until every rank, merge target,
-    # correction protection and 80/40 limit is checked by the canonical decoder.
-    _decode_canonical_reconcile_result(canonical, frozen, results, article_limit)
+    # correction protection and input membership is checked by the canonical decoder.
+    _decode_canonical_reconcile_result(canonical, frozen, results, input_count)
     return canonical
 
 
 def _decode_canonical_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
-                                       batch_results: Sequence[TitleTriageResult], article_limit: int) -> tuple[TitleSelectionItem, ...]:
+                                       batch_results: Sequence[TitleTriageResult], input_count: int) -> tuple[TitleSelectionItem, ...]:
     """Strictly decode the canonical selected/merged/notSelected ledger form."""
     if (not isinstance(raw, Mapping) or set(raw) != {"selected", "merged", "notSelected"}
             or any(not isinstance(raw.get(key), list) for key in raw)):
@@ -505,14 +511,14 @@ def _decode_canonical_reconcile_result(raw: Mapping[str, object], items: Sequenc
         if result.status == "no_value":
             selection.append(TitleSelectionItem(item.document_id, item.revision, "no_value", result.matter_key,
                                                 result.stage_key, result.reason))
-    return _validate_selection(items=frozen, results=results, selection_items=tuple(selection), article_limit=article_limit)
+    return _validate_selection(items=frozen, results=results, selection_items=tuple(selection), input_count=input_count)
 
 
 def validate_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
-                              batch_results: Sequence[TitleTriageResult], article_limit: int) -> tuple[TitleSelectionItem, ...]:
+                              batch_results: Sequence[TitleTriageResult], input_count: int) -> tuple[TitleSelectionItem, ...]:
     """Decode a compact complete declaration or a strict old checkpoint."""
-    canonical = normalize_reconcile_result(raw, items, batch_results, article_limit)
-    return _decode_canonical_reconcile_result(canonical, items, batch_results, article_limit)
+    canonical = normalize_reconcile_result(raw, items, batch_results, input_count)
+    return _decode_canonical_reconcile_result(canonical, items, batch_results, input_count)
 
 
 def _review_context(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult],
@@ -523,11 +529,11 @@ def _review_context(items: Sequence[TitleDTO], batch_results: Sequence[TitleTria
     if not isinstance(proposed_selection, TitleSelection):
         raise TitleTriageProtocolError("标题终检缺少冻结拟选名单")
     if (proposed_selection.input_refs != tuple(item.ref for item in frozen)
-            or proposed_selection.article_limit not in _LIMITS.values()
+            or proposed_selection.input_count != len(frozen)
             or proposed_selection.batch_results != results):
         raise TitleTriageProtocolError("标题终检拟选名单与当前标题审计不一致")
     all_items = _validate_selection(items=frozen, results=results, selection_items=proposed_selection.items,
-                                    article_limit=proposed_selection.article_limit)
+                                    input_count=proposed_selection.input_count)
     selected = tuple(sorted((item for item in all_items if item.disposition == "selected"),
                             key=lambda item: int(item.selected_rank or 0)))
     if tuple(item.ref for item in selected) != proposed_selection.selected_refs:
@@ -680,7 +686,7 @@ def apply_title_review(items: Sequence[TitleDTO], batch_results: Sequence[TitleT
             continue
         final.append(item)
     return _validate_selection(items=frozen, results=results, selection_items=tuple(final),
-                               article_limit=proposed_selection.article_limit)
+                               input_count=proposed_selection.input_count)
 
 
 def _validate_items(items: Sequence[TitleDTO]) -> tuple[TitleDTO, ...]:
@@ -705,7 +711,7 @@ def _validate_batch(*, batch: tuple[TitleDTO, ...], results: Sequence[TitleTriag
 
 
 def _validate_selection(*, items: tuple[TitleDTO, ...], results: tuple[TitleTriageResult, ...],
-                        selection_items: Sequence[TitleSelectionItem], article_limit: int) -> tuple[TitleSelectionItem, ...]:
+                        selection_items: Sequence[TitleSelectionItem], input_count: int) -> tuple[TitleSelectionItem, ...]:
     parsed = tuple(selection_items)
     if any(not isinstance(item, TitleSelectionItem) for item in parsed):
         raise TitleTriageProtocolError("全局标题结果类型无效")
@@ -716,7 +722,7 @@ def _validate_selection(*, items: tuple[TitleDTO, ...], results: tuple[TitleTria
     results_by_ref = {result.ref: result for result in results}
     selected = [item for item in parsed if item.disposition == "selected"]
     ranks = [int(item.selected_rank or 0) for item in selected]
-    if sorted(ranks) != list(range(1, len(selected) + 1)) or len(selected) > article_limit:
+    if sorted(ranks) != list(range(1, len(selected) + 1)) or len(selected) > input_count:
         raise TitleTriageProtocolError("全局标题入选排序或文章上限无效")
     selected_refs = {item.ref for item in selected}
     for item in parsed:
@@ -760,7 +766,7 @@ def triage_titles(
     its approved identity.  Requiring a non-empty mapping prevents a caller
     from silently invoking a title model without that binding.
     """
-    if window_kind not in _LIMITS:
+    if window_kind not in _WINDOWS:
         raise TitleTriageProtocolError("标题初筛窗口必须是 evening 或 morning")
     if not isinstance(policy, Mapping) or not policy:
         raise TitleTriageProtocolError("标题初筛缺少已批准 policy")
@@ -844,21 +850,21 @@ def triage_titles(
     ordered_results = tuple(sorted(results, key=lambda result: result.ref))
     if len(ordered_results) != len(frozen):
         raise TitleTriageProtocolError("标题批次合并未完整覆盖输入")
-    article_limit = _LIMITS[window_kind]
+    input_count = len(frozen)
     if not callable(reconcile_call):
         raise TitleTriageProtocolError("标题初筛缺少全局协调调用")
-    reconciled = reconcile_call(frozen, ordered_results, article_limit)
+    reconciled = reconcile_call(frozen, ordered_results, input_count)
     ordered_selection = _validate_selection(items=frozen, results=ordered_results,
-                                            selection_items=reconciled, article_limit=article_limit)
+                                            selection_items=reconciled, input_count=input_count)
     selected_refs = tuple(item.ref for item in sorted((item for item in ordered_selection if item.disposition == "selected"),
                                                        key=lambda item: int(item.selected_rank or 0)))
-    selection = TitleSelection("frozen", window_kind, article_limit, tuple(item.ref for item in frozen),
+    selection = TitleSelection("frozen", window_kind, input_count, tuple(item.ref for item in frozen),
                                ordered_results, ordered_selection, selected_refs,
                                _manifest_hash(window_kind=window_kind, items=frozen, results=ordered_results,
                                               selection=ordered_selection))
     if checkpoint is not None:
         checkpoint({"stage": "title_selection", "state": "frozen", "windowKind": window_kind,
-                    "articleLimit": article_limit, "inputCount": len(frozen),
+                    "inputCount": input_count,
                     "selectedRefs": [{"documentId": ref[0], "revision": ref[1]} for ref in selected_refs],
                     "manifestHash": selection.manifest_hash})
     return selection

@@ -1,0 +1,86 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+_________________ test_material_morning_without_recommendation _________________
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1323/test_material_morning_without_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a2f1fd0>
+
+    def test_material_morning_without_recommendation(tmp_path,monkeypatch):
+        mp=monkeypatch
+        marker="本晨重要事实与论点已改变，但本轮比较后不再推荐此公司"
+        provider=FakeProvider([_result(json.dumps({'material':True,'reasonStatus':'current','observationStatus':'current','summary':marker,'materialContraryEvidence':[]}))])
+        mp.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
+        def change(payload,value):
+            if payload.get('action')=='compare_companies':
+                for row in value['companyAssessments']:
+                    if row['companyCode']=='300002.SZ':row.update(role='excluded',rank=None,summary='本轮不推荐旧催化')
+        db,old,task,_=later_scan(tmp_path,mp,change)
+        _freeze_k10_clocks(mp,'2026-09-09T09:12:00+08:00')
+        with client_for(db) as client:
+            current=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
+            assert current['report']['updatedCards']==current['report']['addedCards']==[]
+>           update=next(x for x in current['report']['lifecycleUpdates'] if x['opportunityId']==old['opportunityId'])
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           StopIteration
+
+Backend/tests/test_b55_consistency.py:31: StopIteration
+___________________ test_frozen_price_and_consecutive_result ___________________
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1323/test_frozen_price_and_consecut0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a34aed0>
+
+    def test_frozen_price_and_consecutive_result(tmp_path,monkeypatch):
+        mp=monkeypatch
+        mp.setattr(market_context,'collect_market_context',market)
+        db,task_id,task,calls,gateway=e2e._run(tmp_path,mp,v2=True)
+        assert task.status=='completed',task
+        candidates=store.list_candidates(scan_id=store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['scanId'],state='offered',db_path=db)
+        assert candidates and candidates[0]['comparison']['marketContext']['300002.SZ']['recentDays'][0]['pctChg']==12.0
+        with client_for(db) as client:
+            evening=client.get('/api/v1/k10/v2/reports/latest?window=evening').json()
+            detail=client.get('/api/v1/k10/company-windows/'+evening['report']['eveningCards'][0]['companyWindowId']).json()
+        card=evening['report']['eveningCards'][0]
+>       assert '+12.00%' in card['priceReaction'] and '2026-09-08' in card['priceReaction']
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: argument of type 'NoneType' is not iterable
+
+Backend/tests/test_b55_consistency.py:53: TypeError
+_____________ test_structured_debate_survives_real_worker_and_api ______________
+
+tmp_path = PosixPath('/private/var/folders/_v/s6hfcbrj5v3fyxk8jzwh7ft00000gn/T/pytest-of-linotsai/pytest-1323/test_structured_debate_survive0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ddb9f10>
+
+    def test_structured_debate_survives_real_worker_and_api(tmp_path,monkeypatch):
+        mp=monkeypatch
+        db,_,task,_,_=e2e._run(tmp_path,mp,v2=True);assert task.status=='completed'
+        _freeze_k10_clocks(mp,e2e.RUN_AT.isoformat())
+        with client_for(db) as client:
+            card=client.get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']['eveningCards'][0]
+            response=client.post('/api/v1/k10/company-windows/'+card['companyWindowId']+'/selection',json={'action':'keep','idempotencyKey':'consistency-debate'})
+            assert response.status_code==200,response.text
+            job=response.json()['analysisJobId']
+            provider=FakeProvider([_result(debate_text(pro)),_result(debate_text(con))])
+            mp.setattr(runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'fixture',None))
+            done=run_once(db_path=db,worker_id='consistency-debate',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:e2e.RUN_AT,task_id=job)
+            assert done.status=='completed' and provider.results==[],done
+            result=client.get('/api/v1/k10/company-windows/'+card['companyWindowId']+'/analysis-chain')
+            assert result.status_code==200,result.text
+            dto=result.json();analyses=dto['items'][0]['analyses'];assert len(analyses)==2
+>           assert all(a['summary']['commonFacts'] and a['summary']['disagreements'] and a['summary']['unknowns'] for a in analyses)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Backend/tests/test_b55_consistency.py:100: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x109cee440>
+
+>   assert all(a['summary']['commonFacts'] and a['summary']['disagreements'] and a['summary']['unknowns'] for a in analyses)
+               ^^^^^^^^^^^^
+E   KeyError: 'summary'
+
+Backend/tests/test_b55_consistency.py:100: KeyError
+=========================== short test summary info ============================
+FAILED Backend/tests/test_b55_consistency.py::test_material_morning_without_recommendation
+FAILED Backend/tests/test_b55_consistency.py::test_frozen_price_and_consecutive_result
+FAILED Backend/tests/test_b55_consistency.py::test_structured_debate_survives_real_worker_and_api
+3 failed in 3.95s

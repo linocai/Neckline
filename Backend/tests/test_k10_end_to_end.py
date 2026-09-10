@@ -28,12 +28,17 @@ class FakeProvider:
     def chat(self, *_args, **_kwargs): return self.results.pop(0)
 
 
+def _debate_result(text):
+    from tests.debate_fixture import debate_text
+    return _result(debate_text(text))
+
+
 def _result(text: str) -> LLMResult:
     return LLMResult(ok=True, content=text, provider="deepseek", model="deepseek-v4-pro", prompt_tokens=2, completion_tokens=3, total_tokens=5, usage_unavailable=False)
 
 
 def _client(path: Path) -> TestClient:
-    app = FastAPI(); app.include_router(create_router(lambda: path, lambda: None, lambda: path.parent / "parquet")); return TestClient(app)
+    app = FastAPI(); app.include_router(create_router(lambda: path, lambda: None, lambda: path.parent / "parquet", current_execution_config_binding_provider=lambda:("end-to-end-execution",1,None))); return TestClient(app)
 
 
 def _seed(path: Path) -> str:
@@ -70,7 +75,7 @@ def test_selected_debate_then_morning_contrary_withdraws_without_erasing_history
                               execution_config_revision=execution_revision, binding_kind="scheduled",
                               bound_at=NOW, db_path=path)
     from neckline.k10 import runtime, morning_runtime
-    analysis = FakeProvider([_result("正方全文"), _result("反方全文")])
+    analysis = FakeProvider([_debate_result("正方全文"), _debate_result("反方全文")])
     monkeypatch.setattr(runtime, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", analysis, "deepseek", None))
     run_once(db_path=path, worker_id="analysis", lease_for=timedelta(minutes=5), handlers={"analysis": production_analysis_handler()}, clock=lambda: datetime(2026, 9, 6, 13, tzinfo=timezone.utc))
     assert store.get_task(task_id=chosen["analysisJobId"], db_path=path).status == "completed"

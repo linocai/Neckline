@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from neckline.k10.analysis import run_debate
 from neckline.llm.base import LLMResult
+from tests.debate_fixture import debate_text
 
 
 class Provider:
@@ -10,7 +11,7 @@ class Provider:
 
     def chat(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
-        return LLMResult(ok=True, content="分析完成", provider="fixture", model="fixture")
+        return LLMResult(ok=True, content=debate_text("分析完成"), provider="fixture", model="fixture")
 
 
 def _context():

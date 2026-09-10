@@ -249,7 +249,7 @@ class ExecutionTitleCountsOut(K10Model):
 class ExecutionArticleCountsOut(K10Model):
     """Selected article admission and deep-read outcomes, never a claim that
     every collected article body was read."""
-    limit: int = Field(default=0, ge=0)
+    limit: int | None = Field(default=None, ge=0)
     selected: int = Field(default=0, ge=0)
     admitted: int = Field(default=0, ge=0)
     completed: int = Field(default=0, ge=0)
@@ -357,6 +357,7 @@ class LifecycleEventOut(K10Model):
 
 
 class OpportunityOut(K10Model):
+    strategyVersion: str | None = None
     schemaVersion: str = SCHEMA_VERSION
     opportunityId: str
     opportunityKey: str
@@ -418,6 +419,8 @@ class SelectionSnapshotOut(K10Model):
 
 
 class CompanyWindowOut(K10Model):
+    canSelect: bool | None = None
+    strategyVersion: str | None = None
     schemaVersion: str = SCHEMA_VERSION
     companyWindowId: str
     companyCode: str
@@ -502,7 +505,14 @@ class AnalysisInputLineage(K10Model):
     evidenceDisclosure: EvidenceDisclosureOut | None = None
 
 
+class AnalysisSummaryOut(K10Model):
+    commonFacts: list[str]
+    disagreements: list[str]
+    unknowns: list[str]
+
+
 class AnalysisArtifactOut(K10Model):
+    summary: AnalysisSummaryOut | None = None
     analysisId: str
     observationId: str
     revision: int
@@ -603,6 +613,7 @@ class CompanyWindowEvaluationOut(K10Model):
     d2: MarketDayOut | None = None
     primaryEligible: bool
     closeLimitHitAny: bool | None = None
+    consecutiveLimitUp: bool | None = None
     firstTouchDay: Literal["D1", "D2"] | None = None
     firstTouchStatus: str | None = None
     knownTouchDays: list[Literal["D1", "D2"]] = Field(default_factory=list)
@@ -621,6 +632,7 @@ class EvaluationMetricsOut(K10Model):
     hitCount: int = Field(default=0, ge=0)
     hitRate: float | None = None
     touchRate: float | None = None
+    consecutiveLimitUpCount: int = Field(default=0, ge=0)
     incompleteCount: int = Field(default=0, ge=0)
     pendingCount: int = Field(default=0, ge=0)
     observedCompleteCount: int = Field(default=0, ge=0)
@@ -657,6 +669,7 @@ class ResultsEventGroupOut(K10Model):
 
 
 class ResultsOut(K10Model):
+    strategyVersion: str | None = None
     schemaVersion: str = SCHEMA_VERSION
     state: Literal["available", "not_configured"]
     reason: ApiFailure | None = None
@@ -695,6 +708,17 @@ class ConfigurationScopeOut(K10Model):
 
 
 class ConfigurationOut(K10Model):
+    runControl: ExecutionRunControlOut | None = None
+    strategyVersion: str | None = None
+    strategySnapshotId: str | None = None
+    universeSnapshotId: str | None = None
+    profileSnapshotId: str | None = None
+    universeSha256: str | None = None
+    profilesSha256: str | None = None
+    profileReviewStatus: str | None = None
+    executionConfigId: str | None = None
+    executionConfigRevision: int | None = None
+
     schemaVersion: str = SCHEMA_VERSION
     configId: str | None = None
     configRevision: int | None = None
@@ -808,3 +832,108 @@ class AnalysisChainOut(K10Model):
     schemaVersion: str = SCHEMA_VERSION
     companyWindowId: str
     items: list[AnalysisChainItemOut] = Field(default_factory=list)
+
+
+class V2CatalystOut(K10Model):
+    lifecycleState: Literal["active", "risk", "withdrawn", "expired"] | None = None
+    eventId: str
+    eventRevision: int
+    opportunityId: str | None = None
+    companyWindowId: str
+    headline: str
+    summary: str
+    classification: str
+    verificationStatus: str
+
+
+class CardPriceContextOut(K10Model):
+    asOf: str
+    collectedAt: str | None = None
+    tradeDate: str
+    pctChg: float
+    sourceRefs: list[SourceReference]
+
+
+class V2CardOut(K10Model):
+    canSelect: bool | None = None
+    sourceMarker: str | None = None
+    latePublication: bool | None = None
+    cardId: str
+    companyCode: str
+    companyName: str
+    rank: int
+    section: Literal["evening", "updated", "added"]
+    companyWindowId: str
+    currentSelectionState: Literal["kept", "skipped", "unhandled"]
+    d1TradeDate: str
+    d2TradeDate: str
+    sampleClass: Literal["primary", "overlap"]
+    strategyVersion: str
+    summary: str
+    twoDayReason: str
+    uncertainty: list[str]
+    sourceRefs: list[SourceReference]
+    catalysts: list[V2CatalystOut]
+    priceReaction: str | None = None
+    priceContext: CardPriceContextOut | None = None
+
+
+class V2LifecycleUpdateOut(K10Model):
+    updateId: str
+    opportunityId: str
+    companyWindowId: str
+    companyCode: str
+    companyName: str
+    kind: Literal['risk', 'withdrawal', 'expiry', 'evidence_update']
+    reason: str
+    createdAt: str
+    sourceRefs: list[SourceReference]
+
+
+class V2IncompleteReviewOut(K10Model):
+    taskId: str
+    opportunityId: str
+    companyWindowId: str
+    companyCode: str
+    status: str
+    reason: str
+
+
+class V2ReportOut(K10Model):
+    coverageGaps: list[str] = Field(default_factory=list)
+    incompleteReviews: list[V2IncompleteReviewOut] = Field(default_factory=list)
+    lifecycleUpdates: list[V2LifecycleUpdateOut] = Field(default_factory=list)
+    reportId: str
+    strategyVersion: str
+    strategySnapshotId: str
+    windowKind: Literal["evening", "morning"]
+    parentReportId: str | None = None
+    cutoffAt: str
+    verificationCutoffAt: str | None = None
+    availableAt: str | None = None
+    status: str
+    eveningCards: list[V2CardOut]
+    updatedCards: list[V2CardOut]
+    addedCards: list[V2CardOut]
+    nextCursor: str | None = None
+
+
+class V2ReportEnvelope(K10Model):
+    schemaVersion: int = 8
+    state: Literal["available", "empty", "not_configured"]
+    reason: ApiFailure | None = None
+    report: V2ReportOut | None = None
+
+
+class V2ReportSummaryOut(K10Model):
+    reportId: str
+    strategyVersion: str
+    windowKind: Literal['evening', 'morning']
+    cutoffAt: str
+    availableAt: str | None = None
+    status: str
+
+
+class V2ReportListOut(K10Model):
+    items: list[V2ReportSummaryOut]
+    page: PageMeta

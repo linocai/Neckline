@@ -1,0 +1,1776 @@
+{
+  "target": "Neckline 3.2.0 Build 54 / Schema 8",
+  "head": "71d0e1a5d805cbf932300c1f78899168a8af793b",
+  "deployed": "76c0a9f97937065ed17a5e6f64f4ee8829bbb756",
+  "files": [
+    {
+      "path": ".gitignore",
+      "kind": "file",
+      "sha256": "a52bca66a7c8d8168de103b4c5b06d9483d596cf1fd915a528c7747212a06359"
+    },
+    {
+      "path": ".learnings/LEARNINGS.md",
+      "kind": "file",
+      "sha256": "35578ff78203094462e265972295c6846392067cb83369c21673c4d6c3d79495"
+    },
+    {
+      "path": "AGENTS.md",
+      "kind": "file",
+      "sha256": "eaf008b4cc160c36e8c8868f00423627a499298b8f988af55d51e00de299969d"
+    },
+    {
+      "path": "App/Neckline.xcodeproj/project.pbxproj",
+      "kind": "file",
+      "sha256": "4fd65dedb3e1a347228b8d5cb903ee12d315c308c85e31d042c0a6d4f752b89f"
+    },
+    {
+      "path": "App/Neckline.xcodeproj/project.xcworkspace/contents.xcworkspacedata",
+      "kind": "file",
+      "sha256": "7f3b00b5c3fdb45242d7b87e1e5c4e25d1fa8129a16c94295ecc4e8ea2235c5f"
+    },
+    {
+      "path": "App/Neckline.xcodeproj/xcshareddata/xcschemes/Neckline.xcscheme",
+      "kind": "file",
+      "sha256": "bb8be5f8b16d0c6e5b2f40a949d2aa81238a570eec631f191d6acad06b2b4ccf"
+    },
+    {
+      "path": "App/Neckline/App/AppModel.swift",
+      "kind": "file",
+      "sha256": "c696f6fb3c0f591711b8ea02d9a10e3aba76e3ea677e5854538f61c41acbe544"
+    },
+    {
+      "path": "App/Neckline/App/K10Cache.swift",
+      "kind": "file",
+      "sha256": "f279c0ffa64d93e826e8cb800d582c791bb03e91a1e830753e8930c2c65f4d72"
+    },
+    {
+      "path": "App/Neckline/App/K10SyntheticUIFixture.swift",
+      "kind": "file",
+      "sha256": "091fb8a0cf4fa3b7d2afe0337abd7324083d4873caf898ff53cea493fcb0562d"
+    },
+    {
+      "path": "App/Neckline/App/NecklineApp.swift",
+      "kind": "file",
+      "sha256": "4ceab4d45e50eab9a18d782b5e76d20de4e71fc29058cc6c15f6ed031bf63e6d"
+    },
+    {
+      "path": "App/Neckline/Components/DesignTokens.swift",
+      "kind": "file",
+      "sha256": "391011f383c155c82ccd0e89224fec0326f73fac4d51b05fe9f5f0fc2c4e3bf6"
+    },
+    {
+      "path": "App/Neckline/Neckline.entitlements",
+      "kind": "file",
+      "sha256": "a0454d70e26c7a88d12e2bfa7aeb01c224837de2ae910400f19d5e7d6b3b7d75"
+    },
+    {
+      "path": "App/Neckline/Networking/AppConfig.swift",
+      "kind": "file",
+      "sha256": "48e85369155bdc7e599ac90c4665964a0dca65944ce11be0398695d28a545827"
+    },
+    {
+      "path": "App/Neckline/Networking/K10APIClient.swift",
+      "kind": "file",
+      "sha256": "7c1c26bd3511ec36c01df6088628c2385ed8b0b8a0e827cac1732d70520c93b0"
+    },
+    {
+      "path": "App/Neckline/Networking/K10AdminClient.swift",
+      "kind": "file",
+      "sha256": "c0028850f5e4feab5067b3d899c864f8ff0fecdbd0eef95b46d40ad41d22ed1a"
+    },
+    {
+      "path": "App/Neckline/Networking/K10Models.swift",
+      "kind": "file",
+      "sha256": "3efd1b72dba3635f43b6880b2b84fc8b8b0aaf91eb19d3111a3ce63f503c6827"
+    },
+    {
+      "path": "App/Neckline/Push/K10PushManager.swift",
+      "kind": "file",
+      "sha256": "78abd1d85754f7905bdf224ba74e9bbd241b0856c1f7f01cfee8c64d29316742"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AccentColor.colorset/Contents.json",
+      "kind": "file",
+      "sha256": "c846a8ceaf80e50110b18d36936265f3e278501cdeddcc65f78551ef15c188f9"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/Contents.json",
+      "kind": "file",
+      "sha256": "95376a0583cf4bde7772905b9f6b705dd944da13a929086c03a5a6a1d015b871"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_1024.png",
+      "kind": "file",
+      "sha256": "3f19b4922a3c9270fe8ccf32e517734146ee4b75f5758f9ea97f9c8101f130ce"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_128.png",
+      "kind": "file",
+      "sha256": "444c752365ac38e02e93d93da46213bebb68963fb6e56417ee948801cbe9ecd9"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_16.png",
+      "kind": "file",
+      "sha256": "fb866c7c2adad4f2d358f37045ec03c5cd3fc841d659b2a0a55fe13b22ae33cd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_256.png",
+      "kind": "file",
+      "sha256": "2429f0bee99535d192ca950e886ef19023c706504c3aef39f712c6b8dbd4c7a3"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_32.png",
+      "kind": "file",
+      "sha256": "24ff9f45c88ad3ae9d0d286c5bf52697829308c3fcf66d2d4ecfd12b9dd56a33"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_512.png",
+      "kind": "file",
+      "sha256": "b70b64c87fed7b9e6b788ed7d906ca4de8fd84ad3ae86c0bab075bdf57057501"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV304B36.appiconset/icon_64.png",
+      "kind": "file",
+      "sha256": "07b458d6ab5711f6e258d774182feb367dc3728a06bb77a0f1074f23d01525dd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/Contents.json",
+      "kind": "file",
+      "sha256": "95376a0583cf4bde7772905b9f6b705dd944da13a929086c03a5a6a1d015b871"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_1024.png",
+      "kind": "file",
+      "sha256": "3f19b4922a3c9270fe8ccf32e517734146ee4b75f5758f9ea97f9c8101f130ce"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_128.png",
+      "kind": "file",
+      "sha256": "444c752365ac38e02e93d93da46213bebb68963fb6e56417ee948801cbe9ecd9"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_16.png",
+      "kind": "file",
+      "sha256": "fb866c7c2adad4f2d358f37045ec03c5cd3fc841d659b2a0a55fe13b22ae33cd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_256.png",
+      "kind": "file",
+      "sha256": "2429f0bee99535d192ca950e886ef19023c706504c3aef39f712c6b8dbd4c7a3"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_32.png",
+      "kind": "file",
+      "sha256": "24ff9f45c88ad3ae9d0d286c5bf52697829308c3fcf66d2d4ecfd12b9dd56a33"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_512.png",
+      "kind": "file",
+      "sha256": "b70b64c87fed7b9e6b788ed7d906ca4de8fd84ad3ae86c0bab075bdf57057501"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV305B37.appiconset/icon_64.png",
+      "kind": "file",
+      "sha256": "07b458d6ab5711f6e258d774182feb367dc3728a06bb77a0f1074f23d01525dd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/Contents.json",
+      "kind": "file",
+      "sha256": "95376a0583cf4bde7772905b9f6b705dd944da13a929086c03a5a6a1d015b871"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_1024.png",
+      "kind": "file",
+      "sha256": "3f19b4922a3c9270fe8ccf32e517734146ee4b75f5758f9ea97f9c8101f130ce"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_128.png",
+      "kind": "file",
+      "sha256": "444c752365ac38e02e93d93da46213bebb68963fb6e56417ee948801cbe9ecd9"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_16.png",
+      "kind": "file",
+      "sha256": "fb866c7c2adad4f2d358f37045ec03c5cd3fc841d659b2a0a55fe13b22ae33cd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_256.png",
+      "kind": "file",
+      "sha256": "2429f0bee99535d192ca950e886ef19023c706504c3aef39f712c6b8dbd4c7a3"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_32.png",
+      "kind": "file",
+      "sha256": "24ff9f45c88ad3ae9d0d286c5bf52697829308c3fcf66d2d4ecfd12b9dd56a33"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_512.png",
+      "kind": "file",
+      "sha256": "b70b64c87fed7b9e6b788ed7d906ca4de8fd84ad3ae86c0bab075bdf57057501"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV306B38.appiconset/icon_64.png",
+      "kind": "file",
+      "sha256": "07b458d6ab5711f6e258d774182feb367dc3728a06bb77a0f1074f23d01525dd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/Contents.json",
+      "kind": "file",
+      "sha256": "95376a0583cf4bde7772905b9f6b705dd944da13a929086c03a5a6a1d015b871"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_1024.png",
+      "kind": "file",
+      "sha256": "3f19b4922a3c9270fe8ccf32e517734146ee4b75f5758f9ea97f9c8101f130ce"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_128.png",
+      "kind": "file",
+      "sha256": "444c752365ac38e02e93d93da46213bebb68963fb6e56417ee948801cbe9ecd9"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_16.png",
+      "kind": "file",
+      "sha256": "fb866c7c2adad4f2d358f37045ec03c5cd3fc841d659b2a0a55fe13b22ae33cd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_256.png",
+      "kind": "file",
+      "sha256": "2429f0bee99535d192ca950e886ef19023c706504c3aef39f712c6b8dbd4c7a3"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_32.png",
+      "kind": "file",
+      "sha256": "24ff9f45c88ad3ae9d0d286c5bf52697829308c3fcf66d2d4ecfd12b9dd56a33"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_512.png",
+      "kind": "file",
+      "sha256": "b70b64c87fed7b9e6b788ed7d906ca4de8fd84ad3ae86c0bab075bdf57057501"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/AppIconV310B39.appiconset/icon_64.png",
+      "kind": "file",
+      "sha256": "07b458d6ab5711f6e258d774182feb367dc3728a06bb77a0f1074f23d01525dd"
+    },
+    {
+      "path": "App/Neckline/Resources/Assets.xcassets/Contents.json",
+      "kind": "file",
+      "sha256": "0fd49ba3c3585c709678e0046a821c3c60685ec7063720d30d3a3448be3a208b"
+    },
+    {
+      "path": "App/Neckline/Resources/Info.plist",
+      "kind": "file",
+      "sha256": "28b307b3c44ebf23a81e993225f711c2b819c767684cb3ca3df4722efa342578"
+    },
+    {
+      "path": "App/Neckline/Views/EvidenceViews.swift",
+      "kind": "file",
+      "sha256": "caa50408a04a621bd1ab72ce1f1b8584adcbab89254d90c4ebdc6e868666e2ee"
+    },
+    {
+      "path": "App/Neckline/Views/FocusView.swift",
+      "kind": "file",
+      "sha256": "9e7cda46f1b072f6143f5c56c4b57efeee263556aa57386f28d27605b247605e"
+    },
+    {
+      "path": "App/Neckline/Views/K10Presentation.swift",
+      "kind": "file",
+      "sha256": "421e2bac41408d61c8290180d0ac1a318e1482031af06b6e75a56664e6e847ba"
+    },
+    {
+      "path": "App/Neckline/Views/OpportunitiesView.swift",
+      "kind": "file",
+      "sha256": "774a08a56f34e1f0b1dcbfdea2cab87733f4dfdb8ba0187b8282bea4d179f3a8"
+    },
+    {
+      "path": "App/Neckline/Views/PerformanceView.swift",
+      "kind": "file",
+      "sha256": "6b82540e910fc0f4aeaa6ac2c6f20d1b343c3cae108d90fe419fa84886c9e1ca"
+    },
+    {
+      "path": "App/Neckline/Views/RootView.swift",
+      "kind": "file",
+      "sha256": "0d5736780d3cc36f4fd62307570cf75c0ac5a7d77f08049be33cace4bde8bcec"
+    },
+    {
+      "path": "App/Neckline/Views/SettingsView.swift",
+      "kind": "file",
+      "sha256": "1282e632a7d4f813259011a627ee7f15f2383cb984ba7d634b6979fe92ee2969"
+    },
+    {
+      "path": "App/Neckline/Views/V3Components.swift",
+      "kind": "file",
+      "sha256": "bcaab10690f13cb6086ff019df7c80afa81b9433f5b23476a3552da2d0e49bc7"
+    },
+    {
+      "path": "App/NecklineTests/K10V3Tests.swift",
+      "kind": "file",
+      "sha256": "8e2667c30e6c00aa7c46724d8ec62799dac198a8a8eab746f3fb314dcea08f32"
+    },
+    {
+      "path": "App/project.yml",
+      "kind": "file",
+      "sha256": "3d4943112710cb64428d3789f10ac169f94b4d27d9723aab6bcd91aab8e2a944"
+    },
+    {
+      "path": "App/scripts/prepare_release_candidate.sh",
+      "kind": "file",
+      "sha256": "bef9f87c204a2b1c7169daa307c71877ccd4491085922dba0b7ef90425366359"
+    },
+    {
+      "path": "Backend/.env.example",
+      "kind": "file",
+      "sha256": "f52f343a8f25bafe5edc9c0d8e1512a9b2b9476e5856943e0d142a4557d21b68"
+    },
+    {
+      "path": "Backend/data/.gitkeep",
+      "kind": "file",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "Backend/deploy/neckline-backup.service",
+      "kind": "file",
+      "sha256": "38bf95af92bfd281d56b8425279760567befce9396e7008531745fa93bc82fc0"
+    },
+    {
+      "path": "Backend/deploy/neckline-backup.timer",
+      "kind": "file",
+      "sha256": "0f2b6497e4eebf423c27d5c206f32a8ea5ec3e4f9784226f5bf8de68b161144b"
+    },
+    {
+      "path": "Backend/deploy/neckline-k10-evening.service",
+      "kind": "file",
+      "sha256": "602fbe97257fc28c0c111114c06f1acebbbe6779332b8019f508d8bc5eef068d"
+    },
+    {
+      "path": "Backend/deploy/neckline-k10-evening.timer",
+      "kind": "file",
+      "sha256": "de6febaad9f00aaca61c21e368e33a362f6ba2db1b28d7bf78fcfa2cd3a8f09b"
+    },
+    {
+      "path": "Backend/deploy/neckline-k10-morning.service",
+      "kind": "file",
+      "sha256": "eaa115a65b697159e135072d798c485d21462b6f4449f4af779e117fa4ccc42d"
+    },
+    {
+      "path": "Backend/deploy/neckline-k10-morning.timer",
+      "kind": "file",
+      "sha256": "5c80350a43f6187a8fc4d904bccfe1ffa1bf8f2c14953c223a8e4b4b747b867a"
+    },
+    {
+      "path": "Backend/deploy/neckline-k10-worker.service",
+      "kind": "file",
+      "sha256": "7dd02307db4d7aa56d63d81b14aabf413daadef05e41fdd82848c3da744f039c"
+    },
+    {
+      "path": "Backend/deploy/neckline-market-retry.service",
+      "kind": "file",
+      "sha256": "7d0c5c044bb2cae0eb636f1ca831bae0b003a2e7265cdfacece3bea799ba5604"
+    },
+    {
+      "path": "Backend/deploy/neckline-market-retry.timer",
+      "kind": "file",
+      "sha256": "d4fd374983a3165e08ed2797082e0c6e468a3abd19956022a1dd9266821674fd"
+    },
+    {
+      "path": "Backend/deploy/neckline-market-update.service",
+      "kind": "file",
+      "sha256": "49839ff320801a5652d3a46d1987809254a39688059f9f25129a4c4b3a942c25"
+    },
+    {
+      "path": "Backend/deploy/neckline-market-update.timer",
+      "kind": "file",
+      "sha256": "7389c8a274bbf9f7f0d6bc1308eef70c820b25d30fc15968454298893ad04bfc"
+    },
+    {
+      "path": "Backend/deploy/neckline.service",
+      "kind": "file",
+      "sha256": "d34b477b3aff4ff6ba3e4ae7548efbbb9b9e29d08d9231b6bf7a08aa504cfa72"
+    },
+    {
+      "path": "Backend/deploy/npm-custom-http.conf",
+      "kind": "file",
+      "sha256": "1b5312345eefcc5eef2abe4fb89ef871ab9a835d910a7543fa3930d6d90c767a"
+    },
+    {
+      "path": "Backend/deploy/npm-le-deploy-hook.sh",
+      "kind": "file",
+      "sha256": "c200924765e054ce5d52dcab4f7d503610de93d9286bc5b32b1640b60b190c63"
+    },
+    {
+      "path": "Backend/neckline/__init__.py",
+      "kind": "file",
+      "sha256": "1cf0be4aae498edba6d23ec970b1a531c239bdef2787851ed91b6e3facd50e06"
+    },
+    {
+      "path": "Backend/neckline/api/__init__.py",
+      "kind": "file",
+      "sha256": "4c80c151a9442c0f919655ad3adffd342d014206f3a3306c44a5e6a0262dc113"
+    },
+    {
+      "path": "Backend/neckline/api/app.py",
+      "kind": "file",
+      "sha256": "4b43d4f5c0d24537de97da16887776c1b3d0ba0189dad4883f72993ca4d727cc"
+    },
+    {
+      "path": "Backend/neckline/api/deps.py",
+      "kind": "file",
+      "sha256": "8f0ee75bd1b45ed5c7a180473ec27ed0bd9c399ef3208ccc1ccb2c670602f346"
+    },
+    {
+      "path": "Backend/neckline/api/k10.py",
+      "kind": "file",
+      "sha256": "021e430f02b4d006811367cb8ca4c38864611a7f1d9eb7b9286dd0448c9f77e9"
+    },
+    {
+      "path": "Backend/neckline/api/k10_schemas.py",
+      "kind": "file",
+      "sha256": "2821e8dd51aaba765f174c81c70d6a714abbd14be0ff6c3d830e57ee775b0518"
+    },
+    {
+      "path": "Backend/neckline/api/schemas.py",
+      "kind": "file",
+      "sha256": "08fd3aa0a297e21b939d485e5010704bba4486d965cc413b07e349da1e744752"
+    },
+    {
+      "path": "Backend/neckline/api/stores.py",
+      "kind": "file",
+      "sha256": "d1a531cc458dc4ffee12af8678cd0e5c174f6ea1aa6fe4fdb603cca027e44375"
+    },
+    {
+      "path": "Backend/neckline/calendar/__init__.py",
+      "kind": "file",
+      "sha256": "ead39aea9b4d87f1e51d0283e6a6cbedcab2c510056bb6e849748df8663e83cc"
+    },
+    {
+      "path": "Backend/neckline/calendar/static_holidays.py",
+      "kind": "file",
+      "sha256": "2360caac77863bf485229de5e8ee63fa3009627af968fab93bdd7292486a9c82"
+    },
+    {
+      "path": "Backend/neckline/calendar/trading_calendar.py",
+      "kind": "file",
+      "sha256": "a9bb1cf0b81d46c02ed9ca3c6fbe684b4c550b66c2a5f3540fb352b1d36c6052"
+    },
+    {
+      "path": "Backend/neckline/config/__init__.py",
+      "kind": "file",
+      "sha256": "471c1ee37760f38cd78296c178b4e8f2507631c465a3c0e0451a7632174f7830"
+    },
+    {
+      "path": "Backend/neckline/config/k10-execution-v1.json",
+      "kind": "file",
+      "sha256": "98bb564a90fba0316598b7e869a1410273bff1b6b821ef70f4456b6bf97b7ebb"
+    },
+    {
+      "path": "Backend/neckline/config/k10-execution-v3.json",
+      "kind": "deleted",
+      "sha256": null
+    },
+    {
+      "path": "Backend/neckline/config/k10-execution-v4.json",
+      "kind": "file",
+      "sha256": "4a89a04a4994c980e847b1048c34b0e4347e1923cc8c2ea1e73438d8e0f9fc0f"
+    },
+    {
+      "path": "Backend/neckline/config/k10-title-triage-policy-v1.json",
+      "kind": "file",
+      "sha256": "57ad5c4b119556a4e57824bcd6de16f19b12d78acd8aadaa10500c9e394ece23"
+    },
+    {
+      "path": "Backend/neckline/config/k10-v1.4.json",
+      "kind": "file",
+      "sha256": "b5dfc0abf4cf66cc3e1d93bd61469d624e7b82ec8a587f3ad7b423fde6dec6ec"
+    },
+    {
+      "path": "Backend/neckline/config/k10-v2.json",
+      "kind": "file",
+      "sha256": "c4272b252936dc15e53b9c387723e5daba2c4f65ac8392fc091b1edf93a0d2a3"
+    },
+    {
+      "path": "Backend/neckline/config/notification-delivery-v1.json",
+      "kind": "file",
+      "sha256": "550ee3e4c530051a5478d70f70ccd25171bbb23584715ec8c42c01a4c522a72a"
+    },
+    {
+      "path": "Backend/neckline/data/__init__.py",
+      "kind": "file",
+      "sha256": "8c56e080be5ee794649ba3c17012e00e7ed95716c65a38f626b8b08a57a3a1eb"
+    },
+    {
+      "path": "Backend/neckline/data/adjust.py",
+      "kind": "file",
+      "sha256": "3971d402d9829ec5ce724609ee128c56b0eb2a2354197da436e321938e700a97"
+    },
+    {
+      "path": "Backend/neckline/data/board.py",
+      "kind": "file",
+      "sha256": "5412a173e6a77b0dcc1bbe25f55967f2896308069537d4f807113912144c33bf"
+    },
+    {
+      "path": "Backend/neckline/data/eod_validation.py",
+      "kind": "file",
+      "sha256": "363b30ed09750ef8a23447cabe8ae478c37a9cf5c0e996c532b0f78cbe4a25f3"
+    },
+    {
+      "path": "Backend/neckline/data/limit_derived.py",
+      "kind": "file",
+      "sha256": "b22d0afd915b4b90048f709c806eb8fd5207309100b5f0a1ccb71152f94fe56b"
+    },
+    {
+      "path": "Backend/neckline/data/market_data.py",
+      "kind": "file",
+      "sha256": "34349091da40005a4d65fc83865463aae5caa96aad88b9b8cd5cbaf44bdd71e9"
+    },
+    {
+      "path": "Backend/neckline/data/panel.py",
+      "kind": "file",
+      "sha256": "fc6e30fb48008eb9ac6e78e144228768cf9a0bdb51d1afa8e8779782c84077c9"
+    },
+    {
+      "path": "Backend/neckline/data/realtime.py",
+      "kind": "file",
+      "sha256": "08e232690dd822ba7f8e8ac7bff57ec399ab202dcf185e2fbd5d393089a6210e"
+    },
+    {
+      "path": "Backend/neckline/data/sw_industry.py",
+      "kind": "file",
+      "sha256": "3e71a300c212e4037d1ce8e7cbdf488850559f44289f3042489ca1a822bb180f"
+    },
+    {
+      "path": "Backend/neckline/data/top_list.py",
+      "kind": "file",
+      "sha256": "8cc442434ba41e91b565a1776d36d8e9500705f9fa660d37b6686cae46d77c58"
+    },
+    {
+      "path": "Backend/neckline/data/tushare_client.py",
+      "kind": "file",
+      "sha256": "1991dba60505ab8ea567e2e09522401be9a89bb05a8980f20a4d53245165bdfb"
+    },
+    {
+      "path": "Backend/neckline/db.py",
+      "kind": "file",
+      "sha256": "1093d04e036e148776a9c5bcd7407ea32ae85c8e1335309d492559acc9184992"
+    },
+    {
+      "path": "Backend/neckline/k10/__init__.py",
+      "kind": "file",
+      "sha256": "cad26b8bd1ac5c6419be7272b31a6585484b38d89a7b799dd427abead1f7a781"
+    },
+    {
+      "path": "Backend/neckline/k10/analysis.py",
+      "kind": "file",
+      "sha256": "36b8f82c4d7532a1448de0f349eca14cc1b6835288887a8e3eea43794cbd2597"
+    },
+    {
+      "path": "Backend/neckline/k10/cli.py",
+      "kind": "file",
+      "sha256": "e2846c3db157b56dfa72b4389e5e0bd9b6f1b50835607cc6c7cd02aa0632f7d7"
+    },
+    {
+      "path": "Backend/neckline/k10/config.py",
+      "kind": "file",
+      "sha256": "ff232d3a2ca294458ea1b86df59120897f20e5d2a88d94ff3f85ec28b215653b"
+    },
+    {
+      "path": "Backend/neckline/k10/discovery.py",
+      "kind": "file",
+      "sha256": "b67f2c3b4212f298a94e4ab2b81a006ce106de662baf292e1e3b4849a02a5eaf"
+    },
+    {
+      "path": "Backend/neckline/k10/evaluation.py",
+      "kind": "file",
+      "sha256": "6653846c705562a81fa3c794c0ed39a0c81964e84c82e7bc976d536011097509"
+    },
+    {
+      "path": "Backend/neckline/k10/evaluation_runtime.py",
+      "kind": "file",
+      "sha256": "5be6b87b9f309d4d17972c0cc7d1aec54aed3bb3532dff32604a7d794259ec16"
+    },
+    {
+      "path": "Backend/neckline/k10/evaluation_schedule.py",
+      "kind": "file",
+      "sha256": "593f8ebcafed6342621136ea7e4692fea853cd89c787399b88b5003f6cf9f21a"
+    },
+    {
+      "path": "Backend/neckline/k10/historical_cases.py",
+      "kind": "file",
+      "sha256": "12c721c8a67236630b30d8641d37663e845863c5905ffb80f0a17b93c3add122"
+    },
+    {
+      "path": "Backend/neckline/k10/ingestion.py",
+      "kind": "file",
+      "sha256": "354050d2b945685b1e454a438f7e9015ff1285f099ff194933ee4298a278702f"
+    },
+    {
+      "path": "Backend/neckline/k10/investigation.py",
+      "kind": "file",
+      "sha256": "79dc739d7edb4e83c9b480f160d6e12f4987a6ef07cf033b5a1a3eb0e0d6651b"
+    },
+    {
+      "path": "Backend/neckline/k10/investigation_prompts.py",
+      "kind": "file",
+      "sha256": "46ad6c34d135fd2ed9a5813c5f0884ffcbebfc2c62e0dcd934fb0ff152ea3616"
+    },
+    {
+      "path": "Backend/neckline/k10/lifecycle.py",
+      "kind": "file",
+      "sha256": "119ce412707df5d525dcbfc9a79182772ba8996b120b1f779eb821ed632aac0e"
+    },
+    {
+      "path": "Backend/neckline/k10/market_context.py",
+      "kind": "file",
+      "sha256": "77691cf5cb30067e44171a7b46014fb56c1791dc95a42345ccf291b2f87de29f"
+    },
+    {
+      "path": "Backend/neckline/k10/market_observation.py",
+      "kind": "file",
+      "sha256": "45d7de9fa11ebf90cc905e43e7f9f7c15672ea3d580b0f1299b94fa1f77f9565"
+    },
+    {
+      "path": "Backend/neckline/k10/metering.py",
+      "kind": "file",
+      "sha256": "e0f9a9cf707f2ab740be811769f6974e43e09cb4caa4b838d2fcc93804836768"
+    },
+    {
+      "path": "Backend/neckline/k10/migration.py",
+      "kind": "file",
+      "sha256": "88d281b35e4a893c5d7f9be9a681fb30f58aa67bd660b101eba2c7d0d30b25b2"
+    },
+    {
+      "path": "Backend/neckline/k10/model_execution.py",
+      "kind": "file",
+      "sha256": "28bec3ac7fa602c0055424dcac19489d8a5c8e1ec0a36584a3d369822c1f6db3"
+    },
+    {
+      "path": "Backend/neckline/k10/morning.py",
+      "kind": "file",
+      "sha256": "c31a4d26a963c70e1217cf38e4ef4437a624f77e75d3a271e0b3a8f5735427d2"
+    },
+    {
+      "path": "Backend/neckline/k10/morning_runtime.py",
+      "kind": "file",
+      "sha256": "23f0a37beb10850de73a6894ca04a1f54b1a2c813742624f79b93f3b7f787116"
+    },
+    {
+      "path": "Backend/neckline/k10/notification_runtime.py",
+      "kind": "file",
+      "sha256": "e370c23771141431c7438e558d2ce9e41a9dbb44cc6d1ff3e39fa7ffe60ba09e"
+    },
+    {
+      "path": "Backend/neckline/k10/notifications.py",
+      "kind": "file",
+      "sha256": "98a1bab2445a63dc53c3bcf8eacd7d4f8cba47a0332beb588d876d1e0b34d404"
+    },
+    {
+      "path": "Backend/neckline/k10/opportunity_discovery.py",
+      "kind": "file",
+      "sha256": "592b4a67d4b241de7de2cd6512f9b1362343b34bee469f0a7b94ea6cc88dc344"
+    },
+    {
+      "path": "Backend/neckline/k10/pipeline.py",
+      "kind": "file",
+      "sha256": "5ffb01cd7026edd29d43ac5dae6ef3fadcaa940cdcbcb153c563652b78f53303"
+    },
+    {
+      "path": "Backend/neckline/k10/prompts.py",
+      "kind": "file",
+      "sha256": "951e3d1c9dd40479569eb042b4d918e779630a40202be974da1d796a7e203675"
+    },
+    {
+      "path": "Backend/neckline/k10/providers.py",
+      "kind": "file",
+      "sha256": "dd99bc9402278961f7a32cdb4a6a01f52e9a490bbce6aa5caeb803169998bbcd"
+    },
+    {
+      "path": "Backend/neckline/k10/research_contracts.py",
+      "kind": "file",
+      "sha256": "772e4eedf6ee3281c68b4532112c8cdf74dddfbe8bf1cda2b0156b010307038d"
+    },
+    {
+      "path": "Backend/neckline/k10/research_runtime.py",
+      "kind": "file",
+      "sha256": "c3b4f8a67316fac4fa4d4aaa10647a988f1bf523bd6da1ba3f3df808fafdf272"
+    },
+    {
+      "path": "Backend/neckline/k10/research_store.py",
+      "kind": "file",
+      "sha256": "e68117f789b04753b79258441952ebfdede547089280ac8e30ed44331b353dcc"
+    },
+    {
+      "path": "Backend/neckline/k10/runtime.py",
+      "kind": "file",
+      "sha256": "d386617c04efa055e53493e74994ad642496b05e881710da49ddc3de6d196aed"
+    },
+    {
+      "path": "Backend/neckline/k10/schema.py",
+      "kind": "file",
+      "sha256": "4eff190029228d22e8e0b41ba3dd1718b598678b090f53327c5ba8e882f3010f"
+    },
+    {
+      "path": "Backend/neckline/k10/source_metadata.py",
+      "kind": "file",
+      "sha256": "56d309c27603a7cf63fbf01b962fd803a5b57652bedd9701f0796e23f28bd672"
+    },
+    {
+      "path": "Backend/neckline/k10/sources.py",
+      "kind": "file",
+      "sha256": "359f3b286fb542f51afd3e21002d8bb83b6328ecf2e65915d20107a9b3ee0f8c"
+    },
+    {
+      "path": "Backend/neckline/k10/store.py",
+      "kind": "file",
+      "sha256": "221e20643d79d23fa1a7b97c443b54dc9949e82cfed6a86afff313a3599327f8"
+    },
+    {
+      "path": "Backend/neckline/k10/title_runtime.py",
+      "kind": "file",
+      "sha256": "642591b9fc8d0f9f2fa3907fcf42808c17c2d69cf2f155b0375a34fe0e5b2305"
+    },
+    {
+      "path": "Backend/neckline/k10/title_triage.py",
+      "kind": "file",
+      "sha256": "79ed1ebae31debeefbe93f6178a947c3edc20c1a51eb516904d9086d43cb5310"
+    },
+    {
+      "path": "Backend/neckline/k10/tushare_news.py",
+      "kind": "file",
+      "sha256": "915a73cc7e66090a4dbac1bdfb180c44001493bf271af1ef56600879f353bc20"
+    },
+    {
+      "path": "Backend/neckline/k10/types.py",
+      "kind": "file",
+      "sha256": "65a12c6aa037d4410ee8b4700d38151f95de1e4e50245a3e095425fe48b1796e"
+    },
+    {
+      "path": "Backend/neckline/k10/universe.py",
+      "kind": "file",
+      "sha256": "3da3926e2f96d6773d5d1c5734db0556cf1901f46090b08499734ff6eadb8666"
+    },
+    {
+      "path": "Backend/neckline/k10/v2_profiles.py",
+      "kind": "file",
+      "sha256": "b9347642312ff8c617aedbaf5985bfda06d26ed726f43eca13f5aae17d890a38"
+    },
+    {
+      "path": "Backend/neckline/k10/v2_schema.py",
+      "kind": "file",
+      "sha256": "cdaf23916917d591cbefa5326077d6c5f43cfc1f32daf541e6395b08b7b36263"
+    },
+    {
+      "path": "Backend/neckline/k10/v2_store.py",
+      "kind": "file",
+      "sha256": "8893a4092d7e7105ca773a53345e599f12981108f30dd595a1ac94dafeba49ee"
+    },
+    {
+      "path": "Backend/neckline/k10/verification.py",
+      "kind": "file",
+      "sha256": "07c6b334f71ab4d8a7a16ad4eb7b50094e049e82cbb3759b93a52d2837908440"
+    },
+    {
+      "path": "Backend/neckline/k10/verification_checkpoints.py",
+      "kind": "file",
+      "sha256": "70715ddae9790868af5d640063a6b16800098b159b35ef593be764e9b2d65532"
+    },
+    {
+      "path": "Backend/neckline/k10/windows.py",
+      "kind": "file",
+      "sha256": "6d8074d30ed3c4595b6fbcb8fcd916dfa300c535e6d54c90ff4247da0de05ce3"
+    },
+    {
+      "path": "Backend/neckline/k10/worker.py",
+      "kind": "file",
+      "sha256": "712a6b579c81f539a918c29a8e243fff32f271762baca7e5caca3410445c603b"
+    },
+    {
+      "path": "Backend/neckline/llm/__init__.py",
+      "kind": "file",
+      "sha256": "e7bbfba0a87728a1eb150ba1c8b752adf44905a6a239f0806ef22d5d8cf100b5"
+    },
+    {
+      "path": "Backend/neckline/llm/base.py",
+      "kind": "file",
+      "sha256": "64cfa0508963c5310d90941bd57f48a6bbb775f823ed71e3b764d5cae6f5b179"
+    },
+    {
+      "path": "Backend/neckline/llm/json_block.py",
+      "kind": "file",
+      "sha256": "c5941359efe97d22842ed5812e9c0c655d97f7bd5b375c609889a572ef586d29"
+    },
+    {
+      "path": "Backend/neckline/llm/openai_compat.py",
+      "kind": "file",
+      "sha256": "415a3acd950ddcb213ff5d46ad315da5469c464285e0f5c9b530d4a7b32e4426"
+    },
+    {
+      "path": "Backend/neckline/llm/providers/__init__.py",
+      "kind": "file",
+      "sha256": "e5cc859a6aa4f509e4bd998c0df222c20fba413b5ddb07a93dee6a7e52f26f3f"
+    },
+    {
+      "path": "Backend/neckline/llm/usage.py",
+      "kind": "file",
+      "sha256": "80b2269d07a65786468a05d8619fb7d4de0c0f95ce8733ca175aa0326d892240"
+    },
+    {
+      "path": "Backend/neckline/notify_kinds.py",
+      "kind": "file",
+      "sha256": "f7026f5a5021ef800fb1e6a94c7a2a67bb086b2dc7a2b7d7b9dd7b3a64b9139e"
+    },
+    {
+      "path": "Backend/neckline/push/__init__.py",
+      "kind": "file",
+      "sha256": "a95d83d0172966b23e6692f51431eeab85d640b820e3e8c8ad23a4e608423e84"
+    },
+    {
+      "path": "Backend/neckline/push/apns.py",
+      "kind": "file",
+      "sha256": "a71d1b1a2a49d42e21d27af8d864b304e738b47cd9bff5af00b4f9e2b71a7e7d"
+    },
+    {
+      "path": "Backend/neckline/search/__init__.py",
+      "kind": "file",
+      "sha256": "f50dc3bc0fe962c7703c604db953a7c3b2eafa8e1da20ad288e93ea26c865fb0"
+    },
+    {
+      "path": "Backend/neckline/search/tavily.py",
+      "kind": "file",
+      "sha256": "f86ea4bb65e449df055ccfa90f284706e981bfdf979c73b9019380228cf3457d"
+    },
+    {
+      "path": "Backend/neckline/settings_store.py",
+      "kind": "file",
+      "sha256": "e5563e252c1f039928f03189c96175561ed8ccb35bec5c692a4570c73f89df17"
+    },
+    {
+      "path": "Backend/pip.conf",
+      "kind": "file",
+      "sha256": "f221604081dc5f885109bd3e2e0b2f462022a945ac6586e37767a88745355fce"
+    },
+    {
+      "path": "Backend/pyproject.toml",
+      "kind": "file",
+      "sha256": "145b8e523d4a56ad19e2fe22e5fbed4e069043d788cce362c562f1679f73de94"
+    },
+    {
+      "path": "Backend/requirements.txt",
+      "kind": "file",
+      "sha256": "c189e1f82cfb6729f9ba42ebd3d1a18d2b4ebd031c7bd746ce1405b05fef9159"
+    },
+    {
+      "path": "Backend/scripts/backfill.py",
+      "kind": "file",
+      "sha256": "bae12be9b449fec906bcbe965ad47f1d58efc785bb4c09e619534160e9968126"
+    },
+    {
+      "path": "Backend/scripts/backup_snapshot.py",
+      "kind": "file",
+      "sha256": "7cc3dc7c5bf025a9dae80e2e41f416cc25b138aeda3f7ef2eddef57ce5ab701f"
+    },
+    {
+      "path": "Backend/scripts/daily_update.py",
+      "kind": "file",
+      "sha256": "6752ea2b9444a66040facdffeb499f554addea842c475b224a79190e1a6f6187"
+    },
+    {
+      "path": "Backend/scripts/export_sw_industry_history.py",
+      "kind": "file",
+      "sha256": "f26e9ce99993132c88dbbedc5dee183079844e42c6a9077736c0f3fe6e72c10d"
+    },
+    {
+      "path": "Backend/scripts/import_sw_industry_history.py",
+      "kind": "file",
+      "sha256": "94c9606a4b6926e1199e0ae8ac73ff509d98f340f82ade9f29dfe6d78da27913"
+    },
+    {
+      "path": "Backend/scripts/init_calendar.py",
+      "kind": "file",
+      "sha256": "0b68d307b865da250f30e931a514c30c55776bfb48129bb1b80cb52289b90c17"
+    },
+    {
+      "path": "Backend/scripts/restore_backup.py",
+      "kind": "file",
+      "sha256": "e35cb9c74d01810b5b54c16a4df2e33d9be48e711708807b71df3da91a950015"
+    },
+    {
+      "path": "Backend/scripts/setup.sh",
+      "kind": "file",
+      "sha256": "ab33342d204a1d4e3879e6fadf2ad41d6e4eb36190dbf3b2e0bcbb44f00a95a4"
+    },
+    {
+      "path": "Backend/scripts/sync_code.sh",
+      "kind": "file",
+      "sha256": "5055392bfd10f120010154f621c2f2b4eee5fa64d282f225a7ac1bb60b5836e0"
+    },
+    {
+      "path": "Backend/tests/__init__.py",
+      "kind": "file",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "Backend/tests/conftest.py",
+      "kind": "file",
+      "sha256": "5b717b6643f9337f6607fd2902bb50175e81f2eb5990d5a70f8460f464830582"
+    },
+    {
+      "path": "Backend/tests/fixtures/k10_contract/company_window.json",
+      "kind": "file",
+      "sha256": "284ac4cb639890f2dfbdcdbaf6f7271ba0bf2fc49fb2916b6dfa38f0c9adecab"
+    },
+    {
+      "path": "Backend/tests/fixtures/k10_contract/evaluation.json",
+      "kind": "file",
+      "sha256": "e000a0811253cc9ad9d7d25c1f9e7f6a92109ac1edfb93798243df96b4bd9ef1"
+    },
+    {
+      "path": "Backend/tests/fixtures/k10_contract/selection_action.json",
+      "kind": "file",
+      "sha256": "4e228d417a5c93a46cd6ad6450a388d5cac93f641d81f94f82057a6899dd9385"
+    },
+    {
+      "path": "Backend/tests/guard_scan.py",
+      "kind": "file",
+      "sha256": "52851406f849a01b9d5275244fb258b0481024e14f422cdf7fbaf9ec3fb587c2"
+    },
+    {
+      "path": "Backend/tests/k10_v302_fixture.py",
+      "kind": "file",
+      "sha256": "d7dfd8cd51a22c5586950f10bc3f1f7b9cb31564d2e1c8bcfb0da7095689fd4f"
+    },
+    {
+      "path": "Backend/tests/k10_v303_fixture.py",
+      "kind": "file",
+      "sha256": "de9c771bf186a8d5a3537fbbd53b9e5bb8dbc7bec8277289a169daa054f929e2"
+    },
+    {
+      "path": "Backend/tests/k10_v304_fixture.py",
+      "kind": "file",
+      "sha256": "3ae328f555383dc13f6059b58c94922f9ab83acb88d55bdb98359f1983116121"
+    },
+    {
+      "path": "Backend/tests/k10_v306_fixture.py",
+      "kind": "file",
+      "sha256": "aca8ca73e2015b428f7176e523f144414a8bc28b56e200370352018d89454307"
+    },
+    {
+      "path": "Backend/tests/k10_v320_fixture.py",
+      "kind": "file",
+      "sha256": "31278318e1e7b7c14952b82f7f05e24bef29ccff445c7b8da73aedeec87cbaf2"
+    },
+    {
+      "path": "Backend/tests/offline_guard/sitecustomize.py",
+      "kind": "file",
+      "sha256": "be30e1682c5ea32947de8cf6ada94771f212b279314b38bd5d359a9c1f357fb7"
+    },
+    {
+      "path": "Backend/tests/test_adjust.py",
+      "kind": "file",
+      "sha256": "4c20ec7c3998b647d676f92f95554279b091cd9cd5095937dc5c56c78628f362"
+    },
+    {
+      "path": "Backend/tests/test_api_auth.py",
+      "kind": "file",
+      "sha256": "0a625b37dee722d46fddd8e69e1abfeb0f70728f8dbd8d6450f7a640d160b2fb"
+    },
+    {
+      "path": "Backend/tests/test_api_settings.py",
+      "kind": "file",
+      "sha256": "9cfbe129020338532e6ef3e7fae294d4b06d47fd8ca065bb69982abfcdc26192"
+    },
+    {
+      "path": "Backend/tests/test_apns.py",
+      "kind": "file",
+      "sha256": "5004664dabde354bf4d531ac07ab28d4d26cf339a1be077daf2393b25d536fcb"
+    },
+    {
+      "path": "Backend/tests/test_b36_model_execution.py",
+      "kind": "file",
+      "sha256": "c3bbaeb32167b84cd2ca2752701792ecc6c10efc997cb391295c0343e0dd44cb"
+    },
+    {
+      "path": "Backend/tests/test_b40_title_recovery.py",
+      "kind": "file",
+      "sha256": "c78af54b0b518fec90286903d98dde40ee2a272ea23a638ab819ecfd446581dc"
+    },
+    {
+      "path": "Backend/tests/test_b42_body_contract.py",
+      "kind": "file",
+      "sha256": "92e4a3f95c482ea01a371295d21a788cb2fc5a4a7dbeb530328b6006ad4fcaca"
+    },
+    {
+      "path": "Backend/tests/test_b44_research_concurrency.py",
+      "kind": "file",
+      "sha256": "48f08d09dd25b09f8049ccc7843a7982caf087afe64fbae3b8a6d23d6d7f234b"
+    },
+    {
+      "path": "Backend/tests/test_b45_research_envelope.py",
+      "kind": "file",
+      "sha256": "c693ed6659f0d1da528e81d5012e1c387562664894c2a814caeff0b94badd322"
+    },
+    {
+      "path": "Backend/tests/test_b46_research_persistence.py",
+      "kind": "file",
+      "sha256": "38427dda5b2ae964561b27ec57d57b0610f505c75031659831750682491cfb14"
+    },
+    {
+      "path": "Backend/tests/test_b47_company_mapping.py",
+      "kind": "file",
+      "sha256": "1623944f2962047e7fd86cf3bd6cd4fc5aa928c953e6ce475463323c75be6d97"
+    },
+    {
+      "path": "Backend/tests/test_b49_pending_comparison.py",
+      "kind": "file",
+      "sha256": "d8d50953349b989a2a5a6cb9ec8ef458ad5ec51e8136a18b1cbd260d2d1e88b8"
+    },
+    {
+      "path": "Backend/tests/test_b50_disclosure_feedback.py",
+      "kind": "file",
+      "sha256": "0fc1c15671ad0664f6e70e64db956f0cb9cfd8506fc668d17a0f53363613d1d7"
+    },
+    {
+      "path": "Backend/tests/test_b51_research_phase.py",
+      "kind": "file",
+      "sha256": "7b333d1011c6b5fc3fb67e3a0586d5f9bde9657b4d03d32b9f35c5a444a1708a"
+    },
+    {
+      "path": "Backend/tests/test_b52_parallel_aggregation.py",
+      "kind": "file",
+      "sha256": "20f5523eadc30aa4b1a95c011c5d36b4fd0b61bfc8ad2b9a03d1680f56f1c4b6"
+    },
+    {
+      "path": "Backend/tests/test_b53_finalization_output.py",
+      "kind": "file",
+      "sha256": "6aca941df8da2ccae3f035dca0f13c18c4919f855779d5df08e405211cff95a7"
+    },
+    {
+      "path": "Backend/tests/test_backup_snapshot.py",
+      "kind": "file",
+      "sha256": "8f19fc31698485b065a4c9b7fdb2d66f7c2068d21ee72ba5fbc50f54bef75d8f"
+    },
+    {
+      "path": "Backend/tests/test_board.py",
+      "kind": "file",
+      "sha256": "65a60144037557f7a4137bc232ea5c7fadc73021c81bd7eff1c4893e3ea2c09f"
+    },
+    {
+      "path": "Backend/tests/test_calendar.py",
+      "kind": "file",
+      "sha256": "56572e9a0bd5bdd249f78ebb2c12b251648451f1075db8f282af89f78ecb861d"
+    },
+    {
+      "path": "Backend/tests/test_client_version_governance.py",
+      "kind": "file",
+      "sha256": "54a2468acdd64ddbd0932c8fb6123b8bfaaf3eb250998aa62a6dd80060a5c273"
+    },
+    {
+      "path": "Backend/tests/test_data_panel.py",
+      "kind": "file",
+      "sha256": "1208372f72c147c79b91b40e98e700039317afe5afd4221a4cd5317ded87b6a0"
+    },
+    {
+      "path": "Backend/tests/test_data_realtime.py",
+      "kind": "file",
+      "sha256": "76a3ef2002f7159f146c024c88e856b3b048aa6ac50e691f666314ce4d582df8"
+    },
+    {
+      "path": "Backend/tests/test_db_isolation_guardrail.py",
+      "kind": "file",
+      "sha256": "4b752aa2d79d6da2073ad188b921da8023c33385844864758035bf0a4d344687"
+    },
+    {
+      "path": "Backend/tests/test_eod_payload_validation.py",
+      "kind": "file",
+      "sha256": "445feab8604cf61094ba407eec30393bec8727481898e672f941d276e9d724f7"
+    },
+    {
+      "path": "Backend/tests/test_export_sw_industry_history.py",
+      "kind": "file",
+      "sha256": "1f16b226f6c0392dd9310f5a7f16f032e20d5a59fbee56c3a910c987031f8fbc"
+    },
+    {
+      "path": "Backend/tests/test_k10_analysis.py",
+      "kind": "file",
+      "sha256": "ce4f49815bae64d337479e3f5d08a1aa865db3c95b48f9bca156cc6fd76870df"
+    },
+    {
+      "path": "Backend/tests/test_k10_api.py",
+      "kind": "file",
+      "sha256": "5d644e166cd342d192514b7d8945bea7a21b7b87107b2bfcb83bd9299e4d77c9"
+    },
+    {
+      "path": "Backend/tests/test_k10_cli.py",
+      "kind": "file",
+      "sha256": "94b1a337c29df3a94b73618ffce7b11185647e15aab73b0c374e167a74330fe0"
+    },
+    {
+      "path": "Backend/tests/test_k10_config.py",
+      "kind": "file",
+      "sha256": "8e3fad90e41637ecc09a668b2433a9e785d7bf870443a5937d749fe61b5685d8"
+    },
+    {
+      "path": "Backend/tests/test_k10_contract.py",
+      "kind": "file",
+      "sha256": "bd00b5fad648ccaa6cc9c742f1b69d93917bade690275bc3ca1fc8e8f87ce892"
+    },
+    {
+      "path": "Backend/tests/test_k10_core.py",
+      "kind": "file",
+      "sha256": "686dcb1b8fad4ea6916118ced54106a6889c299ab1ca9df1ef1cdec75be2c862"
+    },
+    {
+      "path": "Backend/tests/test_k10_discovery.py",
+      "kind": "file",
+      "sha256": "6de7b668b24be716e015ed830cf3cfd320579abc3fd8229ba1701400131d2799"
+    },
+    {
+      "path": "Backend/tests/test_k10_end_to_end.py",
+      "kind": "file",
+      "sha256": "59d04ae77f1d5da7f8a065174809713507314b54b6bd37592ca629eec93c67b4"
+    },
+    {
+      "path": "Backend/tests/test_k10_evaluation.py",
+      "kind": "file",
+      "sha256": "eb59c6a06d861bfa153f0821f88fbe65ddba8db80dacade253064b7e13cdba76"
+    },
+    {
+      "path": "Backend/tests/test_k10_evaluation_schedule.py",
+      "kind": "file",
+      "sha256": "549aedf3d3b837506febf2ab5fcad97bd6e29e9da3e5fbb47fffbd27aa7179f1"
+    },
+    {
+      "path": "Backend/tests/test_k10_execution.py",
+      "kind": "file",
+      "sha256": "e78a70a8f70b945a9c80616acd0bc1f7a72eafe38868c48b15fe9fb9b8219de2"
+    },
+    {
+      "path": "Backend/tests/test_k10_historical_cases.py",
+      "kind": "file",
+      "sha256": "94504d509f972b83cd4e0f4e5876639fc719019016fb5dbf2abdec56bb697f2f"
+    },
+    {
+      "path": "Backend/tests/test_k10_ingestion.py",
+      "kind": "file",
+      "sha256": "9a2e27d77b5c5b2c29baf5b3005b9c7bd4bedd4e6b2d89833f7a6b89016fe036"
+    },
+    {
+      "path": "Backend/tests/test_k10_lifecycle.py",
+      "kind": "file",
+      "sha256": "5b518876e4044e2c2f69d577e397b20b9cff34c4f2418976e8ff288e26e434c3"
+    },
+    {
+      "path": "Backend/tests/test_k10_market_context.py",
+      "kind": "file",
+      "sha256": "2dc3bfc12d2e305b4062e754aed12defcf1a529b366fb452ac729d189590c38f"
+    },
+    {
+      "path": "Backend/tests/test_k10_market_observation.py",
+      "kind": "file",
+      "sha256": "5dfb7b7ae670cb2ffd00d2077d7b3de06d6a4935426294cf16ef0144136bbe9b"
+    },
+    {
+      "path": "Backend/tests/test_k10_metering.py",
+      "kind": "file",
+      "sha256": "7bfb696db0ee24346a6cf6fbc8ac0969a4d96f110ccc9b5926b8e2c4c4f95399"
+    },
+    {
+      "path": "Backend/tests/test_k10_migration.py",
+      "kind": "file",
+      "sha256": "957fb68b44f18741d02e5db0c2e3e8072b39af130bc06745adee7affe4addf12"
+    },
+    {
+      "path": "Backend/tests/test_k10_morning.py",
+      "kind": "file",
+      "sha256": "db447d3795e8b805dcb6d1098d726bab6d415de7c2d9b7df6bc9cdef96699161"
+    },
+    {
+      "path": "Backend/tests/test_k10_notifications.py",
+      "kind": "file",
+      "sha256": "a4e8b1c2b88f65aa0cbc875288a4925af5e134b9a7a45c24d5a39dfd037477b2"
+    },
+    {
+      "path": "Backend/tests/test_k10_operations.py",
+      "kind": "file",
+      "sha256": "8a5e7daa9bd43975e7740d9b697c0caf7aceeb0cbd89cf30f45fae6f5caf3e7a"
+    },
+    {
+      "path": "Backend/tests/test_k10_pipeline.py",
+      "kind": "file",
+      "sha256": "004ac4d26cc6a9e3cc040354d0b892b5a8b794502a5fe39397fe3798812d3b1d"
+    },
+    {
+      "path": "Backend/tests/test_k10_providers.py",
+      "kind": "file",
+      "sha256": "bbbf7b438aa5664d704008538c0a9fda0fc18ecb294b9565933e5626055bb300"
+    },
+    {
+      "path": "Backend/tests/test_k10_runtime.py",
+      "kind": "file",
+      "sha256": "4b4a8c1bdd0a6fce552d856c41d5b9722b2f264226b76dc766ef92c57d7d51a9"
+    },
+    {
+      "path": "Backend/tests/test_k10_source_metadata.py",
+      "kind": "file",
+      "sha256": "00d7044dd7f0b00b06da8ed3769f0018d7fb0b2ac2c47fcba247b4c67bf0c37d"
+    },
+    {
+      "path": "Backend/tests/test_k10_store.py",
+      "kind": "file",
+      "sha256": "6607ee803cdf0cbb28ff9c93a8f529910c12ddb5c8a409bd92688dc0f3e28671"
+    },
+    {
+      "path": "Backend/tests/test_k10_tushare_news.py",
+      "kind": "file",
+      "sha256": "ae1638c6e8277c51379e952ca1c488773129399626cac3319c275bf18ade1fe0"
+    },
+    {
+      "path": "Backend/tests/test_k10_universe.py",
+      "kind": "file",
+      "sha256": "8b614c9c237a86d408e60bab992a0a2a57651676a0a40b71687280c79e7c1dd9"
+    },
+    {
+      "path": "Backend/tests/test_k10_v2_pipeline.py",
+      "kind": "file",
+      "sha256": "9de5a104ac28ce6fe64e2768cc6d7f1b0846853fe5b5370960c7e27c947c2174"
+    },
+    {
+      "path": "Backend/tests/test_k10_v2_profiles.py",
+      "kind": "file",
+      "sha256": "2e6c5b46f37d7519732d3cd0afcd298302b560a62561c862ff4885e4b3a6f45c"
+    },
+    {
+      "path": "Backend/tests/test_k10_v302_api.py",
+      "kind": "file",
+      "sha256": "2eca3515a95521a857f6d6b5e09ca843601b5f9b9d9ed41a53a093e3571c843c"
+    },
+    {
+      "path": "Backend/tests/test_k10_v302_fixture.py",
+      "kind": "file",
+      "sha256": "4e8bbc0e9e2c38d5dd01e43915879909004843e706b6bb0066bc6978cff770f8"
+    },
+    {
+      "path": "Backend/tests/test_k10_v302_pipeline.py",
+      "kind": "file",
+      "sha256": "e5bd6bc8532c6f1eaf73527a1eae4ee04e409722307d552747922a5f60614035"
+    },
+    {
+      "path": "Backend/tests/test_k10_v302_store.py",
+      "kind": "file",
+      "sha256": "da3cb80523da817bb0a2ccb9d5cdc7a0ec6986ec6cecc1ceb8631976d0687018"
+    },
+    {
+      "path": "Backend/tests/test_k10_v303_api.py",
+      "kind": "file",
+      "sha256": "f51ab2439e368209e9f33a379091b87c9488a6a64b40bd08dcca0b6aaa2e5c70"
+    },
+    {
+      "path": "Backend/tests/test_k10_v303_discovery.py",
+      "kind": "file",
+      "sha256": "e4a2dfbf472b7ab0eb0689b01ea43ef20e758295c2b58f82678b0e9e5554f969"
+    },
+    {
+      "path": "Backend/tests/test_k10_v303_fixture.py",
+      "kind": "file",
+      "sha256": "6df9a530ff55135e61f93becbddda308adaea8cfa22958a5ff7e36caf859136a"
+    },
+    {
+      "path": "Backend/tests/test_k10_v303_morning.py",
+      "kind": "file",
+      "sha256": "714ebda1aaff7fb98e83aa66119f318c205b88f77860d0eb3e953c17a5de6ee5"
+    },
+    {
+      "path": "Backend/tests/test_k10_v303_sources.py",
+      "kind": "file",
+      "sha256": "33d1f840f72275fcd6b4b2556540ef8f5aa72a5be2b25016f82a52dc0c8ea320"
+    },
+    {
+      "path": "Backend/tests/test_k10_v304_api.py",
+      "kind": "file",
+      "sha256": "b61914fff65bc1f506c5f8368f3ae4dc59c61096dce8ede6209cc79170b526d0"
+    },
+    {
+      "path": "Backend/tests/test_k10_v304_discovery.py",
+      "kind": "file",
+      "sha256": "35a4595f566fadfbdaf40f7270f845ea88af931d3dc2a51bcb5e3d1989dfd9d6"
+    },
+    {
+      "path": "Backend/tests/test_k10_v304_fixture.py",
+      "kind": "file",
+      "sha256": "125e8168956bc174741671f1ec761e6659b50a7b971edf9a0340eb502cd742cf"
+    },
+    {
+      "path": "Backend/tests/test_k10_v304_morning.py",
+      "kind": "file",
+      "sha256": "6147a1c7fdf97bfacc3c48976aa6b5c49aa3db87e2e95ef69684848b156b7163"
+    },
+    {
+      "path": "Backend/tests/test_k10_v304_sources.py",
+      "kind": "file",
+      "sha256": "b1f4cb0dc00609ac51087b492ee144e31bf1aea30730e720efaffdcd71aa20c3"
+    },
+    {
+      "path": "Backend/tests/test_k10_v306_storage.py",
+      "kind": "file",
+      "sha256": "c45f021b0e4d325dfc5b68a571b15b4fc0fe1654fe86e4b9e34c28f8ccfe975d"
+    },
+    {
+      "path": "Backend/tests/test_k10_verification.py",
+      "kind": "file",
+      "sha256": "bd5e76df86f68121ddac76d7e4c820aaf56d0b7b56483ff69d84f8a48772c9c8"
+    },
+    {
+      "path": "Backend/tests/test_k10_windows.py",
+      "kind": "file",
+      "sha256": "0332aa629cdbc0cca351cbce327fe72f8dab998a732ae54acf61f641fc48c453"
+    },
+    {
+      "path": "Backend/tests/test_k10_worker.py",
+      "kind": "file",
+      "sha256": "4e8d968131b86bdbbaad2e65567a8eddfd469acfda027ff2ce5f3e1af2e23517"
+    },
+    {
+      "path": "Backend/tests/test_limit_derived.py",
+      "kind": "file",
+      "sha256": "9381381c553d56b773701e5b9b52eafc1d69b44b0fe1a181855e9f2a86305b1c"
+    },
+    {
+      "path": "Backend/tests/test_llm.py",
+      "kind": "file",
+      "sha256": "6cd840b09017d31e68271d3b619210f791eeb499e5c21ee7b3cafbbb9273bfc3"
+    },
+    {
+      "path": "Backend/tests/test_market_data.py",
+      "kind": "file",
+      "sha256": "c5cb06b888e5f200d59e86e92ff8e6ff5e5a669349848b85e8565aa4ca48223c"
+    },
+    {
+      "path": "Backend/tests/test_notify_kinds.py",
+      "kind": "file",
+      "sha256": "fd9216226f8633c9e7c6344d6e48bfdddb89a28e2d73314c48dad5d7f0016f29"
+    },
+    {
+      "path": "Backend/tests/test_schema_current.py",
+      "kind": "file",
+      "sha256": "6aa480385d36ec350a15ce5cf2e80b9c469ad7cbdfbd71d36430a3ba77892622"
+    },
+    {
+      "path": "Backend/tests/test_sw_industry.py",
+      "kind": "file",
+      "sha256": "535367dbf8eaa6bd322983b353dc386793d2e8f6f2dc71cdf1dd750bd7c9abf3"
+    },
+    {
+      "path": "Backend/tests/test_tavily.py",
+      "kind": "file",
+      "sha256": "aaa06c3f6121d3c9f106f74c69f5985e14b356941a8e641481576b61bf58ae0a"
+    },
+    {
+      "path": "Backend/tests/test_top_list.py",
+      "kind": "file",
+      "sha256": "c7e6ed9092213300823ae025b6dae3db43557663189a788541293dcd171cb5ae"
+    },
+    {
+      "path": "Backend/tests/test_tushare_client.py",
+      "kind": "file",
+      "sha256": "1c722b132587725240b0eaf2ca0d5e14d28081307f90ab10c290d8ec305341c3"
+    },
+    {
+      "path": "Backend/tests/test_v306_pipeline.py",
+      "kind": "file",
+      "sha256": "8360ead77cc8e687df528bbdc190853e8699095ddf71a8b78e95e07a3fad6934"
+    },
+    {
+      "path": "Backend/tests/test_v306_provider_attempts.py",
+      "kind": "file",
+      "sha256": "60e497f8a55e2b61a40e5306396a33c9d6fb60d7c7b80f698e6b066150851440"
+    },
+    {
+      "path": "Backend/tests/test_v306_title_triage.py",
+      "kind": "file",
+      "sha256": "4ae9fba3b90e02352de3b51129118e999b33d759bbbf2a77b5ed407e86a41e68"
+    },
+    {
+      "path": "Backend/tests/test_v310_analysis.py",
+      "kind": "file",
+      "sha256": "8aec57c02c502ad6d5ba609e41d6da7d02a6c9d3977583caa0b7e68bf3f94e8a"
+    },
+    {
+      "path": "Backend/tests/test_v310_investigation.py",
+      "kind": "file",
+      "sha256": "82edeaca51b49d6b81befd9e4a4175f2f7f2285673d8b3fc8c82f9c7662b45d7"
+    },
+    {
+      "path": "Backend/tests/test_v310_pipeline_e2e.py",
+      "kind": "file",
+      "sha256": "6fc4255d194c8fd86f6f8be8d88c6a4516de8f821e21b37ea9c4ec920e56119a"
+    },
+    {
+      "path": "Backend/tests/test_v310_publication.py",
+      "kind": "file",
+      "sha256": "228d9435c7f8c0c68555b18f0689fddd1a6639c07d649353ad38bd4e425b54e7"
+    },
+    {
+      "path": "Backend/tests/test_v310_research_runtime.py",
+      "kind": "file",
+      "sha256": "a08e39b87623f989f85e5b2cc5e3815cfe0d316afcee170b7ba113c6bc1913ca"
+    },
+    {
+      "path": "Backend/tests/test_v310_research_storage.py",
+      "kind": "file",
+      "sha256": "f15cec9c59908ef2597ee460750568a62b0a60acfa6716ed4131972a3b06d7de"
+    },
+    {
+      "path": "Backend/tests/test_v310_tavily.py",
+      "kind": "file",
+      "sha256": "e1a24593520a3e869f332dbd0e44e77d58bc2d6e127c50c550efcb21316efbea"
+    },
+    {
+      "path": "PROJECT_PLAN.md",
+      "kind": "file",
+      "sha256": "a6f5ca271243e479d25e40f97965bf8b1fbeb66f72f4cfc2c805dbb4fc392bcc"
+    },
+    {
+      "path": "README.md",
+      "kind": "file",
+      "sha256": "f5829a66d80efa479827db784f01f5900e4dac834f8e7fb770ccd5a6ac98cc52"
+    },
+    {
+      "path": "archive/.gitkeep",
+      "kind": "file",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "archive/Neckline_V3_前瞻设计.md",
+      "kind": "file",
+      "sha256": "89a8d23ff459cc7b7641870356aaa12c89c8ccbbf2717ddd2c4905e62ebdb887"
+    },
+    {
+      "path": "archive/Neckline_V3_界面参考/00-overview.png",
+      "kind": "file",
+      "sha256": "4db8d64107f232494e44f69fa611b52963df6530d4f4557b905183810635aeff"
+    },
+    {
+      "path": "archive/Neckline_V3_界面参考/01-opportunities.png",
+      "kind": "file",
+      "sha256": "3e2bc347dad31295f5a7cd3f47038d2eeb70f3c238eb6090d6462fd41fef48db"
+    },
+    {
+      "path": "archive/Neckline_V3_界面参考/02-analysis-plan.png",
+      "kind": "file",
+      "sha256": "3e06bd17394689f1d0965f402db74ee916a848f80a3af5da352b2400d67de3df"
+    },
+    {
+      "path": "archive/Neckline_V3_界面参考/03-morning-plan.png",
+      "kind": "file",
+      "sha256": "7857f19e15bac7603e838ee97e1de5332447915b664db7a30cebfbaebad2a829"
+    },
+    {
+      "path": "archive/Neckline_V3_界面参考/04-results-settings.png",
+      "kind": "file",
+      "sha256": "32e372fd3008dd987c84f5ed323feddb8ee904c2a51fafaf4e4faac4478b3988"
+    },
+    {
+      "path": "archive/v3.0.4-b36_execution.md",
+      "kind": "file",
+      "sha256": "178a7170490680dbd85a27b86453f00b1be513d29d13e31aaf0d3b018e8c3520"
+    },
+    {
+      "path": "archive/v3.0.5-b37_execution.md",
+      "kind": "file",
+      "sha256": "07e93f6a3d7560e5aeeb7744f4a6d0439ae11988a2014ac835fcff76f9c07339"
+    },
+    {
+      "path": "archive/v3.0.6-b38_execution.md",
+      "kind": "file",
+      "sha256": "1ac01d459756f0fdbfcf037e042cbbf2cf19dd69a8493a019e5bb1f1b9898e8c"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b40-code-only-deploy.py",
+      "kind": "file",
+      "sha256": "33a8d1a32494600452ae2950429940b79d4e8a8ea985d9510fa0509271781622"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b40-deploy-receipt.json",
+      "kind": "file",
+      "sha256": "b413aeeff1935ce4f0489ac20eb9603358a3482c4856de6f062620ddd70ff959"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b40-resume-receipt.json",
+      "kind": "file",
+      "sha256": "1b944a9761821e1fad1784e2fe79611d7b317a80e0977d612637e7bc4cd46216"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b41-deploy-receipt.json",
+      "kind": "file",
+      "sha256": "d4048e358612bec410c84522403c1be0b9cc8eed48236fd6b885bca35a96af8c"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b41-resume-receipt.json",
+      "kind": "file",
+      "sha256": "b2170f0d0432d0ee4626ea6beb4fc736f23415dca7c7ef8758a04068b4b462bf"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b42-deploy-receipt.json",
+      "kind": "file",
+      "sha256": "9b5948afbd73c05ee8bb18eb84b381f900af9190ad14bbacaf7ef22ccede88e8"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b42-resume-receipt.json",
+      "kind": "file",
+      "sha256": "b68733b887ba0e1228f8dcbbfe11f0e92ebd6475276d48607cec708678880acc"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b43-deploy-receipt.json",
+      "kind": "file",
+      "sha256": "afb631069531e275476cb35decb077d4e8bedc07d139cbdfaff7f95036141fbd"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b43-resume-receipt.json",
+      "kind": "file",
+      "sha256": "aa74776617973924fa4a1e2a4d86e12d38bffc2b24ecd7540cddc0c75f3a18a7"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b44-deploy-receipt.json",
+      "kind": "file",
+      "sha256": "3ea639dc3846ff368c3abef11b2c4ad1e17f29ded093637506c063b07b927f9d"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b44-resume-receipt.json",
+      "kind": "file",
+      "sha256": "a466fc23fec912fc710eb369c708cf6aebc5b913a15caee0d5a3b7712f756b6f"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b45-deploy-receipt.json",
+      "kind": "file",
+      "sha256": "d9439d09105cfd4c2d1e22d048e91b9084162b6e28e95735acd4c4ec6a5c9273"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b45-resume-receipt.json",
+      "kind": "file",
+      "sha256": "8eba937fcefb7c0b7ac9db7d06e5cd4b74ed3a8e2d808dd815c2407f2f1526b2"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b46-apple-result.json",
+      "kind": "file",
+      "sha256": "a2ab562444ca604e0667de16ad2f3640caf4dd83e9804a22c55e90009954006a"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b46-deploy-result.json",
+      "kind": "file",
+      "sha256": "77096b6ba2db8059511e7d39f4d818b60e2834c2cecfd09d9c5603340afcaafb"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b46-resume-result.json",
+      "kind": "file",
+      "sha256": "b43c5e760f0a5b3c78dbacc46f329f1b311a3ea04e444fd38e027911fe79d6c1"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b48-apple.json",
+      "kind": "file",
+      "sha256": "55af068da10bfd62a6e26306da574191e7d4375556463482584ff3ca116c8774"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b48-configure-next.json",
+      "kind": "file",
+      "sha256": "b6c9bc577339b8d40da27fd274520297dc28a49707573e497c02648d7d313b6f"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b48-deploy.json",
+      "kind": "file",
+      "sha256": "530cacfe6cb34060f47cbcda1a2bf486d841612a14cfb3b04909c2c177aa24a2"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b48-resume.json",
+      "kind": "file",
+      "sha256": "826f427760472acf435a3f3501d5f9e4168c3fac970ee630e38f0ae8267f005f"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b49-apple.json",
+      "kind": "file",
+      "sha256": "ddf33728a14c76543734f86aad64a7f88a36768e4bfd9cb7b7e5fe51e9e8ebde"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b49-deploy.json",
+      "kind": "file",
+      "sha256": "036541dbe7b7319d860f6b2c06579fa0edcad643dc2c03bc5f264a8d8f0e94c9"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b49-resume.json",
+      "kind": "file",
+      "sha256": "2ae20d3da9fc918838f7e00fdcb22994628dd957676187238f49025b8d2c8e0f"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b50-apple.json",
+      "kind": "file",
+      "sha256": "4cbd4b2b9ed44f3aaa83a9a36b334e2ef6c4820e85284019827ea9711b094ac7"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b50-deploy.json",
+      "kind": "file",
+      "sha256": "c2022076b6c64cef060a818e8a19329bc78ba0adfb2460e8e5bfd2fd6ef23aef"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b50-resume.json",
+      "kind": "file",
+      "sha256": "a97b02470b00a12334bc20c7f763aafae4eb08c0ffec6eacf8c20760a91a612c"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b51-apple.json",
+      "kind": "file",
+      "sha256": "119a82ba447d48ab3059ef20b795da9684666aee25931124f05b8fdf51cde097"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b51-deploy.json",
+      "kind": "file",
+      "sha256": "e65da763d356e1c46c3fad4d94b1a1e327afbaddc73ec2cbecd2ddd3b47297c3"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b51-resume.json",
+      "kind": "file",
+      "sha256": "66bc2337ec655cf970bebe983b33d103fe0f2bff15a32b3373ec4c20bb1acb29"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b52-apple.json",
+      "kind": "file",
+      "sha256": "bafe9e54d709a3209f91194b851fa8475f4145703ae6075cf1740d2584e64e9a"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b52-deploy.json",
+      "kind": "file",
+      "sha256": "986a6447da195a88978e1dc48f5736cd9de5959fd18581c4bad4a41a52b0e279"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b52-resume.json",
+      "kind": "file",
+      "sha256": "c99cff8462c5f5fb7ce9857c560bd4dd22efe15051698b2763d0361af77dab2a"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-apple.json",
+      "kind": "file",
+      "sha256": "362c6d42651730b4a525c207d0baab77fa0b157df5f1f5bf3e5e7622e2f3123e"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-configure-next.json",
+      "kind": "file",
+      "sha256": "dad2406a860288f1b16c4b40dba0f39f7a8c4c5997f2760cbab04ae741e0d9bf"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-deploy.json",
+      "kind": "file",
+      "sha256": "75f05662f41c8cb3b4afcc17707c8b1dc363f5fb07ff1c6bd4b291d85330b1ec"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-final-diagnostics.json",
+      "kind": "file",
+      "sha256": "0a4aa860deee1e8a190de638e506b914417baa6332bc6b212cf72ae4b8cdf015"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-report-verification.json",
+      "kind": "file",
+      "sha256": "ac4ac1add16c5ba930cde21ed4ba9da31cd6300c9afac2ca96f24d301e627229"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-resume.json",
+      "kind": "file",
+      "sha256": "8620429f25aeb0ee3aa65cd88d50eec662b0a0ea76578c20163bdfdd91903e66"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/b53-schedules.json",
+      "kind": "file",
+      "sha256": "328dfddda60047ad27144d1c07449237112c3a40f98372ffc3ce32a07d924ec6"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/first-evening-outcome.json",
+      "kind": "file",
+      "sha256": "196e404801e78540e6d3168d7d469056030dc029b3d8220c68102aab0e690049"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/first-evening-start-receipt.json",
+      "kind": "file",
+      "sha256": "982eaea6edc517a5b4f247310838b559325455797b6c2267b67b7211984aeb1f"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/frozen-contract-receipt.json",
+      "kind": "file",
+      "sha256": "b0983ab0ac5fe9cca1d72648a143817578abf78ca311b910c48ed5c8fcc36be4"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/ios-v310-b39-empty-opportunities.png",
+      "kind": "file",
+      "sha256": "d623288e4cc315e4ebc035d54f9f59e13b22b693dd0e48058279769ca886b7fa"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/ios-v310-b39-full-assessments.png",
+      "kind": "file",
+      "sha256": "0ada9aad499b12df9e7e44bfe1459b1171acd053c9c0e18c6e0097e581632710"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/ios-v310-b39-research-summary.png",
+      "kind": "file",
+      "sha256": "d5364711710af803a3d4f088f5fc4ceecd884b534a1c4c2eebf6bf17e5af3e3d"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/production-release-receipt.json",
+      "kind": "file",
+      "sha256": "8b1c44206346f24ef184f0b08c2043601266b7021e56076f859794096c4ad09b"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/production_release.py",
+      "kind": "file",
+      "sha256": "35e4c2217cd5f13325f29d1da73bb3ed3d6902dca449420b7f03265c66a26fc5"
+    },
+    {
+      "path": "archive/v3.1.0-b39-evidence/release-SHA256SUMS.txt",
+      "kind": "file",
+      "sha256": "b1af775baa6ec3c1736eaf38208423bfca28697e2ae36de30e978c6a4ffdbcb7"
+    },
+    {
+      "path": "archive/v3.1.0-b39_execution.md",
+      "kind": "file",
+      "sha256": "2844b9ca5152dd9982ca7c68854d929b99c68340bdaaccec1eb03bcc7ee7aa59"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/ios-empty.png",
+      "kind": "file",
+      "sha256": "deb6b3fed8d50dea1bc91223b3db85854e3f3276f6095cfda8d6ff96d3a3fa14"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/ios-morning.png",
+      "kind": "file",
+      "sha256": "becd5ba57d7119bb3bd12db925e86051c775499366dbd76f9416201d7c9123f7"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/ios-opportunities.png",
+      "kind": "file",
+      "sha256": "d8748cc7fb11f70ebafd6b09a35616d1b3467855736a55c0df040eff73eedb71"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/macos-empty.png",
+      "kind": "file",
+      "sha256": "49faa08d652709a83240a8ae5ecbfed462a22584b2b88583b9db528fc17c108f"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/macos-morning.png",
+      "kind": "file",
+      "sha256": "1e007281d210cdfbfae07c681619adc63033ef2e31488062d7b79a2d75e64218"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/macos-opportunities.png",
+      "kind": "file",
+      "sha256": "ab5091a2d3aadd40cce0ce55e6ec887de08eb6adfa760b79496cc1cb56cb3b9f"
+    },
+    {
+      "path": "archive/v3.2.0-b54-evidence/macos-performance.png",
+      "kind": "file",
+      "sha256": "6c1d41a57a3d6403bd9f8db03ca2fd3b011ef54b7f8c2033461853e7863b9c1a"
+    },
+    {
+      "path": "archive/v3.2.0-b54_execution.md",
+      "kind": "file",
+      "sha256": "b3161f82d5372505b2fffc20849d6bb864def29a6237a2e2d9cca7c223b0ea9f"
+    }
+  ],
+  "strategy": {
+    "path": "/Users/linotsai/Lino/whynotme/K10.md",
+    "sha256": "44817dfdb8f7815568909b4bf0bf8b6ba3054815be2a50d8682c7b4d8602dd3d"
+  }
+}
