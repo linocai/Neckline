@@ -1,0 +1,20 @@
+{
+  "taskId": "task_c9c0feab5c83a08e8a17138ebfb0041a",
+  "scanId": "scan_d39fbd5c631ea9a7df5f569dbd432b4d",
+  "releaseSet": "v3.2.0-b66",
+  "resumedAt": "2026-09-10T23:49:05.852054+08:00",
+  "frozenInputSha256": "f9c9e0bd0b4a00513eb8886d2cac63f65165dd85c5453691e05f32d1d3ea5770",
+  "checkpointsAndBillingUnchangedByRecovery": false,
+  "recoveryAudit": "Five valid pending-verification comparison cache labels were invalidated by a legacy rule; exact original metadata restored after typed and historical-state validation.",
+  "restoredCacheLabels": 5,
+  "originalResultsAndBillingPreserved": true,
+  "paidTitleCount": 44,
+  "paidTitleSha256": "ed4e1ab4625ac5ea9b06359a90f0b5dcba747321e72512672cc0b981938db726",
+  "oldTasksSha256": "aa37d7d249c43cbc85604e538253c7d5b1ed8bc879bf951031fe249927019e0b",
+  "externalAttemptsSha256": "a90e4b279eb3a7efbad95904e06c964dbffda477ee03417151ff23e4a51965cb",
+  "allCompletedCheckpointCount": 536,
+  "allCompletedCheckpointSha256": "a942777b2133fb9399b3c980f31084e732c7d02aefbe3c3a405590dda610fe0b",
+  "repairBackup": "/opt/neckline/data/backups/v3.2.0-b66-predeploy/pre-checkpoint-label-repair.db",
+  "repairBackupSha256": "abc001c219148991ff7cf9a5c7985c92147823fad9119bd72eec2d147981b356",
+  "repairedAt": "2026-09-10T15:53:53.903436+00:00"
+}

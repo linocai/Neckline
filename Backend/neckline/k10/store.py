@@ -3093,7 +3093,7 @@ def authorize_discovery_recovery(
         forbidden_comparisons = {_json(json.loads(raw)) for (raw,) in conn.execute(
             "SELECT s.result_json FROM k10_research_stage_results s JOIN k10_research_snapshot_revisions r "
             "ON r.snapshot_id=s.snapshot_id AND r.revision=s.revision WHERE r.task_id=? "
-            "AND s.action='compare_companies' AND r.research_status NOT IN ('ready_for_comparison','comparison_complete')",
+            "AND s.action='compare_companies' AND r.research_status NOT IN ('ready_for_comparison','pending_verification','comparison_complete')",
             (task_id,))}
         for cache_key, stage, raw in conn.execute(
                 "SELECT item_key,stage,result_json FROM k10_execution_item_checkpoints "
