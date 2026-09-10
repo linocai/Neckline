@@ -1,0 +1,20 @@
+{
+  "build": 69,
+  "backendTests": {
+    "passed": 1179,
+    "warnings": 21,
+    "elapsedSeconds": 165.98,
+    "networkDenied": true
+  },
+  "targetedTests": 31,
+  "oldProductionSourceReproductionFailures": 2,
+  "actualPaidComparisonsRevalidated": 1,
+  "actualPaidFulltextInputsRevalidated": 3,
+  "paidResultRevalidationProviderCalls": 0,
+  "macOSArchive": "passed",
+  "iOSArchive": "passed",
+  "strictSignatures": "passed",
+  "macOSZipExtractionSignature": "passed",
+  "swiftSourceChanged": false,
+  "liveReportAcceptance": "pending"
+}

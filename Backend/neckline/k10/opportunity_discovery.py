@@ -157,13 +157,12 @@ def validate_event_comparison(
     publishable = [code for code in expected if roles[code] in PUBLISHABLE_ROLES]
     primary = [code for code in expected if roles[code] == "primary"]
     alternatives = [code for code in expected if roles[code] == "alternative"]
-    tied = [code for code in expected if roles[code] == "tied"]
     if len(primary) > 1 or (alternatives and len(primary) != 1):
         raise ComparisonValidationError("同一事件只能有一个主推，备选必须有主推", code="compare_company_role_invalid")
     if primary and ranks[primary[0]] != 1:
         raise ComparisonValidationError("同一事件主推必须为第 1 名", code="compare_company_ranking_invalid")
-    if tied and len({ranks[code] for code in tied}) != 1:
-        raise ComparisonValidationError("差异不足的并列公司必须共享同一名次", code="compare_company_ranking_invalid")
+    # Each rank may contain its own tied group. The model may place one group
+    # above another; collapsing all tied companies would change its judgment.
     for rank in set(ranks.values()):
         role_set = {roles[code] for code in publishable if ranks[code] == rank}
         if "tied" in role_set and len(role_set) != 1:

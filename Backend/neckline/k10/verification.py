@@ -383,6 +383,37 @@ class TavilyEvidenceGateway:
             return VerificationEvidenceBundle(state, tuple(docs), tuple(eligible), safe_coverage)
         return bundle
 
+    def _same_fulltext_with_reworded_explanation(self, *, existing: Any, event: EventDraft,
+                                               ref: Mapping[str, Any], context: Mapping[str, Any],
+                                               cutoff_at: datetime, cutoff_inclusive: bool) -> bool:
+        """Prove an old completed input differs only in two explanatory fields.
+
+        A model can request an extracted version again using revised prose. Its
+        parent source and actual paid request stay identical. Historical input
+        hashing keeps changed sources, cutoffs and event facts fail-closed.
+        """
+        if existing is None or existing[0] != "completed" or self.checkpoint_store is None:
+            return False
+        with read_connection(self.db_path) as conn:
+            require_schema(conn)
+            history = conn.execute(
+                "SELECT DISTINCT f.request_json FROM k10_research_fulltext_requests f "
+                "JOIN k10_research_snapshot_revisions s ON s.snapshot_id=f.snapshot_id "
+                "AND s.revision=f.snapshot_revision WHERE s.task_id=? AND f.question_id=?",
+                (self.checkpoint_store.task_id, context["questionId"]),
+            ).fetchall()
+        for (raw,) in history:
+            request = json.loads(raw)
+            original_context = dict(context) | {key: request[key] for key in
+                ("reasonExcerptInsufficient", "expectedJudgmentChange")}
+            original_digest = self.checkpoint_store.input_sha256(
+                canonical_key=event.canonical_key, stage_key=event.stage_key, event_state=event.event_state,
+                headline=event.headline, event_kind=event.event_kind, facts=event.facts, source_refs=[dict(ref)],
+                cutoff_at=_text(cutoff_at), cutoff_inclusive=cutoff_inclusive, investigation_path=original_context)
+            if original_digest == existing[1]:
+                return True
+        return False
+
     def fetch_fulltext(self, *, event: EventDraft, document: DiscoveryDocument, question: Any,
                        request: Any, cutoff_at: datetime,
                        cutoff_inclusive: bool = False) -> VerificationEvidenceBundle:
@@ -497,7 +528,9 @@ class TavilyEvidenceGateway:
                 "state": "pending", "reason": "tavily_fulltext_unavailable", "requestState": "reused",
                 "requests": self.requests, "creditsTotal": self.credits}
             missing_result = {"state": "pending", "documentRefs": [], "eligibleDocumentRefs": [], "coverage": missing_coverage}
-            if old_checkpoint is not None and old_checkpoint[1] != digest:
+            if old_checkpoint is not None and old_checkpoint[1] != digest and not self._same_fulltext_with_reworded_explanation(
+                    existing=old_checkpoint, event=event, ref=ref, context=context,
+                    cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive):
                 return self._pending("checkpoint_input_mismatch")
             if old_checkpoint is not None and old_checkpoint[0] == "running":
                 checkpoint.complete(item_key=item_key, input_sha256=digest, result=missing_result)
@@ -515,7 +548,9 @@ class TavilyEvidenceGateway:
             cached_result = {"state": cached_coverage["state"], "documentRefs": [cached_ref],
                 "eligibleDocumentRefs": [cached_ref] if cached_coverage["state"] == "available" else [],
                 "coverage": cached_coverage}
-            if old_checkpoint is not None and old_checkpoint[1] != digest:
+            if old_checkpoint is not None and old_checkpoint[1] != digest and not self._same_fulltext_with_reworded_explanation(
+                    existing=old_checkpoint, event=event, ref=ref, context=context,
+                    cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive):
                 return self._pending("checkpoint_input_mismatch")
             store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
                 revision=document.revision, state="completed", reason_code=None, updated_at=_text(self.clock()), db_path=self.db_path)
