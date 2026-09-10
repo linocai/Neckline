@@ -106,23 +106,23 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-发布源码 `8e5cec47b599e152fc32dacbf32a43ec7b9f8b9b`，不可变标签 `v3.2.0-b59`；后续文档提交不移动标签。
+发布源码 `c228c0f2e9dc362876c467a06bb365cad9563107`，不可变标签 `v3.2.0-b59`；后续文档提交不移动标签。
 服务器 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 API 已恢复读取；worker、所有 timer 和报告开关继续暂停，未经用户另行授权不试跑、不恢复旧任务。
 `/etc/neckline/k10.env` 绑定策略 `k10-v2-production` 第 1 修订、执行 `k10-v2-execution-production` 第 1 修订；
 固定快照 `k10-v2-20260909` 已绑定，首次扫描前四项配置检查通过。
 
-Mac `/Applications/Neckline.app` 已为 3.2.0（57），Developer ID 严格验签、通用架构和单实例启动通过。
+Mac `/Applications/Neckline.app` 已为 3.2.0（59），Developer ID 严格验签、通用架构和单实例启动通过。
 Mac 尚未公证，网络下载后的 Gatekeeper 体验未验收。iOS 真机签名归档和工程配置就绪，由用户通过 Xcode 安装，不导出 IPA。
 本地签名归档：`/Users/linotsai/Lino/releases/Neckline/v3.2.0-b59-20260910/`；
 后端包、wheel 与 runtime manifest：`/opt/neckline/releases/v3.2.0-b59/`。
 
-本次 Schema 7→8 在真实副本演练后迁移，67 个旧表的历史行／列完整保留，通知 Schema 仍为 2。
-服务器恢复集 `/opt/neckline/data/backups/v3.2.0-b59-predeploy/` 包含 B53 代码、旧绑定、迁移前后数据库和回执。
-Mac 可恢复副本 `/Users/linotsai/Lino/app_backups/Neckline-v3.1.0-build53-pre-v320-b57-20260910.app`。
+本次只更新代码与 wheel；Schema 8、通知 Schema 2 和 85 张表全部数据保持不变，前后备份校验值相同。
+服务器恢复集 `/opt/neckline/data/backups/v3.2.0-b59-predeploy/` 包含 B57 代码、环境／绑定、切换前后数据库和回执。
+Mac 可恢复副本 `/Users/linotsai/Lino/app_backups/Neckline-v3.2.0-build57-pre-b59-20260910.app`。
 回滚前必须停止所有写入者、保存最新现场并核对升级后的业务写入；不得直接拿旧快照覆盖新增数据。
 保持根目录 `root:root /0755`、数据库 `neckline:neckline /0600`，恢复后核对完整性、健康、鉴权、实际配置和暂停状态。
 
 旧晚报与原 D1/D2、用户选择、失败晨报检查点仍保留；它们不是 K10-v2 首报，不能为了新版本重放或重开窗口。
 此前 B39–B53 故障、恢复及旧执行参数只作历史证据，见 [执行记录](archive/v3.1.0-b39_execution.md)；
-本次发布与恢复集的详细哈希见 [3.2.0 执行记录第 20 节](archive/v3.2.0-b54_execution.md)。数据库和凭据只留服务器，不公开。
+本次发布与恢复集的详细哈希见 [3.2.0 执行记录第 23 节](archive/v3.2.0-b54_execution.md)。数据库和凭据只留服务器，不公开。
