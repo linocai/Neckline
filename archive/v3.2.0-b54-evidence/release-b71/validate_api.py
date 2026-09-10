@@ -44,7 +44,19 @@ def verify(get):
         if window == 'evening':
             assert report.report.status == 'partial' and report.report.availableAt and report.reason is None
             assert len(report.report.eveningCards) == 7 and not report.report.incompleteReviews
-            assert all(card.priceContext and all(ref.dataFetchedAt == 'unknown' for ref in card.priceContext.sourceRefs) for card in report.report.eveningCards)
+            from neckline.k10.v2_store import read_report
+            saved = read_report(db_path=Path(args.db), report_id=report.report.reportId)
+            contexts = 0
+            for card, original in zip(report.report.eveningCards, saved['eveningCards']):
+                assert card.cardId == original['cardId']
+                if original['priceContext'] is None:
+                    assert card.priceContext is None
+                    continue
+                contexts += 1
+                assert card.priceContext is not None
+                for ref, raw in zip(card.priceContext.sourceRefs, original['priceContext']['sourceRefs']):
+                    assert all(ref.model_dump()[key] == value for key, value in raw.items())
+            assert contexts > 0
         out[window] = report.model_dump(mode='json')
     out['results'] = ResultsOut.model_validate(get('/k10/results', True)).model_dump(mode='json')
     out['opportunities'] = OpportunityListOut.model_validate(get('/k10/opportunities', True)).model_dump(mode='json')

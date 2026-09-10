@@ -42,7 +42,6 @@ class SourceReference(K10Model):
     publishedAt: str | None = None
     publishedPrecision: Literal["exact", "date", "unknown"] = "unknown"
     fetchedAt: str | None = None
-    dataFetchedAt: str | None = None
     collectedAt: str | None = None
 
 
@@ -847,12 +846,16 @@ class V2CatalystOut(K10Model):
     verificationStatus: str
 
 
+class CardPriceSourceReference(SourceReference):
+    dataFetchedAt: str | None = None
+
+
 class CardPriceContextOut(K10Model):
     asOf: str
     collectedAt: str | None = None
     tradeDate: str
     pctChg: float
-    sourceRefs: list[SourceReference]
+    sourceRefs: list[CardPriceSourceReference]
 
 
 class V2CardOut(K10Model):
