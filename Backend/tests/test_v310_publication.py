@@ -203,6 +203,7 @@ def test_morning_handler_carries_frozen_disclosure_into_model_and_report(tmp_pat
     monkeypatch.setattr(morning_runtime.store, "read_run_config", lambda **_: {"payload": {"modelRoutes": {"morning": "deepseek-v4-pro"}}})
     monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=Provider(), error=None))
     monkeypatch.setattr(morning_runtime.store, "load_candidate_context", lambda **_: {
+        "documents": [], "frozenEvidenceRefs": [],
         "observationIds": [], "opportunity": {"opportunityId": "opportunity-rumor", "state": "active"},
         "candidate": {"comparison": {"differences": {"evidenceDisclosure": disclosure}}},
     })

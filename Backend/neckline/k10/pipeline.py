@@ -29,7 +29,7 @@ from . import store
 from .config import validate_execution_config, validate_run_config
 from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryModel, EventComparison, InvestigationOutcome,
                         EvidenceRef, EventDraft, FrozenDiscoveryDraftCompatibilityError, SqliteDiscoveryWriter, Verification,
-                        DiscoveryDeadlineExceeded, DiscoverySliceYield, DiscoveryUnderstandingIncomplete, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
+                        DiscoveryDeadlineExceeded, DiscoverySliceYield, DiscoveryUnderstandingIncomplete, ProviderThrottleYield, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
                         thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows)
 from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
 from .historical_cases import apply_historical_assessments
@@ -39,7 +39,7 @@ from .research_contracts import Claim, ResearchSnapshot, ResearchStageResult, Re
 from .model_execution import JsonRepairError, ModelInvocation, ModelNetworkError, SemanticValidationError, execute_model_operation
 from .metering import bind_provider_execution_spending, provider_spend_context
 from .opportunity_discovery import ComparisonValidationError, validate_classification, validate_event_comparison
-from .providers import resolve_deepseek_v4_pro
+from .providers import resolve_deepseek_v4_pro, runtime_execution_profile
 from .tushare_news import TuShareMajorNewsAdapter
 from .universe import CHINEXT, CompanyMetadata, CompanyMetadataProvider
 from .verification import TavilyEvidenceGateway
@@ -61,11 +61,6 @@ class PipelineError(RuntimeError):
     def __init__(self, message: str, *, code: str = "pipeline_invalid") -> None:
         super().__init__(message)
         self.code = code
-
-
-class ProviderThrottleYield(DiscoverySliceYield):
-    def __init__(self, delay):
-        self.delay = delay
 
 
 _TS_CODE = re.compile(r"^\d{6}\.(?:SZ|SH|BJ)$")
@@ -1065,6 +1060,7 @@ class _CheckpointedDiscoveryModel:
             "cutoffAt": self._cutoff_at,
             "executionBinding": {key: self._binding.get(key) for key in ("configId", "revision", "contentSha256")},
             "modelOptions": model_options, "input": item,
+            **({"runtimeProvider": self._binding["runtimeProvider"]} if "runtimeProvider" in self._binding else {}),
         }
         return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -1271,7 +1267,8 @@ class _CheckpointedDiscoveryModel:
                 cache_key = sha256(json.dumps({"version": ("k10-source-facts-v2" if self._base._uses_investigation_contract()
                                                          else "k10-source-facts-v1"), "prompt": prompt_hash,
                     "source": sha256(text.encode()).hexdigest(), "template": template,
-                    "model": self._policy["model"]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                    "model": self._policy["model"],
+                    **({"runtimeProvider": self._binding["runtimeProvider"]} if "runtimeProvider" in self._binding else {})}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
                 cached = store.read_fact_cache(cache_key=cache_key, cutoff_at=self._cutoff_at, db_path=self._db_path)
                 if cached is not None:
                     if self._leaseguard is not None:
@@ -1311,7 +1308,8 @@ class _CheckpointedDiscoveryModel:
                 eligible_at = document.published_at or document.fetched_at
                 refs = [_ref_payload(document.evidence_ref)]
                 store.store_fact_cache(cache_key=cache_key, source_refs=refs, eligible_at=eligible_at,
-                    template_content_sha256=template["contentSha256"], model=self._policy["model"],
+                    template_content_sha256=template["contentSha256"],
+                    model=self._binding.get("runtimeProvider", {}).get("model", self._policy["model"]),
                     prompt_input_sha256=prompt_hash, result={"events": freeze_event_drafts(value[0]), "needsFullText": value[1]},
                     created_at=_text(_now()), db_path=self._db_path)
             return value
@@ -1790,7 +1788,7 @@ def _publish_scan(*, run, scan_id: str, kind: str, db_path: Path, created_at: st
     all_inputs = tuple(replace(item, source_marker=kind) for item in writer.publication_inputs)
     def publish_report(conn, available_at):
         from .v2_store import publish_cards
-        publish_cards(conn, report_id="report_" + scan_id, scan_id=scan_id, kind=kind,
+        return publish_cards(conn, report_id="report_" + scan_id, scan_id=scan_id, kind=kind,
                       snapshot_id=config["payload"]["strategySnapshotId"], inputs=all_inputs, available_at=available_at)
     return store.publish_opportunities(
         batch_id="publication_" + scan_id, scan_id=scan_id, publication_kind=kind,
@@ -1905,8 +1903,12 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
         identity = json.dumps({"candidateId": candidate["candidateId"], "eventId": match["eventId"], "cutoff": parent.input_cutoff_at, "refs": refs}, ensure_ascii=False, sort_keys=True)
         digest = sha256(identity.encode()).hexdigest()[:32]
         task_id = f"morning_review_{digest}"
+        original_cutoff = store.candidate_publication_cutoff(candidate_id=candidate["candidateId"], db_path=parent.db_path)
+        if original_cutoff is None:
+            outcomes.append("failed")
+            continue
         payload = {"parentScanId": scan_id, "candidateId": candidate["candidateId"], "observationId": observations.get(candidate["candidateId"]),
-                   "originalCutoffAt": scan["cutoffAt"], "morningEvidenceRefs": refs,
+                   "originalCutoffAt": original_cutoff, "originalNewsCutoffAt": scan["cutoffAt"], "morningEvidenceRefs": refs,
                    "independentVerificationRefs": _morning_refs(match.get("independentVerificationRefs")),
                    "companyWindowId": match.get("companyWindowId"), "displayRank": match.get("displayRank"),
                    "selectionState": match.get("selectionState"), "lifecycle": match.get("lifecycle"),
@@ -2673,8 +2675,13 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         if profile_payload is None or not isinstance(profile_payload.get("discovery"), Mapping):
             raise PipelineError("发现执行包分片配置无效", code="execution_policy_invalid")
         delay = yielded.delay if isinstance(yielded, ProviderThrottleYield) else profile_payload["discovery"].get("continuationDelaySeconds")
-        if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < (0 if isinstance(yielded, ProviderThrottleYield) else 1):
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or delay < (0 if isinstance(yielded, ProviderThrottleYield) else 1):
             raise PipelineError("发现执行包续跑延迟无效", code="execution_policy_invalid")
+        if execution_deadline_at is not None and delay >= (execution_deadline_at - _now()).total_seconds():
+            finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
+                status="failed", pipeline_state="deadline", coverage_extra={**running_coverage, "executionState": "deadline"})
+            return TaskResult("failed", "deadline", {"scanId": scan_id, "safeErrorCode": "DISCOVERY_DEADLINE"},
+                              "服务限流，无法在本次任务完成时限内重试")
         return TaskResult("failed", "discovery_slice", {"scanId": scan_id, "ingestionState": ingestion.state},
                           "发现任务分片继续", retry_at=_now() + timedelta(seconds=delay),
                           retry_kind="failure" if isinstance(yielded, ProviderThrottleYield) else "continuation", safe_error_code="rate_limited" if isinstance(yielded, ProviderThrottleYield) else "DISCOVERY_SLICE")
@@ -2777,7 +2784,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         checkpoint["researchSnapshotIds"] = list(final_coverage.get("researchSnapshotIds", ()))
     if research_terminal_error is not None:
         checkpoint["safeErrorCode"] = research_terminal_error
-        return TaskResult("failed", "research_state", checkpoint, "研究执行失败，冻结扫描未发布，可受控恢复")
+        return TaskResult("failed", "research_state", checkpoint,
+                          "余额不足，任务已停止" if research_terminal_error == 'insufficient_balance' else "研究执行失败，冻结扫描未发布，可受控恢复")
     if kind == "morning":
         checkpoint["morningReviewMatches"] = matches
     usage = getattr(model, "usage_records", None)
@@ -2920,7 +2928,8 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
             return TaskResult("failed", "resume_input", context.checkpoint, "受控恢复冻结输入或原任务绑定无效")
         same_task_recovery = True
     resuming = legacy_recovery or same_task_recovery
-    resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path)
+    resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path,task_id=context.task.task_id)
+    execution_profile = runtime_execution_profile(execution_profile, resolution.provider)
     if resolution.provider is not None:
         bind_provider_execution_spending(provider=resolution.provider, task_id=context.task.task_id,
                                          execution_profile=execution_profile)

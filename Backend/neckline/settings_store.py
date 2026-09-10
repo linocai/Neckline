@@ -9,10 +9,12 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional, Tuple
 
 from neckline import notify_kinds
 from neckline.db import connection, init_schema, readonly_tables
+from neckline.llm.connection import chat_endpoint, model_name, connection_name
 
 _UNSET = object()
 _PROVIDER_COLUMNS = "id, name, base_url, model, api_key, has_web_search, search_engine, notes, enabled, created_at, updated_at"
@@ -187,19 +189,21 @@ def create_provider(
     enabled: bool = True,
     db_path: Optional[Path] = None,
 ) -> ProviderRecord:
-    nm = (name or "").strip()
+    nm = connection_name(name)
     if not nm:
         raise ValueError("provider name 不可为空")
-    bu = (base_url or "").strip()
+    bu = chat_endpoint(base_url)
     if not bu:
         raise ValueError("base_url 不可为空")
-    md = (model or "").strip()
+    md = model_name(model)
     if not md:
         raise ValueError("model 不可为空")
     now = _now()
     init_schema(db_path)
     try:
         with connection(db_path) as conn:
+            if enabled:
+                conn.execute("UPDATE llm_providers SET enabled=0,updated_at=? WHERE enabled=1", (now,))
             conn.execute(
                 "INSERT INTO llm_providers "
                 "(name, base_url, model, api_key, has_web_search, search_engine, notes, enabled, "
@@ -231,10 +235,10 @@ def update_provider(
     vals: List[Any] = []
     if base_url is not _UNSET:
         sets.append("base_url=?")
-        vals.append(str(base_url).strip())
+        vals.append(chat_endpoint(base_url))
     if model is not _UNSET:
         sets.append("model=?")
-        vals.append(str(model).strip())
+        vals.append(model_name(model))
     if api_key is not _UNSET:
         sets.append("api_key=?")
         vals.append(_clean(api_key))
@@ -258,9 +262,18 @@ def update_provider(
     vals.append(_now())
     vals.append(name)
     with connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if base_url is not _UNSET and api_key is _UNSET:
+            old = conn.execute("SELECT base_url,api_key FROM llm_providers WHERE name=?", (name,)).fetchone()
+            if old is not None and _clean(old[1]):
+                before, after = urlsplit(old[0]), urlsplit(chat_endpoint(base_url))
+                if (before.hostname, before.port or 443) != (after.hostname, after.port or 443):
+                    raise ValueError("更换服务商地址时，请同时填写新 API Key 或清除旧 Key")
         cur = conn.execute(f"UPDATE llm_providers SET {', '.join(sets)} WHERE name=?", vals)
         if cur.rowcount == 0:
             return None
+        if enabled is True:
+            conn.execute("UPDATE llm_providers SET enabled=0,updated_at=? WHERE name<>? AND enabled=1", (_now(), name))
     return get_provider_record(name, db_path=db_path)
 
 

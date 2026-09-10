@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import json
@@ -13,7 +13,7 @@ from neckline.search.tavily import TavilySearchClient, TavilySearchResponse, Tav
 from neckline.settings_store import get_tavily_api_key
 from neckline.llm.usage import record as record_usage
 
-from .discovery import DiscoveryDocument, EventDraft
+from .discovery import DiscoveryDocument, EventDraft, ProviderThrottleYield
 from .source_metadata import PublicationMetadataResolver
 from .types import DocumentVersion
 from .schema import read_connection, require_schema
@@ -109,19 +109,67 @@ class TavilyEvidenceGateway:
                 "paused": "execution_paused", "not_configured": "execution_not_configured",
                 "pending_outcome": "tavily_request_outcome_unknown", "retired": "execution_retired_by_user",
                 "reused": "tavily_attempt_reused",
+                "terminal": "insufficient_balance",
             }.get(str(admitted.get("state")), "tavily_attempt_admission_failed")
         attempt_id = admitted.get("attemptId")
         return (str(attempt_id), None) if isinstance(attempt_id, str) else (None, "tavily_attempt_admission_failed")
 
     def _settle_search(self, *, attempt_id: str, response: TavilySearchResponse | TavilyExtractResponse | None) -> None:
-        outcome = "unknown" if response is None else ("succeeded" if response.ok else "failed")
+        code = self._response_code(response)
+        outcome = "unknown" if code in {"tavily_request_outcome_unknown", "tavily_extract_outcome_unknown"} else ("succeeded" if response.ok else "failed")
         usage = None if response is None else {
             "promptTokens": None, "completionTokens": None, "totalTokens": None,
             "searchRequests": 1, "searchCredits": response.credits if isinstance(response.credits, int) else None,
         }
+        receipt = None
+        if response is not None and not response.ok and response.reason != "tavily_fulltext_unavailable":
+            receipt = {}
+            if code == "rate_limited":
+                profile = store.task_execution_profile(task_id=self.checkpoint_store.task_id, db_path=self.db_path)
+                policy = profile["payload"]["discovery"]
+                delay = response.retry_after_seconds
+                if delay is None:
+                    with read_connection(self.db_path) as conn:
+                        attempts = conn.execute("SELECT network_attempt_count FROM k10_execution_item_checkpoints c "
+                            "JOIN k10_external_attempts a ON c.task_id=a.task_id AND c.item_key=a.item_key "
+                            "WHERE a.attempt_id=? AND c.stage='tavily_evidence'", (attempt_id,)).fetchone()[0]
+                    delay = policy["retryBackoffSeconds"][min(attempts - 1, len(policy["retryBackoffSeconds"]) - 1)]
+                # An enormous provider delay cannot fit this task's frozen lifetime.
+                if delay >= policy["completionDeadlineSeconds"]:
+                    code = "network_attempts_exhausted"
+                else:
+                    receipt = {"retryAt": _text(self.clock() + timedelta(seconds=delay))}
         store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=usage,
-                                      error_code=None if response is None or response.ok else "tavily_response_unavailable",
+                                      error_code=None if response is None or response.ok else code,
+                                      verification_failure=receipt,
                                       settled_at=_text(self.clock()), db_path=self.db_path)
+
+    @staticmethod
+    def _response_code(response) -> str:
+        if response is None:
+            return "tavily_request_outcome_unknown"
+        if response.reason == "tavily_extract_outcome_unknown" or response.reason.endswith(("Timeout", "TimeoutError", "NetworkError", "ConnectError", "ReadError", "WriteError", "RemoteProtocolError")):
+            return "tavily_request_outcome_unknown"
+        return {"tavily_http_402": "insufficient_balance", "tavily_http_429": "rate_limited"}.get(
+            response.reason, "tavily_response_unavailable")
+
+    def _failed_response(self, *, item_key: str, input_sha256: str) -> VerificationEvidenceBundle:
+        # The ledger and failure receipt committed together. Re-read without
+        # claiming another attempt or losing Retry-After during interruption.
+        with read_connection(self.db_path) as conn:
+            row = conn.execute("SELECT safe_error_code,result_json,network_attempt_count FROM k10_execution_item_checkpoints "
+                "WHERE task_id=? AND item_kind='event' AND item_key=? AND stage='tavily_evidence'",
+                (self.checkpoint_store.task_id, item_key)).fetchone()
+        code, raw, attempts = row
+        receipt = json.loads(raw or "{}")
+        if code == "rate_limited" and attempts < self.network_max_attempts:
+            raise ProviderThrottleYield(max(0, (datetime.fromisoformat(receipt["retryAt"]) - self.clock()).total_seconds()))
+        return self._pending(code or "tavily_response_unavailable")
+
+    def _pending_claim(self, claim) -> VerificationEvidenceBundle:
+        if claim.reason == "rate_limited" and claim.result:
+            raise ProviderThrottleYield(max(0, (datetime.fromisoformat(claim.result["retryAt"]) - self.clock()).total_seconds()))
+        return self._pending(claim.reason or "verification_checkpoint_pending")
 
     @staticmethod
     def _mapping(value: Any) -> Mapping[str, Any]:
@@ -181,12 +229,12 @@ class TavilyEvidenceGateway:
                 investigation_path=query_context,
             )
             claim = self.checkpoint_store.claim(item_key=checkpoint_key, input_sha256=checkpoint_input,
-                                                network_max_attempts=self.network_max_attempts)
+                                                network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()))
             self.requests = claim.requests
             if claim.state == "reused":
                 return self._restore_checkpoint_bundle(claim.result)
             if claim.state == "pending":
-                return self._pending(claim.reason or "verification_checkpoint_pending")
+                return self._pending_claim(claim)
         attempt_id, blocked = self._reserve_search(
             item_key=checkpoint_key or event.canonical_key, input_sha256=checkpoint_input or "unbound",
             attempt=self.requests,
@@ -249,9 +297,7 @@ class TavilyEvidenceGateway:
         if response.credits is not None:
             self.credits += response.credits
         if self.checkpoint_store is not None and not response.ok:
-            self.checkpoint_store.fail_retryable(item_key=checkpoint_key, input_sha256=checkpoint_input,
-                                                 safe_error_code="tavily_response_unavailable")
-            return self._pending("tavily_response_unavailable")
+            return self._failed_response(item_key=checkpoint_key, input_sha256=checkpoint_input)
         docs: list[DiscoveryDocument] = []
         eligible: list[DiscoveryDocument] = []
         for index, hit in enumerate(response.hits):
@@ -476,12 +522,12 @@ class TavilyEvidenceGateway:
             if old_checkpoint is not None and old_checkpoint[0] == "running":
                 checkpoint.complete(item_key=item_key, input_sha256=digest, result=cached_result)
             return self._restore_checkpoint_bundle(cached_result)
-        claim = checkpoint.claim(item_key=item_key, input_sha256=digest, network_max_attempts=self.network_max_attempts)
+        claim = checkpoint.claim(item_key=item_key, input_sha256=digest, network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()))
         self.requests = claim.requests
         if claim.state == "reused":
             return self._restore_checkpoint_bundle(claim.result)
         if claim.state == "pending":
-            return self._pending(claim.reason or "verification_checkpoint_pending")
+            return self._pending_claim(claim)
         attempt_id, blocked = self._reserve_search(item_key=item_key, input_sha256=digest, attempt=self.requests)
         if blocked:
             if blocked in {"execution_paused", "execution_not_configured", "execution_retired_by_user"}:
@@ -500,11 +546,12 @@ class TavilyEvidenceGateway:
             else:
                 self._settle_search(attempt_id=attempt_id, response=response)
         if response is None or (not response.ok and response.reason != "tavily_fulltext_unavailable"):
-            code = "tavily_extract_outcome_unknown" if response is None else response.reason
-            checkpoint.fail_retryable(item_key=item_key, input_sha256=digest, safe_error_code=code)
+            code = "tavily_extract_outcome_unknown" if response is None else self._response_code(response)
+            if response is None:
+                checkpoint.fail_retryable(item_key=item_key, input_sha256=digest, safe_error_code=code)
             store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
                 revision=document.revision, state="failed", reason_code=code, updated_at=_text(self.clock()), db_path=self.db_path)
-            return self._pending(code)
+            return self._failed_response(item_key=item_key, input_sha256=digest)
         obtained_at = self.clock()
         obtained_text = _text(obtained_at)
         if response.credits is not None:

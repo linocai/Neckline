@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from neckline.llm.connection import chat_endpoint, model_name, connection_name
 
 
 class OkOut(BaseModel):
@@ -63,6 +64,10 @@ class ProviderCreateIn(BaseModel):
     notes: Optional[str] = None
     enabled: bool = True
 
+    _name = field_validator("name")(connection_name)
+    _endpoint = field_validator("baseUrl")(chat_endpoint)
+    _model = field_validator("model")(model_name)
+
 
 class ProviderUpdateIn(BaseModel):
     baseUrl: Optional[str] = None
@@ -72,6 +77,9 @@ class ProviderUpdateIn(BaseModel):
     searchEngine: Optional[str] = None
     notes: Optional[str] = None
     enabled: Optional[bool] = None
+
+    _endpoint = field_validator("baseUrl")(chat_endpoint)
+    _model = field_validator("model")(model_name)
 
 
 class TavilySettingsIn(BaseModel):

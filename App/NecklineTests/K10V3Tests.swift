@@ -1,5 +1,11 @@
 import XCTest
 import Foundation
+import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 @testable import Neckline
 
 final class K10V3Tests: XCTestCase {
@@ -569,7 +575,7 @@ final class K10V3Tests: XCTestCase {
         model.bind(config: config)
         model.providers = [old.provider]
 
-        let saving = Task { await model.saveDeepSeekConnection(name: "deepseek", apiKey: "new-key", enabled: true) }
+        let saving = Task { await model.saveModelConnection(name: "deepseek", baseURL: "https://api.deepseek.com/v1/chat/completions", modelName: "deepseek-v4-pro", apiKey: "new-key", enabled: true, creating: false) }
         await gate.waitUntilEntered()
         model.resetForConnectionChange()
         config.baseURLOverride = "https://b.example"
@@ -1107,6 +1113,7 @@ private actor ControlledAdminService: K10AdminServicing {
         return K10TavilyStatus(keySet: true)
     }
     func clearTavilyKey() async throws { if let updateGate { await updateGate.wait() } }
+    func deleteProvider(name: String) async throws {}
     func registerDevice(token: String) async throws {}
     func providerReadCount() -> Int { providerReads }
 }
@@ -1553,4 +1560,138 @@ extension K10V3Tests {
         XCTAssertNil(model.dailyReportErrors["morning"])
     }
 
+}
+
+extension K10V3Tests {
+    @MainActor func testB59ActualSettingsAPIEditingAndFailureKeepsState() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["NK_B59_API_URL"], let url = URL(string: raw) else {
+            throw XCTSkip("Isolated BYOK API was not requested")
+        }
+        let suite = "b59-byok-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let config = AppConfig(defaults: defaults, tokenStore: RecordingTokenStore(), loadPersistentCredentials: false)
+        config.apiToken = "b59-local-test-token-only"; config.baseURLOverride = raw
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {})
+        model.bind(config: config)
+        let name = "常用 模型-\(UUID().uuidString)"
+        let secondName = "备用-\(UUID().uuidString)"
+        let saved = await model.saveModelConnection(name: name, baseURL: "https://gateway.example/v1/", modelName: "vendor/custom-model", apiKey: "synthetic-key", enabled: true, creating: true)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.providers.first?.baseUrl, "https://gateway.example/v1/chat/completions")
+        XCTAssertEqual(model.providers.first?.model, "vendor/custom-model")
+        XCTAssertEqual(model.providers.first?.keySet, true)
+        let updated = await model.saveModelConnection(name: name, baseURL: "https://gateway.example/v1", modelName: "changed-model", apiKey: "", enabled: true, creating: false)
+        XCTAssertTrue(updated)
+        XCTAssertEqual(model.providers.first?.keySet, true)
+        let duplicate = await model.saveModelConnection(name: name, baseURL: "https://gateway.example/v1", modelName: "overwrite", apiKey: "wrong-key", enabled: true, creating: true)
+        XCTAssertFalse(duplicate)
+        XCTAssertTrue(model.providerSettingsError?.contains("已存在") == true)
+        XCTAssertEqual(model.providers.first?.model, "changed-model")
+        XCTAssertFalse(model.providerSettingsSaving)
+        let second = await model.saveModelConnection(name: secondName, baseURL: "https://second.example/v1", modelName: "other-model", apiKey: "other-key", enabled: true, creating: true)
+        XCTAssertTrue(second)
+        XCTAssertEqual(model.providers.filter(\.enabled).map(\.name), [secondName])
+        let blocked = await model.saveModelConnection(name: secondName, baseURL: "https://third.example/v1", modelName: "other-model", apiKey: "", enabled: true, creating: false)
+        XCTAssertFalse(blocked)
+        XCTAssertTrue(model.providerSettingsError?.contains("API Key") == true)
+        let cleared = await model.saveModelConnection(name: secondName, baseURL: "https://second.example/v1", modelName: "other-model", apiKey: "", enabled: false, creating: false, clearKey: true)
+        XCTAssertTrue(cleared)
+        XCTAssertEqual(model.providers.first { $0.name == secondName }?.keySet, false)
+        let client = K10AdminClient(baseURL: url, token: "b59-local-test-token-only")
+        let rows = try await client.providers()
+        XCTAssertEqual(rows.first { $0.name == name }?.model, "changed-model")
+        XCTAssertEqual(rows.first { $0.name == name }?.keySet, true)
+        let removed = await model.deleteModelConnection(name: name)
+        XCTAssertTrue(removed)
+        let removedSecond = await model.deleteModelConnection(name: secondName)
+        XCTAssertTrue(removedSecond)
+        let after = try await client.providers()
+        XCTAssertFalse(after.contains { $0.name == name || $0.name == secondName })
+    }
+
+    @MainActor func testB59ActualSettingsDTOAndNativeScreens() async throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_B59_DTO_DIR"] else {
+            throw XCTSkip("Isolated BYOK response artifacts were not requested")
+        }
+        for state in ["empty", "providers"] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(state + ".json"))
+            let page = try JSONDecoder().decode(K10ProviderList.self, from: data)
+            XCTAssertEqual(page.items.count, state == "empty" ? 0 : 2)
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("synthetic-only"))
+            let model = AppModel(serviceFactory: { nil }, cacheClearer: {})
+            model.providers = page.items
+            if state == "providers" {
+                XCTAssertEqual(page.items.first?.model, "vendor/model-a")
+                XCTAssertEqual(page.items.first?.keySet, true)
+            }
+            try await renderB59Editor(model: model, root: root, state: state)
+        }
+    }
+}
+
+@MainActor private func renderB59Editor(model: AppModel, root: String, state: String) async throws {
+    #if os(macOS)
+    let host = NSHostingView(rootView: ModelEditor(model: model))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 920), styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = host; window.appearance = NSAppearance(named: .aqua)
+    window.orderFront(nil)
+    defer { window.orderOut(nil) }
+    try await Task.sleep(for: .milliseconds(350))
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: root).appendingPathComponent("macos-\(state).png"))
+    #else
+    let controller = UIHostingController(rootView: ModelEditor(model: model))
+    let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+    let window = UIWindow(windowScene: scene)
+    window.frame = scene.coordinateSpace.bounds
+    window.overrideUserInterfaceStyle = .light
+    window.rootViewController = controller; window.makeKeyAndVisible()
+    defer { window.isHidden = true }
+    try await Task.sleep(for: .milliseconds(350))
+    controller.view.layoutIfNeeded()
+    func capture(_ suffix: String) throws {
+        let image = UIGraphicsImageRenderer(size: window.bounds.size).image { _ in
+            XCTAssertTrue(window.drawHierarchy(in: window.bounds, afterScreenUpdates: true), "Native screen must actually be visible")
+        }
+        try XCTUnwrap(image.pngData()).write(to: URL(fileURLWithPath: root).appendingPathComponent("ios-\(state)-\(suffix).png"))
+    }
+    try capture("top")
+    func scrollView(_ view: UIView) -> UIScrollView? {
+        if let scroll = view as? UIScrollView, scroll.contentSize.height > scroll.bounds.height { return scroll }
+        return view.subviews.compactMap { scrollView($0) }.first
+    }
+    if let scroll = scrollView(controller.view) {
+        scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)), animated: false)
+        try await Task.sleep(for: .milliseconds(150))
+        try capture("bottom")
+    }
+    #endif
+}
+
+extension K10V3Tests {
+    @MainActor func testB59SlowSettingsReadCannotUndoSavedConnection() async throws {
+        let suite = "b59-read-race-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let config = AppConfig(defaults: defaults, tokenStore: RecordingTokenStore())
+        config.apiToken = "synthetic-token"
+        config.baseURLOverride = "https://example.test"
+        let gate = RefreshGate()
+        let old = ControlledAdminService(providerName: "stale", tavilyKeySet: false, providersGate: gate)
+        let saved = ControlledAdminService(providerName: "saved", tavilyKeySet: false)
+        let admins = AdminServiceBox(old)
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, adminServiceFactory: { _, _ in admins.service })
+        model.bind(config: config)
+        let loading = Task { await model.refreshAdminSettings() }
+        await gate.waitUntilEntered()
+        admins.service = saved
+        let success = await model.saveModelConnection(name: "saved", baseURL: "https://api.deepseek.com/v1", modelName: "deepseek-v4-pro", apiKey: "synthetic-key", enabled: true, creating: true)
+        XCTAssertTrue(success)
+        await gate.open()
+        await loading.value
+        XCTAssertEqual(model.providers.map(\.name), ["saved"])
+    }
 }

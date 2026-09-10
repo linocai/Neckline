@@ -25,7 +25,7 @@ from neckline.settings_store import (
 )
 
 VERSION = "v3.2.0"
-RELEASE_SET = "v3.2.0-b57"
+RELEASE_SET = "v3.2.0-b59"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
@@ -46,6 +46,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Neckline", version=VERSION, lifespan=lifespan)
+# Validation errors must not echo a submitted API Key (including malformed JSON fields).
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_settings_validation(request, exc):
+    if request.url.path.startswith(f"{API_PREFIX}/settings/providers"):
+        messages = [str(error.get("msg", "配置字段无效")).removeprefix("Value error, ") for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": {"reason": "invalid_provider", "message": "；".join(messages)}})
+    return await request_validation_exception_handler(request, exc)
+
+
 app.include_router(create_k10_router(db_path_provider=_db, require_token_dependency=require_token,
                                      parquet_dir_provider=lambda: settings.parquet_dir,
                                      current_config_binding_provider=lambda: (
@@ -140,7 +154,10 @@ def update_settings_provider(name: str, body: ProviderUpdateIn) -> ProviderOut:
         kwargs["notes"] = body.notes
     if "enabled" in fields:
         kwargs["enabled"] = body.enabled
-    rec = update_provider(name, db_path=_db(), **kwargs)
+    try:
+        rec = update_provider(name, db_path=_db(), **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"ok": False, "reason": str(exc)}) from None
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
     return _provider_out(rec)

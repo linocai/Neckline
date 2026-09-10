@@ -246,22 +246,11 @@ def _reserve(
                                     "model_cache_corrupt")
             return _Reservation("completed", int(row[1]), int(row[2]), int(row[3]), int(row[4]), row[5], row[6], value=cached)
         if row is not None and row[0] == "running":
-            # A process may have died after the upstream accepted the request.
-            # The reservation remains charged, but a later slice may use one
-            # of the *remaining* explicit attempts.  This avoids both a free
-            # retry and a permanent wedge after an interrupted call.
+            # Remaining network attempts do not authorize resending a request
+            # whose paid outcome was lost before the result checkpoint.
             prior_attempts, prior_network, prior_repairs = int(row[1]), int(row[2]), int(row[3])
-            if prior_network >= network_limit:
-                return _Reservation("failed", prior_attempts, prior_network, prior_repairs, int(row[4]), row[5], row[6],
-                                    "model_request_outcome_unknown")
-            attempt_count, network_count = prior_attempts + 1, prior_network + 1
-            conn.execute(
-                "UPDATE k10_execution_item_checkpoints SET attempt_count=?,network_attempt_count=?,"
-                "safe_error_code=NULL,safe_error_ref=NULL,updated_at=? "
-                "WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
-                (attempt_count, network_count, updated_at, task_id, kind, ledger_key, stage),
-            )
-            return _Reservation("reserved", attempt_count, network_count, prior_repairs, int(row[4]), row[5], row[6])
+            return _Reservation("failed", prior_attempts, prior_network, prior_repairs, int(row[4]), row[5], row[6],
+                                "model_request_outcome_unknown")
         prior_attempts = int(row[1]) if row is not None else 0
         prior_network = int(row[2]) if row is not None else 0
         prior_repairs = int(row[3]) if row is not None else 0

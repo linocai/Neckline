@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from . import store
@@ -116,6 +117,30 @@ def _requested_snapshot(context: TaskContext, observation_id: str) -> tuple[Mapp
     return snapshot, int(request["globalRevision"]), request_id, window_id
 
 
+def _attach_window_catalysts(snapshot: Mapping[str, Any], publication: Mapping[str, Any],
+                             *, cutoff_at: str, db_path: Path) -> Mapping[str, Any]:
+    """Resolve every exact candidate frozen by the keep producer, once per window."""
+    window_id = publication["companyWindow"]["companyWindowId"]
+    documents = {(row["documentId"], row["revision"]): row for row in snapshot["documents"]}
+    refs = {(row["documentId"], row["revision"]): row for row in snapshot["frozenEvidenceRefs"]}
+    mappings = {row["mappingId"]: row for row in snapshot["mappings"]}
+    catalysts = []
+    for sample in publication["publicationSamples"]:
+        if sample.get("companyWindowId") != window_id:
+            raise AnalysisInputError("冻结催化不属于本次选择窗口")
+        candidate = store.load_candidate_context(candidate_id=sample["companyCandidateId"], cutoff_at=cutoff_at, db_path=db_path)
+        if (candidate is None or candidate["candidate"]["eventId"] != sample["eventId"]
+                or candidate["candidate"]["eventRevision"] != sample["eventRevision"]
+                or len(candidate["documents"]) != len(candidate["frozenEvidenceRefs"])):
+            raise AnalysisInputError("公司窗口催化的冻结原文不完整")
+        catalysts.append({"candidate": candidate["candidate"], "event": candidate["event"]})
+        documents.update({(row["documentId"], row["revision"]): row for row in candidate["documents"]})
+        refs.update({(row["documentId"], row["revision"]): row for row in candidate["frozenEvidenceRefs"]})
+        mappings.update({row["mappingId"]: row for row in candidate["mappings"]})
+    return {**snapshot, "documents": list(documents.values()), "frozenEvidenceRefs": list(refs.values()),
+            "mappings": list(mappings.values()), "catalystContexts": catalysts}
+
+
 def analysis_handler(
     context: TaskContext,
     *,
@@ -133,7 +158,7 @@ def analysis_handler(
     frozen = store.load_task_analysis_config(task_id=context.task.task_id, db_path=context.db_path)
     configuration = frozen.get("payload") if isinstance(frozen, Mapping) else None
     resolver = provider_resolver or resolve_deepseek_v4_pro
-    resolution = resolver(configuration=configuration, task="analysis", db_path=context.db_path)
+    resolution = resolver(configuration=configuration, task="analysis", db_path=context.db_path, task_id=context.task.task_id)
     if resolution.provider is None or not isinstance(configuration, Mapping):
         return TaskResult("not_configured", "configuration", context.checkpoint, resolution.error or "模型未配置")
     # A legacy provider cannot quietly become a live fallback.  The concrete
@@ -173,6 +198,13 @@ def analysis_handler(
         frozen_market = pro.input_lineage.get("marketContext")
     else:
         frozen_market = context.task.payload.get("marketContext")
+    # A completed pre-B58 pro owns this revision's frozen input. New
+    # revisions and B58 pro artifacts carry the full catalyst source set.
+    if publication["companyWindow"] is not None and (pro is None or pro.input_lineage.get("allCatalystsIncluded")):
+        try:
+            snapshot = _attach_window_catalysts(snapshot, publication, cutoff_at=context.input_cutoff_at, db_path=context.db_path)
+        except (AnalysisInputError, KeyError, TypeError, ValueError):
+            return TaskResult("failed", "input", context.checkpoint, "公司窗口催化的冻结原文不完整")
     try:
         snapshot = attach_frozen_market_context(
             observation_context=snapshot, market_context=frozen_market, cutoff_at=context.input_cutoff_at,
@@ -193,6 +225,9 @@ def analysis_handler(
         except (AnalysisInputError, ValueError):
             return TaskResult("failed", "input", context.checkpoint, "冻结分析输入无效")
         context.require_lease()
+        if pro.status == "failed" and pro.provider_error_code is None:
+            store.record_external_result_failure(task_id=context.task.task_id, db_path=context.db_path,
+                attempt_id=getattr(getattr(resolution.provider, "_thread_usage", None), "last_external_attempt_id", None))
         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=pro)
     if pro.status != "completed":
         return _failed_role(context=context, role=pro, checkpoint=_checkpoint(pro=pro))
@@ -220,6 +255,9 @@ def analysis_handler(
         except (AnalysisInputError, ValueError):
             return TaskResult("failed", "con_input", _checkpoint(pro=pro), "反方冻结输入无效")
         context.require_lease()
+        if con.status == "failed" and con.provider_error_code is None:
+            store.record_external_result_failure(task_id=context.task.task_id, db_path=context.db_path,
+                attempt_id=getattr(getattr(resolution.provider, "_thread_usage", None), "last_external_attempt_id", None))
         record_analysis_artifact(repository=store, db_path=context.db_path, artifact=con)
         if con.status != "completed":
             return _failed_role(context=context, role=con, checkpoint=_checkpoint(pro=pro, con=con))

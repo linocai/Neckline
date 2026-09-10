@@ -1,0 +1,1 @@
+{"items":[{"name":"日常模型","baseUrl":"https://gateway.example/v1/chat/completions","model":"vendor/model-a","hasWebSearch":false,"searchEngine":null,"notes":null,"enabled":true,"keySet":true},{"name":"备用模型","baseUrl":"https://api.deepseek.com/v1/chat/completions","model":"deepseek-v4-pro","hasWebSearch":false,"searchEngine":null,"notes":null,"enabled":false,"keySet":false}]}

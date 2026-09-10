@@ -1,0 +1,23 @@
+{
+  "macos": {
+    "result": "passed",
+    "logSha256": "6b3db1b1fbb67f86e81bf5f096a412fe0ad33ab81a0cbe4446d24dd8e570d6b7",
+    "bundleId": "top.linotsai.neckline.qa",
+    "marketingVersion": "3.2.0",
+    "build": "58"
+  },
+  "ios": {
+    "result": "passed",
+    "logSha256": "d1a72c23dc8e3ccfb05990ba9d7e97e30bb3c10d6a113630a8f4e2963694a4c8",
+    "bundleId": "top.linotsai.neckline.qa",
+    "marketingVersion": "3.2.0",
+    "build": "58"
+  },
+  "ios-build-for-testing": {
+    "result": "passed",
+    "logSha256": "56250f9f5463f4bfa9d053bc487ddcd74f54d018646b4c78b4a0dfb2836d47df",
+    "bundleId": "top.linotsai.neckline.qa",
+    "marketingVersion": "3.2.0",
+    "build": "58"
+  }
+}

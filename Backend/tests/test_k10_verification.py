@@ -172,13 +172,13 @@ def test_task_bound_network_failure_conservatively_records_unknown_attempt(tmp_p
     retry = TavilyEvidenceGateway(db_path=path, client=_Search(), task_id=task_id,
                                   leaseguard=lambda: None, network_max_attempts=1)
     again = retry.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
-    assert again.coverage["reason"] == "network_attempts_exhausted"
+    assert again.coverage["reason"] == "tavily_request_outcome_unknown"
     with sqlite3.connect(path) as conn:
         row = conn.execute("SELECT status,network_attempt_count,safe_error_code FROM k10_execution_item_checkpoints").fetchone()
     assert row == ("failed", 1, "tavily_request_outcome_unknown")
 
 
-def test_task_bound_network_retry_is_explicitly_limited_per_event(tmp_path):
+def test_task_bound_unknown_outcome_blocks_retry_even_with_attempts_remaining(tmp_path):
     path = tmp_path / "retryable-outcome.sqlite"
     initialize_schema(path)
     task_id = _bound_task(path)
@@ -198,14 +198,15 @@ def test_task_bound_network_retry_is_explicitly_limited_per_event(tmp_path):
                                     task_id=task_id, leaseguard=lambda: None, network_max_attempts=2)
     assert gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["reason"] == "tavily_request_outcome_unknown"
     recovered = gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
-    assert recovered.state == "available" and search.calls == 2
+    assert recovered.state == "pending" and search.calls == 1
+    assert recovered.coverage["reason"] == "tavily_request_outcome_unknown"
     with sqlite3.connect(path) as conn:
         row = conn.execute("SELECT status,attempt_count,network_attempt_count FROM k10_execution_item_checkpoints").fetchone()
-    assert row == ("completed", 2, 2)
+    assert row == ("failed", 1, 1)
     restarted_search = _Search()
     restarted = TavilyEvidenceGateway(db_path=path, client=restarted_search, task_id=task_id,
                                       leaseguard=lambda: None, network_max_attempts=2)
-    assert restarted.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["requestState"] == "reused"
+    assert restarted.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["reason"] == "tavily_request_outcome_unknown"
     assert restarted_search.calls == 0
 
 

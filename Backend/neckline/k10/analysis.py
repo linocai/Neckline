@@ -310,6 +310,7 @@ def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str,
         {"kind": "candidate", "candidate": dict(candidate)},
         *({"kind": "mapping", "mapping": dict(item)} for item in mappings if isinstance(item, Mapping)),
         *({"kind": "document", "document": dict(item)} for item in documents if isinstance(item, Mapping)),
+        *({"kind": "catalyst", **dict(item)} for item in context.get("catalystContexts", ()) if isinstance(item, Mapping)),
     ]
     if isinstance(disclosure, Mapping):
         evidence.append({"kind": "evidence_disclosure", "evidenceDisclosure": dict(disclosure)})
@@ -338,6 +339,7 @@ def _core_context(context: Mapping[str, Any], *, cutoff_at: str) -> Mapping[str,
         "frozenEvidenceRefs": [dict(item) for item in frozen_refs if isinstance(item, Mapping)],
         "inputCutoffAt": cutoff_at,
         **({"evidenceDisclosure": dict(disclosure)} if isinstance(disclosure, Mapping) else {}),
+        **({"allCatalystsIncluded": True} if "catalystContexts" in context else {}),
         **({"marketContext": market_copy} if isinstance(market, Mapping) else {}),
         **({"publicationContext": publication_copy} if isinstance(publication, Mapping) else {}),
         **({"chain": dict(request_chain)} if isinstance(request_chain, Mapping) else {}),
@@ -439,7 +441,7 @@ def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: 
         return "", None, None, f"模型调用异常：{type(exc).__name__}", {}, None, None
     usage = _usage(result)
     if not result.ok:
-        code = result.error_code if result.error_code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
+        code = result.error_code if result.error_code in {"insufficient_balance", "rate_limited", "provider_request_outcome_unknown", "model_request_outcome_unknown"} else "provider_call_failed"
         return "", result.provider or None, result.model or None, failure_message(code), usage, code, result.retry_after_seconds
     if not isinstance(result.content, str) or not result.content.strip():
         return "", result.provider or None, result.model or None, "模型未返回正文", usage, None, None

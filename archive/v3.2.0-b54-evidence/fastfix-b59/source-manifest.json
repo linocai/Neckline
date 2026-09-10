@@ -1,0 +1,113 @@
+{
+  "baselineHead": "b8be3f68c5faf75eb755ddd90662df9d3d65ddeb",
+  "baseline": "B58 uncommitted quick-fix worktree, before BYOK",
+  "marketingVersion": "3.2.0",
+  "build": 59,
+  "files": [
+    {
+      "path": "Backend/neckline/llm/connection.py",
+      "beforeSha256": null,
+      "afterSha256": "d9eb4fb6467d55f625140f75fa8ab8ae5dd3d16963302d021cb30eaef03b0460"
+    },
+    {
+      "path": "Backend/tests/test_b59_byok.py",
+      "beforeSha256": null,
+      "afterSha256": "8cd3973448ff75fb1c3a48cb9629f8036818f6175ef8c433e9e9d5fe5ade18bb"
+    },
+    {
+      "path": "App/Neckline.xcodeproj/project.pbxproj",
+      "beforeSha256": "253fc36fa5d1ffe026a3f6099eade9c6f00bc639a3abe36d9d082742f6efa695",
+      "afterSha256": "135736e83148c455f93693598c976330d61bd1684f3acf6d53fa91ed22a50e2b"
+    },
+    {
+      "path": "App/Neckline/App/AppModel.swift",
+      "beforeSha256": "5f406d49faa14cc7a8840c4acb5eb550f7fc9f639d02c491b25ecb105e3facb0",
+      "afterSha256": "49161c05b22de4ff9dbb20f18548b864346fcfe99cedbb191f341d38a3b10a9d"
+    },
+    {
+      "path": "App/Neckline/Networking/K10AdminClient.swift",
+      "beforeSha256": "c0028850f5e4feab5067b3d899c864f8ff0fecdbd0eef95b46d40ad41d22ed1a",
+      "afterSha256": "8a9c9f9952c7c929ae04ca79ed1e04c738964891abb338dc2fbd72b5e8b24b68"
+    },
+    {
+      "path": "App/Neckline/Views/SettingsView.swift",
+      "beforeSha256": "1282e632a7d4f813259011a627ee7f15f2383cb984ba7d634b6979fe92ee2969",
+      "afterSha256": "8da3b441cafadeccfbfb14152cd02ee8c525c0444e226c01a39a2a8e4742c8af"
+    },
+    {
+      "path": "App/NecklineTests/K10V3Tests.swift",
+      "beforeSha256": "552b00105b14011f291926710317b2ad6590e3fe0d619c62da749a6c1feef898",
+      "afterSha256": "78ad53a6cae9af9569241c17115cc41b7ae650446fde81d9d6511c0049391085"
+    },
+    {
+      "path": "App/project.yml",
+      "beforeSha256": "7df94ee6df7398448bda897693c050f4f0acbfa778a55a808287b6c39d0c2bdd",
+      "afterSha256": "5a43a0ba52f619c9b3849abf4850f18671e7a6073c532f5ebcbe65784e3d9c00"
+    },
+    {
+      "path": "Backend/neckline/api/app.py",
+      "beforeSha256": "6a324d4ab2e6195f20825992fb10797b01d951753c53f4cc64c50d7bc9ca9747",
+      "afterSha256": "4c2c473ddc65547e9d7849aef5640d10052381d8efdada4e5a1a920dbb6a4613"
+    },
+    {
+      "path": "Backend/neckline/api/schemas.py",
+      "beforeSha256": "08fd3aa0a297e21b939d485e5010704bba4486d965cc413b07e349da1e744752",
+      "afterSha256": "de852bed9dcbdd0edf35160c8c71d30b843f7fcda23663121a0d36366e3318d5"
+    },
+    {
+      "path": "Backend/neckline/k10/metering.py",
+      "beforeSha256": "2d56a4959f1e8bef651787102b98bc9612853626813ef94fa0f53bf8516d09b6",
+      "afterSha256": "f2b8abdf8c87b3e4453b7272d623120a1c2fc0dfa94850b10820df4acb178e3a"
+    },
+    {
+      "path": "Backend/neckline/k10/morning_runtime.py",
+      "beforeSha256": "0f9f6b378e6486326bf249d3b6475104fc935a023c7956689bb2c2086c8af1ed",
+      "afterSha256": "e2efb71f7f44b3a8283754cf90ab3e0915d5038b131315a60bd6d7240f6b7d9e"
+    },
+    {
+      "path": "Backend/neckline/k10/pipeline.py",
+      "beforeSha256": "369c78d95ae04a884f01ace7b38a28b453bad8495a8d8273544bfabafc9b53b2",
+      "afterSha256": "d2348b874a02cba05e13a0a9d442076962976b0837e3034f092ea865b3cca8f5"
+    },
+    {
+      "path": "Backend/neckline/k10/providers.py",
+      "beforeSha256": "dd99bc9402278961f7a32cdb4a6a01f52e9a490bbce6aa5caeb803169998bbcd",
+      "afterSha256": "23b9317b03af19252bbc969417c763752db1b4f0e85bfd3b075a8d46a4ea2f8d"
+    },
+    {
+      "path": "Backend/neckline/k10/research_runtime.py",
+      "beforeSha256": "0a07738a9206055c512dfc661118c05534dd65df273afc19d4e8a431671ae9fc",
+      "afterSha256": "8c58823c866a6ddc228745f24d5fb29475c1720b9cf386569d2577891eb1dbe9"
+    },
+    {
+      "path": "Backend/neckline/k10/runtime.py",
+      "beforeSha256": "7628a1e64c6c66414a16a7a307c74db65161435871ac39ad6f9594b044655274",
+      "afterSha256": "f0027ce7d0825f6f022dac147e2c7b2511c5a0bfc65b92cc83d12114a6886116"
+    },
+    {
+      "path": "Backend/neckline/k10/store.py",
+      "beforeSha256": "00c3cf95ed61d9ddc4ceed254f3ea0c0447ede2867337b30fef139a1c69dce62",
+      "afterSha256": "64528165571d76a1ba9847bf198f6c4ef09f6682e7650432bcecbc066ab93a84"
+    },
+    {
+      "path": "Backend/neckline/settings_store.py",
+      "beforeSha256": "e5563e252c1f039928f03189c96175561ed8ccb35bec5c692a4570c73f89df17",
+      "afterSha256": "0fba92ed79938b04c5817df37de0187da3fa90244491e864aa12b939728203a4"
+    },
+    {
+      "path": "Backend/tests/test_b56_review_regressions.py",
+      "beforeSha256": "0de755fa66428140f08267fc339a681f110e1d92daa490fd96efa86e7f888535",
+      "afterSha256": "eeec0cdebc2ffb5f0008ea968658731459a5f15e041951e6bd0fbbcc22dd4f39"
+    },
+    {
+      "path": "Backend/tests/test_k10_providers.py",
+      "beforeSha256": "bbbf7b438aa5664d704008538c0a9fda0fc18ecb294b9565933e5626055bb300",
+      "afterSha256": "7b4519019f542d2eec32ff7e0125d4f8d17ae55d94befce29784ea70f6149b0b"
+    },
+    {
+      "path": "Backend/tests/test_v310_pipeline_e2e.py",
+      "beforeSha256": "6fc4255d194c8fd86f6f8be8d88c6a4516de8f821e21b37ea9c4ec920e56119a",
+      "afterSha256": "9ff076b3bcf303660e3b52a7b46b98835686d99ff1cf3858da69c40f548e15da"
+    }
+  ]
+}

@@ -113,6 +113,7 @@ def _install_runtime_fakes(monkeypatch, *, response):
     monkeypatch.setattr(morning_runtime.store, "read_run_config", lambda **_: {"payload": {"modelRoutes": {"morning": "deepseek-v4-pro"}}})
     monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=Provider(), error=None))
     monkeypatch.setattr(morning_runtime.store, "load_candidate_context", lambda **_: {
+        "documents": [], "frozenEvidenceRefs": [],
         "observationIds": [], "opportunity": {"opportunityId": "opportunity-v304", "state": "active"},
     })
     monkeypatch.setattr(morning_runtime.store, "load_document_versions", lambda *, refs, **_: [

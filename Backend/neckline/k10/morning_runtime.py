@@ -118,8 +118,14 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
     from .v2_store import read_morning_result,save_morning_result
     input_hash=sha256(json.dumps({'payload':payload,'cutoff':context.input_cutoff_at,'configuration':configuration},ensure_ascii=False,sort_keys=True).encode()).hexdigest()
     cached=read_morning_result(task_id=context.task.task_id,input_sha256=input_hash,db_path=context.db_path)
+    def invalid_model(message: str) -> TaskResult:
+        if cached is None:
+            context.require_lease()
+            store.record_external_result_failure(task_id=context.task.task_id, db_path=context.db_path,
+                attempt_id=getattr(getattr(resolution.provider, "_thread_usage", None), "last_external_attempt_id", None))
+        return TaskResult("failed", "model", error=message)
     if cached is None:
-        resolution=resolve_deepseek_v4_pro(configuration=configuration, task="morning", db_path=context.db_path)
+        resolution=resolve_deepseek_v4_pro(configuration=configuration, task="morning", db_path=context.db_path, task_id=context.task.task_id)
         if resolution.provider is None:
             return TaskResult("not_configured", "configuration", error=resolution.error or "晨间模型未配置")
         bind_provider_execution_spending(provider=resolution.provider, task_id=context.task.task_id,
@@ -139,6 +145,8 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
     independent_docs=store.load_document_versions(refs=independent_refs, db_path=context.db_path)
     if base is None or len(docs) != len(refs) or len(independent_docs) != len(independent_refs):
         return TaskResult("failed", "input", error="晨间冻结资料不存在或已损坏")
+    if len(base["documents"]) != len(base["frozenEvidenceRefs"]):
+        return TaskResult("failed", "input", error="原推荐冻结资料不完整，不能完成晨间复核")
     try:
         disclosure = _frozen_evidence_disclosure(payload=payload, base=base)
     except MorningUpdateError:
@@ -173,28 +181,28 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
             return provider_failure_result(context=context, stage="model", code=result.error_code,
                                            retry_after_seconds=result.retry_after_seconds)
         try: raw=json.loads(result.content)
-        except (TypeError,json.JSONDecodeError): return TaskResult("failed","model",error="晨间模型未返回有效 JSON")
-    if not isinstance(raw,Mapping) or not isinstance(raw.get("material"),bool) or not isinstance(raw.get("summary"),str): return TaskResult("failed","model",error="晨间模型输出结构无效")
+        except (TypeError,json.JSONDecodeError): return invalid_model("晨间模型未返回有效 JSON")
+    if not isinstance(raw,Mapping) or not isinstance(raw.get("material"),bool) or not isinstance(raw.get("summary"),str): return invalid_model("晨间模型输出结构无效")
     contrary=raw.get("materialContraryEvidence")
-    if not isinstance(contrary,list) or any(not isinstance(item,Mapping) for item in contrary): return TaskResult("failed","model",error="晨间反证结构无效")
+    if not isinstance(contrary,list) or any(not isinstance(item,Mapping) for item in contrary): return invalid_model("晨间反证结构无效")
     valid_refs = {(item["documentId"], item["revision"]) for item in refs + independent_refs}
     if any(not isinstance(item.get("documentId"), str) or not isinstance(item.get("revision"), int) or not isinstance(item.get("claim"), str) or not item["claim"].strip() or (item["documentId"], item["revision"]) not in valid_refs for item in contrary):
-        return TaskResult("failed", "model", error="晨间反证必须引用冻结资料且有明确主张")
+        return invalid_model("晨间反证必须引用冻结资料且有明确主张")
     if raw.get("reasonStatus") == "invalidated" and source_status != "complete":
-        return TaskResult("failed", "model", error="资料未完整时不能将反证判定为已核撤回")
+        return invalid_model("资料未完整时不能将反证判定为已核撤回")
     if raw.get("reasonStatus") == "invalidated":
         independent_keys = {(item["documentId"], item["revision"]) for item in independent_refs}
         contrary_keys = {(item["documentId"], item["revision"]) for item in contrary}
         if not contrary_keys.intersection(independent_keys):
-            return TaskResult("failed", "model", error="已核撤回至少一条反证必须直接引用独立核验资料")
+            return invalid_model("已核撤回至少一条反证必须直接引用独立核验资料")
     if not raw["material"] and source_status != "complete" and raw.get("reasonStatus") == "current":
-        return TaskResult("failed", "model", error="资料未完整时不能声称当前无变化")
+        return invalid_model("资料未完整时不能声称当前无变化")
     try:
         update=build_morning_update(cutoff_at=context.input_cutoff_at,candidate_id=candidate_id,observation_id=observation_id,
             reason_status=raw.get("reasonStatus"),source_status=source_status,observation_status=raw.get("observationStatus"),
             material_contrary_evidence=contrary,source_refs=[{**item,"fetchedAt":next(doc["fetchedAt"] for doc in docs if doc["documentId"]==item["documentId"] and doc["revision"]==item["revision"])} for item in refs],
             independent_verification_refs=independent_refs, summary=raw["summary"], evidence_disclosure=disclosure)
-    except (MorningUpdateError,KeyError,StopIteration): return TaskResult("failed","model",error="晨间状态或资料引用无效")
+    except (MorningUpdateError,KeyError,StopIteration): return invalid_model("晨间状态或资料引用无效")
     if cached is None:
         context.require_lease()
         cached=save_morning_result(task_id=context.task.task_id,input_sha256=input_hash,raw=raw,captured_at=clock(),db_path=context.db_path)

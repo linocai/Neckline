@@ -1,0 +1,17 @@
+{
+  "backend": {
+    "passed": 1135,
+    "warnings": 21,
+    "externalNetworkDenied": true,
+    "isolatedDatabases": true
+  },
+  "macOSBuild": true,
+  "iOSSimulatorBuild": true,
+  "iOSBuildForTesting": true,
+  "releaseArchives": {
+    "macOS": "3.2.0 / 59 / top.linotsai.neckline / Developer ID + timestamp + hardened runtime",
+    "iOS": "3.2.0 / 59 / top.linotsai.neckline / Apple Development"
+  },
+  "realProvidersCalled": false,
+  "ipaExported": false
+}

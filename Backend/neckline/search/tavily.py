@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
+import math
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -16,6 +19,17 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 
 
+def _retry_after(value: str | None) -> float | None:
+    try:
+        delay = float(value)
+    except (TypeError, ValueError):
+        try:
+            delay = (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, delay) if math.isfinite(delay) else None
+
+
 @dataclass(frozen=True)
 class TavilySearchResponse:
     ok: bool
@@ -26,6 +40,7 @@ class TavilySearchResponse:
     request_id: Optional[str] = None
     reason: str = "ok"
     wall_ms: int = 0
+    retry_after_seconds: Optional[float] = None
 
     def evidence_payload(self) -> dict:
         return {
@@ -56,6 +71,7 @@ class TavilyExtractResponse:
     request_id: Optional[str] = None
     reason: str = "ok"
     wall_ms: int = 0
+    retry_after_seconds: Optional[float] = None
 
 
 def _published_date(item: dict) -> str:
@@ -110,6 +126,7 @@ class TavilySearchClient:
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         started_all = time.monotonic()
         last_reason = "tavily_call_failed"
+        retry_after_seconds = None
         chosen_transport = transport if transport is not None else self.transport
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -161,6 +178,7 @@ class TavilySearchClient:
                         wall_ms=max(0, int((time.monotonic() - started_all) * 1000)),
                     )
                 last_reason = f"tavily_http_{response.status_code}"
+                retry_after_seconds = _retry_after(response.headers.get('Retry-After'))
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     break
             except Exception as exc:  # noqa: BLE001 - network errors are retried without bodies/keys
@@ -169,6 +187,7 @@ class TavilySearchClient:
                 logger.warning("Tavily 检索第 %d/%d 次未成功(%s),将重试", attempt, self.max_attempts, last_reason)
         return TavilySearchResponse(
             False, clean_query, reason=last_reason,
+            retry_after_seconds=retry_after_seconds,
             wall_ms=max(0, int((time.monotonic() - started_all) * 1000)),
         )
 
@@ -200,7 +219,8 @@ class TavilySearchClient:
                 })
             elapsed = max(0, int((time.monotonic() - started) * 1000))
             if response.status_code != 200:
-                return TavilyExtractResponse(False, clean_url, reason=f"tavily_http_{response.status_code}", wall_ms=elapsed)
+                return TavilyExtractResponse(False, clean_url, reason=f"tavily_http_{response.status_code}", wall_ms=elapsed,
+                                             retry_after_seconds=_retry_after(response.headers.get('Retry-After')))
             body = response.json()
             if not isinstance(body, dict):
                 return TavilyExtractResponse(False, clean_url, reason="tavily_invalid_response", wall_ms=elapsed)

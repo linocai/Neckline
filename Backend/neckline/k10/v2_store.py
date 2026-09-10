@@ -165,6 +165,12 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
             conn.execute('INSERT INTO k10_v2_card_catalysts VALUES (?,?,?,?,?)',
                          (card_id, item.event_id, item.event_revision, mapping['opportunityId'], _json(mapping)))
 
+    def finalize_timestamp(final_at):
+        conn.execute('UPDATE k10_v2_report_runs SET available_at=?,verification_cutoff_at=?,created_at=? WHERE report_id=?',
+                     (final_at, final_at, final_at, report_id))
+        conn.execute('UPDATE k10_v2_report_cards SET created_at=? WHERE report_id=?', (final_at, report_id))
+    return finalize_timestamp
+
 
 def _link_report_updates(conn, *, report_id: str, scan_id: str, available_at: str):
     # Each durable change belongs to one report; no company/card is fabricated.

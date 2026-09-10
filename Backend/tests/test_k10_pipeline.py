@@ -584,8 +584,11 @@ def test_persisted_morning_match_requires_explicit_retry_for_terminal_child(tmp_
                       status="completed", coverage={}, created_at=CREATED.isoformat(), completed_at=CREATED.isoformat(), db_path=path)
     event = store.append_event_revision(event_id="event-child", stable_key="child", headline="公告", event_kind="fixture", facts={},
                                         source_refs=[], supersedes_revision=None, created_at=CREATED.isoformat(), db_path=path)
+    from tests.test_k10_lifecycle import _input
+    published = _input("candidate-child", "event-child", key="child", source_marker="evening")
     store.create_candidate(candidate_id="candidate-child", scan_id="old", event_id=event.event_id, event_revision=event.revision,
-                           company_code="300001.SZ", comparison={}, evidence=[], created_at=CREATED.isoformat(), db_path=path)
+                           company_code="300001.SZ", comparison=published.comparison, evidence=[], created_at=CREATED.isoformat(), db_path=path)
+    store.publish_opportunities(batch_id="old-batch", scan_id="old", publication_kind="evening", inputs=[published], clock=lambda: CREATED, db_path=path)
     parent = TaskContext(Task("parent", "morning_scan", "running", 1, "parent-worker", None, {}),
                          {"maxAttempts": 3}, {}, "fixture@1", CUTOFF.isoformat(), path, threading.Event())
     configuration = {"taskPolicies": {"morning": {"maxAttempts": 3, "costLimit": None}}}

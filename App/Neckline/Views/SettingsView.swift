@@ -91,9 +91,6 @@ struct ScanCoverageSummary: View {
 struct SettingsView: View {
     @Bindable var model: AppModel
     @ObservedObject var config: AppConfig
-    @State private var providerName = "k10-deepseek"
-    @State private var providerKey = ""
-    @State private var providerEnabled = true
     @State private var tavilyKey = ""
     @State private var showConnectionEditor = false
     @State private var showModelEditor = false
@@ -212,7 +209,7 @@ struct SettingsView: View {
         .navigationTitle("设置")
         .task { await model.refreshAdminSettings() }
         .sheet(isPresented: $showConnectionEditor) { ConnectionEditor(config: config, model: model) }
-        .sheet(isPresented: $showModelEditor) { ModelEditor(model: model, providerName: $providerName, providerKey: $providerKey, providerEnabled: $providerEnabled) }
+        .sheet(isPresented: $showModelEditor) { ModelEditor(model: model) }
         .sheet(isPresented: $showSourceEditor) { SourceEditor(model: model, tavilyKey: $tavilyKey) }
     }
 
@@ -245,7 +242,8 @@ struct SettingsView: View {
     private var sourceDetail: String { model.tavilyKeySet ? "Tavily 定向核验已配置；覆盖和缺口按扫描显示。" : "Tavily 密钥未配置；不会把来源不足当作空结果。" }
     private var providerDetail: String {
         let active = model.providers.filter(\.enabled)
-        return active.isEmpty ? "尚未读取或未启用连接" : "\(active.count) 个启用连接 · K10 固定 DeepSeek V4 Pro"
+        guard let provider = active.first else { return "添加端点、模型名称和 API Key" }
+        return "\(provider.name) · \(provider.model) · \(provider.keySet ? "Key 已配置" : "缺少 Key")"
     }
     private var coverageDetail: String { model.scanSummaries.isEmpty ? "尚无扫描回执" : "查看来源范围、成功水位与缺口" }
 }
@@ -666,59 +664,166 @@ private struct ConnectionEditor: View {
     }
 }
 
-private struct ModelEditor: View {
+struct ModelEditor: View {
     @Bindable var model: AppModel
-    @Binding var providerName: String
-    @Binding var providerKey: String
-    @Binding var providerEnabled: Bool
+    @State private var selectedName: String?
+    @State private var providerName = ""
+    @State private var endpoint = ""
+    @State private var modelName = ""
+    @State private var apiKey = ""
+    @State private var enabled = true
+    @State private var clearKey = false
+    @State private var confirmDelete = false
+    @State private var saveNotice: String?
+    @State private var initialized = false
     @Environment(\.dismiss) private var dismiss
+
+    private var selected: K10Provider? { model.providers.first { $0.name == selectedName } }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                    V3PageHeader(title: "模型配置", subtitle: "K10-v2 固定使用 DeepSeek V4 Pro；密钥只写入服务器。")
-                    V3Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if model.providers.isEmpty {
-                                Text("尚未读取已保存的连接。保存时不会回显密钥。")
-                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                            } else {
-                                ForEach(model.providers) { provider in
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(provider.name).font(NKFont.callout.weight(.semibold))
-                                            Text("\(provider.enabled ? "启用" : "停用") · \(provider.keySet ? "密钥已配置" : "未配置密钥")")
-                                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                                        }
-                                        Spacer()
-                                        V3Pill(text: provider.enabled ? "available" : "not_configured")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    V3Card {
-                        VStack(alignment: .leading, spacing: 12) {
-                            TextField("连接名称", text: $providerName).textFieldStyle(.roundedBorder)
-                            SecureField("新的 API Key（留空不改现有）", text: $providerKey).textFieldStyle(.roundedBorder)
-                            Toggle("启用该连接", isOn: $providerEnabled).font(NKFont.callout)
-                            Button("保存 DeepSeek 连接") {
-                                Task {
-                                    await model.saveDeepSeekConnection(name: providerName, apiKey: providerKey, enabled: providerEnabled)
-                                    providerKey = ""
-                                    dismiss()
-                                }
-                            }
-                            .buttonStyle(V3PrimaryButtonStyle())
-                        }
-                    }
+                    V3PageHeader(title: "我的模型", subtitle: "填写自己的 API 地址、模型和 Key。支持 OpenAI 兼容的 Chat Completions 接口。")
+                    connectionsCard
+                    editorCard
                 }
                 .padding(NKSpace.pagePad)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
             }
             .background(NK.pageBg)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            .navigationTitle("模型连接 · BYOK")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() }.disabled(model.providerSettingsSaving) } }
         }
+        #if os(macOS)
+        .frame(minWidth: 620, minHeight: 680)
+        #endif
+        .interactiveDismissDisabled(model.providerSettingsSaving)
+        .onAppear {
+            guard !initialized else { return }
+            initialized = true
+            load(model.providers.first(where: \.enabled) ?? model.providers.first)
+        }
+        .confirmationDialog("删除这组连接和服务器上的 Key？引用它的未完成任务将无法继续。", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("删除连接", role: .destructive) {
+                guard let name = selectedName else { return }
+                Task { if await model.deleteModelConnection(name: name) { load(model.providers.first(where: \.enabled) ?? model.providers.first); saveNotice = "连接及其 Key 已删除" } }
+            }
+        }
+    }
+
+    private var connectionsCard: some View {
+        V3Card {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("已保存的连接").font(NKFont.headline)
+                    Spacer()
+                    Button { load(nil) } label: { Label("新增", systemImage: "plus") }
+                        .disabled(model.providerSettingsSaving)
+                }
+                if model.providers.isEmpty {
+                    Text("还没有模型连接。填写下方信息后保存。")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
+                ForEach(model.providers) { provider in
+                    Button { load(provider) } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: selectedName == provider.name ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(NK.accent)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(provider.name).font(NKFont.callout.weight(.semibold)).foregroundStyle(NK.textPrimary)
+                                Text("\(provider.model) · \(URL(string: provider.baseUrl)?.host ?? provider.baseUrl)")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary).lineLimit(2)
+                                Text(provider.keySet ? "Key 已配置" : "未配置 Key")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            }
+                            Spacer(minLength: 4)
+                            if provider.enabled { Text("当前使用").font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.accent) }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(model.providerSettingsSaving)
+                }
+            }
+        }
+    }
+
+    private var editorCard: some View {
+        V3Card {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text(selectedName == nil ? "新增连接" : "编辑连接").font(NKFont.headline)
+                    Spacer()
+                    if selectedName == nil {
+                        Button("填入 DeepSeek 示例") { endpoint = "https://api.deepseek.com/v1"; modelName = "deepseek-v4-pro" }
+                            .font(NKFont.caption)
+                    }
+                }
+                field("连接名称", hint: "例如：日常模型") { TextField("给这组连接起个名字", text: $providerName).disabled(selectedName != nil) }
+                field("API 地址", hint: "填写基础地址（如 https://example.com/v1）或完整 /chat/completions 地址。") {
+                    TextField("https://…/v1", text: $endpoint)
+                        #if os(iOS)
+                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                }
+                field("模型名称", hint: "填写服务商提供的准确模型 ID。") {
+                    TextField("模型 ID", text: $modelName)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                }
+                field("API Key", hint: selected?.keySet == true ? "服务器已保存 Key；留空保留。输入新 Key 即可替换。" : "Key 只写入服务器，不会回显。") {
+                    SecureField(clearKey ? "保存时将清除旧 Key" : "输入 API Key", text: $apiKey).disabled(clearKey)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                }
+                if selected?.keySet == true {
+                    Toggle("清除已保存的 Key", isOn: $clearKey).font(NKFont.caption)
+                        .onChange(of: clearKey) { _, value in if value { apiKey = "" } }
+                }
+                Toggle("设为当前使用的连接", isOn: $enabled).font(NKFont.callout)
+                Text("切换连接只影响新任务。要保留未完成任务的原配置，请新增连接；直接修改端点或模型会阻止旧任务继续。保存不调用模型，不恢复暂停任务。")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                if let saveNotice, model.providerSettingsError == nil {
+                    Label(saveNotice, systemImage: "checkmark.circle.fill").font(NKFont.callout).foregroundStyle(NK.up)
+                }
+                if let error = model.providerSettingsError {
+                    Text(error).font(NKFont.callout).foregroundStyle(NK.down).textSelection(.enabled)
+                }
+                HStack(spacing: 12) {
+                    Button(model.providerSettingsSaving ? "保存中…" : "保存连接") {
+                        Task {
+                            if await model.saveModelConnection(name: providerName, baseURL: endpoint, modelName: modelName, apiKey: apiKey,
+                                                               enabled: enabled, creating: selectedName == nil, clearKey: clearKey) {
+                                load(model.providers.first { $0.name == providerName.trimmingCharacters(in: .whitespacesAndNewlines) })
+                                saveNotice = "已保存，未发起模型调用"
+                            }
+                        }
+                    }.buttonStyle(V3PrimaryButtonStyle())
+                    if selectedName != nil {
+                        Button("删除连接", role: .destructive) { confirmDelete = true }.buttonStyle(.plain)
+                    }
+                }
+            }
+            .disabled(model.providerSettingsSaving)
+        }
+    }
+
+    private func field<Content: View>(_ title: String, hint: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(NKFont.callout.weight(.medium))
+            content().textFieldStyle(.roundedBorder)
+            Text(hint).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+        }
+    }
+
+    private func load(_ provider: K10Provider?) {
+        selectedName = provider?.name; providerName = provider?.name ?? ""
+        endpoint = provider?.baseUrl ?? ""; modelName = provider?.model ?? ""
+        enabled = provider?.enabled ?? !model.providers.contains(where: \.enabled)
+        apiKey = ""; clearKey = false; saveNotice = nil; model.providerSettingsError = nil
     }
 }
 

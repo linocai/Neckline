@@ -137,7 +137,7 @@ class VerificationCheckpointStore:
             self._bound(conn)
             self._assert_transaction_lease(conn)
             existing = conn.execute(
-                "SELECT input_sha256,status,result_json,attempt_count,network_attempt_count FROM k10_execution_item_checkpoints "
+                "SELECT input_sha256,status,result_json,attempt_count,network_attempt_count,safe_error_code FROM k10_execution_item_checkpoints "
                 "WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
                 (self.task_id, _ITEM_KIND, item_key, _STAGE),
             ).fetchone()
@@ -158,6 +158,13 @@ class VerificationCheckpointStore:
                         raise VerificationCheckpointError("verification_checkpoint_corrupt")
                     return VerificationRequestClaim("reused", None, used, result)
                 prior_attempts = int(existing[4])
+                if existing[5] in {"insufficient_balance", "network_attempts_exhausted", "tavily_request_outcome_unknown", "tavily_extract_outcome_unknown"}:
+                    return VerificationRequestClaim("pending", existing[5], used)
+                if existing[1] == "failed" and existing[5] == "rate_limited" and prior_attempts < network_max_attempts:
+                    receipt = json.loads(existing[2] or "{}")
+                    retry_at = receipt.get("retryAt")
+                    if retry_at and datetime.fromisoformat(updated_at or _now()) < datetime.fromisoformat(retry_at):
+                        return VerificationRequestClaim("pending", "rate_limited", used, receipt)
                 if str(existing[1]) == "failed" and prior_attempts < network_max_attempts:
                     conn.execute(
                         "UPDATE k10_execution_item_checkpoints SET status='running',attempt_count=?,network_attempt_count=?,"

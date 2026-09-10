@@ -95,7 +95,7 @@ def test_morning_runtime_records_complete_no_change_as_continuing_report_item(tm
             return LLMResult(ok=True, content='{"material":false,"reasonStatus":"current","observationStatus":"current","summary":"无实质变化。","materialContraryEvidence":[]}', provider="deepseek", model="deepseek-v4-pro")
     monkeypatch.setattr(morning_runtime.store, "read_run_config", lambda **_: {"payload": {"modelRoutes": {"morning": "deepseek-v4-pro"}, "taskPolicies": {"morning": {"timeoutSeconds": 90, "modelMaxAttempts": 3, "costLimit": None}}}})
     monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", Provider(), "deepseek", None))
-    monkeypatch.setattr(morning_runtime.store, "load_candidate_context", lambda **_: {"observationIds": [], "candidate": {"candidateId": "candidate-1"}, "opportunity": {"opportunityId": "opp-1", "state": "active"}})
+    monkeypatch.setattr(morning_runtime.store, "load_candidate_context", lambda **_: {"documents": [], "frozenEvidenceRefs": [], "observationIds": [], "candidate": {"candidateId": "candidate-1"}, "opportunity": {"opportunityId": "opp-1", "state": "active"}})
     monkeypatch.setattr(morning_runtime.store, "load_document_versions", lambda *, refs, **_: [
         {"documentId": ref["documentId"], "revision": ref["revision"], "fetchedAt": "2026-09-07T08:00:00+08:00"}
         for ref in refs

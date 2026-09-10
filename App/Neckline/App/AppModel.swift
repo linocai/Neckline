@@ -488,6 +488,7 @@ struct K10CacheContext: Hashable {
     }
     func refreshAdminSettings() async {
         let generation = connectionGeneration
+        let settingsRevision = providerSettingsRevision
         guard let config, config.hasToken else { return }
         let client = adminServiceFactory(config.resolvedBaseURL, config.apiToken)
         do {
@@ -495,32 +496,89 @@ struct K10CacheContext: Hashable {
             async let tavilyStatus = client.tavilyStatus()
             let (newProviders, newTavilyStatus) = try await (currentProviders, tavilyStatus)
             guard isCurrent(generation) else { return }
-            providers = newProviders
+            if settingsRevision == providerSettingsRevision { providers = newProviders }
             tavilyKeySet = newTavilyStatus.keySet
         } catch {
             guard isCurrent(generation) else { return }
             toast = error.localizedDescription
         }
     }
-    func saveDeepSeekConnection(name: String, apiKey: String, enabled: Bool) async {
+    private var providerSettingsRevision: UInt64 = 0
+    var providerSettingsSaving = false
+    var providerSettingsError: String?
+
+    /// The caller explicitly chooses create or edit; a stale list must never overwrite a namesake.
+    func saveModelConnection(name: String, baseURL: String, modelName: String, apiKey: String,
+                             enabled: Bool, creating: Bool, clearKey: Bool = false) async -> Bool {
+        guard !providerSettingsSaving else { return false }
         let generation = connectionGeneration
-        guard let config, config.hasToken else { toast = "请先配置 API Token"; return }
+        guard let config, config.hasToken else { providerSettingsError = "请先配置服务连接的 API Token"; return false }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { toast = "连接名称不能为空"; return }
-        let client = adminServiceFactory(config.resolvedBaseURL, config.apiToken)
-        let existingProvider = providers.contains(where: { $0.name == name })
+        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelName = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let update = K10ProviderUpdate(baseUrl: "https://api.deepseek.com/v1/chat/completions", model: "deepseek-v4-pro", apiKey: key.isEmpty ? nil : key, hasWebSearch: false, searchEngine: nil, notes: "K10-v2", enabled: enabled)
+        guard !name.isEmpty, name.count <= 80, name.rangeOfCharacter(from: CharacterSet(charactersIn: "/?#%").union(.controlCharacters)) == nil else {
+            providerSettingsError = "连接名称需为 1–80 个字符，不能包含 / ? # %"; return false
+        }
+        guard let url = URLComponents(string: endpoint), url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              endpoint.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              !url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).hasSuffix("responses"),
+              !url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).hasSuffix("messages") else {
+            providerSettingsError = "请填写 HTTPS 的 Chat Completions API 地址，不含账号、查询参数或片段"; return false
+        }
+        guard !modelName.isEmpty, modelName.count <= 200, modelName.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil else {
+            providerSettingsError = "请填写服务商提供的准确模型 ID，不能包含空格"; return false
+        }
+        let old = providers.first(where: { $0.name == name })
+        if !creating, let old, old.baseUrl != endpoint, key.isEmpty, !clearKey, old.keySet {
+            // A retained credential must not silently be forwarded to a different host.
+            guard URL(string: old.baseUrl)?.host?.lowercased() == url.host?.lowercased(), (URL(string: old.baseUrl)?.port ?? 443) == (url.port ?? 443) else {
+                providerSettingsError = "更换服务商地址时，请同时填写该服务商的 API Key，或清除旧 Key"; return false
+            }
+        }
+        let client = adminServiceFactory(config.resolvedBaseURL, config.apiToken)
+        providerSettingsRevision &+= 1
+        providerSettingsSaving = true; providerSettingsError = nil
+        defer { if isCurrent(generation) { providerSettingsSaving = false } }
         do {
-            if existingProvider { _ = try await client.updateProvider(name: name, update) }
-            else { _ = try await client.createProvider(K10ProviderCreate(name: name, baseUrl: "https://api.deepseek.com/v1/chat/completions", model: "deepseek-v4-pro", apiKey: key.isEmpty ? nil : key, hasWebSearch: false, searchEngine: nil, notes: "K10-v2", enabled: enabled)) }
-            guard isCurrent(generation) else { return }
-            await refreshAdminSettings()
-            guard isCurrent(generation) else { return }
-            toast = "连接已保存；密钥不会回显"
+            let saved: K10Provider
+            let replacementKey: String? = clearKey ? "" : (key.isEmpty ? nil : key)
+            if creating {
+                saved = try await client.createProvider(K10ProviderCreate(name: name, baseUrl: endpoint, model: modelName, apiKey: replacementKey, hasWebSearch: false, searchEngine: nil, notes: "K10-v2 BYOK", enabled: enabled))
+            } else {
+                saved = try await client.updateProvider(name: name, K10ProviderUpdate(baseUrl: endpoint, model: modelName, apiKey: replacementKey, hasWebSearch: false, searchEngine: nil, notes: nil, enabled: enabled))
+            }
+            guard isCurrent(generation) else { return false }
+            providers = providers.filter { $0.name != saved.name }.map { provider in
+                guard saved.enabled else { return provider }
+                return K10Provider(name: provider.name, baseUrl: provider.baseUrl, model: provider.model, hasWebSearch: provider.hasWebSearch, searchEngine: provider.searchEngine, notes: provider.notes, enabled: false, keySet: provider.keySet)
+            } + [saved]
+            return true
         } catch {
-            guard isCurrent(generation) else { return }
-            toast = error.localizedDescription
+            guard isCurrent(generation) else { return false }
+            providerSettingsError = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteModelConnection(name: String) async -> Bool {
+        guard !providerSettingsSaving else { return false }
+        let generation = connectionGeneration
+        guard let config, config.hasToken else { providerSettingsError = "请先配置服务连接的 API Token"; return false }
+        let client = adminServiceFactory(config.resolvedBaseURL, config.apiToken)
+        providerSettingsRevision &+= 1
+        providerSettingsSaving = true; providerSettingsError = nil
+        defer { if isCurrent(generation) { providerSettingsSaving = false } }
+        do {
+            try await client.deleteProvider(name: name)
+            guard isCurrent(generation) else { return false }
+            providers.removeAll { $0.name == name }
+            return true
+        } catch {
+            guard isCurrent(generation) else { return false }
+            providerSettingsError = error.localizedDescription
+            return false
         }
     }
     func setTavilyKey(_ key: String) async {
@@ -572,7 +630,7 @@ struct K10CacheContext: Hashable {
             toast = error.localizedDescription
         }
     }
-    private func advanceConnectionGeneration() { connectionGeneration &+= 1 }
+    private func advanceConnectionGeneration() { connectionGeneration &+= 1; providerSettingsSaving = false; providerSettingsError = nil }
     private func isCurrent(_ generation: Int) -> Bool { generation == connectionGeneration }
     private func isCurrentRefresh(_ connection: Int, _ refresh: Int) -> Bool { isCurrent(connection) && refresh == refreshGeneration }
     private func isCurrentChainReload(_ windowID: String, _ reload: Int) -> Bool { analysisChainReloadGenerations[windowID] == reload }

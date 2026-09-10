@@ -1351,7 +1351,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             execution_binding = None
             if task is not None and task.kind in {'analysis','morning_review','evening_scan','morning_scan'} and store.task_execution_profile(task_id=job_id,db_path=db_path()) is None:
                 execution_binding = required_runtime_execution_binding()
-            store.retry_task(task_id=job_id, expected_attempt_count=command.expectedAttemptCount, retried_at=_now(), db_path=db_path(),execution_binding=execution_binding)
+            store.retry_task(task_id=job_id, expected_attempt_count=command.expectedAttemptCount, retried_at=_now(), db_path=db_path(),execution_binding=execution_binding,user_requested=True)
         except store.K10Conflict as exc:
             raise _conflict(str(exc)) from exc
         with _reader(db_path()) as conn:

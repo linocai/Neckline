@@ -10,6 +10,7 @@ import logging
 import json
 from pathlib import Path
 from time import monotonic
+from threading import local
 from typing import Callable, Iterator, Mapping
 from zoneinfo import ZoneInfo
 
@@ -63,6 +64,7 @@ def _safe_failure(result) -> str | None:
 class MeteredProvider(OpenAICompatProvider):
     def __init__(self, *, ledger_db: Path, ledger_task: str, **kwargs):
         super().__init__(**kwargs)
+        self._thread_usage = local()
         self._ledger_db, self._ledger_task = ledger_db, ledger_task
         self._spend_task_id: str | None = None
         self._spend_payload: Mapping[str, object] | None = None
@@ -95,8 +97,7 @@ class MeteredProvider(OpenAICompatProvider):
         finally:
             _SPEND_CONTEXT.reset(token)
 
-    @staticmethod
-    def _request_input_sha256(args: tuple[object, ...], kwargs: Mapping[str, object]) -> str | None:
+    def _request_input_sha256(self, args: tuple[object, ...], kwargs: Mapping[str, object]) -> str | None:
         """Fingerprint the bounded request without retaining its prompt text."""
         messages = args[0] if args else kwargs.get("messages")
         if not isinstance(messages, list):
@@ -106,7 +107,7 @@ class MeteredProvider(OpenAICompatProvider):
             for message in messages:
                 to_api = getattr(message, "to_api", None)
                 rendered.append(to_api() if callable(to_api) else message)
-            body = {"model": "deepseek-v4-pro", "messages": rendered,
+            body = {"model": self.model, "endpoint": self.api_url, "messages": rendered,
                     "response_format": kwargs.get("response_format"),
                     "model_options": kwargs.get("model_options")}
             encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -150,6 +151,7 @@ class MeteredProvider(OpenAICompatProvider):
                 "not_configured": "execution_not_configured",
                 "pending_outcome": "provider_request_outcome_unknown",
                 "retired": "execution_retired_by_user",
+                "terminal": "insufficient_balance",
                 "reused": "provider_attempt_reused",
             }.get(str(state), "provider_attempt_admission_failed")
         attempt_id = result.get("attemptId")
@@ -176,7 +178,12 @@ class MeteredProvider(OpenAICompatProvider):
                                       retry_after_seconds=getattr(result, "retry_after_seconds", None))
 
     def chat(self, *args, **kwargs):
+        # DeepSeek's extension is not part of the Chat Completions protocol.
+        if not self.model.lower().startswith("deepseek") and isinstance(kwargs.get("model_options"), Mapping):
+            kwargs["model_options"] = {key: value for key, value in kwargs["model_options"].items()
+                                       if key not in {"thinking", "reasoningEffort"}}
         attempt_id, blocked = self._begin_attempt(args=args, kwargs=kwargs)
+        self._thread_usage.last_external_attempt_id = attempt_id
         if blocked is not None:
             return LLMResult(ok=False, reason="K10 execution spend is unavailable", provider=self.name, model=self.model,
                              error_code=blocked, usage_unavailable=True)

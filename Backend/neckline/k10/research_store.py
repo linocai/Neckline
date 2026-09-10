@@ -368,12 +368,18 @@ def read_research_state(*, snapshot_id: str, db_path: Path) -> dict[str, Any] | 
 
 def _eligible_prior_source(
     conn, *, ref: Mapping[str, Any], allowed: set[tuple[str, int]], cutoff: datetime,
+    include_historical_sources: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     """Return a source timing decision without selecting any article body."""
     document_id, revision = _ref(ref, "sourceRef")
     provenance = {"sourceRef": {"documentId": document_id, "revision": revision}}
-    if (document_id, revision) not in allowed:
+    if (document_id, revision) not in allowed and not include_historical_sources:
         return False, {**provenance, "reason": "not_current_input"}
+    if (document_id, revision) not in allowed:
+        newer = conn.execute("SELECT fetched_at FROM k10_source_document_versions WHERE document_id=? AND revision>?",
+                             (document_id, revision)).fetchall()
+        if any(_aware_instant(row[0], "newer source fetched_at") <= cutoff for row in newer):
+            return False, {**provenance, "reason": "source_revision_superseded"}
     row = conn.execute(
         "SELECT published_at,published_precision,fetched_at FROM k10_source_document_versions "
         "WHERE document_id=? AND revision=?", (document_id, revision),
@@ -399,6 +405,7 @@ def load_prior_research_evidence(
     *, task_id: str, input_source_refs: Sequence[Mapping[str, Any]], news_cutoff_at: str,
     verification_cutoff_at: str, prompt_contract_revision: str, model_parameters_sha256: str,
     db_path: Path, canonical_key: str | None = None, event_id: str | None = None,
+    include_historical_sources: bool = False,
 ) -> dict[str, Any]:
     """Load bounded, time-applicable evidence from prior *task* snapshots.
 
@@ -457,6 +464,7 @@ def load_prior_research_evidence(
         isolated: list[dict[str, Any]] = []
         seen_claims: set[tuple[str, str, int]] = set()
         seen_relations: set[tuple[str, str]] = set()
+        relations_selected = False
         for snapshot_id, revision, prior_task_id, prior_event_id, source_event_revision, source_news_cutoff, source_verification_cutoff in rows:
             snapshot_provenance = {
                 "taskId": str(prior_task_id), "snapshotId": str(snapshot_id), "snapshotRevision": int(revision), "eventId": str(prior_event_id),
@@ -475,7 +483,8 @@ def load_prior_research_evidence(
             for claim in _latest_payloads(conn, "k10_research_claims", "claim_id", "claim_json", str(snapshot_id), int(revision)):
                 ref = claim.get("sourceRef")
                 try:
-                    eligible, timing = _eligible_prior_source(conn, ref=ref, allowed=allowed, cutoff=news_cutoff)
+                    eligible, timing = _eligible_prior_source(conn, ref=ref, allowed=allowed, cutoff=news_cutoff,
+                        include_historical_sources=include_historical_sources)
                 except ResearchContractError:
                     eligible, timing = False, {"sourceRef": ref, "reason": "invalid_source_ref"}
                 if not eligible:
@@ -492,8 +501,10 @@ def load_prior_research_evidence(
                     "location": claim.get("location"), "sourceTiming": {"publishedAt": timing["publishedAt"], "fetchedAt": timing["fetchedAt"]},
                     "provenance": snapshot_provenance,
                 })
+            if relations_selected:
+                continue
             stage_rows = conn.execute(
-                "SELECT result_json FROM k10_research_stage_results WHERE snapshot_id=? AND revision<=? ORDER BY revision ASC",
+                "SELECT result_json FROM k10_research_stage_results WHERE snapshot_id=? AND revision<=? ORDER BY revision DESC",
                 (snapshot_id, revision),
             ).fetchall()
             for (result_json,) in stage_rows:
@@ -502,6 +513,9 @@ def load_prior_research_evidence(
                 mappings = conclusion.get("companyMappings") if isinstance(conclusion, Mapping) else None
                 if not isinstance(mappings, Sequence) or isinstance(mappings, (str, bytes)):
                     continue
+                # Each close result is a complete relation set. Corrections
+                # and an explicit empty set supersede all older guesses.
+                relations_selected = True
                 for mapping in mappings:
                     if not isinstance(mapping, Mapping):
                         continue
@@ -516,7 +530,8 @@ def load_prior_research_evidence(
                     failed = False
                     for ref in refs:
                         try:
-                            eligible, timing = _eligible_prior_source(conn, ref=ref, allowed=allowed, cutoff=verification_cutoff)
+                            eligible, timing = _eligible_prior_source(conn, ref=ref, allowed=allowed, cutoff=verification_cutoff,
+                                include_historical_sources=include_historical_sources)
                         except ResearchContractError:
                             eligible, timing = False, {"sourceRef": ref, "reason": "invalid_source_ref"}
                         if not eligible:
@@ -540,6 +555,7 @@ def load_prior_research_evidence(
                         "uncertainty": mapping.get("uncertainty") if isinstance(mapping.get("uncertainty"), str) else None,
                         "provenance": snapshot_provenance,
                     })
+                break
     return {
         "claims": claims, "companyRelations": relations, "isolated": isolated,
         "scope": {"currentTaskId": task_id, "canonicalKey": canonical_key, "eventId": event_id,

@@ -4,6 +4,7 @@ protocol K10AdminServicing: Sendable {
     func providers() async throws -> [K10Provider]
     func createProvider(_ provider: K10ProviderCreate) async throws -> K10Provider
     func updateProvider(name: String, _ provider: K10ProviderUpdate) async throws -> K10Provider
+    func deleteProvider(name: String) async throws
     func tavilyStatus() async throws -> K10TavilyStatus
     func setTavilyKey(_ key: String) async throws -> K10TavilyStatus
     func clearTavilyKey() async throws
@@ -22,7 +23,8 @@ actor K10AdminClient: K10AdminServicing {
 
     func providers() async throws -> [K10Provider] { let page: K10ProviderList = try await request("/api/v1/settings/providers", method: "GET", body: Optional<Data>.none); return page.items }
     func createProvider(_ provider: K10ProviderCreate) async throws -> K10Provider { try await request("/api/v1/settings/providers", method: "POST", body: provider) }
-    func updateProvider(name: String, _ provider: K10ProviderUpdate) async throws -> K10Provider { try await request("/api/v1/settings/providers/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)", method: "PUT", body: provider) }
+    func updateProvider(name: String, _ provider: K10ProviderUpdate) async throws -> K10Provider { try await request("/api/v1/settings/providers/\(name.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")) ?? name)", method: "PUT", body: provider) }
+    func deleteProvider(name: String) async throws { let _: K10OK = try await request("/api/v1/settings/providers/\(name.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")) ?? name)", method: "DELETE", body: Optional<Data>.none) }
     func tavilyStatus() async throws -> K10TavilyStatus {
         struct Snapshot: Codable { let tavily: K10TavilyStatus }
         let snapshot: Snapshot = try await request("/api/v1/settings", method: "GET", body: Optional<Data>.none)
@@ -35,7 +37,9 @@ actor K10AdminClient: K10AdminServicing {
     private func request<T: Decodable, Body: Encodable>(_ path: String, method: String, body: Body?) async throws -> T {
         guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw K10APIError.noToken }
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { throw K10APIError.server(0, "服务地址无效") }
-        components.path = path
+        components.percentEncodedPath = path
+        components.query = nil
+        components.fragment = nil
         guard let url = components.url else { throw K10APIError.server(0, "请求地址无效") }
         try K10NetworkIsolation.validate(url)
         var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 15
@@ -45,6 +49,15 @@ actor K10AdminClient: K10AdminServicing {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw K10APIError.server(0, "服务未返回 HTTP 响应") }
             guard 200..<300 ~= http.statusCode else {
+                if path.hasPrefix("/api/v1/settings/providers") {
+                    if http.statusCode == 409 { throw K10APIError.conflict("连接名称已存在，请选择该连接编辑，或换一个名称") }
+                    if http.statusCode == 422,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let errors = json["detail"] as? [[String: Any]],
+                       let message = errors.first?["msg"] as? String {
+                        throw K10APIError.server(422, message.replacingOccurrences(of: "Value error, ", with: ""))
+                    }
+                }
                 throw K10APIError.decodeServerFailure(data, status: http.statusCode)
             }
             do { return try JSONDecoder().decode(T.self, from: data) } catch { throw K10APIError.decoding("服务响应无法按设置契约读取") }

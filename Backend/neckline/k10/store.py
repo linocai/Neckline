@@ -544,6 +544,11 @@ def begin_external_attempt(
         _, config_error = _bound_v3_config(conn, task_id=task_id)
         if config_error is not None:
             return {"state": "not_configured", "reason": config_error, "attemptId": None}
+        checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+        authorized = set(checkpoint.get("authorizedRetryAttemptIds", []))
+        terminal = next((row for row in conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND error_code='insufficient_balance'", (task_id,)) if row[0] not in authorized), None)
+        if terminal is not None:
+            return {"state": "terminal", "reason": "insufficient_balance", "attemptId": terminal[0]}
         old = conn.execute(
             "SELECT attempt_id,state,input_sha256 FROM k10_external_attempts WHERE task_id=? AND attempt_key=?", (task_id, attempt_key),
         ).fetchone()
@@ -553,7 +558,7 @@ def begin_external_attempt(
             old_state = str(old[1])
             return {"state": "pending_outcome" if old_state == "started" else "reused", "reason": None, "attemptId": old[0]}
         if stage in {"analysisPro", "analysisCon", "morning"}:
-            uncertain = conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown') LIMIT 1", (task_id, stage, item_key)).fetchone()
+            uncertain = next((row for row in conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown','succeeded')", (task_id, stage, item_key)) if row[0] not in authorized), None)
             if uncertain is not None:
                 return {"state": "pending_outcome", "reason": None, "attemptId": uncertain[0]}
         attempt_id = str(uuid.uuid4())
@@ -564,10 +569,26 @@ def begin_external_attempt(
     return {"state": "started", "reason": None, "attemptId": attempt_id}
 
 
+def record_external_result_failure(*, task_id: str, attempt_id: str | None, db_path: Path) -> None:
+    """Acknowledge a specific paid response rejected by business validation."""
+    if attempt_id is None:
+        return
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        attempt = conn.execute("SELECT state FROM k10_external_attempts WHERE task_id=? AND attempt_id=?",
+                               (task_id, attempt_id)).fetchone()
+        if attempt is None or attempt[0] != "succeeded":
+            return
+        checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+        checkpoint["knownFailedResultAttemptIds"] = sorted(set(checkpoint.get("knownFailedResultAttemptIds", [])) | {attempt_id})
+        conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+
+
 def settle_external_attempt(
     *, attempt_id: str, outcome: str, usage: Mapping[str, Any] | None,
     settled_at: str, error_code: str | None, db_path: Path,
     record_provider_failure: bool = False, retry_after_seconds: float | None = None,
+    verification_failure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Settle one started attempt with actual or explicitly unavailable provider usage."""
     if outcome not in {"succeeded", "failed", "unknown"} or not attempt_id or not settled_at:
@@ -594,6 +615,15 @@ def settle_external_attempt(
             "search_credits=?,error_code=?,settled_at=? WHERE attempt_id=?",
             (*expected, settled_at, attempt_id),
         )
+        if verification_failure is not None:
+            task_id, item_key, stage = conn.execute(
+                "SELECT task_id,item_key,stage FROM k10_external_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if stage != "search" or outcome not in {"failed", "unknown"}:
+                raise ValueError("核验失败回执必须对应失败或未知的搜索请求")
+            conn.execute("UPDATE k10_execution_item_checkpoints SET status='failed',safe_error_code=?,result_json=?,updated_at=? "
+                         "WHERE task_id=? AND item_kind='event' AND item_key=? AND stage='tavily_evidence' AND status='running'",
+                         (error_code or "tavily_request_outcome_unknown", _json(verification_failure), settled_at, task_id, item_key))
         if record_provider_failure and outcome == "failed" and error_code in {"insufficient_balance", "rate_limited"}:
             task_id, stage = conn.execute("SELECT task_id,stage FROM k10_external_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
             if stage not in {"analysisPro", "analysisCon", "morning"}:
@@ -2077,6 +2107,19 @@ def get_opportunity_for_candidate(*, candidate_id: str, db_path: Path) -> dict[s
         return _opportunity_for_candidate_conn(conn, candidate_id)
 
 
+def candidate_publication_cutoff(*, candidate_id: str, db_path: Path) -> str | None:
+    """The evidence availability boundary of this exact published candidate."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT b.available_at FROM k10_publication_samples s "
+            "JOIN k10_publication_batches b ON b.batch_id=s.batch_id "
+            "WHERE s.candidate_id=? ORDER BY julianday(b.available_at),b.batch_id LIMIT 1",
+            (candidate_id,),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+
 def load_candidate_context(*, candidate_id: str, cutoff_at: str, db_path: Path,
                            lifecycle_as_of: datetime | None = None) -> Optional[dict[str, Any]]:
     """Read an offered or observed candidate's frozen event/mapping evidence for morning review."""
@@ -2793,6 +2836,10 @@ def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[st
         parsed = None
     started = _execution_started_at(parsed)
     merged = dict(checkpoint)
+    for key in ("knownFailedResultAttemptIds", "authorizedRetryAttemptIds", "providerBinding"):
+        merged.pop(key, None)
+        if isinstance(parsed, Mapping) and key in parsed:
+            merged[key] = parsed[key]
     if started is not None:
         merged["executionStartedAt"] = started
     # Only authorize_discovery_recovery writes this authority. A handler's
@@ -2875,8 +2922,25 @@ def renew_task_lease(
     return _task_from_row(row)
 
 
+def _authorize_known_external_failures(conn, *, task_id: str, checkpoint: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(checkpoint)
+    known = set(result.get("knownFailedResultAttemptIds", []))
+    eligible = {row[0] for row in conn.execute("SELECT attempt_id,state,error_code FROM k10_external_attempts WHERE task_id=?", (task_id,))
+                if (row[1] == "failed" and row[2] == "insufficient_balance") or (row[1] == "succeeded" and row[0] in known)}
+    result["authorizedRetryAttemptIds"] = sorted(set(result.get("authorizedRetryAttemptIds", [])) | eligible)
+    # A confirmed balance failure is safe to retry only at an explicit user
+    # entry point. Keep the original per-step attempt/deadline bounds intact.
+    for attempt_id in eligible:
+        conn.execute("UPDATE k10_execution_item_checkpoints SET safe_error_code='provider_retry_authorized' "
+                     "WHERE task_id=? AND stage='tavily_evidence' AND status='failed' AND safe_error_code='insufficient_balance' "
+                     "AND item_key=(SELECT item_key FROM k10_external_attempts WHERE attempt_id=? AND stage='search')",
+                     (task_id, attempt_id))
+    return result
+
+
 def retry_task(
     *, task_id: str, expected_attempt_count: int, retried_at: str, db_path: Path, execution_binding: Mapping[str, Any] | None = None,
+    user_requested: bool = False,
 ) -> Task:
     """把一个明确失败态任务重新入队；调用方须带上看到的尝试数以避免盲目重试覆盖。"""
     with write_connection(db_path) as conn:
@@ -2891,6 +2955,10 @@ def retry_task(
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务不是可重试的当前失败版本")
+        if user_requested:
+            checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+            checkpoint = _authorize_known_external_failures(conn, task_id=task_id, checkpoint=checkpoint)
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
         if execution_binding is not None:
             _attach_missing_execution_conn(conn,task_id=task_id,execution_binding=execution_binding,bound_at=retried_at)
         conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
@@ -2990,7 +3058,7 @@ def authorize_discovery_recovery(
             raise K10Conflict("任务 checkpoint 无效") from exc
         if not isinstance(checkpoint, Mapping):
             raise K10Conflict("任务 checkpoint 无效")
-        updated_checkpoint = dict(checkpoint)
+        updated_checkpoint = _authorize_known_external_failures(conn, task_id=task_id, checkpoint=checkpoint)
         if research_max_tokens is not None or completion_deadline_seconds is not None or finalization_max_tokens is not None:
             original = json.loads(conn.execute(
                 "SELECT payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
@@ -3380,6 +3448,9 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
                          (lifecycle_id, opportunity_id, "published", None, _json(item.evidence_refs),
                           _json({"batchId": batch_id, "candidateId": item.candidate_id,
                                  "sourceMarker": item.source_marker, "latePublication": fixed.delayed}), available_at, available_at))
+        # All potentially expensive report/card writes precede the final D1
+        # boundary check. The hook may return a timestamp-only finalizer.
+        finalize_publication = publication_hook(conn, available_at) if publication_hook is not None else None
         committed = clock()
         if not isinstance(committed, datetime) or committed.tzinfo is None:
             raise ValueError("publication clock 必须返回带时区 datetime")
@@ -3395,8 +3466,8 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
             conn.execute("UPDATE k10_publication_samples SET created_at=? WHERE batch_id=?", (final_at, batch_id))
             conn.execute("UPDATE k10_opportunity_lifecycle_events SET occurred_at=?,created_at=? WHERE kind='published' AND opportunity_id IN (SELECT opportunity_id FROM k10_opportunities WHERE first_batch_id=?)", (final_at, final_at, batch_id))
             available_at = final_at
-        if publication_hook is not None:
-            publication_hook(conn, available_at)
+        if callable(finalize_publication):
+            finalize_publication(available_at)
     return PublicationBatch(batch_id, scan_id, publication_kind, available_at, len(values))
 
 

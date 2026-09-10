@@ -1,0 +1,4 @@
+B58: all confirmed findings and adopted recovery regressions closed.
+Discovery/history and lifecycle passed review2 (5a99896cf2d6522ed159c3cb1eb10b66afa944449e267b0165fcf59d44a88d76).
+Execution passed review3 (5d08f24e1cc09127c41e2a65006810866f624395187441c3094d0e18e170da73); delta only failed-result receipt ordering and two regressions.
+All 27 reviewed source/test files match review3. Backend: 1119 passed; native builds: 3 passed; actual API DTO Swift decode: 5 passed. No live provider or production operation.

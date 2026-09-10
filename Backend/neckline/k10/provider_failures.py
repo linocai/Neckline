@@ -31,6 +31,9 @@ def provider_failure_result(*, context: TaskContext, stage: str, code: str | Non
                             checkpoint: Mapping[str, Any] | None = None,
                             received_at: datetime | None = None) -> TaskResult:
     # Only protocol codes cross this boundary; never store upstream error text.
+    if code in {"provider_request_outcome_unknown", "model_request_outcome_unknown"}:
+        return TaskResult("failed", stage, {**(checkpoint or context.checkpoint), "safeErrorCode": code},
+                          "上次模型调用结果无法安全恢复，已停止重复付费请求")
     code = code if code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
     checkpoint = {**(checkpoint if checkpoint is not None else context.checkpoint), "safeErrorCode": code}
     error = failure_message(code)

@@ -487,7 +487,7 @@ def test_model_truncation_preserves_reported_usage_without_reissuing_same_input(
     assert calls == 1
 
 
-def test_model_interrupted_attempt_remains_charged_but_can_use_remaining_attempt(tmp_path):
+def test_model_interrupted_attempt_remains_charged_and_cannot_be_repeated(tmp_path):
     path = tmp_path / "model-interrupted.sqlite"
     _seed(path)
     input_sha = _model_input("interrupted")
@@ -497,7 +497,8 @@ def test_model_interrupted_attempt_remains_charged_but_can_use_remaining_attempt
     resumed = _model_result(task_id="task-1", operation="compare", item_key="event", input_sha256=input_sha, path=path,
                             operation_call=lambda: LLMResult(ok=True, content='{"ok":true}', prompt_tokens=1,
                                                               completion_tokens=1, usage_unavailable=False), validate=lambda raw: raw)
-    assert resumed.status == "completed" and resumed.network_attempt_count == 2 and resumed.attempt_count == 2
+    assert resumed.status == "failed" and resumed.network_attempt_count == 1 and resumed.attempt_count == 1
+    assert resumed.safe_error_code == "model_request_outcome_unknown"
 
 
 def test_model_attempt_rechecks_lease_in_its_write_transaction(tmp_path):

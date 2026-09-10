@@ -165,6 +165,11 @@ class DiscoverySliceYield(RuntimeError):
     """Cooperative execution boundary; never a model/data failure."""
 
 
+class ProviderThrottleYield(DiscoverySliceYield):
+    def __init__(self, delay):
+        self.delay = delay
+
+
 class DiscoveryDeadlineExceeded(RuntimeError):
     """The task's one persisted completion deadline elapsed; do not publish partial work."""
 

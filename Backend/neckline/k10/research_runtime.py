@@ -99,7 +99,8 @@ class _Investigation:
             create_research_snapshot(snapshot=ResearchSnapshot(self.identity, task_id, event_revision.event_id,
                 event_revision.revision, _text(cutoff_at), _text(created_at), self.context_digest,
                 self.policy["investigationPromptContractRevision"],
-                _hash({"model": self.policy["model"], "options": self.policy["modelOptions"]["investigation"]}),
+                _hash({"model": self.policy["model"], "options": self.policy["modelOptions"]["investigation"],
+                       **({"runtimeProvider": execution_profile["runtimeProvider"]} if "runtimeProvider" in execution_profile else {})}),
                 "continue_research", "ok", 1, _text(created_at), _text(created_at)), db_path=db_path, lease_guard=leaseguard)
             self._refresh()
         if self.snapshot.context_sha256 != self.context_digest:
@@ -134,6 +135,12 @@ class _Investigation:
             if isinstance(tool, Mapping):
                 refs.update(_refs(tool.get("documentRefs", [])))
                 self.allowed.update(_refs(tool.get("eligibleDocumentRefs", [])))
+            prior = conclusion.get("runtimePriorEvidence")
+            if isinstance(prior, Mapping):
+                historical = _refs([item["sourceRef"] for item in prior.get("claims", [])]
+                    + [ref for item in prior.get("companyRelations", []) for ref in item["relationEvidence"]])
+                refs.update(historical)
+                self.allowed.update(historical)
         if refs:
             for row in store.load_document_versions(refs=[_ref(ref) for ref in refs], db_path=self.db_path):
                 key = _key(row)
@@ -154,7 +161,10 @@ class _Investigation:
 
     def _cards(self) -> list[dict[str, Any]]:
         cards = []
-        claims = self.state["claims"]
+        claims = list(self.state["claims"])
+        for stage in self.state["stageResults"]:
+            prior = (stage["result"].get("conclusion") or {}).get("runtimePriorEvidence") or {}
+            claims.extend(prior.get("claims", []))
         for ref in sorted(self.allowed, key=lambda item: (item.document_id, item.revision)):
             doc = self.documents.get(ref)
             if doc is None:
@@ -218,9 +228,11 @@ class _Investigation:
             input_source_refs=[_ref(ref) for ref in self.event.source_refs],
             news_cutoff_at=self.snapshot.news_cutoff_at, verification_cutoff_at=self.snapshot.verification_cutoff_at,
             prompt_contract_revision=self.snapshot.prompt_contract_revision,
-            model_parameters_sha256=self.snapshot.model_parameters_sha256, db_path=self.db_path)
+            model_parameters_sha256=self.snapshot.model_parameters_sha256, db_path=self.db_path,
+            include_historical_sources=True)
         self._record(ResearchStageResult("close_research", conclusion={
             "researchStatus": self.snapshot.research_status, "runtimePriorEvidence": value}), digest=_hash(value))
+        self._restore_sources()
 
     def _validate_result(self, action: str, result: ResearchStageResult, packet: Mapping[str, Any]) -> None:
         if action == 'close_research' and packet.get('pathsExhausted') and (result.conclusion or {}).get('researchStatus') == 'continue_research':
@@ -343,6 +355,8 @@ class _Investigation:
         return step.result
 
     def _tool(self, bundle: Any, *, path: QueryPath | None = None, request: FullTextRequest | None = None) -> None:
+        if bundle.coverage.get("reason") == "insufficient_balance":
+            self.model._terminal_provider_error = "insufficient_balance"
         if bundle.coverage.get("requestState") == "pending":
             raise InvestigationError("资料调用尚未完成", code=str(bundle.coverage.get("reason") or "investigation_tool_failed"))
         for doc in bundle.documents:

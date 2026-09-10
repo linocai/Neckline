@@ -29,12 +29,12 @@ def test_resolves_one_official_deepseek_v4_pro_connection_with_explicit_policy(t
     assert result.provider.has_web_search is False
 
 
-def test_only_official_https_deepseek_endpoint_and_exact_model_are_usable(tmp_path):
+def test_invalid_endpoint_or_missing_credentials_are_unusable(tmp_path):
     for record in (
         _record(base_url="http://api.deepseek.com"),
-        _record(base_url="https://other.example.com"),
-        _record(base_url="https://api.deepseek.com/other"),
-        _record(model="deepseek-chat"),
+        _record(base_url="https://user:secret@other.example.com"),
+        _record(base_url="https://api.example.com/v1/messages"),
+        _record(model=" "),
         _record(key=None),
         _record(enabled=False),
     ):
