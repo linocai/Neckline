@@ -42,6 +42,7 @@ class SourceReference(K10Model):
     publishedAt: str | None = None
     publishedPrecision: Literal["exact", "date", "unknown"] = "unknown"
     fetchedAt: str | None = None
+    dataFetchedAt: str | None = None
     collectedAt: str | None = None
 
 
