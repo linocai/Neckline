@@ -204,6 +204,10 @@ def read_report(*, db_path: Path, report_id: str | None = None, window: str = 'e
                       windowKind=row['window_kind'], parentReportId=row['parent_report_id'], cutoffAt=row['cutoff_at'],
                       verificationCutoffAt=row['verification_cutoff_at'], availableAt=row['available_at'], status=row['status'],
                       eveningCards=[], updatedCards=[], addedCards=[], lifecycleUpdates=[], nextCursor=None)
+        if row['available_at'] is None:
+            active = conn.execute('SELECT t.status FROM k10_scan_execution_bindings b JOIN k10_tasks t ON t.task_id=b.task_id WHERE b.scan_id=?', (row['scan_id'],)).fetchone()
+            if active and (active[0] == 'running' or (active[0] == 'queued' and row['status'] in {'failed', 'not_configured'})):
+                report['status'] = active[0]
         coverage=conn.execute('SELECT content_json FROM k10_v2_report_coverage WHERE report_id=?',(row['report_id'],)).fetchone()
         report.update(json.loads(coverage[0]) if coverage else {'coverageGaps':[], 'incompleteReviews':[]})
         changes = conn.execute('SELECT e.lifecycle_event_id,e.opportunity_id,o.company_window_id,o.company_code,e.kind,e.reason,e.created_at,e.source_refs_json FROM k10_v2_report_lifecycle_updates l JOIN k10_opportunity_lifecycle_events e ON e.lifecycle_event_id=l.lifecycle_event_id JOIN k10_opportunities o ON o.opportunity_id=e.opportunity_id WHERE l.report_id=? ORDER BY julianday(e.created_at),e.lifecycle_event_id', (row['report_id'],)).fetchall()

@@ -1,0 +1,5 @@
+f11d6bfcd4ae645e3799f0eba93dbe1f5f4ea6b9e43a4ea16b512c2197c1a585  Neckline-v3.2.0-b60-Backend.tar.gz
+c5d46db3acb56354f702fc9dbba5299af79d46440cff52eb7d60b14b2a9759e1  Neckline-v3.2.0-b60-macOS.zip
+abd2404755fa74b7273ddb334cf98da9fee76f085eee95dcbe6c4a7551d23968  manifest.json
+9e25ff8fcba025b4aa879e649715fc6e8eb28edc4f3da8b6f5e07e7abc2818dd  neckline_runtime-3.2.0-py3-none-any.whl
+3b083df4dc3fa8d18685381e9ccee2970d9298a8b5414829a6913397f702e0a4  runtime-manifest.json

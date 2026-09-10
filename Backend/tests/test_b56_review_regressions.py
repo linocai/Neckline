@@ -320,7 +320,11 @@ def test_build56_health_and_operator_config_paths():
     from neckline.api.app import app
     # No startup or operational database access is needed by this public endpoint.
     response=TestClient(app).get('/api/v1/health')
-    assert response.status_code==200 and response.json()['releaseSet']=='v3.2.0-b59'
+    import re
+    project = (Path(__file__).parents[2]/'App/project.yml').read_text()
+    version = re.search(r'MARKETING_VERSION:\s*"([^"]+)"', project).group(1)
+    build = re.search(r'CURRENT_PROJECT_VERSION:\s*"([^"]+)"', project).group(1)
+    assert response.status_code==200 and response.json()['releaseSet']==f'v{version}-b{build}'
     root=Path(__file__).parents[2]
     for name in ('k10-v2.json','k10-execution-v4.json'):
         assert (root/'Backend/neckline/config'/name).is_file()

@@ -433,6 +433,12 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         value = options.get(stage) if isinstance(options, Mapping) else None
         if not isinstance(value, Mapping):
             raise PipelineError("发现执行包模型选项无效", code="execution_policy_invalid")
+        feedback = getattr(self._thread_usage, "repair_feedback", None) or {}
+        if "truncated" in feedback.get("errorCode", ""):
+            # Reserve the already-approved output capacity for the structured
+            # answer when a reasoning-heavy response exhausted that capacity.
+            return {**{key: item for key, item in value.items() if key != "reasoningEffort"},
+                    "thinking": {"type": "disabled"}}
         return dict(value)
 
     def advance_research(self, *, snapshot: ResearchSnapshot, action: str,
@@ -962,16 +968,6 @@ class _CheckpointedDiscoveryModel:
         identity = sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()
         item = {"instruction": instruction, "payload": payload}
-        if self._allow_failed_research_resume:
-            digest, _key, row = self._research_checkpoint(operation=stage, stage=stage,
-                                                        item_key=identity, item=item)
-            self._reject_unknown_research_checkpoint(row)
-            code = row[1] if row is not None else None
-            if row is not None and row[0] == "failed" and isinstance(code, str) and "json" in code:
-                item = {**item, "authorizedSemanticRecoveryOf": digest}
-                _digest, _key, resumed = self._research_checkpoint(operation=stage, stage=stage,
-                                                                  item_key=identity, item=item)
-                self._reject_unknown_research_checkpoint(resumed)
         return self._run(operation=stage, stage=stage, item_key=identity,
             item=item, invoke=invoke,
             encode=validate, decode=validate)
@@ -1067,10 +1063,16 @@ class _CheckpointedDiscoveryModel:
     def _run(self, *, operation: str, stage: str, item_key: str, item: Mapping[str, Any],
              invoke: Callable[[], Any], encode: Callable[[Any], Mapping[str, Any] | list[Any]],
              decode: Callable[[Mapping[str, Any] | list[Any]], Any]) -> Any:
-        if operation in {"verify", "map", "compare", "classify", "prioritize"}:
+        compact_resume = False
+        if operation in {"verify", "map", "compare", "classify", "prioritize", "titleBatch", "titleReconcile"}:
+            original_item = item
+            _original_digest, _original_key, original_row = self._research_checkpoint(
+                operation=operation, stage=stage, item_key=item_key, item=item)
             item, _digest, _key, _row = self._recovery_target(
                 operation=operation, stage=stage, item_key=item_key, item=item,
                 eligible=lambda code: code in {"execution_paused", "response_truncated"} or "json" in code)
+            compact_resume = (item != original_item and original_row is not None
+                              and "truncated" in (original_row[1] or ""))
         if operation in {"classify", "prioritize"} and (_row is None or _row[0] != "completed"):
             repair = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("runtimeRepair")
             if repair is not None and repair.get("finalizationModelOptions") is not None:
@@ -1082,13 +1084,21 @@ class _CheckpointedDiscoveryModel:
                     eligible=lambda code: code in {"execution_paused", "response_truncated"} or "json" in code)
 
         def invoke_bound_finalization():
+            previous_feedback = None
             if isinstance(self._base, DeepSeekDiscoveryModel):
                 self._base._thread_usage.finalization_model_options = item.get("runtimeFinalizationModelOptions")
+                previous_feedback = getattr(self._base._thread_usage, "repair_feedback", None)
+                if compact_resume and previous_feedback is None:
+                    self._base._thread_usage.repair_feedback = {
+                        "errorCode": "response_truncated", "requiredCorrection":
+                        "上次达到输出长度限制。只输出本阶段要求的完整 JSON，用简短理由替代重复解释；"
+                        "保留全部必须审阅的输入、必要公司与真实引用，不追加标题抄录、长篇分析或无关字段。"}
             try:
                 return invoke()
             finally:
                 if isinstance(self._base, DeepSeekDiscoveryModel):
                     self._base._thread_usage.finalization_model_options = None
+                    self._base._thread_usage.repair_feedback = previous_feedback
 
         def remember_validation(exc: Exception) -> None:
             if not isinstance(self._base, DeepSeekDiscoveryModel):
@@ -1135,6 +1145,8 @@ class _CheckpointedDiscoveryModel:
                 safe = code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code) else "model_execution_invalid"
                 if safe == "response_truncated" and operation.startswith("investigation_"):
                     safe = "investigation_json_output_truncated"
+                elif safe == "response_truncated" and isinstance(self._base, DeepSeekDiscoveryModel):
+                    safe = operation.lower() + "_json_output_truncated"
                 elif operation.startswith("investigation_") and usage.get("validationErrors"):
                     safe = "investigation_json_contract_invalid"
                 error_type = (JsonRepairError if "json" in safe
@@ -1172,6 +1184,10 @@ class _CheckpointedDiscoveryModel:
                 self._base._thread_usage.repair_feedback["requiredCorrection"] = (
                     "上次达到输出长度限制。此次仅输出本 action 必须的增量变化，省略未变命题和问题，"
                     "精简重复解释，保留决定依据、真实引用和合法完整 JSON；不得裁掉必要公司或伪造结论。")
+            elif result is not None and "output_truncated" in (result.safe_error_code or ""):
+                self._base._thread_usage.repair_feedback["requiredCorrection"] = (
+                    "上次达到输出长度限制。只输出本阶段要求的完整 JSON，用简短理由替代重复解释；"
+                    "保留全部必须审阅的输入、必要公司与真实引用，不追加标题抄录、长篇分析或无关字段。")
             try:
                 return metered_invoke()
             finally:
@@ -1191,11 +1207,8 @@ class _CheckpointedDiscoveryModel:
             if result.status == "completed":
                 break
             code = result.safe_error_code or ""
-            # A truncated answer consumed the configured output budget.  A
-            # second call with the identical material and maxTokens cannot be
-            # a repair, so leave it as an auditable pending item.  A later
-            # explicitly bound profile with a larger budget changes the input
-            # digest and may make one new request.
+            # Truncation gets the bound single JSON repair with compact output
+            # and thinking disabled, keeping the approved capacity unchanged.
             retryable = ("json" in code or code.startswith("provider_")
                          or code in {"response_empty", "response_filtered", "model_network_failed"})
             if code == "rate_limited" and result.attempt_count < int(self._policy["networkMaxAttempts"]):

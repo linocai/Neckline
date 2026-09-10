@@ -1,0 +1,11 @@
+{
+  "version": "3.2.0",
+  "build": 60,
+  "macOSInstalled": "/Applications/Neckline.app",
+  "macOSBackup": "/Users/linotsai/Lino/app_backups/Neckline-v3.2.0-build59-pre-b60-20260910.app",
+  "dittoUsed": true,
+  "strictSignatureVerified": true,
+  "singleRunningInstance": true,
+  "iOSArchive": "/Users/linotsai/Lino/releases/Neckline/v3.2.0-b60-20260910/build/Neckline-iOS.xcarchive",
+  "ipaExported": false
+}

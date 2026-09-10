@@ -10,7 +10,23 @@ from tests.test_v310_pipeline_e2e import _run, _http_transport, _api, RUN_AT
 
 @pytest.mark.parametrize('operation', ['classify', 'prioritize'])
 def test_explicit_output_repair_preserves_successful_research_and_classification(tmp_path, monkeypatch, operation):
+    # Preserve the historical B53 failure boundary now that fresh structured
+    # truncations get a compact repair. The real producer and ledger still own it.
+    execute = pipeline.execute_model_operation
+    def legacy_terminal(**kwargs):
+        original = kwargs['operation_call']
+        def invoke():
+            try:
+                return original()
+            except pipeline.JsonRepairError as exc:
+                if 'truncated' in exc.code:
+                    raise pipeline.SemanticValidationError(code='response_truncated', input_tokens=exc.input_tokens,
+                        output_tokens=exc.output_tokens,total_tokens=exc.total_tokens) from exc
+                raise
+        return execute(**{**kwargs,'operation_call':invoke})
+    monkeypatch.setattr(pipeline, 'execute_model_operation', legacy_terminal)
     db, task_id, first, _, gateway = _run(tmp_path, monkeypatch, finalization_truncate=operation)
+    monkeypatch.setattr(pipeline, 'execute_model_operation', execute)
     assert first.status == 'failed'
     before = store.task_execution_input(task_id=task_id, db_path=db)
     with _api(db) as client:

@@ -1420,6 +1420,9 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 card["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump() for ref in card["sourceRefs"]]
         for change in report['lifecycleUpdates']:
             change['sourceRefs'] = [_source_ref({**dict(ref), **dict(docs.get((ref.get('documentId'), ref.get('revision')), {}))}).model_dump() for ref in change['sourceRefs']]
+        if report['status'] in {'queued', 'running'}:
+            return V2ReportEnvelope(state='available', report=V2ReportOut(**report),
+                reason=ApiFailure(reason='report_processing', message='任务已恢复，正在继续处理已保存的内容。'))
         return V2ReportEnvelope(state="available", report=V2ReportOut(**report),
             reason=ApiFailure(reason=failure.get("reason", "incomplete"), message=failure.get("message", "今天没跑成 · 处理未完成")) if failure or report["status"] not in {"completed","partial"} else None)
 

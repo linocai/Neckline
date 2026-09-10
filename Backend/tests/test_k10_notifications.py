@@ -30,6 +30,25 @@ NOW = datetime(2026, 9, 6, 13, 0, tzinfo=timezone.utc)
 TEST_RETRY_POLICY = NotificationRetryPolicy(timedelta(seconds=30), timedelta(minutes=15))
 
 
+def test_targeted_report_push_does_not_dispatch_old_failure_notifications(tmp_path):
+    db = _db(tmp_path)
+    _finish_task(db, task_id='old-failure', status='failed')
+    old = enqueue_task_notification(task_id='old-failure', db_path=db, created_at=NOW)
+    _finish_task(db, task_id='tonight', kind='evening_scan')
+    target = enqueue_task_notification(task_id='tonight', db_path=db, created_at=NOW)
+    calls = []
+    def send(**kwargs):
+        calls.append(kwargs['collapse_id'])
+        return DeliveryResult(ok=True)
+    args = dict(db_path=db, list_device_tokens=lambda:('device-a',), delete_device=lambda token:False,
+        sender=send, worker_id='targeted', now=NOW+timedelta(minutes=2), retry_policy=TEST_RETRY_POLICY,
+        notification_id=target.notification_id)
+    assert dispatch_task_notifications(**args) == 1
+    assert dispatch_task_notifications(**args) == 0
+    assert calls == [target.notification_id]
+    assert get_notification(notification_id=old.notification_id, db_path=db).status == 'queued'
+
+
 def test_worker_maintenance_recovers_missing_terminal_hook_and_uses_device_preferences(tmp_path, monkeypatch):
     from neckline.api.stores import upsert_device
     from neckline.k10 import notification_runtime

@@ -458,14 +458,16 @@ def _device_key(token: str) -> str:
 
 def _claim_next(
     conn, *, worker_id: str, now_text: str, lease_until: str, excluded_ids: set[str],
+    notification_id: str | None = None,
 ):
     exclusions = "" if not excluded_ids else " AND notification_id NOT IN (" + ",".join("?" for _ in excluded_ids) + ")"
+    target = " AND notification_id=?" if notification_id is not None else ""
     row = conn.execute(
         "SELECT notification_id FROM k10_task_notifications WHERE "
         "((status='queued' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?) "
-        "OR (status='sending' AND lease_until < ?))" + exclusions +
+        "OR (status='sending' AND lease_until < ?))" + exclusions + target +
         " ORDER BY COALESCE(next_attempt_at,created_at),created_at,notification_id LIMIT 1",
-        (now_text, now_text, *sorted(excluded_ids)),
+        (now_text, now_text, *sorted(excluded_ids), *((notification_id,) if notification_id is not None else ())),
     ).fetchone()
     if row is None:
         return None
@@ -556,6 +558,7 @@ def dispatch_task_notifications(
     lease_for: timedelta = timedelta(minutes=2), limit: int = 20,
     clock: Callable[[], datetime] | None = None,
     retry_policy: NotificationRetryPolicy | None = None,
+    notification_id: str | None = None,
 ) -> int:
     """Dispatch bounded queued notifications through injected common device/APNs seams.
 
@@ -577,6 +580,7 @@ def dispatch_task_notifications(
             _require_notifications_schema(conn)
             row = _claim_next(
                 conn, worker_id=worker_id, now_text=stamp, lease_until=lease_until, excluded_ids=claimed_ids,
+                notification_id=notification_id,
             )
         if row is None:
             break

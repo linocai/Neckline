@@ -1,0 +1,13 @@
+{
+  "targetedRegressionPassed": 18,
+  "notificationSuiteAndRecoveryPassed": 28,
+  "externalNetworkDenied": true,
+  "fullSuite": "pending against final B61 source",
+  "nativeArchives": {
+    "macOS": "3.2.0 / 61 / Developer ID",
+    "iOS": "3.2.0 / 61 / Apple Development"
+  },
+  "strictSignaturesVerified": true,
+  "swiftSourceChanged": false,
+  "ipaExported": false
+}

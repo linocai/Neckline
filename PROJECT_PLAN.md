@@ -1,4 +1,4 @@
-# Neckline · 3.2.0 / 双端 Build 59 · K10-v2
+# Neckline · 3.2.0 / 双端 Build 60 · K10-v2
 
 本文件是工程控制面。本轮详细契约与验收证据写入 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。现行策略唯一依据为 [`whynotme/K10.md`](../whynotme/K10.md)；生产代码不得导入研究仓。
 
@@ -8,7 +8,7 @@
 
 ## 稳定技术决定
 
-- 生产为 **3.2.0 / 双端 Build 59 / Schema 8 / K10-v2**，于 2026-09-10 完成累计发布（含 B58 SOP 修复）。API 可读取；用户于 2026-09-10 21:04 授权打开开关并单次试跑当晚 21:00 任务，常规定时器暂不恢复。
+- 生产为 **3.2.0 / 双端 Build 60 / Schema 8 / K10-v2**，于 2026-09-10 完成累计发布（含 B58 SOP 修复）。API 可读取；用户于 2026-09-10 21:04 授权打开开关并单次试跑当晚 21:00 任务，常规定时器暂不恢复。
 - K10-v2 固定使用 `K10-v2初始股票池_20260909.json` 的 1,089 只公司。导入器显式接收 `--universe-file` 和 `--profiles-dir`，校验名单、完整资料、索引与原始证据后原子写入工程侧数据；运行期只读该快照，不读取或 Python 导入 `whynotme`。资料的 `local_draft_awaiting_user` 来源状态、引用、报告期和缺口原样保留，缺项不排除公司。
 - Schema 8 只新增 v2 的池／资料快照与日推荐卡账本；现有 K10-v1.4 的已发布推荐、选择和证据冻结保留且不可重写。旧 D1/D2 仍可在日后获恢复授权后追加行情事实和评价修订，但不重置窗口或回改选择；v2 新卡借用既有机会／公司窗口账本。
 - 所有精确去重标题均经批量模型短筛；本地索引只帮助召回相关公司，名称或关键词未命中不能硬删。无 80／40、正文、搜索、文章、初选公司、题材、涨幅或 token 总配额；正文／补查按共享事件和实际缺口进行，跨批归并并复用资料与证据。删除 80／40 的活跃生产、校验和测试契约，不保留兼容运行路径。
@@ -21,23 +21,23 @@
 
 ## 当前状态
 
-- **已发布 3.2.0 / 双端 Build 59 / Schema 8**，源码 `c228c0f`，不可变 tag `v3.2.0-b59`；从实际 B57 `8e5cec4` 累计核对全部 B58/B59 改动，线上基线与目标运行文件均无漂移。
+- **已发布 3.2.0 / 双端 Build 60 / Schema 8**，源码 `03fb861`，不可变 tag `v3.2.0-b60`；从实际 B59 `c228c0f` 核对 B60 池外线索快修，线上基线与目标运行文件均无漂移。
 - 双端 BYOK 可编辑 HTTPS Chat Completions 端点、模型和 Key，支持多连接、新增／切换／清除／删除，运行中任务保留其原连接身份。实现与验证见版本记录第 22 节；B58 六项 SOP 修复及独立复查见第 21 节。
-- 发布回归 **1135 passed / 21 个既有 Polars warnings**，macOS build、iOS Simulator build、iOS build-for-testing 及双端正式签名归档通过；同源码 BYOK 双端各 3 项 XCTest、真实 API 和原生页面验收完成。
-- 宁波 API active+enabled。用户已授权今晚首次真实试跑：持久 run control 已于 21:07 打开，单任务已于 21:09:52 失败，执行进程退出；常规 worker/timer 保持 inactive+disabled，旧任务不恢复。当前 BYOK 是用户选择的 deepseek-flash。任务 `task_c9c0feab5c83a08e8a17138ebfb0041a`；详见版本记录第 24 节。
+- 发布回归 **1141 passed / 21 个既有 Polars warnings**，macOS build、iOS Simulator build、iOS build-for-testing 及双端正式签名归档通过；同源码 BYOK 双端各 3 项 XCTest、真实 API 和原生页面验收完成。
+- 宁波 API active+enabled。用户已授权今晚首次真实试跑：持久 run control 已于 21:07 打开，首轮于 21:09:52 失败后，用户授权快修；B60 已于 21:25:47 从原冻结任务恢复，归并输出截断后已退出，B61 修复验证中；常规 worker/timer 保持 inactive+disabled，旧任务不恢复。当前 BYOK 是用户选择的 deepseek-flash。任务 `task_c9c0feab5c83a08e8a17138ebfb0041a`；详见版本记录第 25 节。
 - 1,089 份公司资料及原 `local_draft_awaiting_user` 来源状态保留。绑定仍为 `k10-v2-production` 第 1 修订、`k10-v2-execution-production` 第 1 修订，策略快照 `k10-v2-20260909`；首次 V2 扫描前四项配置就绪。
-- B59 发布切换时只更新代码与 wheel，85 表不变且 pre/post SHA256 相同；其后用户更改了模型连接，本次真实试跑也已新增数据。原晚报、旧晨报失败、选择与固定 D1/D2 保留，不能再用发布前备份覆盖试跑现场。
-- B59 恢复集 `/opt/neckline/data/backups/v3.2.0-b59-predeploy/` 保留 B57 runtime、环境／绑定和 pre/post DB；隔离恢复演练通过，根 root:root/0755、DB neckline:neckline/0600。任何以后恢复前仍须核对新增写入。
+- B60 发布切换时只更新代码与 wheel，85 表不变且 pre/post SHA256 相同；备份已包含用户的新模型连接与本次真实试跑数据，恢复运行会继续新增数据。原晚报、旧晨报失败、选择与固定 D1/D2 保留，不能再用发布前备份覆盖试跑现场。
+- B60 恢复集 `/opt/neckline/data/backups/v3.2.0-b60-predeploy/` 保留 B59 runtime、环境／绑定和 pre/post DB；隔离恢复演练通过，根 root:root/0755、DB neckline:neckline/0600。任何以后恢复前仍须核对新增写入。
 - Mac 已用 ditto 换装并单实例启动，严格签名／Apple 时间戳及 ZIP 解包验签通过；实际 B59 BYOK 和两份历史窗口可读。iOS 签名归档就绪，由用户通过 Xcode 安装，未生成 IPA。Mac 沿用 Developer ID 签名但未公证的既有方式。
 - 六项 GitHub Release 资产已发布并下载逐字节核对；实际生产 API 通过当前 Swift 解码。完整发布回执、安装及运维事实见 [版本记录第 23 节](archive/v3.2.0-b54_execution.md#23-b59-一条龙发布2026-09-10)。
 
 ## 当前 Plan
 
-用户已授权 B60 快修并继续今晚同一任务：过滤池外可选线索，保留全部标题与有效公司；离线回归与旧付费检查点复用验证通过后，仅代码部署，再经正式 recover-scan 恢复原 task/scan。常规 worker/timer 与旧任务不启动。
+用户明确要求：今晚报告完整生成、客户端可读并实际推送后才能结束。B60 已完成全部 44 批标题，归并回复达到 32,768 tokens 被截断；B61 正修复受影响步骤的精简输出／恢复、恢复中的 API 状态和单份通知投递。保留全部已付结果，继续同一 task/scan；常规 worker/timer 与旧任务不启动。
 
 ## Backlog
 
-- 首试失败：模型在标题结果返回池外代码 300487.SZ；公司池校验位于 completed 检查点落档之后，不能靠重复入队消除坏缓存。另有 TuShare upstream_rejected 采集缺口，现有记录未保留具体供应商原因。详见版本记录第 24 节。
+- TuShare upstream_rejected 采集缺口仍须保留披露；原记录未保存具体供应商原因，不能猜测。标题池外代码阻断问题已由 B60 修复。
 - 首试用量 22 次模型调用 / 801,379 tokens；不扩展成日成本估计。本轮仅授权修复后恢复今晚同一任务，常规定时尚未启动。
 
 ## 里程碑索引
@@ -50,3 +50,4 @@
 - 3.2.0 / Build 58：SOP 快修及恢复边界复查，随 B59 发布；见同一版本记录第 21 节。
 - 3.2.0 / Build 59：双端 BYOK 与 SOP 修复累计发布；见同一版本记录第 22–23 节。
 - 2026-09-10 21:00 首试：21:07 启动、21:09:52 标题阶段失败；原因及用量见同一版本记录第 24 节。
+- 3.2.0 / Build 60：池外线索局部过滤，22 个付费检查点保留，原晚报恢复；见同一版本记录第 25 节。
