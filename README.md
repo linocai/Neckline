@@ -1,14 +1,14 @@
 # Neckline
 
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-10 已发布
-**3.2.0 / 双端 Build 60 / K10-v2 / Schema 8**，后端发布集合为 `v3.2.0-b60`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.2.0-b60)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
+**3.2.0 / 双端 Build 61 / K10-v2 / Schema 8**，后端发布集合为 `v3.2.0-b61`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.2.0-b61)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
 
-**2026-09-10 晚间任务已在 B60 恢复运行。** 首轮因标题结果夹带池外代码于 21:09:52 中断；用户要求直接过滤并继续，现已修复标题／研究公司线索处理，并于 21:25:47 经正式入口恢复同一冻结 task/scan。原 22 批付费结果保留，未重新采集输入。API active+enabled、运行开关 open；专用单任务进程运行，常规 worker／timer 与旧任务保持暂停。
+**2026-09-10 晚间报告正在 B61 继续执行。** B60 完成全部 44 批标题后遇到归并回复截断；B61 已修复精简输出／恢复处理和读取状态，于 21:49:41 恢复原 task/scan，保留全部付费标题与冻结输入。报告成功后将只派送本报告通知；API active+enabled、开关 open，专用进程运行，常规 worker/timer 和旧任务保持暂停。
 
 固定 1,089 公司池与完整资料已显式导入生产库，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
 
-B60 通过 1,141 项离线回归、真实失败结果回放与同任务恢复测试，以及双端签名归档和严格验签；仅代码升级，部署前后 85 表数据未变。当前报告尚在真实执行，最终输出以任务状态为准；原 TuShare 采集缺口保留。
+B61 通过 1,147 项离线回归、真实失败结果回放与同任务恢复测试，以及双端签名归档和严格验签；仅代码升级，部署前后 85 表数据未变。当前报告尚在真实执行，最终输出以任务状态为准；原 TuShare 采集缺口保留。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -48,7 +48,7 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 
 当前生产策略包为 [k10-v2.json](Backend/neckline/config/k10-v2.json)，执行包为 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)；用户当前生产连接为 `deepseek-flash`，可在 BYOK 显式切换实际端点和模型。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
 
-**Build 60 已发布双端 BYOK**：设置 → 模型配置，可保存多组 HTTPS Chat Completions 连接、修改端点和模型 ID、替换或清除 Key，启用一组即切换新任务的连接。API 基础地址自动补 `/chat/completions`；密钥留空保留，跨服务商地址更新须同时换 Key 或清除旧 Key。客户端和后端已一同发布；Mac 已换装，iOS 安装 Build 60 后即可使用。
+**Build 61 已发布双端 BYOK**：设置 → 模型配置，可保存多组 HTTPS Chat Completions 连接、修改端点和模型 ID、替换或清除 Key，启用一组即切换新任务的连接。API 基础地址自动补 `/chat/completions`；密钥留空保留，跨服务商地址更新须同时换 Key 或清除旧 Key。客户端和后端已一同发布；Mac 已换装，iOS 安装 Build 61 后即可使用。
 
 每个开始执行的任务单独冻结连接名称、端点和模型；切换到另一组不影响原任务，同一组可轮换 Key。直接改原组的端点／模型或删除原组，会阻止旧任务继续；希望保留未完成任务时应新增连接。旧版本已有外呼但未记录连接身份的任务不能自动猜选并恢复。保存配置不试调模型、不探测余额、不打开报告开关。通用接口不发送 DeepSeek 专用推理参数；供应商对具体模型的支持仍需用户日后实际使用确认。
 
@@ -106,7 +106,7 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-发布源码 `c228c0f2e9dc362876c467a06bb365cad9563107`，不可变标签 `v3.2.0-b60`；后续文档提交不移动标签。
+发布源码 `c228c0f2e9dc362876c467a06bb365cad9563107`，不可变标签 `v3.2.0-b61`；后续文档提交不移动标签。
 服务器 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 API 可读取；持久报告开关已为 9 月 10 日晚间单次试跑打开，专用进程已处理新任务并在失败后退出；常规 worker 和 timer 不恢复，旧失败任务保持原状态。
 `/etc/neckline/k10.env` 绑定策略 `k10-v2-production` 第 1 修订、执行 `k10-v2-execution-production` 第 1 修订；
@@ -114,11 +114,11 @@ API 可读取；持久报告开关已为 9 月 10 日晚间单次试跑打开，
 
 Mac `/Applications/Neckline.app` 已为 3.2.0（59），Developer ID 严格验签、通用架构和单实例启动通过。
 Mac 尚未公证，网络下载后的 Gatekeeper 体验未验收。iOS 真机签名归档和工程配置就绪，由用户通过 Xcode 安装，不导出 IPA。
-本地签名归档：`/Users/linotsai/Lino/releases/Neckline/v3.2.0-b60-20260910/`；
-后端包、wheel 与 runtime manifest：`/opt/neckline/releases/v3.2.0-b60/`。
+本地签名归档：`/Users/linotsai/Lino/releases/Neckline/v3.2.0-b61-20260910/`；
+后端包、wheel 与 runtime manifest：`/opt/neckline/releases/v3.2.0-b61/`。
 
 本次只更新代码与 wheel；Schema 8、通知 Schema 2 和 85 张表全部数据保持不变，前后备份校验值相同。
-服务器恢复集 `/opt/neckline/data/backups/v3.2.0-b60-predeploy/` 包含 B57 代码、环境／绑定、切换前后数据库和回执。
+服务器恢复集 `/opt/neckline/data/backups/v3.2.0-b61-predeploy/` 包含 B57 代码、环境／绑定、切换前后数据库和回执。
 Mac 可恢复副本 `/Users/linotsai/Lino/app_backups/Neckline-v3.2.0-build57-pre-b59-20260910.app`。
 回滚前必须停止所有写入者、保存最新现场并核对升级后的业务写入；不得直接拿旧快照覆盖新增数据。
 保持根目录 `root:root /0755`、数据库 `neckline:neckline /0600`，恢复后核对完整性、健康、鉴权、实际配置和暂停状态。

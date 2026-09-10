@@ -8,6 +8,7 @@ from hashlib import sha256
 import json
 import logging
 import math
+import os
 from pathlib import Path
 import re
 import time
@@ -386,7 +387,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
 
     def _json(self, *, operation: str, payload: Mapping[str, Any],
               model_options: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
-        return self._parse_json_result(self._request_json(operation=operation, payload=payload, model_options=model_options))
+        parsed = self._parse_json_result(self._request_json(operation=operation, payload=payload, model_options=model_options))
+        self._thread_usage.last_candidate = parsed
+        return parsed
 
     @staticmethod
     def _key_passages(text: str, *, maximum: int) -> str:
@@ -434,7 +437,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         if not isinstance(value, Mapping):
             raise PipelineError("发现执行包模型选项无效", code="execution_policy_invalid")
         feedback = getattr(self._thread_usage, "repair_feedback", None) or {}
-        if "truncated" in feedback.get("errorCode", ""):
+        if "truncated" in feedback.get("errorCode", "") or feedback.get("compactOutput") is True:
             # Reserve the already-approved output capacity for the structured
             # answer when a reasoning-heavy response exhausted that capacity.
             return {**{key: item for key, item in value.items() if key != "reasoningEffort"},
@@ -1070,7 +1073,8 @@ class _CheckpointedDiscoveryModel:
                 operation=operation, stage=stage, item_key=item_key, item=item)
             item, _digest, _key, _row = self._recovery_target(
                 operation=operation, stage=stage, item_key=item_key, item=item,
-                eligible=lambda code: code in {"execution_paused", "response_truncated"} or "json" in code)
+                eligible=lambda code: code in {"execution_paused", "response_truncated"} or "json" in code
+                    or (operation in {"titleBatch", "titleReconcile"} and code in {"title_protocol_invalid", "title_protected_merge_invalid"}))
             compact_resume = (item != original_item and original_row is not None
                               and "truncated" in (original_row[1] or ""))
         if operation in {"classify", "prioritize"} and (_row is None or _row[0] != "completed"):
@@ -1093,6 +1097,8 @@ class _CheckpointedDiscoveryModel:
                         "errorCode": "response_truncated", "requiredCorrection":
                         "上次达到输出长度限制。只输出本阶段要求的完整 JSON，用简短理由替代重复解释；"
                         "保留全部必须审阅的输入、必要公司与真实引用，不追加标题抄录、长篇分析或无关字段。"}
+                elif compact_resume:
+                    self._base._thread_usage.repair_feedback = {**previous_feedback, "compactOutput": True}
             try:
                 return invoke()
             finally:
@@ -1112,15 +1118,73 @@ class _CheckpointedDiscoveryModel:
                 chain = chain.__cause__
             if not errors and isinstance(exc, InvestigationError):
                 errors = [{"field":"result", "expected":exc.code, "constraint":str(exc)}]
+            from .title_triage import TitleTriageProtocolError
+            if not errors and isinstance(exc, TitleTriageProtocolError):
+                errors = [{"field":"titleResult", "expected":exc.code, "constraint":str(exc)}]
             if errors:
                 previous = getattr(self._base._thread_usage, "last", None) or {}
                 self._base._thread_usage.last = {**previous, "validationErrors": errors}
+
+        def preserve_rejected_response(exc: Exception) -> None:
+            if not isinstance(self._base, DeepSeekDiscoveryModel):
+                return
+            candidate = getattr(self._base._thread_usage, "last_candidate", None)
+            if not isinstance(candidate, Mapping):
+                return
+            # Private, explicitly unvalidated evidence: never a completed cache
+            # or public API field. Preserve paid answers for offline repairs.
+            value = {"taskId": self._task_id, "operation": operation, "itemKey": item_key,
+                     "inputSha256": self._digest(operation=operation, stage=stage, item=item),
+                     "recordedAt": datetime.now(timezone.utc).isoformat(),
+                     "errorCode": getattr(exc, "code", "model_execution_invalid"),
+                     "constraint": str(exc), "response": dict(candidate)}
+            content = (json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n").encode()
+            folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
+            try:
+                folder.parent.mkdir(mode=0o700, exist_ok=True)
+                folder.mkdir(mode=0o700, exist_ok=True)
+                target = folder / (sha256(content).hexdigest() + ".json")
+                descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except FileExistsError:
+                pass
+            except OSError:
+                logging.getLogger(__name__).warning("Could not preserve rejected model response")
+
+        def reusable_title_response():
+            previous = item.get("authorizedSemanticRecoveryOf")
+            if operation not in {"titleBatch", "titleReconcile"} or not previous or not self._allow_failed_research_resume:
+                return None
+            folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
+            for path in sorted(folder.glob("*.json")):
+                try:
+                    if path.is_symlink():
+                        continue
+                    content = path.read_bytes()
+                    if sha256(content).hexdigest() != path.stem:
+                        continue
+                    value = json.loads(content)
+                    if (value.get("taskId"), value.get("operation"), value.get("itemKey"), value.get("inputSha256")) != (self._task_id, operation, item_key, previous):
+                        continue
+                    # Revalidate with the current strict contract and exact
+                    # frozen refs. A rejected diagnostic is never a cache hit.
+                    encode(value["response"])
+                    return value["response"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+            return None
+
+        recovered_title = reusable_title_response()
 
         def validate_with_feedback(value):
             try:
                 return encode(value)
             except Exception as exc:
                 remember_validation(exc)
+                preserve_rejected_response(exc)
                 raise
 
         def metered_invoke() -> Any:
@@ -1129,6 +1193,7 @@ class _CheckpointedDiscoveryModel:
             thread_usage = getattr(self._base, "_thread_usage", None)
             if thread_usage is not None:
                 thread_usage.last = None
+                thread_usage.last_candidate = None
                 thread_usage.audit_context = (self._task_id, operation, item_key)
             def current_usage():
                 if thread_usage is not None:
@@ -1137,9 +1202,10 @@ class _CheckpointedDiscoveryModel:
                 added = records[start:] if isinstance(records, list) else []
                 return added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
             try:
-                value = invoke_bound_finalization()
+                value = recovered_title if recovered_title is not None else invoke_bound_finalization()
             except Exception as exc:
                 remember_validation(exc)
+                preserve_rejected_response(exc)
                 usage = current_usage()
                 code = getattr(exc, "code", None)
                 safe = code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code) else "model_execution_invalid"

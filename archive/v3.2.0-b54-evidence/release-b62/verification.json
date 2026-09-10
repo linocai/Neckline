@@ -1,0 +1,14 @@
+{
+  "backend": {
+    "passed": 1151,
+    "warnings": 21,
+    "durationSeconds": 179.55,
+    "networkDenied": true
+  },
+  "macOSArchive": "passed",
+  "iOSArchive": "passed",
+  "marketingVersion": "3.2.0",
+  "build": 62,
+  "macOSStrictSignature": true,
+  "iOSStrictSignature": true
+}

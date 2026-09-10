@@ -2,12 +2,19 @@
   "targetedRegressionPassed": 18,
   "notificationSuiteAndRecoveryPassed": 28,
   "externalNetworkDenied": true,
-  "fullSuite": "pending against final B61 source",
+  "fullSuite": {
+    "passed": 1147,
+    "warnings": 21,
+    "commit": "99a83b3e38027734b7d1d69d3622522609478132"
+  },
   "nativeArchives": {
     "macOS": "3.2.0 / 61 / Developer ID",
     "iOS": "3.2.0 / 61 / Apple Development"
   },
   "strictSignaturesVerified": true,
   "swiftSourceChanged": false,
-  "ipaExported": false
+  "ipaExported": false,
+  "macOSBuild": true,
+  "iOSSimulatorBuild": true,
+  "iOSBuildForTesting": true
 }

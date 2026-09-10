@@ -113,7 +113,14 @@ def select_title_documents(
         def check(value):
             if not isinstance(value, Mapping):
                 raise TitleTriageProtocolError("标题输出不是 JSON 对象")
-            normalized = validate(value)
+            try:
+                normalized = validate(value)
+            except TitleTriageProtocolError as exc:
+                # This callback validates a returned answer, not the frozen
+                # input. Even bookkeeping errors deserve the bound JSON repair.
+                if "json" not in exc.code:
+                    exc.code = "title_json_contract_invalid"
+                raise
             return dict(normalized) if isinstance(normalized, Mapping) else dict(value)
         return model.run_title_operation(stage=stage, instruction=instruction, payload=payload, validate=check)
 
