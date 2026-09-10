@@ -161,15 +161,14 @@ def test_publish_rejects_malformed_historical_context_before_any_batch_write(tmp
         assert conn.execute("SELECT COUNT(*) FROM k10_publication_samples").fetchone() == (0,)
 
 
-def test_publish_rejects_two_primaries_for_one_event_before_any_batch_write(tmp_path):
+def test_publish_preserves_two_primaries_and_shared_model_rank_for_one_event(tmp_path):
     path = tmp_path / "two-primary.sqlite"
     inputs = _publication_seed(path, count=2)
-    with pytest.raises(ValueError, match="至多一个 primary"):
-        store.publish_opportunities(batch_id="batch-two-primary", scan_id="scan-publication", publication_kind="morning",
-                                    inputs=inputs, db_path=path, clock=lambda: datetime(2026, 9, 8, 9, 29, tzinfo=SHANGHAI))
+    store.publish_opportunities(batch_id="batch-two-primary", scan_id="scan-publication", publication_kind="morning",
+                                inputs=inputs, db_path=path, clock=lambda: datetime(2026, 9, 8, 9, 29, tzinfo=SHANGHAI))
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM k10_publication_batches").fetchone() == (0,)
-        assert conn.execute("SELECT COUNT(*) FROM k10_company_windows").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM k10_publication_batches").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM k10_company_windows").fetchone() == (2,)
 
 
 def test_publish_allows_primary_global_ranks_from_separate_events(tmp_path):

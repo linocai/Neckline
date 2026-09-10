@@ -3238,27 +3238,13 @@ def _validate_historical_context(conn, comparison: Mapping[str, Any]) -> None:
 
 
 def _validate_event_comparison_inputs(values: Sequence["OpportunityPublicationInput"]) -> None:
-    """Enforce one event-level ranking decision before any sample is written."""
-    grouped: dict[tuple[str, int], list["OpportunityPublicationInput"]] = {}
+    """Preserve model-authored event ranks without imposing a role quota."""
     for item in values:
-        grouped.setdefault((item.event_id, item.event_revision), []).append(item)
-    for _event, peers in grouped.items():
-        primary = [item for item in peers if item.category == "primary"]
-        if len(primary) > 1:
-            raise ValueError("同一事件修订至多一个 primary")
-        by_rank: dict[int, list["OpportunityPublicationInput"]] = {}
-        for item in peers:
-            comparison = item.comparison if isinstance(item.comparison, Mapping) else {}
-            rank = (comparison.get("eventRank") if comparison.get("rankNamespace") == "event"
-                    else comparison.get("rank"))
-            if rank is None:
-                continue
-            if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
-                raise ValueError("发布样本 rank 必须是正整数或 null")
-            by_rank.setdefault(rank, []).append(item)
-        for rank, tied in by_rank.items():
-            if len(tied) > 1 and any(item.category != "tied" for item in tied):
-                raise ValueError("同一事件修订的同 rank 仅允许 tied")
+        comparison = item.comparison if isinstance(item.comparison, Mapping) else {}
+        rank = (comparison.get("eventRank") if comparison.get("rankNamespace") == "event"
+                else comparison.get("rank"))
+        if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int) or rank < 1):
+            raise ValueError("发布样本 rank 必须是正整数或 null")
 
 
 def _validate_research_publication_bridge(

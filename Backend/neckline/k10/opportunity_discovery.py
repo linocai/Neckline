@@ -154,23 +154,10 @@ def validate_event_comparison(
         elif rank is not None:
             raise ComparisonValidationError("pending 或 excluded 不得有发布排序", code="compare_company_ranking_invalid")
 
-    publishable = [code for code in expected if roles[code] in PUBLISHABLE_ROLES]
-    primary = [code for code in expected if roles[code] == "primary"]
-    alternatives = [code for code in expected if roles[code] == "alternative"]
-    if len(primary) > 1 or (alternatives and len(primary) != 1):
-        raise ComparisonValidationError("同一事件只能有一个主推，备选必须有主推", code="compare_company_role_invalid")
-    if primary and ranks[primary[0]] != 1:
-        raise ComparisonValidationError("同一事件主推必须为第 1 名", code="compare_company_ranking_invalid")
-    # Each rank may contain its own tied group. The model may place one group
-    # above another; collapsing all tied companies would change its judgment.
-    for rank in set(ranks.values()):
-        role_set = {roles[code] for code in publishable if ranks[code] == rank}
-        if "tied" in role_set and len(role_set) != 1:
-            raise ComparisonValidationError("并列名次不得与主推或备选混用", code="compare_company_ranking_invalid")
-        if "tied" not in role_set and len(role_set) != 1:
-            raise ComparisonValidationError("同一事件排序角色不一致", code="compare_company_role_invalid")
-        if "tied" not in role_set and sum(ranks[code] == rank for code in publishable) != 1:
-            raise ComparisonValidationError("非并列名次只能对应一家公司", code="compare_company_ranking_invalid")
+    # K10-v2 lets the model choose recommendation count and order. Numeric
+    # ranks carry that order (including shared ranks); valid recommendation
+    # labels must not impose a second, contradictory one-primary quota.
+    # Keep every model-authored label, rank and explanation unchanged.
     if ranks and set(ranks.values()) != set(range(1, max(ranks.values()) + 1)):
         raise ComparisonValidationError("事件比较名次必须连续", code="compare_company_ranking_invalid")
 

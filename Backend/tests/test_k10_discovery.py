@@ -328,7 +328,7 @@ def test_uncalibrated_probability_is_rejected():
     assert run.state == "partial" and run.issues[0].stage == "compare"
 
 
-def test_event_comparison_is_single_complete_order_and_rejects_misaligned_roles():
+def test_event_comparison_preserves_model_order_and_shared_primary_rank():
     class WholeEvent(_Model):
         def __init__(self):
             super().__init__(count=2)
@@ -356,9 +356,11 @@ def test_event_comparison_is_single_complete_order_and_rejects_misaligned_roles(
                 "gap": "不应独立判断", "rankChangeConditions": "资料", "twoDayReason": "催化"}, event.source_refs, rank=1)
             return EventComparison(result.summary, rows, result.evidence_refs)
 
-    rejected = run_discovery(documents=(document,), configuration=_configuration(), model=Reversed(), verify=_verify,
-                             metadata=_Metadata(), cutoff_at=NOW)
-    assert rejected.state == "partial" and rejected.issues[0].stage == "compare"
+    shared = run_discovery(documents=(document,), configuration=_configuration(), model=Reversed(), verify=_verify,
+                           metadata=_Metadata(), cutoff_at=NOW)
+    assert shared.state == "completed" and not shared.issues
+    assert [(item.mapping.company_code, item.comparison.rank, item.comparison.differences["role"])
+            for item in shared.candidates] == [("300000.SZ", 1, "primary"), ("300001.SZ", 1, "primary")]
 
 
 @pytest.mark.parametrize("text", ["不输出涨停概率，无法估计涨停概率。", "不使用机械预测分数，只说明资料缺口。"])
