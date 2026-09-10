@@ -16,5 +16,6 @@
   "ipaExported": false,
   "macOSBuild": true,
   "iOSSimulatorBuild": true,
-  "iOSBuildForTesting": true
+  "iOSBuildForTesting": true,
+  "releaseAssetsDownloadedAndVerified": 6
 }

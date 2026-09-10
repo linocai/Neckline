@@ -372,9 +372,9 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
                                batch_results: Sequence[TitleTriageResult], input_count: int) -> dict[str, object]:
     """Normalize an explicit complete declaration to the canonical old ledger form.
 
-    The current model response is deliberately compact: it proves it reviewed
-    every global participant and only names retained/merged rows. Unnamed rows
-    are a successful, explicit complement only after that proof passes. Strict
+    The current model response explicitly declares completion and only names
+    retained/merged rows. The system owns exact counts and reference coverage;
+    a model echoing the whole audited input count is not a lost review. Strict
     canonical output remains readable for an already-completed old checkpoint.
     """
     frozen = _validate_items(items)
@@ -400,7 +400,7 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
             raise TitleTriageProtocolError("全局标题未明确完成审阅")
         reviewed_count = raw.get("reviewedCount")
         if (isinstance(reviewed_count, bool) or not isinstance(reviewed_count, int)
-                or reviewed_count != len(participants)):
+                or reviewed_count not in {len(participants), len(frozen)}):
             raise TitleTriageProtocolError("全局标题 reviewedCount 与参与标题不一致")
         selected, merged = raw.get("selected"), raw.get("merged")
         if not isinstance(selected, list) or not isinstance(merged, list):
@@ -416,18 +416,31 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
                 raise TitleTriageProtocolError("全局标题输出含陌生 refIndex")
             return value
 
+        selected_rows: list[dict[str, object]] = []
         for row in selected:
             index = indexed(row, selected_keys)
             if index in covered:
-                raise TitleTriageProtocolError("全局标题输出 refIndex 重复")
+                # A repeated source adds no decision. Keep the first judgement
+                # and validate its rank/reason normally below.
+                continue
             covered.add(index)
+            selected_rows.append(dict(row))
+        selected_indices = set(covered)
+        merged_rows: list[dict[str, object]] = []
         for row in merged:
             index = indexed(row, merged_keys)
             target = indexed(row, merged_keys, key="into")
             if index in covered or index == target:
                 raise TitleTriageProtocolError("全局标题合并 refIndex 无效")
+            if target not in selected_indices:
+                # The model sometimes also groups unselected articles. Such
+                # an optional hint cannot invalidate the explicit selections
+                # or promote an unselected target. Keep both in the separately
+                # audited complement; no merge edge is persisted.
+                continue
             covered.add(index)
-        canonical = {"selected": [dict(row) for row in selected], "merged": [dict(row) for row in merged],
+            merged_rows.append(dict(row))
+        canonical = {"selected": selected_rows, "merged": merged_rows,
                      "notSelected": sorted(set(by_index) - covered)}
     else:
         raise TitleTriageProtocolError("全局标题 JSON 字段无效")
