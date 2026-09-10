@@ -1,0 +1,14 @@
+{
+  "taskId": "task_c9c0feab5c83a08e8a17138ebfb0041a",
+  "scanId": "scan_d39fbd5c631ea9a7df5f569dbd432b4d",
+  "releaseSet": "v3.2.0-b64",
+  "frozenInputSha256": "f9c9e0bd0b4a00513eb8886d2cac63f65165dd85c5453691e05f32d1d3ea5770",
+  "resumedAt": "2026-09-10T14:58:40.964545+00:00",
+  "checkpointsAndBillingUnchangedByRecovery": true,
+  "paidTitleCount": 44,
+  "paidTitleSha256": "ed4e1ab4625ac5ea9b06359a90f0b5dcba747321e72512672cc0b981938db726",
+  "oldTasksSha256": "aa37d7d249c43cbc85604e538253c7d5b1ed8bc879bf951031fe249927019e0b",
+  "externalAttemptsSha256": "b2a71ea1b036a17cae7b8da8c0822ddea3262a83fa9466857fa05565f930a77a",
+  "allCompletedCheckpointCount": 216,
+  "allCompletedCheckpointSha256": "c24a39f8c0841c2903253bd5e46885ed5a06639162db4c43d7b6f36fe94dc078"
+}
