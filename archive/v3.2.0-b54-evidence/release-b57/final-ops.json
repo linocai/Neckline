@@ -1,0 +1,1 @@
+{"status": "verified", "tasks": [["cancelled", 2], ["completed", 1], ["failed", 2], ["not_configured", 1]], "schema": 8, "runtimeDrift": false, "historicalRowsPreserved": true, "api": "active", "workerAndTimers": "inactive", "runControl": "closed"}
