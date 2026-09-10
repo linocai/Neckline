@@ -1,14 +1,14 @@
 # Neckline
 
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-10 已发布
-**3.2.0 / 双端 Build 57 / K10-v2 / Schema 8**，后端发布集合为 `v3.2.0-b57`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.2.0-b57)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
+**3.2.0 / 双端 Build 59 / K10-v2 / Schema 8**，后端发布集合为 `v3.2.0-b59`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.2.0-b59)；Mac 已换装并启动，iOS 通过 Xcode 由用户直接安装，本次不生成 IPA。
 
 **读取接口已恢复，报告运行仍暂停。** API active+enabled，持久运行开关 closed，worker、早晚报告、行情和备份 timer 均 inactive+disabled。9 月 8 日晚报两份样本、原用户选择及晨报失败检查点保留，不重放报告，不恢复已退役的 2,472 篇事故批次。
 
 固定 1,089 公司池与完整资料已显式导入生产库，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
 
-本轮工程通过隔离验证、实际迁移、生产只读 API 与 Swift 解码验收；未进行真实模型／搜索／行情／推送调用或余额／权限探测。首次真实运行仍待用户授权，离线通过不代表真实供应商效果或实际 token 总量。
+本轮通过 1,135 项离线后端回归、双端构建与签名归档、真实副本及生产只读 API 与 Swift 解码验收；代码升级前后全部数据保持一致，无迁移；未进行真实模型／搜索／行情／推送调用或余额／权限探测。首次真实运行仍待用户授权，离线通过不代表真实供应商效果或实际 token 总量。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -46,14 +46,14 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 
 ## 配置与数据
 
-当前生产策略包为 [k10-v2.json](Backend/neckline/config/k10-v2.json)，执行包为 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)，全部模型使用 `deepseek-v4-pro`。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
+当前生产策略包为 [k10-v2.json](Backend/neckline/config/k10-v2.json)，执行包为 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)；生产原连接仍是 `deepseek-v4-pro`，可在 BYOK 显式切换实际端点和模型。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
 
-**本地未发布的 Build 59** 增加双端 BYOK：设置 → 模型配置，可保存多组 HTTPS Chat Completions 连接、修改端点和模型 ID、替换或清除 Key，启用一组即切换新任务的连接。API 基础地址自动补 `/chat/completions`；密钥留空保留，跨服务商地址更新须同时换 Key 或清除旧 Key。客户端和后端需一同更新后才能使用自定义模型。
+**Build 59 已发布双端 BYOK**：设置 → 模型配置，可保存多组 HTTPS Chat Completions 连接、修改端点和模型 ID、替换或清除 Key，启用一组即切换新任务的连接。API 基础地址自动补 `/chat/completions`；密钥留空保留，跨服务商地址更新须同时换 Key 或清除旧 Key。客户端和后端已一同发布；Mac 已换装，iOS 安装 Build 59 后即可使用。
 
 每个开始执行的任务单独冻结连接名称、端点和模型；切换到另一组不影响原任务，同一组可轮换 Key。直接改原组的端点／模型或删除原组，会阻止旧任务继续；希望保留未完成任务时应新增连接。旧版本已有外呼但未记录连接身份的任务不能自动猜选并恢复。保存配置不试调模型、不探测余额、不打开报告开关。通用接口不发送 DeepSeek 专用推理参数；供应商对具体模型的支持仍需用户日后实际使用确认。
 
 
-初始化／升级顺序：确认目标和备份 → 受控 Schema 8 初始化／迁移 → 导入固定资料 → 登记配置修订 → 绑定策略快照 → 核对 API 配置响应。当前只允许在隔离本地库操作；生产迁移和恢复尚未授权。API 启动和 GET 不执行迁移。Schema 8 新增固定池、资料快照和日报卡账本，保留旧版正式机会、选择及 D1/D2 原记录。
+初始化／升级顺序：确认目标和备份 → 受控 Schema 8 初始化／迁移 → 导入固定资料 → 登记配置修订 → 绑定策略快照 → 核对 API 配置响应。B57 已完成一次生产初始化；B59 不改数据库结构，今后新增生产迁移或恢复须重新确认目标与恢复路径。API 启动和 GET 不执行迁移。Schema 8 新增固定池、资料快照和日报卡账本，保留旧版正式机会、选择及 D1/D2 原记录。
 
 在 `Backend/` 使用 `python -m neckline.k10.cli`，按顺序执行以下子命令；`--db` 都传同一已核对的 Schema 8 库，修订号使用前两项登记命令实际返回值，不照抄旧生产修订：
 
@@ -74,7 +74,7 @@ B36 事故与先前付费测试仅作历史证据，详见 [B36 执行记录](ar
 
 **暂停的 B53 历史配置（不是新版本配置步骤）：** 策略配置修订 3 保留每来源必填的 `lateArrivalReplaySeconds`，TuShare 显式设为 `86400`，
 用于有界回补晚到资料，记录实际回查范围和缺口。它不是无限历史覆盖，也不允许把新取得的资料回填为旧推荐。
-既有修订原样保留；当前停用 API／timer 的配置绑定为策略修订 3、执行修订 4，原晚报任务仍绑定执行修订 2，不得改写历史修订或用代码默认补齐。
+既有修订原样保留；当时停用的 API／timer 配置绑定为策略修订 3、执行修订 4，原晚报任务仍绑定执行修订 2，不得改写历史修订或用代码默认补齐。
 
 API 使用 `/api/v1/k10/`，通用连接/推送设置仍在 `/api/v1/settings`，设备注册为 `/api/v1/devices`。
 API 启动只验证鉴权和既有 schema；GET 不迁移、不启动模型。重任务由独立 K10 worker 执行，timer 只入队。
@@ -106,7 +106,7 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-发布源码 `8e5cec47b599e152fc32dacbf32a43ec7b9f8b9b`，不可变标签 `v3.2.0-b57`；后续文档提交不移动标签。
+发布源码 `8e5cec47b599e152fc32dacbf32a43ec7b9f8b9b`，不可变标签 `v3.2.0-b59`；后续文档提交不移动标签。
 服务器 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 API 已恢复读取；worker、所有 timer 和报告开关继续暂停，未经用户另行授权不试跑、不恢复旧任务。
 `/etc/neckline/k10.env` 绑定策略 `k10-v2-production` 第 1 修订、执行 `k10-v2-execution-production` 第 1 修订；
@@ -114,11 +114,11 @@ API 已恢复读取；worker、所有 timer 和报告开关继续暂停，未经
 
 Mac `/Applications/Neckline.app` 已为 3.2.0（57），Developer ID 严格验签、通用架构和单实例启动通过。
 Mac 尚未公证，网络下载后的 Gatekeeper 体验未验收。iOS 真机签名归档和工程配置就绪，由用户通过 Xcode 安装，不导出 IPA。
-本地签名归档：`/Users/linotsai/Lino/releases/Neckline/v3.2.0-b57-20260910/`；
-后端包、wheel 与 runtime manifest：`/opt/neckline/releases/v3.2.0-b57/`。
+本地签名归档：`/Users/linotsai/Lino/releases/Neckline/v3.2.0-b59-20260910/`；
+后端包、wheel 与 runtime manifest：`/opt/neckline/releases/v3.2.0-b59/`。
 
 本次 Schema 7→8 在真实副本演练后迁移，67 个旧表的历史行／列完整保留，通知 Schema 仍为 2。
-服务器恢复集 `/opt/neckline/data/backups/v3.2.0-b57-predeploy/` 包含 B53 代码、旧绑定、迁移前后数据库和回执。
+服务器恢复集 `/opt/neckline/data/backups/v3.2.0-b59-predeploy/` 包含 B53 代码、旧绑定、迁移前后数据库和回执。
 Mac 可恢复副本 `/Users/linotsai/Lino/app_backups/Neckline-v3.1.0-build53-pre-v320-b57-20260910.app`。
 回滚前必须停止所有写入者、保存最新现场并核对升级后的业务写入；不得直接拿旧快照覆盖新增数据。
 保持根目录 `root:root /0755`、数据库 `neckline:neckline /0600`，恢复后核对完整性、健康、鉴权、实际配置和暂停状态。

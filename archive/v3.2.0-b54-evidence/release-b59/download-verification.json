@@ -1,0 +1,15 @@
+{
+  "release": "https://github.com/linocai/Neckline/releases/tag/v3.2.0-b59",
+  "tag": "v3.2.0-b59",
+  "allSixAssetsDownloaded": true,
+  "exactBytesMatchLocal": true,
+  "sha256": {
+    "manifest.json": "4329cb7b64b92ff95a75b1e61c53092fb6c55754472f4166e30c973ecaced7a9",
+    "Neckline-v3.2.0-b59-Backend.tar.gz": "fac8aeb7ccfbfaad49aac595037409fad6a7eabf381d6b9cf3820415326da8a6",
+    "Neckline-v3.2.0-b59-macOS.zip": "0ebbf5ac7efa18fa404ee9e1021f41ee2a0ece6dbe3f398638fc87ea4238d230",
+    "neckline_runtime-3.2.0-py3-none-any.whl": "9bd815ca8d73c8b5b22510200cff19f28704de751fb5c61048c802fbba80de4c",
+    "runtime-manifest.json": "52b17d75f9ecaea0bc4cda4c69fdd0cbe7ab32d54b519608f054b81410745426",
+    "SHA256SUMS.txt": "7086448748fa551f1621cdd330a57d139502226e288e3c1d0c17df5b35d0b2e2"
+  },
+  "temporaryDownloadsRemoved": true
+}

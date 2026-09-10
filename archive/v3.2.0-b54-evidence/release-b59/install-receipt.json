@@ -1,0 +1,12 @@
+{
+  "version": "3.2.0",
+  "build": 59,
+  "installedPath": "/Applications/Neckline.app",
+  "previousBuild": 57,
+  "backupPath": "/Users/linotsai/Lino/app_backups/Neckline-v3.2.0-build57-pre-b59-20260910.app",
+  "backupStrictVerified": true,
+  "installedStrictVerified": true,
+  "installedExecutableSha256": "8e09a147efa5a40b82cbc8e41959e7cd4cf2b19dbc158bbbf1810f7b483c6365",
+  "copiedWith": "ditto",
+  "iOS": "signed archive ready; Xcode installation remains user action; no IPA"
+}

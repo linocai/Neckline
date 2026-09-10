@@ -1,4 +1,4 @@
-# Neckline · 本地 3.2.0 / 双端 Build 59 · 生产 Build 57 · K10-v2
+# Neckline · 3.2.0 / 双端 Build 59 · K10-v2
 
 本文件是工程控制面。本轮详细契约与验收证据写入 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。现行策略唯一依据为 [`whynotme/K10.md`](../whynotme/K10.md)；生产代码不得导入研究仓。
 
@@ -8,7 +8,7 @@
 
 ## 稳定技术决定
 
-- 本地快修为 **3.2.0 / 双端 Build 59 / Schema 8 / K10-v2**，尚未发布；生产 **Build 57** 于 2026-09-10 发布。API 可读取，报告开关、worker 和全部 timer 仍保持暂停。
+- 生产为 **3.2.0 / 双端 Build 59 / Schema 8 / K10-v2**，于 2026-09-10 完成累计发布（含 B58 SOP 修复）。API 可读取，报告开关、worker 和全部 timer 仍保持暂停。
 - K10-v2 固定使用 `K10-v2初始股票池_20260909.json` 的 1,089 只公司。导入器显式接收 `--universe-file` 和 `--profiles-dir`，校验名单、完整资料、索引与原始证据后原子写入工程侧数据；运行期只读该快照，不读取或 Python 导入 `whynotme`。资料的 `local_draft_awaiting_user` 来源状态、引用、报告期和缺口原样保留，缺项不排除公司。
 - Schema 8 只新增 v2 的池／资料快照与日推荐卡账本；现有 K10-v1.4 的已发布推荐、选择和证据冻结保留且不可重写。旧 D1/D2 仍可在日后获恢复授权后追加行情事实和评价修订，但不重置窗口或回改选择；v2 新卡借用既有机会／公司窗口账本。
 - 所有精确去重标题均经批量模型短筛；本地索引只帮助召回相关公司，名称或关键词未命中不能硬删。无 80／40、正文、搜索、文章、初选公司、题材、涨幅或 token 总配额；正文／补查按共享事件和实际缺口进行，跨批归并并复用资料与证据。删除 80／40 的活跃生产、校验和测试契约，不保留兼容运行路径。
@@ -21,20 +21,19 @@
 
 ## 当前状态
 
-- B59 双端 BYOK 已完成：端点／模型／Key 可编辑，多连接切换贯通真实任务；全量后端 **1135 passed**、最终 BYOK **15 passed**、三项原生构建及双端各 3 项 XCTest／页面验收通过。范围和边界见 [第 22 节](archive/v3.2.0-b54_execution.md#22-b59-双端-byok-快修2026-09-10未发布)；未提交、未发布。
-
-- B58 已修复本轮只读 SOP 审查的六项问题与复查发现的恢复边界；原刷新性能不在本次范围。最终后端 **1119 passed**、三项原生构建及实际 API 解码通过，独立复查闭环，记录见 [第 21 节](archive/v3.2.0-b54_execution.md#21-b58-sop-快修2026-09-10未发布)。未提交、未发布、未改生产控制。
-- **已发布 3.2.0 / 双端 Build 57 / K10-v2 / Schema 8**，不可变 tag `v3.2.0-b57` / `8e5cec4`；从实际 B53 `76c0a9f` 累计审查，源码与最终复审快照一致。
-- 宁波 API active+enabled；run control closed，worker、早晚报告、行情和备份 timer 均 inactive+disabled。未执行真实供应商／APNs 调用、账户探测、旧任务恢复或新报告。
-- 1,089 份公司资料、索引及证据已通过显式导入落到工程侧数据库；原 `local_draft_awaiting_user` 状态保留。策略 `k10-v2-production` 第 1 修订，执行 `k10-v2-execution-production` 第 1 修订，策略快照 `k10-v2-20260909`；首次扫描前四项实际配置全部就绪。
-- Schema 7→8 演练、真实迁移及恢复演练通过；67 个原有表的旧行／列内容完整保留。生产前后备份、旧代码与绑定位于 `/opt/neckline/data/backups/v3.2.0-b57-predeploy/`，根与数据库权限保持原值。
-- Backend 最终 **1095 passed**（21 个既有 Polars warnings）；三项原生构建通过，XCTest **50 passed / 5 个历史专测跳过 / 0 failed**。B56 累计独立审查及 B57 修复复查闭环，详细范围见版本记录第 18–19 节。
-- Mac 已换装、严格验签并单实例启动，实际显示 B57 / K10-v2、四项已配置和两份旧观察记录。iOS Release 签名归档就绪，由用户通过 Xcode 安装；未生成 IPA。Mac 沿用 Developer ID 签名但未公证的现有发布方式。
-- 发布资产和最终运维证据见 [版本记录第 20 节](archive/v3.2.0-b54_execution.md)。真实供应商成功率、单日 token 和选股效果尚未覆盖。
+- **已发布 3.2.0 / 双端 Build 59 / Schema 8**，源码 `c228c0f`，不可变 tag `v3.2.0-b59`；从实际 B57 `8e5cec4` 累计核对全部 B58/B59 改动，线上基线与目标运行文件均无漂移。
+- 双端 BYOK 可编辑 HTTPS Chat Completions 端点、模型和 Key，支持多连接、新增／切换／清除／删除，运行中任务保留其原连接身份。实现与验证见版本记录第 22 节；B58 六项 SOP 修复及独立复查见第 21 节。
+- 发布回归 **1135 passed / 21 个既有 Polars warnings**，macOS build、iOS Simulator build、iOS build-for-testing 及双端正式签名归档通过；同源码 BYOK 双端各 3 项 XCTest、真实 API 和原生页面验收完成。
+- 宁波 API active+enabled；持久 run control closed，worker、早晚报告、行情及备份 timer 均 inactive+disabled。无真实供应商／APNs 调用、余额／权限探测、旧任务恢复或新报告。
+- 1,089 份公司资料及原 `local_draft_awaiting_user` 来源状态保留。绑定仍为 `k10-v2-production` 第 1 修订、`k10-v2-execution-production` 第 1 修订，策略快照 `k10-v2-20260909`；首次 V2 扫描前四项配置就绪。
+- 只更新代码与 wheel，无 schema、模型配置或绑定修改。85 张表全部行／列不变，pre/post 数据库 SHA256 完全一致；原晚报、晨报失败、选择与固定 D1/D2 窗口保留。
+- B59 恢复集 `/opt/neckline/data/backups/v3.2.0-b59-predeploy/` 保留 B57 runtime、环境／绑定和 pre/post DB；隔离恢复演练通过，根 root:root/0755、DB neckline:neckline/0600。任何以后恢复前仍须核对新增写入。
+- Mac 已用 ditto 换装并单实例启动，严格签名／Apple 时间戳及 ZIP 解包验签通过；实际 B59 BYOK 和两份历史窗口可读。iOS 签名归档就绪，由用户通过 Xcode 安装，未生成 IPA。Mac 沿用 Developer ID 签名但未公证的既有方式。
+- 六项 GitHub Release 资产已发布并下载逐字节核对；实际生产 API 通过当前 Swift 解码。完整发布回执、安装及运维事实见 [版本记录第 23 节](archive/v3.2.0-b54_execution.md#23-b59-一条龙发布2026-09-10)。
 
 ## 当前 Plan
 
-B57 发布已完成；B58 SOP 快修和 B59 双端 BYOK 快修均为后续本地改动。用户已授权 B59 一条龙发布，正在核对实际 B57 至 B59 的累计差异、签名打包并准备代码切换；不包含真实供应商验证或恢复运行。
+B59 一条龙发布完成。真实供应商验证与报告恢复仍待用户另行授权。
 
 ## Backlog
 
@@ -47,5 +46,5 @@ B57 发布已完成；B58 SOP 快修和 B59 双端 BYOK 快修均为后续本地
 - 3.0.6 / Build 38：标题初筛与 80／40 的旧实现，已替代，见 [archive/v3.0.6-b38_execution.md](archive/v3.0.6-b38_execution.md)。
 - 3.1.0 / Build 39–53：已发布 K10-v1.4，首份晚报、失败诊断与停机证据见 [archive/v3.1.0-b39_execution.md](archive/v3.1.0-b39_execution.md)。
 - 3.2.0 / Build 54–57：K10-v2 累计升级与复审修复已发布，报告运行保持暂停，见 [archive/v3.2.0-b54_execution.md](archive/v3.2.0-b54_execution.md)。
-- 3.2.0 / Build 58：SOP 快修及恢复边界复查，未发布；见同一版本记录第 21 节。
-- 3.2.0 / Build 59：双端 BYOK 与实际执行连接贯通，未发布；见同一版本记录第 22 节。
+- 3.2.0 / Build 58：SOP 快修及恢复边界复查，随 B59 发布；见同一版本记录第 21 节。
+- 3.2.0 / Build 59：双端 BYOK 与 SOP 修复累计发布；见同一版本记录第 22–23 节。

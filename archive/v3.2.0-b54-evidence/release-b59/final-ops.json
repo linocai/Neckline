@@ -1,0 +1,88 @@
+{
+  "releaseSet": "v3.2.0-b59",
+  "commit": "c228c0f2e9dc362876c467a06bb365cad9563107",
+  "host": "ser657204219523",
+  "healthLocal": {
+    "status": "ok",
+    "version": "v3.2.0",
+    "releaseSet": "v3.2.0-b59"
+  },
+  "healthPublic": {
+    "status": "ok",
+    "version": "v3.2.0",
+    "releaseSet": "v3.2.0-b59"
+  },
+  "rootMetadata": {
+    "uid": 0,
+    "gid": 0,
+    "mode": 493
+  },
+  "dbMetadata": {
+    "uid": 997,
+    "gid": 988,
+    "mode": 384
+  },
+  "runtimeDrift": false,
+  "allDatabaseRowsUnchanged": true,
+  "tasks": [
+    [
+      "cancelled",
+      2
+    ],
+    [
+      "completed",
+      1
+    ],
+    [
+      "failed",
+      2
+    ],
+    [
+      "not_configured",
+      1
+    ]
+  ],
+  "controls": [
+    [
+      "k10_discovery",
+      "closed"
+    ]
+  ],
+  "units": {
+    "neckline-k10-evening.timer": {
+      "active": "inactive",
+      "enabled": "disabled"
+    },
+    "neckline-k10-morning.timer": {
+      "active": "inactive",
+      "enabled": "disabled"
+    },
+    "neckline-market-update.timer": {
+      "active": "inactive",
+      "enabled": "disabled"
+    },
+    "neckline-market-retry.timer": {
+      "active": "inactive",
+      "enabled": "disabled"
+    },
+    "neckline-backup.timer": {
+      "active": "inactive",
+      "enabled": "disabled"
+    },
+    "neckline.service": {
+      "active": "active",
+      "enabled": "enabled"
+    },
+    "neckline-k10-worker.service": {
+      "active": "inactive",
+      "enabled": "disabled"
+    }
+  },
+  "journalWarningLines": 0,
+  "temporaryRehearsalsRemoved": true,
+  "newPaidCalls": 0,
+  "checkedAtUTC": "2026-09-10T11:50:10.890585+00:00",
+  "journalWindow": "preceding 20 minutes",
+  "temporaryUploadsRemoved": true,
+  "macProductionProcessCount": 1
+}

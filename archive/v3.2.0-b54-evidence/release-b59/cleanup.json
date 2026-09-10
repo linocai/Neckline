@@ -1,0 +1,10 @@
+{
+  "qaBundleCopiesRemoved": [
+    "/tmp/neckline-v3-qa/macos/Build/Products/Debug/Neckline.app",
+    "/tmp/neckline-v3-qa/ios/Build/Products/Debug-iphonesimulator/Neckline.app"
+  ],
+  "productionClientPreserved": true,
+  "signedReleaseArchivesPreserved": true,
+  "previousMacBackupPreserved": true,
+  "temporaryProductionResponseRemoved": true
+}
