@@ -176,6 +176,101 @@ def query_path_signature(path: QueryPath) -> str:
                              separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _prune_assessment_references(value: Mapping[str, Any], packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep usable assessment updates without admitting invented evidence.
+
+    Counts and diagnostics describe local filtering, never a research verdict.
+    Unsupported status upgrades are removed along with their unusable links.
+    """
+    allowed = _packet_refs(packet)
+    def ref_key(ref):
+        if not isinstance(ref, Mapping):
+            return None
+        doc, revision = ref.get("documentId"), ref.get("revision")
+        return (doc, revision) if isinstance(doc, str) and isinstance(revision, int) and not isinstance(revision, bool) else None
+    collections = ("claims", "questions", "evidenceUpdates", "fulltextRequests")
+    if any(not isinstance(value.get(key, ()), (list, tuple)) or
+           any(not isinstance(row, Mapping) for row in value.get(key, ())) for key in collections):
+        return dict(value)  # keep malformed structures subject to typed repair
+    if (any(not isinstance(row.get("claimId"), str) for row in value.get("claims", ()))
+            or any(not isinstance(row.get("claimId"), str) for row in value.get("evidenceUpdates", ()))
+            or any(not isinstance(row.get("questionId"), str)
+                   or not isinstance(row.get("claimIds", ()), (list, tuple))
+                   or any(not isinstance(claim_id, str) for claim_id in row.get("claimIds", ()))
+                   or not isinstance(row.get("missingEvidence", ()), (list, tuple))
+                   for row in value.get("questions", ()))
+            or (value.get("conclusion") is not None and not isinstance(value["conclusion"], Mapping))):
+        return dict(value)
+    original_claims = {row["claimId"]: row for row in packet.get("claims", ())}
+    original_questions = {row["questionId"]: row for row in packet.get("questions", ())}
+    diagnostics = {"discardedClaims": 0, "discardedReferences": 0, "discardedQuestions": 0,
+                   "discardedFulltextRequests": 0}
+    ignored_claims, claims = set(), []
+    immutable = ("text", "kind", "novelty", "sourceRef", "location", "speaker", "subject", "object", "action", "stageOrCondition", "timeText")
+    for row in value.get("claims", ()):
+        old = original_claims.get(row.get("claimId"))
+        if ref_key(row.get("sourceRef")) not in allowed or (old and any(row.get(key) != old.get(key) for key in immutable)):
+            ignored_claims.add(row.get("claimId"))
+            diagnostics["discardedClaims"] += 1
+        else:
+            claims.append(dict(row))
+    known_claims = set(original_claims) | {row.get("claimId") for row in claims}
+    updates, affected_claims = [], set()
+    for row in value.get("evidenceUpdates", ()):
+        claim_id = row.get("claimId")
+        if claim_id not in known_claims or claim_id in ignored_claims or ref_key(row.get("sourceRef")) not in allowed:
+            diagnostics["discardedReferences"] += 1
+            affected_claims.add(claim_id)
+        else:
+            updates.append(dict(row))
+    links = [*packet.get("evidenceUpdates", ()), *updates]
+    for claim in claims:
+        if claim.get("claimId") not in affected_claims:
+            continue
+        required = "contradicts" if claim.get("verificationStatus") == "contradicted" else "supports"
+        if not any(link.get("claimId") == claim.get("claimId") and link.get("relation") == required
+                   and ref_key(link.get("sourceRef")) in allowed for link in links):
+            claim["verificationStatus"] = "unverified"
+    questions = []
+    for row in value.get("questions", ()):
+        old = original_questions.get(row.get("questionId"))
+        claim_ids, refs = row.get("claimIds", ()), row.get("knownEvidence", ())
+        if not isinstance(claim_ids, (list, tuple)) or not isinstance(refs, (list, tuple)):
+            questions.append(dict(row))
+            continue
+        if not set(claim_ids) <= known_claims or (old and any(row.get(key) != old.get(key) for key in ("claimIds", "question"))):
+            diagnostics["discardedQuestions"] += 1
+            continue
+        clean = [dict(ref) for ref in refs if ref_key(ref) in allowed]
+        removed = len(refs) - len(clean)
+        item = {**row, "knownEvidence": clean}
+        if removed or set(claim_ids) & ignored_claims:
+            diagnostics["discardedReferences"] += removed
+            # An answer relying on a rejected version cannot silently close a
+            # question. Keep the gap visible for closure/company disclosure.
+            item["missingEvidence"] = list(dict.fromkeys([*row.get("missingEvidence", ()),
+                "部分引用或命题更新未通过当前证据校验，相关判断仍待核查。"] ))
+            if item.get("state") == "answered":
+                item["state"] = "open"
+        questions.append(item)
+    requestable = allowed | {ref_key(ref) for ref in packet.get("fulltextRequestRefs", ())}
+    handled = {(row.get("questionId"), ref_key(row.get("sourceRef")))
+               for row in packet.get("fulltextRequests", ()) if row.get("state") in {"fulfilled", "rejected"}}
+    requests = []
+    for row in value.get("fulltextRequests", ()):
+        identity = (row.get("questionId"), ref_key(row.get("sourceRef")))
+        if (identity in handled or identity[0] not in original_questions
+                or identity[1] not in requestable):
+            diagnostics["discardedFulltextRequests"] += 1
+        else:
+            requests.append(dict(row))
+    result = {**value, "claims": claims, "questions": questions, "evidenceUpdates": updates,
+              "fulltextRequests": requests}
+    if any(diagnostics.values()):
+        result["conclusion"] = {**(value.get("conclusion") or {}), "runtimeOutputSanitization": diagnostics}
+    return result
+
+
 def decode_stage_result(value: Mapping[str, Any], *, action: str,
                         evidence_packet: Mapping[str, Any] | None = None) -> ResearchStageResult:
     """Decode a provider JSON derivative without retaining its original response."""
@@ -235,6 +330,8 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
             if isinstance(value.get("companyAssessments"), list):
                 value["companyAssessments"] = [row for row in value["companyAssessments"]
                     if not isinstance(row, Mapping) or row.get("companyCode") in allowed]
+        if evidence_packet is not None and "allowedEvidenceRefs" in evidence_packet and action == "assess_evidence":
+            value = _prune_assessment_references(value, evidence_packet)
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))

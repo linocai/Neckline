@@ -1154,9 +1154,11 @@ class _CheckpointedDiscoveryModel:
             except OSError:
                 logging.getLogger(__name__).warning("Could not preserve rejected model response")
 
-        def reusable_title_response():
+        def reusable_paid_response():
             previous = item.get("authorizedSemanticRecoveryOf")
-            if operation not in {"titleBatch", "titleReconcile"} or not previous or not self._allow_failed_research_resume:
+            is_title = operation in {"titleBatch", "titleReconcile"}
+            is_assessment = operation == "investigation_assess_evidence"
+            if not (is_title or is_assessment) or not previous or not self._allow_failed_research_resume:
                 return None
             folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
             for path in sorted(folder.glob("*.json")):
@@ -1169,15 +1171,21 @@ class _CheckpointedDiscoveryModel:
                     value = json.loads(content)
                     if (value.get("taskId"), value.get("operation"), value.get("itemKey"), value.get("inputSha256")) != (self._task_id, operation, item_key, previous):
                         continue
-                    # Revalidate with the current strict contract and exact
-                    # frozen refs. A rejected diagnostic is never a cache hit.
-                    encode(value["response"])
-                    return value["response"]
-                except (OSError, ValueError, KeyError, TypeError):
+                    # The exact-input paid answer must pass current parsing
+                    # AND the same live research evidence boundary before use.
+                    candidate = value["response"] if is_title else decode(value["response"])
+                    if is_assessment:
+                        validator = getattr(self._research_validators, "current", None)
+                        if validator is None:
+                            continue
+                        validator(candidate)
+                    encode(candidate)
+                    return candidate
+                except (OSError, ValueError, KeyError, TypeError, InvestigationError, PipelineError):
                     continue
             return None
 
-        recovered_title = reusable_title_response()
+        recovered_response = reusable_paid_response()
 
         def validate_with_feedback(value):
             try:
@@ -1202,7 +1210,7 @@ class _CheckpointedDiscoveryModel:
                 added = records[start:] if isinstance(records, list) else []
                 return added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
             try:
-                value = recovered_title if recovered_title is not None else invoke_bound_finalization()
+                value = recovered_response if recovered_response is not None else invoke_bound_finalization()
             except Exception as exc:
                 remember_validation(exc)
                 preserve_rejected_response(exc)

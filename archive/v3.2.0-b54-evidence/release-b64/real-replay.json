@@ -1,0 +1,17 @@
+{
+  "replayedActualPaidAssessment": true,
+  "snapshotRevision": 20,
+  "beforeError": "\u95ee\u9898\u5f15\u7528\u4e86\u672a\u63d0\u4f9b\u8bc1\u636e",
+  "afterValidation": "passed",
+  "claimStatuses": [
+    "partially_supported"
+  ],
+  "questions": 2,
+  "sanitization": {
+    "discardedClaims": 0,
+    "discardedReferences": 2,
+    "discardedQuestions": 0,
+    "discardedFulltextRequests": 1
+  },
+  "newProviderCalls": 0
+}

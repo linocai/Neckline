@@ -197,7 +197,9 @@ class _Investigation:
                     (self.task_id, ref.document_id, ref.revision)).fetchone()
                 if row: hints.update(json.loads(row[0]))
         hints.update(code for question in self.state["questions"] for code in question["companyCodes"])
-        query = self.event.headline + " " + json.dumps({"facts": self.event.facts, "questions": self.state["questions"]}, ensure_ascii=False)
+        # Reading a frozen JSON checkpoint changes dictionary insertion order.
+        # That must not change a semantic retrieval query or paid request ID.
+        query = self.event.headline + " " + json.dumps({"facts": self.event.facts, "questions": self.state["questions"]}, ensure_ascii=False, sort_keys=True)
         return retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=query, hinted_codes=sorted(hints))
 
     def _packet(self) -> dict[str, Any]:
