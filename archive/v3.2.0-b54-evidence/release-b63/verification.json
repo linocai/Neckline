@@ -1,0 +1,30 @@
+{
+  "backend": {
+    "passed": 1157,
+    "warnings": 21,
+    "durationSeconds": 161.39,
+    "networkDenied": true
+  },
+  "targetedTests": 47,
+  "reproductionBeforeFix": {
+    "failed": 2,
+    "passed": 3
+  },
+  "realPaidReplyOfflineReplay": {
+    "inputCount": 2782,
+    "participants": 577,
+    "selected": 17,
+    "merged": 2,
+    "notSelected": 558,
+    "sourcesAndReasonsUnchanged": true,
+    "newProviderCalls": 0
+  },
+  "macOSArchive": "passed",
+  "iOSArchive": "passed",
+  "macOSStrictSignature": true,
+  "iOSStrictSignature": true,
+  "macOSZipExtractionStrictVerified": true,
+  "version": "3.2.0",
+  "build": 63,
+  "releaseAssetsDownloadedAndVerified": 6
+}

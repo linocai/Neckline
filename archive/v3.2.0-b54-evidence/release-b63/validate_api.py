@@ -42,7 +42,7 @@ def verify(get):
         report = V2ReportEnvelope.model_validate(get('/k10/v2/reports/latest?window=' + window, True))
         assert report.state == ('available' if window == 'evening' else 'empty')
         if window == 'evening':
-            assert report.report.status == 'failed' and report.reason.reason == 'title_json_contract_invalid'
+            assert report.report.status == 'failed' and report.reason.reason == 'model_json_repair_exhausted'
         out[window] = report.model_dump(mode='json')
     out['results'] = ResultsOut.model_validate(get('/k10/results', True)).model_dump(mode='json')
     out['opportunities'] = OpportunityListOut.model_validate(get('/k10/opportunities', True)).model_dump(mode='json')
