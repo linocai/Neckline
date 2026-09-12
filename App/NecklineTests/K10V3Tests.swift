@@ -1195,6 +1195,66 @@ extension K10V3Tests {
     }
 
     @MainActor
+    func testB60HomeMovesExpiryToHistoryButKeepsWithdrawalWithoutNewCards() async throws {
+        let service = K10SyntheticUIService()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        func update(_ kind: String) -> K10DailyLifecycleUpdate {
+            K10DailyLifecycleUpdate(updateId: kind, opportunityId: "old-opportunity",
+                companyWindowId: "old-window", companyCode: "300001.SZ", companyName: "历史公司",
+                kind: kind, reason: "原始变化依据", createdAt: "2026-09-09T09:00:00+08:00", sourceRefs: [])
+        }
+        model.dailyEvening?.report?.eveningCards = []
+        model.dailyMorning?.report?.addedCards = []
+        model.dailyMorning?.report?.updatedCards = []
+        model.dailyEvening?.report?.lifecycleUpdates = [update("expiry"), update("withdrawal"), update("risk")]
+        model.dailyMorning?.report?.lifecycleUpdates = [update("expiry")]
+        XCTAssertEqual(model.historicalLifecycleUpdates.map(\.kind), ["expiry"])
+        XCTAssertEqual(model.currentLifecycleUpdates.map(\.kind), ["withdrawal", "risk"])
+        XCTAssertEqual(model.dailyLifecycleUpdates.count, 3, "历史仍保留且跨报告去重")
+        XCTAssertTrue(model.currentEveningCards.isEmpty)
+        let window = try XCTUnwrap(model.companyWindows.first)
+        var archived = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(window)) as? [String: Any])
+        archived["companyWindowId"] = "old-window"
+        archived["opportunities"] = (archived["opportunities"] as! [[String: Any]]).map { item in
+            var expired = item; expired["lifecycle"] = "expired"; return expired
+        }
+        model.companyWindows = [try JSONDecoder().decode(K10CompanyWindow.self, from: JSONSerialization.data(withJSONObject: archived))]
+        XCTAssertTrue(model.currentLifecycleUpdates.isEmpty, "已到期窗口的旧风险也不能持续占据首页")
+        XCTAssertEqual(model.historicalLifecycleUpdates.count, 3)
+    }
+
+    @MainActor
+    func testB60HomeArchivesClosedCardsWithoutChangingPublishedReportOrMixedWindow() async throws {
+        let service = K10SyntheticUIService()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        var card = try XCTUnwrap(model.eveningCards.first)
+        var mixed = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(card)) as? [String: Any])
+        var catalysts = try XCTUnwrap(mixed["catalysts"] as? [[String: Any]])
+        var oldCatalyst = try XCTUnwrap(catalysts.first)
+        oldCatalyst["companyWindowId"] = "expired-other-window"
+        oldCatalyst["opportunityId"] = "expired-other-opportunity"
+        oldCatalyst["lifecycleState"] = "expired"
+        catalysts.append(oldCatalyst); mixed["catalysts"] = catalysts
+        card = try JSONDecoder().decode(K10DailyCard.self, from: JSONSerialization.data(withJSONObject: mixed))
+        card.canSelect = true
+        model.dailyEvening?.report?.eveningCards = [card]
+        model.dailyMorning?.report?.updatedCards = [card]
+        XCTAssertEqual(model.currentEveningCards, [card], "当前目标可选时，旧催化结束不能隐藏整张混合卡")
+        card.canSelect = false
+        model.dailyEvening?.report?.eveningCards = [card]
+        model.dailyMorning?.report?.updatedCards = [card]
+        model.dailyMorning?.report?.addedCards = [card]
+        XCTAssertTrue(model.currentEveningCards.isEmpty)
+        XCTAssertTrue(model.currentMorningCards.isEmpty)
+        XCTAssertTrue(model.currentMorningUpdates.isEmpty)
+        XCTAssertEqual(model.endedDailyCards, [card], "同一已结束卡在历史中只出现一次")
+        XCTAssertEqual(model.eveningCards, [card], "首页投影不改已发布的推荐、选择或窗口")
+        XCTAssertEqual(model.dailyMorning?.report?.addedCards, [card])
+    }
+
+    @MainActor
     func testV320DailySelectionKeepsPublishedCardAndTargetsItsWindow() async throws {
         let service = K10SyntheticUIService()
         let model = AppModel(serviceFactory: { service })

@@ -278,6 +278,31 @@ struct K10CacheContext: Hashable {
         }
     }
 
+    // Keep the published report intact; only the home presentation excludes
+    // completed opportunities. The server owns lifecycle and selection state.
+    var currentEveningCards: [K10DailyCard] { eveningCards.filter(\.allowsSelection) }
+    var currentMorningCards: [K10DailyCard] { (dailyMorning?.report?.addedCards ?? []).filter(\.allowsSelection) }
+    var currentMorningUpdates: [K10DailyCard] { (dailyMorning?.report?.updatedCards ?? []).filter(\.allowsSelection) }
+    var endedDailyCards: [K10DailyCard] {
+        var seen = Set<String>()
+        return (eveningCards + (dailyMorning?.report?.addedCards ?? []) + (dailyMorning?.report?.updatedCards ?? []))
+            .filter { !$0.allowsSelection && seen.insert($0.cardId).inserted }
+    }
+    private var expiredWindowIDs: Set<String> {
+        Set(companyWindows.filter { window in
+            window.opportunities.contains { $0.lifecycle == "expired" }
+                && window.opportunities.allSatisfy { ["expired", "withdrawn", "withdrawal"].contains($0.lifecycle) }
+        }.map(\.companyWindowId))
+    }
+    var currentLifecycleUpdates: [K10DailyLifecycleUpdate] {
+        let expired = expiredWindowIDs
+        return dailyLifecycleUpdates.filter { $0.kind != "expiry" && !expired.contains($0.companyWindowId) }
+    }
+    var historicalLifecycleUpdates: [K10DailyLifecycleUpdate] {
+        let current = Set(currentLifecycleUpdates.map(\.id))
+        return dailyLifecycleUpdates.filter { !current.contains($0.id) }
+    }
+
     func loadMoreDailyCards() async {
         let generation = connectionGeneration
         let refresh = refreshGeneration

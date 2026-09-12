@@ -8,7 +8,7 @@ struct OpportunitiesView: View {
     @State private var showsHistory = false
 
     private var cards: [K10DailyCard] {
-        segment == "evening" ? model.eveningCards : (model.dailyMorning?.report?.addedCards ?? [])
+        segment == "evening" ? model.currentEveningCards : model.currentMorningCards
     }
     private var selectedCard: K10DailyCard? { cards.first { $0.cardId == selectedCardID } ?? cards.first }
     private var report: K10DailyReport? { segment == "evening" ? model.dailyEvening?.report : model.dailyMorning?.report }
@@ -52,8 +52,18 @@ struct OpportunitiesView: View {
                     Button(model.loadingMoreDailyCards ? "正在读取…" : "继续读取晨间新增") { Task { await model.loadMoreDailyCards() } }
                         .buttonStyle(V3SecondaryButtonStyle()).disabled(model.offline || model.loadingMoreDailyCards)
                 }
-                DisclosureGroup("历史观察窗口（\(model.companyWindows.count)）", isExpanded: $showsHistory) {
+                DisclosureGroup("历史记录与已结束机会", isExpanded: $showsHistory) {
                     LazyVStack(spacing: NKSpace.blockGap) {
+                        ForEach(model.historicalLifecycleUpdates) { update in
+                            DailyLifecycleUpdateRow(update: update, model: model)
+                        }
+                        if !model.endedDailyCards.isEmpty {
+                            DisclosureGroup("已结束推荐（\(model.endedDailyCards.count)）") {
+                                ForEach(model.endedDailyCards) { card in
+                                    DailyCompanyCard(card: card, model: model)
+                                }
+                            }
+                        }
                         ForEach(model.companyWindows) { HistoryWindowRow(window: $0, model: model) }
                     }.padding(.top, NKSpace.blockGap)
                 }.font(NKFont.callout).foregroundStyle(NK.textSecondary)
@@ -81,8 +91,8 @@ struct OpportunitiesView: View {
                 V3PageHeader(title: segment == "evening" ? "今晚的机会" : "晨间新增", subtitle: "K10-v2 · 每日选择 · 固定两日观察")
             }
             Picker("推荐来源", selection: $model.dailyWindow) {
-                Text("晚间推荐 · \(model.eveningCards.count)").tag("evening")
-                Text("晨间新增 · \(model.dailyMorning?.report?.addedCards.count ?? 0)").tag("morning")
+                Text("晚间推荐 · \(model.currentEveningCards.count)").tag("evening")
+                Text("晨间新增 · \(model.currentMorningCards.count)").tag("morning")
             }.pickerStyle(.segmented)
             if let report = selectedCard?.section == "updated" ? model.dailyMorning?.report : report {
                 Text("消息截至 \(k10DisplayTime(report.cutoffAt)) · 可查看 \(report.availableAt.map(k10DisplayTime) ?? "尚未发布")")
@@ -125,27 +135,27 @@ struct OpportunitiesView: View {
                 NoticeLine(icon: "exclamationmark.circle", text: k10CoverageGapText(gap), tone: NK.amber)
             }
         }
-        if !model.dailyLifecycleUpdates.isEmpty {
+        if !model.currentLifecycleUpdates.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 Text("机会变化").font(NKFont.headline)
-                ForEach(model.dailyLifecycleUpdates) { update in
+                ForEach(model.currentLifecycleUpdates) { update in
                     DailyLifecycleUpdateRow(update: update, model: model)
                 }
             }.padding(NKSpace.cardPad).frame(maxWidth: .infinity, alignment: .leading)
                 .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
         }
-        if let morning = model.dailyMorning?.report, !morning.updatedCards.isEmpty {
-            DisclosureGroup("晨间更新 · \(morning.updatedCards.count) 家") {
+        if !model.currentMorningUpdates.isEmpty {
+            DisclosureGroup("晨间更新 · \(model.currentMorningUpdates.count) 家") {
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(morning.updatedCards) { card in
+                    ForEach(model.currentMorningUpdates) { card in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(card.companyName).font(NKFont.headline)
                             Text(card.summary).font(NKFont.callout)
                             ForEach(card.uncertainty, id: \.self) { Text($0).font(NKFont.caption).foregroundStyle(NK.amber) }
-                            if model.eveningCards.contains(where: { $0.companyCode == card.companyCode }) {
+                            if model.currentEveningCards.contains(where: { $0.companyCode == card.companyCode }) {
                                 Button("查看更新后的公司卡") {
                                     model.dailyWindow = "evening"
-                                    selectedCardID = model.eveningCards.first { $0.companyCode == card.companyCode }?.cardId
+                                    selectedCardID = model.currentEveningCards.first { $0.companyCode == card.companyCode }?.cardId
                                 }.font(NKFont.caption).foregroundStyle(NK.accent)
                             } else if let opportunity = card.catalysts.first?.opportunityId {
                                 Button("查看关联机会") { Task { await model.openOpportunity(id: opportunity) } }.font(NKFont.caption)
@@ -189,6 +199,7 @@ struct OpportunitiesView: View {
     private var emptyTitle: String {
         if response?.state == "not_configured" { return "今天没跑成 · 参数未配置" }
         if model.dailyReportErrors[segment] != nil { return "暂时无法读取报告" }
+        if hasEndedRecommendations { return "暂无进行中的机会" }
         guard let report else { return "等待首次报告" }
         if ["completed", "published", "available"].contains(report.status) {
             return segment == "morning" ? "本晨没有新增公司" : "本轮未推荐公司"
@@ -199,11 +210,17 @@ struct OpportunitiesView: View {
     private var emptyMessage: String {
         if response?.state == "not_configured" { return "请到设置查看缺少的参数或公司资料，配置齐全后再运行。" }
         if model.dailyReportErrors[segment] != nil { return "可以重新读取；读取失败不代表本轮没有机会。" }
+        if hasEndedRecommendations { return "本轮推荐已撤回或结束观察，可在下方历史记录中查看原报告与两日窗口。" }
         if let reason = response?.reason { return reason.message }
         if let report, ["completed", "published", "available"].contains(report.status) {
             return segment == "morning" ? "已有公司的变化列在晨间更新中，原有选择继续保留。" : "本轮比较已完成，没有形成正式推荐。"
         }
         return "正式报告完成后在这里逐张查看，未操作的公司记为未处理。"
+    }
+
+    private var hasEndedRecommendations: Bool {
+        let published = segment == "evening" ? model.eveningCards : (model.dailyMorning?.report?.addedCards ?? [])
+        return cards.isEmpty && !published.isEmpty
     }
 
     private func cardDeck(_ card: K10DailyCard) -> some View {
