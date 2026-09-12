@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -106,7 +107,36 @@ def read_profiles(*, db_path: Path, profiles_id: str, codes: list[str] | None = 
         return [json.loads(row[0]) for row in conn.execute(query + " ORDER BY company_code", args)]
 
 
-def retrieve_company_context(*, db_path: Path, profiles_id: str, query: str,
+# Only business values contribute retrieval terms. These runtime fields are
+# identities/status, never business evidence, even when nested under facts.
+_NON_SEMANTIC = {'claimId', 'questionId', 'pathId', 'documentId', 'revision',
+    'sourceRef', 'sourceRefs', 'verificationStatus', 'state', 'coverage',
+    'eventState', 'eventKind', 'canonicalKey', 'stageKey', 'kind', 'novelty',
+    'compiled_at', 'fetchedAt', 'publishedAt', 'createdAt', 'updatedAt'}
+
+def semantic_text(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+        return semantic_text(decoded) if isinstance(decoded, (dict, list)) else value
+    if isinstance(value, dict):
+        return ' '.join(semantic_text(item) for key, item in value.items() if key not in _NON_SEMANTIC)
+    if isinstance(value, (list, tuple)):
+        return ' '.join(semantic_text(item) for item in value)
+    return ''
+
+def matches_term(term: str, text: str) -> bool:
+    if not isinstance(term, str) or not term:
+        return False
+    term, text = term.casefold(), text.casefold()
+    left = r'(?<![a-z0-9_])' if re.match(r'[a-z0-9_]', term) else ''
+    right = r'(?![a-z0-9_])' if re.search(r'[a-z0-9_]$', term) else ''
+    return re.search(left + re.escape(term) + right, text) is not None
+
+
+def retrieve_company_context(*, db_path: Path, profiles_id: str, query: Any,
                              hinted_codes: list[str] | None = None) -> dict[str, Any]:
     """Local field retrieval; company names are not the only lookup key.
 
@@ -119,13 +149,13 @@ def retrieve_company_context(*, db_path: Path, profiles_id: str, query: str,
     hints = set(hinted_codes or [])
     if not hints <= allowed:
         raise ValueError('公司不属于固定资料快照')
-    text = query.casefold()
+    text = semantic_text(query).casefold()
     matches = {}
     for row in index:
         terms = [row['name'], *row.get('aliases', []), *row.get('match_terms', []),
                  *row.get('dependency_terms', []),
                  *(item.get('entity', '') for item in row.get('relationships', []))]
-        found = [term for term in terms if isinstance(term, str) and term and term.casefold() in text]
+        found = [term for term in terms if isinstance(term, str) and term and matches_term(term, text)]
         if found or row['ts_code'] in hints:
             matches[row['ts_code']] = found
     profiles = read_profiles(db_path=db_path, profiles_id=profiles_id, codes=sorted(matches))
@@ -135,25 +165,47 @@ def retrieve_company_context(*, db_path: Path, profiles_id: str, query: str,
         code = profile['identity']['ts_code']
         terms = [term.casefold() for term in matches[code]] + list(query_terms)
         def relevant(value):
-            content = _json(value).casefold()
-            return any(term in content for term in terms)
+            content = semantic_text(value).casefold()
+            return any(matches_term(term, content) for term in terms)
         fields = {'identity': profile['identity'], 'summary': profile['summary'],
                   'review_status': profile['review_status'], 'compiled_at': profile['compiled_at'],
-                  'raw_evidence_file': profile['raw_evidence_file']}
+                  'profileContentSha256': sha256(_json(profile).encode()).hexdigest()}
         for key in ('businesses', 'relationships', 'revenue_structure', 'market_distribution', 'industry_chain'):
             value = profile.get(key)
             if isinstance(value, list):
                 selected = [item for item in value if relevant(item)]
                 if selected: fields[key] = selected
             elif value and relevant(value):
-                fields[key] = value
+                if isinstance(value, dict) and isinstance(value.get('items'), list):
+                    selected = [item for item in value['items'] if relevant(item)]
+                    # Keep period, denominator, scope differences and all
+                    # original caveats; only unrelated item rows are omitted.
+                    fields[key] = {**value, 'items': selected,
+                        'projectionScope': {'includedItems': len(selected), 'sourceItems': len(value['items']),
+                            'fullFieldAvailable': key}}
+                else:
+                    fields[key] = value
         # Source metadata remains available without resending raw evidence/full archives.
-        fields['sources'] = profile['sources']
+        def source_ids(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key in {'source_ref', 'source_refs'}:
+                        yield from ([item] if isinstance(item, str) else item)
+                    else:
+                        yield from source_ids(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from source_ids(item)
+        refs = set(source_ids(fields))
+        fields['sources'] = [source for source in profile['sources']
+            if any(ref == source['source_id'] or ref.startswith(source['source_id'] + '.') for ref in refs)]
+        fields['fieldRefs'] = [{'field': key, 'contentSha256': sha256(_json(value).encode()).hexdigest()}
+            for key, value in fields.items() if key not in {'sources', 'identity'}]
         fields['retrieval'] = {'matchedTerms': matches[code], 'titleHint': code in hints,
                                'missingFields': [key for key in ('businesses','relationships','revenue_structure','market_distribution','industry_chain') if key not in fields]}
         projected.append(fields)
     return {'profileSnapshotId': profiles_id,
             'fixedPool': [{'companyCode': row['ts_code'], 'name': row['name']} for row in index],
             'candidateCompanyCodes': sorted(matches), 'companyProfiles': projected,
-            'localProfileQuery': query, 'profileStatus': 'local_draft_awaiting_user',
+            'localProfileQuery': {'contentSha256': sha256(text.encode()).hexdigest()}, 'profileStatus': 'local_draft_awaiting_user',
             'scopeRule': '仅池内公司可展开尽调；池外主体仅作背景。按命题语义、产品、子公司及产业链线索关联，不得凭公司名猜测。资料未核，缺失字段明确列示；不能映射则结束，不搜索全市场。'}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .research_context import public_packet
 from .research_contracts import RESEARCH_ACTIONS, ResearchSnapshot
 
 _COMMON = (
@@ -67,6 +68,16 @@ def request_spec(*, snapshot: ResearchSnapshot, action: str, evidence_packet: Ma
         instruction += _V2_RESEARCH_STOP
         instruction += "companyScope 是固定池及按当前命题从本地档案召回的字段。所有问题必须声明合理关联的池内 companyCodes；池外主体只能是证据背景，不得展开其公司尽调。先依据业务、产品、子公司、产业链及资料缺口判断映射，无法合理关联则不建问题和搜索路径，并以 background_only 结束。规划搜索前读取已召回字段及 source_refs，已有资料复用，初稿不是核实证据。搜索路径必须解决指定池内公司问题，禁止全市场公司发现式搜索。"
 
+    if evidence_packet.get('contextProtocol'):
+        shape = {**shape, 'contextRequests': [{'kind': 'company_search|company_fields|claim|question|source',
+            'purpose': '说明影响当前判断的原因', 'questionId': '相关问题ID或null',
+            'companyCode': 'company_fields使用', 'fields': ['真实档案字段'],
+            'id': 'claim/question的真实ID', 'query': 'company_search的业务查询',
+            'sourceRef': {'documentId': '真实ID', 'revision': 1}, 'location': 'excerpt或paragraph:1'}]}
+        instruction += ('资料不足或需要原文限定条件时只返回action和contextRequests，程序本地回读后继续同一action；'
+            '不依赖会话记忆。未知引用不是事实。只能用本轮可见正文或可归因命题的来源建立新支持；'
+            '不能仅凭来源ID升级证据。回读结果在contextResults，每项保存版本/内容哈希。'
+            '同一版本相同字段无需重复申请，来源全文使用段落定位。')
     if action == 'close_research' and evidence_packet.get('pathsExhausted'):
         instruction += '当前没有可执行搜索路径。必须保留已有命题和合理公司映射，完成收口：可比较、pending_verification或放弃；不能输出continue_research，未知不是自动推荐理由。'
     if action == "compare_companies" and evidence_packet.get("publicationAllowed") is False:
@@ -77,6 +88,6 @@ def request_spec(*, snapshot: ResearchSnapshot, action: str, evidence_packet: Ma
             "knownEvidence":[{"documentId":"input","revision":1}], "missingEvidence":["remaining material gap"], "resumeCondition":"string|null"}]}
         if action == "assess_evidence":
             shape["claims"] = [{"claimId":"existing claim id", "verificationStatus":"verified|partially_supported|unverified|contradicted", "decisionImpact":"changed assessment"}]
-    return instruction, {"snapshot":prompt_snapshot,"action":action,"evidencePacket":dict(evidence_packet),"outputContract":shape,"emptyCollectionsAreAllowedOnlyWhenTheStageHasNoApplicableItems":True}
+    return instruction, {"snapshot":prompt_snapshot,"action":action,"evidencePacket":public_packet(evidence_packet),"outputContract":shape,"emptyCollectionsAreAllowedOnlyWhenTheStageHasNoApplicableItems":True}
 
 __all__ = ["request_spec"]

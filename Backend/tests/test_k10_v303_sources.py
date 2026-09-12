@@ -10,7 +10,7 @@ from neckline.k10 import store
 from neckline.k10.cli import enqueue_scan
 from neckline.k10.discovery import DiscoveryDocument
 from neckline.k10.ingestion import ingest_to_sqlite
-from neckline.k10.pipeline import _docs_for_window, execute_scan
+from neckline.k10.pipeline import _docs_for_window, execute_scan as _execute_scan
 from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchRequest, SourceFetchResult
 from neckline.k10.tushare_news import MAJOR_NEWS_FIELDS, TuShareMajorNewsAdapter
 from neckline.k10.windows import SHANGHAI, morning_window
@@ -23,6 +23,13 @@ from tests.test_k10_pipeline import (
     initialize_schema,
 )
 from tests.k10_v306_fixture import append_approved_execution_profile
+
+
+def execute_scan(**kwargs):
+    # These historical scenarios freeze visibility separately from acquisition;
+    # today's wall clock must not replace their publication time.
+    kwargs.setdefault('publication_clock', lambda: kwargs['completed_at'])
+    return _execute_scan(**kwargs)
 
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:

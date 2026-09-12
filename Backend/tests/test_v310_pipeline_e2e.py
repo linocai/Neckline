@@ -99,11 +99,16 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 
         if v2 and action:
             scope = payload['evidencePacket']['companyScope']
-            assert len(scope['fixedPool']) == 1089
+            if payload['evidencePacket'].get('contextProtocol'):
+                assert 'fixedPool' not in scope
+                assert scope['profileSnapshotId'] == 'k10-v2-profiles-20260909'
+            else:
+                assert len(scope['fixedPool']) == 1089
             if require_title_hint:
                 assert '300002.SZ' in scope['candidateCompanyCodes']
                 assert scope['companyProfiles']
-            assert set(scope['candidateCompanyCodes']) <= {row['companyCode'] for row in scope['fixedPool']}
+            if 'fixedPool' in scope:
+                assert set(scope['candidateCompanyCodes']) <= {row['companyCode'] for row in scope['fixedPool']}
             assert all(row['review_status']=='local_draft_awaiting_user' for row in scope['companyProfiles'])
             assert all('evidence' not in row and 'notes' not in row for row in scope['companyProfiles'])
         if action:

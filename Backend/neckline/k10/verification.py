@@ -92,6 +92,9 @@ class TavilyEvidenceGateway:
         self.checkpoint_store = checkpoint_store or (
             VerificationCheckpointStore(db_path=db_path, task_id=task_id, leaseguard=leaseguard, lease_owner=lease_owner) if task_id else None
         )
+        self.context_protocol = None
+        if self.checkpoint_store:
+            self.context_protocol = store.task_execution_input(task_id=self.checkpoint_store.task_id, db_path=db_path)['checkpoint'].get('contextProtocol')
         self.network_max_attempts = network_max_attempts
         self.requests, self.credits = self.checkpoint_store.attempt_snapshot() if self.checkpoint_store else (0, 0)
 
@@ -228,6 +231,19 @@ class TavilyEvidenceGateway:
                 cutoff_at=_text(cutoff_at), cutoff_inclusive=cutoff_inclusive,
                 investigation_path=query_context,
             )
+            if self.context_protocol and query_context:
+                from .research_context import digest, normalized_text, normalized_query
+                q = self._mapping(question)
+                shared = {'protocol': self.context_protocol, 'operation': 'search',
+                    'question': normalized_text(q.get('question')), 'companies': sorted(q.get('companyCodes', [])),
+                    'supportCondition': normalized_text(q.get('supportCondition')),
+                    'refuteCondition': normalized_text(q.get('refuteCondition')),
+                    'knownEvidence': sorted(q.get('knownEvidence', []), key=lambda ref: (ref['documentId'], ref['revision'])),
+                    'sourceRefs': source_refs, 'query': normalized_query(query),
+                    'intent': normalized_text(query_context['intent']), 'targetSource': normalized_text(query_context['targetSource']),
+                    'cutoffAt': cutoff_at.astimezone(timezone.utc).isoformat(), 'cutoffInclusive': cutoff_inclusive}
+                checkpoint_input = digest(shared)
+                checkpoint_key = 'tavily:shared:' + checkpoint_input
             claim = self.checkpoint_store.claim(item_key=checkpoint_key, input_sha256=checkpoint_input,
                                                 network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()))
             self.requests = claim.requests
@@ -498,6 +514,12 @@ class TavilyEvidenceGateway:
             event_state=event.event_state, headline=event.headline, event_kind=event.event_kind,
             facts=event.facts, source_refs=[ref], cutoff_at=_text(cutoff_at),
             cutoff_inclusive=cutoff_inclusive, investigation_path=context)
+        if self.context_protocol:
+            from .research_context import digest as context_digest
+            item_key = 'tavily:shared:extract:' + context_digest([self.context_protocol, ref])
+            digest = context_digest({'protocol': self.context_protocol, 'sourceRef': ref,
+                'sourceContent': source.get('contentSha256'), 'url': url, 'operation': 'extract',
+                'cutoffAt': cutoff_at.astimezone(timezone.utc).isoformat(), 'cutoffInclusive': cutoff_inclusive})
         admission = store.admit_article(task_id=checkpoint.task_id, document_id=document.document_id,
             revision=document.revision, admission_kind="tavily_full_article", created_at=_text(self.clock()), db_path=self.db_path)
         admission_ref = {"taskId": checkpoint.task_id, **ref}

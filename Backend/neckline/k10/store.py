@@ -769,6 +769,11 @@ def _bind_task_execution_conn(conn, *, task_id: str, execution_config_id: str, e
             "execution_content_sha256,binding_kind,bound_at) VALUES(?,?,?,?,?,?)",
             (task_id, *expected, bound_at),
         )
+        from .research_context import PROTOCOL
+        checkpoint_row = conn.execute('SELECT checkpoint_json FROM k10_tasks WHERE task_id=?', (task_id,)).fetchone()
+        checkpoint = json.loads(checkpoint_row[0] or '{}')
+        checkpoint['contextProtocol'] = PROTOCOL
+        conn.execute('UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?', (_json(checkpoint), task_id))
     return {"configId": execution_config_id, "revision": execution_config_revision,
             "contentSha256": str(profile[0]), "bindingKind": binding_kind, "payload": json.loads(profile[1])}
 
@@ -2854,6 +2859,8 @@ def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[st
     merged.pop("runtimeRepair", None)
     if isinstance(parsed, Mapping) and "runtimeRepair" in parsed:
         merged["runtimeRepair"] = parsed["runtimeRepair"]
+    if isinstance(parsed, Mapping) and "contextProtocol" in parsed:
+        merged["contextProtocol"] = parsed["contextProtocol"]
     return merged
 
 

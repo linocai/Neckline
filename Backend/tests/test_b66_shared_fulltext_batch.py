@@ -45,6 +45,15 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
         return VerificationEvidenceBundle('available', (doc,), (doc,), {
             'state': 'available', 'requestState': 'completed', 'operation': 'extract',
             'admissionState': 'fulfilled', 'admissionRef': request.source_ref})
+    def fetch(self, **kwargs):
+        self.search_paths.append(kwargs['query_path'].path_id)
+        refs = [{'documentId': ref.document_id, 'revision': ref.revision} for ref in kwargs['event'].source_refs]
+        rows = store.load_document_versions(refs=refs, db_path=tmp_path/'b39-e2e.sqlite')
+        from neckline.k10.discovery import DiscoveryDocument
+        docs = tuple(DiscoveryDocument(row['documentId'], row['revision'], row['publishedAt'], row['fetchedAt'],
+            row['originalText'], row['excerpt'], row['metadata']) for row in rows)
+        return VerificationEvidenceBundle('available', docs, docs, {'state':'available','requestState':'completed'})
+    monkeypatch.setattr(e2e._Gateway, 'fetch', fetch)
     monkeypatch.setattr(e2e._Gateway, 'fetch_fulltext', fetch_fulltext)
     tick, tripped = [0.0], [False]
     monkeypatch.setattr(pipeline, 'time', SimpleNamespace(monotonic=lambda: tick[0]))
@@ -65,7 +74,7 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
             handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
             clock=lambda: due+timedelta(seconds=1))
     else:
-        assert calls.count('research:assess_evidence') == 3  # two search batches plus one shared fulltext assessment
+        assert calls.count('research:assess_evidence') == 2  # first source plus shared fulltext; repeated same source is not reread
     assert task.status == 'completed' and fulltext_reads == ['read-q-1', 'read-q-2']
     assert len(model_bodies) == 1 and model_bodies[0].strip()  # shared source body read once, including across a pause
     assert calls.count('understand') == 1 and calls.count('titleBatch') == 1

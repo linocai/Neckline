@@ -21,6 +21,7 @@ from .config import ConfigurationStatus, validate_run_config
 from .types import EventRevision
 from .universe import CompanyMetadataProvider, Eligibility, evaluate_company
 from .opportunity_discovery import (
+    ComparisonValidationError,
     NEW_KINDS,
     normalize_catalyst_stage,
     validate_classification,
@@ -1076,15 +1077,20 @@ def run_discovery(
                     status = (metadata.eligibility(mapping.company_code) if hasattr(metadata, "eligibility") else
                               evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at)))
                     classifier = getattr(model, "classify_opportunity", None)
-                    if not callable(classifier):
-                        raise ValueError("发现模型缺少机会延续/新催化分类")
                     prior = tuple(old for old in previous_opportunities if old.get("companyCode") == mapping.company_code)
-                    decision = validate_classification(
-                        classifier(event=event, verification=company_verification, mapping=mapping,
-                                   comparison=comparison, previous=prior),
-                        canonical_key=event.canonical_key, stage_key=event.stage_key,
-                        company_code=mapping.company_code, previous=prior,
-                    )
+                    if configuration.get('configVersion') == 'k10-v2':
+                        from .v2_identity import classify_identity
+                        decision = classify_identity(event=event, verification=company_verification, mapping=mapping,
+                            comparison=comparison, previous=prior, classifier=classifier)
+                    else:
+                        if not callable(classifier):
+                            raise ValueError("发现模型缺少机会延续/新催化分类")
+                        decision = validate_classification(
+                            classifier(event=event, verification=company_verification, mapping=mapping,
+                                       comparison=comparison, previous=prior),
+                            canonical_key=event.canonical_key, stage_key=event.stage_key,
+                            company_code=mapping.company_code, previous=prior,
+                        )
                     _reject_uncalibrated_prediction(decision, path="classification")
                 except Exception as exc:
                     if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
@@ -1126,7 +1132,10 @@ def run_discovery(
                     decision = {**decision, "kind": "needs_review", "reason": "重大反证尚待核实。" + decision["reason"]}
                 candidate = DiscoveryCandidate(event, company_verification, mapping, comparison, status, decision)
                 if decision["kind"] == "background":
-                    background.append(candidate)
+                    if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get('role') in {'pending', 'excluded'}:
+                        (pending if comparison.differences['role'] == 'pending' else excluded).append(candidate)
+                    else:
+                        background.append(candidate)
                     continue
                 if decision["kind"] == "needs_review" and decision.get("relatedOpportunityId") is None:
                     related = _open_event_opportunities(

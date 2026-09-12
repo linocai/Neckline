@@ -115,6 +115,8 @@ def _require_result(action: str, result: ResearchStageResult, packet: Mapping[st
         raise InvestigationError("研究模型返回了错误阶段", code="investigation_action_mismatch")
     if result.safe_error_code:
         raise InvestigationError("研究阶段执行失败", code=result.safe_error_code)
+    if result.context_requests:
+        return  # local reads continue this action; no research state advances
     allowed = _packet_refs(packet)
     if action == "extract_claims":
         seen: set[str] = set()
@@ -201,8 +203,8 @@ def _prune_assessment_references(value: Mapping[str, Any], packet: Mapping[str, 
                    for row in value.get("questions", ()))
             or (value.get("conclusion") is not None and not isinstance(value["conclusion"], Mapping))):
         return dict(value)
-    original_claims = {row["claimId"]: row for row in packet.get("claims", ())}
-    original_questions = {row["questionId"]: row for row in packet.get("questions", ())}
+    original_claims = {row["claimId"]: row for row in packet.get("_localState", packet).get("claims", ())}
+    original_questions = {row["questionId"]: row for row in packet.get("_localState", packet).get("questions", ())}
     diagnostics = {"discardedClaims": 0, "discardedReferences": 0, "discardedQuestions": 0,
                    "discardedFulltextRequests": 0}
     ignored_claims, claims = set(), []
@@ -255,7 +257,7 @@ def _prune_assessment_references(value: Mapping[str, Any], packet: Mapping[str, 
         questions.append(item)
     requestable = allowed | {ref_key(ref) for ref in packet.get("fulltextRequestRefs", ())}
     handled = {(row.get("questionId"), ref_key(row.get("sourceRef")))
-               for row in packet.get("fulltextRequests", ()) if row.get("state") in {"fulfilled", "rejected"}}
+               for row in packet.get("_localState", packet).get("fulltextRequests", ()) if row.get("state") in {"fulfilled", "rejected"}}
     requests = []
     for row in value.get("fulltextRequests", ()):
         identity = (row.get("questionId"), ref_key(row.get("sourceRef")))
@@ -279,7 +281,7 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
     required = {"extract_claims": {"claims"}, "plan_gaps": {"questions"}, "plan_queries": {"queryPaths"},
                 "assess_evidence": {"claims", "questions", "evidenceUpdates", "fulltextRequests"},
                 "close_research": {"conclusion"}, "compare_companies": {"conclusion", "companyAssessments"}}
-    permitted = {"claims", "questions", "queryPaths", "evidenceUpdates", "fulltextRequests", "conclusion", "companyAssessments", "safeErrorCode"}
+    permitted = {"claims", "questions", "queryPaths", "evidenceUpdates", "fulltextRequests", "conclusion", "companyAssessments", "safeErrorCode", "contextRequests"}
     if (isinstance(value, Mapping) and "action" not in value and set(value) <= permitted
             and action in required and (bool(set(value) & required[action]) if action == "assess_evidence" else required[action] <= set(value))):
         # The caller already fixed the action. Missing routing metadata can be
@@ -295,7 +297,7 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
             # durable input; unknown IDs still require complete typed facts.
             value = dict(value)
             for collection, key in (("claims", "claimId"), ("questions", "questionId")):
-                originals = {item[key]: item for item in evidence_packet.get(collection, ())}
+                originals = {item[key]: item for item in evidence_packet.get("_localState", evidence_packet).get(collection, ())}
                 updates = value.get(collection, ())
                 if isinstance(updates, list) and all(isinstance(item, Mapping) for item in updates):
                     value[collection] = [{**originals.get(item.get(key), {}), **item} for item in updates]
@@ -304,7 +306,7 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
             # A model may mention background companies outside this selector's
             # universe. Exclude those hints locally, before planning any paid
             # search; keep in-pool questions, mappings and assessments intact.
-            allowed = {row["companyCode"] for row in scope["fixedPool"]}
+            allowed = {row["companyCode"] for row in (evidence_packet or {}).get("_localState", {}).get("fixedPool", scope.get("fixedPool", []))}
             value = dict(value)
             questions, excluded_questions = [], set()
             for question in value.get("questions", ()):
@@ -355,6 +357,8 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
                 if discarded and isinstance(value.get("conclusion"), Mapping):
                     value["conclusion"] = {**value["conclusion"], "runtimeOutputSanitization": {
                         "discardedCompanyAssessments": discarded}}
+        from .research_context import collapse_repeated_work
+        value = collapse_repeated_work(value, evidence_packet or {})
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))
@@ -377,7 +381,8 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
                                    evidence_updates=tuple(dict(item) for item in updates),
                                    fulltext_requests=tuple(FullTextRequest.from_dict(item) for item in requests),
                                    conclusion=None if conclusion is None else dict(conclusion),
-                                   company_assessments=tuple(dict(item) for item in assessments))
+                                   company_assessments=tuple(dict(item) for item in assessments),
+                                   context_requests=tuple(value.get("contextRequests", ())))
     except ResearchContractError as exc:
         raise InvestigationError("研究输出不符合 typed contract", code="investigation_result_invalid") from exc
 

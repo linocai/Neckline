@@ -23,7 +23,7 @@ def test_v2_actual_cli_worker_fixed_pool_and_unverified_publication(tmp_path,mon
     assert card['catalysts'][0]['verificationStatus']=='unverified'
     assert calls.count('understand')==1 and calls.count('research:compare_companies')==1
     assert len(gateway.search_paths)==2
-    assert 'classify' in calls
+    assert 'classify' not in calls  # Valid first v2 recommendations have a derivable initial identity.
     with sqlite3.connect(db) as conn:
         assert conn.execute('SELECT count(*) FROM k10_v2_title_company_hints WHERE company_codes_json LIKE ?', ('%300002.SZ%',)).fetchone()[0] == 1
         usage = conn.execute('SELECT input_characters,profile_characters,profile_count FROM k10_v2_stage_input_usage').fetchall()

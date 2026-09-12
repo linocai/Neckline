@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Sequence
 
+from .research_context import project_packet, public_packet, read_context, question_dependency, route_identity
 from . import store
 from .discovery import (
     CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoverySliceYield,
@@ -77,6 +78,7 @@ class _Investigation:
                  allow_failed_resume: bool = False) -> None:
         self.model, self.verifier, self.event, self.db_path = model, verifier, event, db_path
         self.task_id, self.guard, self.clock = task_id, leaseguard, clock
+        self.context_protocol = store.task_execution_input(task_id=task_id, db_path=db_path)["checkpoint"].get("contextProtocol")
         self.allow_failed_resume = allow_failed_resume
         self.pending_model_action: dict[str, Any] | None = None
         self.cutoff, self.cutoff_inclusive = cutoff_at, cutoff_inclusive
@@ -185,7 +187,7 @@ class _Investigation:
         return cards
 
     def _company_scope(self) -> dict[str, Any]:
-        binding = getattr(self.model, "_company_profiles_binding", None)
+        binding = getattr(getattr(self, "model", None), "_company_profiles_binding", None)
         if binding is None:
             return {}
         from .schema import read_connection
@@ -196,10 +198,10 @@ class _Investigation:
                 row = conn.execute("SELECT company_codes_json FROM k10_v2_title_company_hints WHERE task_id=? AND document_id=? AND revision=?",
                     (self.task_id, ref.document_id, ref.revision)).fetchone()
                 if row: hints.update(json.loads(row[0]))
-        hints.update(code for question in self.state["questions"] for code in question["companyCodes"])
+        hints.update(code for question in self.state["questions"] if question["state"] == "open" for code in question["companyCodes"])
         # Reading a frozen JSON checkpoint changes dictionary insertion order.
         # That must not change a semantic retrieval query or paid request ID.
-        query = self.event.headline + " " + json.dumps({"facts": self.event.facts, "questions": self.state["questions"]}, ensure_ascii=False, sort_keys=True)
+        query = {"headline": self.event.headline, "facts": self.event.facts, "questions": [q for q in self.state["questions"] if q["state"] == "open"]}
         return retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=query, hinted_codes=sorted(hints))
 
     def _packet(self) -> dict[str, Any]:
@@ -211,6 +213,13 @@ class _Investigation:
                          if _key(ref) not in self.allowed]
         return {"event": {key: self.context[key] for key in ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")},
             "companyScope": self._company_scope(),
+            '_localPathOrder': {path['pathId']: stage['revision'] for stage in self.state['stageResults']
+                for path in stage['result'].get('queryPaths', [])
+                if (stage['result'].get('conclusion') or {}).get('runtimeEvidence')},
+            '_localPathDependencies': {path['pathId']: (stage['result'].get('conclusion') or {})['runtimeEvidence']['questionDependency']
+                for stage in self.state['stageResults']
+                if (stage['result'].get('conclusion') or {}).get('runtimeEvidence', {}).get('questionDependency')
+                for path in stage['result'].get('queryPaths', [])},
             "newsCutoffAt": self.snapshot.news_cutoff_at,
             "allowedEvidenceRefs": [_ref(ref) for ref in sorted(self.allowed, key=lambda item: (item.document_id, item.revision))],
             "claims": self.state["claims"], "questions": self.state["questions"], "queryPaths": self.state["paths"],
@@ -228,20 +237,23 @@ class _Investigation:
             return
         value = load_prior_research_evidence(task_id=self.task_id, event_id=self.snapshot.event_id,
             input_source_refs=[_ref(ref) for ref in self.event.source_refs],
-            news_cutoff_at=self.snapshot.news_cutoff_at, verification_cutoff_at=self.snapshot.verification_cutoff_at,
+            news_cutoff_at=self.snapshot.news_cutoff_at, verification_cutoff_at=_text(max(self.clock(), datetime.fromisoformat(self.snapshot.verification_cutoff_at))),
             prompt_contract_revision=self.snapshot.prompt_contract_revision,
             model_parameters_sha256=self.snapshot.model_parameters_sha256, db_path=self.db_path,
-            include_historical_sources=True)
+            include_historical_sources=True,
+            exclude_snapshot_id=self.identity if getattr(getattr(self, "model", None), "_company_profiles_binding", None) else None)
         self._record(ResearchStageResult("close_research", conclusion={
             "researchStatus": self.snapshot.research_status, "runtimePriorEvidence": value}), digest=_hash(value))
         self._restore_sources()
 
     def _validate_result(self, action: str, result: ResearchStageResult, packet: Mapping[str, Any]) -> None:
+        if result.context_requests:
+            return
         if action == 'close_research' and packet.get('pathsExhausted') and (result.conclusion or {}).get('researchStatus') == 'continue_research':
             raise InvestigationError('当前无可执行查询路径，必须基于已有证据收口公司关联：待核、可比较或放弃，不可继续空转', code='investigation_closure_required')
         scope = packet.get("companyScope")
         if scope:
-            allowed = {item["companyCode"] for item in scope["fixedPool"]}
+            allowed = {item["companyCode"] for item in packet.get("_localState", {}).get("fixedPool", scope.get("fixedPool", []))}
             for question in result.questions:
                 if not question.company_codes or not set(question.company_codes) <= allowed:
                     raise InvestigationError("研究问题必须关联合理的池内公司，无法映射应结束研究", code="company_outside_fixed_pool")
@@ -255,7 +267,7 @@ class _Investigation:
             if _key(claim.source_ref) not in permitted:
                 raise InvestigationError("审读改写了命题范围", code="investigation_claim_scope_invalid")
             original = known_claims.get(claim.claim_id)
-            if original and any(claim.to_dict()[key] != original[key] for key in ("text", "kind", "novelty", "sourceRef", "location")):
+            if original and any(claim.to_dict()[key] != original[key] for key in ("text", "kind", "novelty", "sourceRef", "location", "speaker", "subject", "object", "action", "stageOrCondition", "timeText")):
                 raise InvestigationError("审读不能改写原始命题", code="investigation_claim_scope_invalid")
             known_claims[claim.claim_id] = claim.to_dict()
         for update in result.evidence_updates:
@@ -302,6 +314,8 @@ class _Investigation:
                 if not disclosure["isRumor"] or disclosure["verificationStatus"] == "verified":
                     raise InvestigationError("传闻推荐漏掉未核实标记", code="investigation_rumor_disclosure_missing")
         if result.conclusion:
+            if not set(_refs(result.conclusion.get("evidenceRefs", []))) <= permitted:
+                raise InvestigationError("共同事实引用了本次请求未展示的来源，请先回读或改用已展示证据", code="investigation_reference_invalid")
             mappings = result.conclusion.get("companyMappings", [])
             if not isinstance(mappings, list):
                 raise InvestigationError("公司映射格式无效", code="investigation_mapping_invalid")
@@ -314,7 +328,8 @@ class _Investigation:
         packet = self._packet()
         if extra:
             packet.update(extra)
-        digest = _hash({"action": action, "packet": packet})
+        packet = project_packet(action, packet) if self.context_protocol else packet
+        digest = _hash({"action": action, "packet": public_packet(packet)})
         while True:
             stage = next((item for item in reversed(self.state["stageResults"])
                 if item["action"] == action and item["inputSha256"] == digest and not item["result"].get("safeErrorCode")), None)
@@ -332,7 +347,13 @@ class _Investigation:
                 # with the old action/input uniqueness constraint.
                 digest = _hash({"inputSha256":digest, "supersedesRejectedRevision":stage["revision"]})
                 continue
-            return cached
+            return self._continue_context(action, cached, extra, request_input=digest) if cached.context_requests else cached
+        if packet.get('contextProtocol') and not any(
+                (stage['result'].get('conclusion') or {}).get('runtimeRequest', {}).get('inputSha256') == digest
+                for stage in self.state['stageResults']):
+            self._record(ResearchStageResult('close_research', conclusion={'researchStatus': self.snapshot.research_status,
+                'runtimeRequest': {'action': action, 'inputSha256': digest, 'packet': public_packet(packet)}}),
+                digest=_hash({'requestManifest': digest}))
         self.pending_model_action = {"action": action, "extra": dict(extra or {})}
         try:
             scope = getattr(self.model, "research_validation", None)
@@ -345,6 +366,11 @@ class _Investigation:
                 reject(snapshot=self.snapshot, action=action, evidence_packet=packet,
                        safe_error_code=getattr(exc, "code", "investigation_contract_invalid"))
             raise
+        if step.result.context_requests:
+            # Save the exact paid reply before any local read, without closing
+            # questions or advancing this action's business result.
+            self._record(step.result, digest=digest)
+            return self._continue_context(action, step.result, extra, request_input=digest)
         status = None
         if action == "close_research":
             status = step.result.conclusion["researchStatus"]
@@ -352,9 +378,51 @@ class _Investigation:
         if action == "assess_evidence" and extra and extra.get("fullTextDocuments"):
             persisted = replace(step.result, conclusion={**(step.result.conclusion or {}),
                 "runtimeReadFulltextRefs": list(extra["admittedFulltextRefs"])})
+        if action == 'assess_evidence' and extra and extra.get('newEvidenceRefs'):
+            persisted = replace(persisted, conclusion={**(persisted.conclusion or {}),
+                'runtimeReadEvidenceRefs': list(extra['newEvidenceRefs'])})
         self._record(persisted, digest=digest, research_status=status)
         self.pending_model_action = None
         return step.result
+
+    def _continue_context(self, action, result, extra, *, request_input):
+        values = list((extra or {}).get('contextResults', []))
+        known = {_hash(item['request']) for item in values}
+        changed = False
+        for request in result.context_requests:
+            identity = {key: value for key, value in request.items() if key != 'purpose'}
+            key = _hash(identity)
+            if key in known:
+                continue
+            collection, id_key = ('claims', 'claimId') if request.get('kind') == 'claim' else ('questions', 'questionId')
+            object_version = (_hash(next((row for row in self.state[collection] if row[id_key] == request.get('id')), None))
+                if request.get('kind') in {'claim', 'question'} else None)
+            saved = next(((stage['result'].get('conclusion') or {}).get('runtimeContextRead')
+                for stage in self.state['stageResults']
+                if (stage['result'].get('conclusion') or {}).get('runtimeContextReadInputSha256') == request_input
+                and (stage['result'].get('conclusion') or {}).get('runtimeContextObjectSha256') == object_version
+                and (stage['result'].get('conclusion') or {}).get('runtimeContextRead', {}).get('request') == identity), None)
+            try:
+                value = saved or read_context(request, state=self.state, documents=self.documents,
+                    binding=getattr(getattr(self, 'model', None), '_company_profiles_binding', None),
+                    eligible_refs={(ref.document_id, ref.revision) for ref in self.allowed})
+            except ValueError as exc:
+                raise InvestigationError('局部回读引用无效', code='investigation_context_reference_invalid') from exc
+            if saved is None:
+                self._record(ResearchStageResult('close_research', conclusion={
+                    'runtimeContextRead': value, 'runtimeContextReadInputSha256': request_input,
+                    'runtimeContextObjectSha256': object_version,
+                    'researchStatus': self.snapshot.research_status}), digest=_hash({'input': request_input, 'value': value}))
+            values.append(value)
+            known.add(key)
+            changed = True
+        if not changed:
+            if (extra or {}).get('contextFeedback'):
+                raise InvestigationError('局部回读协议纠错后仍未完成', code='investigation_context_no_increment')
+            return self._call(action, {**(extra or {}), 'contextResults': values,
+                'contextFeedback': {'code': 'already_read',
+                    'instruction': '请求的字段已在 contextResults 中完整提供。请使用已有值完成当前 action 的业务判断；若确有未展示且必要的新字段，可请求新字段。不要重复请求已提供的字段。'}})
+        return self._call(action, {**(extra or {}), 'contextResults': values})
 
     def _tool(self, bundle: Any, *, path: QueryPath | None = None, request: FullTextRequest | None = None) -> None:
         if bundle.coverage.get("reason") == "insufficient_balance":
@@ -366,6 +434,9 @@ class _Investigation:
         self.allowed.update(doc.evidence_ref for doc in bundle.eligible_documents)
         runtime = {"documentRefs": [_ref(doc) for doc in bundle.documents],
             "eligibleDocumentRefs": [_ref(doc) for doc in bundle.eligible_documents], "coverage": dict(bundle.coverage)}
+        if path is not None and self.context_protocol:
+            question = next(q for q in self.state['questions'] if q['questionId'] == path.question_id)
+            runtime['questionDependency'] = question_dependency(question)
         result = ResearchStageResult("assess_evidence", conclusion={"runtimeEvidence": runtime},
             query_paths=() if path is None else (replace(path, state="searched" if bundle.eligible_documents else "no_result",
                 result_summary=str(bundle.coverage.get("reason") or "已取得资料")),),
@@ -403,7 +474,7 @@ class _Investigation:
         """Finish any durably saved tool batch before planning another query."""
         last_assessed = max((stage["revision"] for stage in self.state["stageResults"]
             if stage["action"] == "assess_evidence" and not (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
-            and not stage["result"].get("safeErrorCode")), default=0)
+            and not stage["result"].get("safeErrorCode") and not stage["result"].get("contextRequests")), default=0)
         unassessed = [stage for stage in self.state["stageResults"] if stage["revision"] > last_assessed
                      and (stage["result"].get("conclusion") or {}).get("runtimeEvidence")]
         full_refs, already_read = set(), set()
@@ -420,7 +491,16 @@ class _Investigation:
         if not unassessed and not (full_refs - already_read):
             return False
         full = [self.documents[ref] for ref in sorted(full_refs - already_read, key=lambda item: (item.document_id, item.revision))]
-        self._call("assess_evidence", {"admittedFulltextRefs": [_ref(doc) for doc in full],
+        new_refs = list(dict.fromkeys(ref for stage in unassessed for ref in _refs((stage['result'].get('conclusion') or {})['runtimeEvidence']['documentRefs'])))
+        read_refs = {_key(ref) for stage in self.state['stageResults']
+            for ref in (stage['result'].get('conclusion') or {}).get('runtimeReadEvidenceRefs', [])}
+        if getattr(getattr(self, 'model', None), '_company_profiles_binding', None):
+            new_refs = [ref for ref in new_refs if ref not in read_refs]
+        if not new_refs and not full and getattr(getattr(self, "model", None), "_company_profiles_binding", None):
+            return False
+        affected = list(dict.fromkeys(row['questionId'] for stage in unassessed
+            for row in [*stage['result'].get('queryPaths', []), *stage['result'].get('fulltextRequests', [])]))
+        self._call("assess_evidence", {"newEvidenceRefs": [_ref(ref) for ref in new_refs], "affectedQuestionIds": affected, "admittedFulltextRefs": [_ref(doc) for doc in full],
             "fullTextDocuments": [{**_ref(doc), "text": doc.analysis_text or doc.original_text or "",
                 "publishedAt": doc.published_at, "fetchedAt": doc.fetched_at,
                 "eligibleAtNewsCutoff": doc.evidence_ref in self.allowed,
@@ -438,10 +518,13 @@ class _Investigation:
         # Resume the durable phase, including an interruption immediately AFTER
         # an assessment write. Runtime pause/resume records are not closures.
         reviewed = max((stage["revision"] for stage in self.state["stageResults"]
-            if not stage["result"].get("safeErrorCode") and (
+            if not stage["result"].get("safeErrorCode") and not stage["result"].get("contextRequests") and (
                 (stage["action"] == "assess_evidence" and not
                  (stage["result"].get("conclusion") or {}).get("runtimeEvidence"))
-                or self._denied_fulltext(stage))), default=0)
+                or self._denied_fulltext(stage)
+                or (self.context_protocol and bool(stage["result"].get("queryPaths"))
+                    and not any(path["state"] == "planned" for path in self.state["paths"])
+                    and bool((stage["result"].get("conclusion") or {}).get("runtimeEvidence"))))), default=0)
         closed = max((stage["revision"] for stage in self.state["stageResults"]
             if stage["action"] == "close_research" and not stage["result"].get("safeErrorCode")
             and "companyMappings" in (stage["result"].get("conclusion") or {})), default=0)
@@ -569,7 +652,7 @@ class _Investigation:
             conclusion = {"researchStatus": "background_only", "stopReason": "本事件没有影响判断的独立命题。", "companyMappings": []}
             self._record(ResearchStageResult("close_research", conclusion=conclusion), digest=_hash(conclusion), research_status="background_only")
         else:
-            if not any(stage["action"] == "plan_gaps" for stage in self.state["stageResults"]):
+            if not any(stage["action"] == "plan_gaps" and not stage["result"].get("contextRequests") for stage in self.state["stageResults"]):
                 self._call("plan_gaps")
             while True:
                 if self.snapshot.research_status != "continue_research":
@@ -603,9 +686,17 @@ class _Investigation:
                             if conclusion['researchStatus'] == 'continue_research':
                                 conclusion = self._pending("当前相关查证路径已用尽，保留已有事实与公司关联，尚有影响判断的缺口。")
                             break
-                    used = {_path_identity(QueryPath.from_dict(item)) for item in self.state["paths"] if item["state"] != "planned"}
+                    def work_identity(path):
+                        if not self.context_protocol:
+                            return _path_identity(path)
+                        question = next(q for q in self.state['questions'] if q['questionId'] == path.question_id)
+                        frozen = next(((stage['result'].get('conclusion') or {}).get('runtimeEvidence', {}).get('questionDependency')
+                            for stage in self.state['stageResults'] if any(p['pathId'] == path.path_id for p in stage['result'].get('queryPaths', []))
+                            and (stage['result'].get('conclusion') or {}).get('runtimeEvidence', {}).get('questionDependency')), None)
+                        return route_identity(path.to_dict(), question, frozen if path.state != 'planned' else None)
+                    used = {work_identity(QueryPath.from_dict(item)) for item in self.state["paths"] if item["state"] != "planned"}
                     for path in pending_paths:
-                        if _path_identity(path) in used:
+                        if work_identity(path) in used:
                             raise InvestigationError("续查只是重复旧路径", code="investigation_path_duplicate")
                         question = next((Question.from_dict(item) for item in self.state["questions"] if item["questionId"] == path.question_id), None)
                         if question is None or question.state != "open":
@@ -617,7 +708,7 @@ class _Investigation:
                         bundle = self.verifier.fetch(event=self.event, retrieved_at=self.clock(), cutoff_at=self.cutoff,
                             cutoff_inclusive=self.cutoff_inclusive, question=question, query_path=path)
                         self._tool(bundle, path=path)
-                        used.add(_path_identity(path))
+                        used.add(work_identity(path))
                     self._assess_due()
                 self._fulltexts()
                 closed = self._close()

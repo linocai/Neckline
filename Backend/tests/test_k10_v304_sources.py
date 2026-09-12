@@ -8,7 +8,7 @@ import pytest
 
 from neckline.k10 import store
 from neckline.k10.cli import enqueue_scan
-from neckline.k10.pipeline import execute_scan
+from neckline.k10.pipeline import execute_scan as _execute_scan
 from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchResult
 from neckline.k10.windows import SHANGHAI
 from neckline.k10.worker import run_once
@@ -20,6 +20,13 @@ from tests.test_k10_pipeline import (
     initialize_schema,
 )
 from tests.k10_v306_fixture import append_approved_execution_profile
+
+
+def execute_scan(**kwargs):
+    # These historical scenarios freeze visibility separately from acquisition;
+    # today's wall clock must not replace their publication time.
+    kwargs.setdefault('publication_clock', lambda: kwargs['completed_at'])
+    return _execute_scan(**kwargs)
 
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:

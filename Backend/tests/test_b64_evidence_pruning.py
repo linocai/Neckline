@@ -94,6 +94,23 @@ def test_same_task_recovery_reuses_paid_assessment_without_research_respend(tmp_
         if value.get("action") == "assess_evidence":
             value["evidenceUpdates"] = [{"claimId": "article-claim-1", "sourceRef": UNKNOWN,
                                           "relation": "supports", "location": "excerpt", "applicability": {}}]
+    # The regression needs an actual returned source; an empty search no
+    # longer creates a paid assessment in the v2 context protocol.
+    def fetch(self, **kwargs):
+        from neckline.k10.discovery import DiscoveryDocument
+        from neckline.k10.verification import VerificationEvidenceBundle
+        self.search_paths.append(kwargs['query_path'].path_id)
+        ref = kwargs['event'].source_refs[0]
+        db = tmp_path/'b39-e2e.sqlite'
+        row = store.load_document_versions(refs=[{'documentId':ref.document_id,'revision':ref.revision}],db_path=db)[0]
+        identifier = 'b64-evidence-' + str(len(self.search_paths))
+        text = '独立核验材料 ' + str(len(self.search_paths)) + '，仍未确认项目订单'
+        store.append_document_version(document_id=identifier,source_key='fixture',external_id=identifier,canonical_url=None,
+            content_sha256=__import__('hashlib').sha256(text.encode()).hexdigest(),published_at=row['publishedAt'],published_precision='exact',
+            fetched_at=row['fetchedAt'],original_text=None,excerpt=text,fetch_version='fixture',metadata={},created_at=e2e.RUN_AT.isoformat(),db_path=db)
+        doc=DiscoveryDocument(identifier,1,row['publishedAt'],row['fetchedAt'],None,text,{})
+        return VerificationEvidenceBundle('available',(doc,),(doc,),{'state':'available','requestState':'completed'})
+    monkeypatch.setattr(e2e._Gateway,'fetch',fetch)
     edit_responses(monkeypatch, bad_reference)
     # Reproduce the actual historical decoder/boundary rather than changing
     # producer state by hand. Later recovery must use the real returned task.
@@ -107,7 +124,7 @@ def test_same_task_recovery_reuses_paid_assessment_without_research_respend(tmp_
     scan = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
     assert recover_scan(db_path=db, scan_id=scan, execution_config_id="b39-execution", execution_config_revision=1,
                         confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan, db_path=db), now=e2e.RUN_AT) == task_id
-    resumed = e2e._http_transport(monkeypatch, v2=True)
+    resumed = e2e._http_transport(monkeypatch, v2=True, initial_query_round=1)
     done = run_once(db_path=db, task_id=task_id, worker_id="b64", lease_for=timedelta(minutes=5),
                     handlers=pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path/"parquet"),
                     clock=lambda: e2e.RUN_AT)

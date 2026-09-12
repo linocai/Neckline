@@ -405,15 +405,16 @@ def load_prior_research_evidence(
     *, task_id: str, input_source_refs: Sequence[Mapping[str, Any]], news_cutoff_at: str,
     verification_cutoff_at: str, prompt_contract_revision: str, model_parameters_sha256: str,
     db_path: Path, canonical_key: str | None = None, event_id: str | None = None,
-    include_historical_sources: bool = False,
+    include_historical_sources: bool = False, exclude_snapshot_id: str | None = None,
 ) -> dict[str, Any]:
-    """Load bounded, time-applicable evidence from prior *task* snapshots.
+    """Load time-applicable evidence from prior and related task snapshots.
 
     This is intentionally a source-fact/relation cache, not a comparison cache:
     it never returns assessments, ranks, market context, prompts, or article
     bodies.  A caller must choose exactly one stable event identity and supplies
-    its currently frozen source refs.  The current task is always excluded:
-    its in-progress snapshot is already part of the caller's packet. Anything
+    its currently frozen source refs. The caller snapshot is excluded; another
+    event in the same task can contribute overlapping source facts, but not
+    company relations. Anything
     absent, imprecisely timed, or after either relevant cutoff is returned only
     as an isolation record.
     """
@@ -453,11 +454,11 @@ def load_prior_research_evidence(
             "SELECT r.snapshot_id,r.revision,r.task_id,r.event_id,r.event_revision,r.news_cutoff_at,r.verification_cutoff_at "
             "FROM k10_research_snapshot_revisions r JOIN ("
             "SELECT snapshot_id,MAX(revision) revision FROM k10_research_snapshot_revisions "
-            "WHERE event_id=? AND task_id<>? GROUP BY snapshot_id"
+            "WHERE (event_id=? AND task_id<>?) OR (? IS NOT NULL AND task_id=? AND snapshot_id<>?) GROUP BY snapshot_id"
             ") latest ON latest.snapshot_id=r.snapshot_id AND latest.revision=r.revision "
-            "WHERE r.event_id=? AND r.task_id<>? AND r.prompt_contract_revision=? AND r.model_parameters_sha256=? "
+            "WHERE r.prompt_contract_revision=? AND r.model_parameters_sha256=? "
             "ORDER BY r.updated_at DESC,r.snapshot_id DESC",
-            (source_event_id, task_id, source_event_id, task_id, prompt_contract_revision, model_parameters_sha256),
+            (source_event_id, task_id, exclude_snapshot_id, task_id, exclude_snapshot_id, prompt_contract_revision, model_parameters_sha256),
         ).fetchall()
         claims: list[dict[str, Any]] = []
         relations: list[dict[str, Any]] = []
@@ -480,6 +481,13 @@ def load_prior_research_evidence(
             if prior_news_cutoff > news_cutoff or prior_verification_cutoff > verification_cutoff:
                 isolated.append({"kind": "snapshot", "reason": "snapshot_after_current_cutoff", "provenance": snapshot_provenance})
                 continue
+            if prior_task_id == task_id:
+                original_refs = conn.execute('SELECT source_refs_json FROM k10_event_revisions WHERE event_id=? AND revision=?',
+                    (prior_event_id, source_event_revision)).fetchone()
+                # Shared facts require an actual source-version overlap, never
+                # a coincidental company or a similar event headline.
+                if not original_refs or not ({_ref(ref, 'shared source') for ref in json.loads(original_refs[0])} & allowed):
+                    continue
             for claim in _latest_payloads(conn, "k10_research_claims", "claim_id", "claim_json", str(snapshot_id), int(revision)):
                 ref = claim.get("sourceRef")
                 try:
@@ -490,7 +498,7 @@ def load_prior_research_evidence(
                 if not eligible:
                     isolated.append({**timing, "kind": "claim", "provenance": snapshot_provenance})
                     continue
-                key = (str(claim.get("claimId")), timing["sourceRef"]["documentId"], timing["sourceRef"]["revision"])
+                key = (str(claim.get("text")), timing["sourceRef"]["documentId"], timing["sourceRef"]["revision"])
                 if key in seen_claims:
                     continue
                 seen_claims.add(key)
@@ -501,7 +509,7 @@ def load_prior_research_evidence(
                     "location": claim.get("location"), "sourceTiming": {"publishedAt": timing["publishedAt"], "fetchedAt": timing["fetchedAt"]},
                     "provenance": snapshot_provenance,
                 })
-            if relations_selected:
+            if relations_selected or prior_task_id == task_id:
                 continue
             stage_rows = conn.execute(
                 "SELECT result_json FROM k10_research_stage_results WHERE snapshot_id=? AND revision<=? ORDER BY revision DESC",

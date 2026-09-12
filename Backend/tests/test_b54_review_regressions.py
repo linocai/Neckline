@@ -220,7 +220,12 @@ def test_r3_mixed_company_disclosures_only_withdraw_the_refuted_company(tmp_path
     _freeze_k10_clocks(monkeypatch,"2026-09-09T09:10:00+08:00")
     states={row['companyCode']:row['state'] for row in store.list_opportunities(db_path=db)}
     assert states['300002.SZ']=='withdrawn' and states['300004.SZ']=='active'
-    assert seen['300002.SZ']=='contradicted' and seen['300004.SZ']=='needs_review'
+    assert seen['300002.SZ']=='contradicted'
+    # V2 exact-stage recommendations now reuse their identity without another
+    # classifier call. The refuted company's withdrawal still uses that route.
+    assert '300004.SZ' not in seen
+    card = next(row for row in read_report(db_path=db,window='morning')['updatedCards'] if row['companyCode']=='300004.SZ')
+    assert card['catalysts'][0]['verificationStatus']=='unverified'
 
 
 def test_r4_lifecycle_read_is_durable_readonly_and_does_not_reset_selection(tmp_path,monkeypatch):

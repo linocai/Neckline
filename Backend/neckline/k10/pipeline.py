@@ -524,7 +524,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         if binding is not None:
             from .v2_profiles import retrieve_company_context
             profile_context = retrieve_company_context(db_path=binding[0], profiles_id=binding[1],
-                query=event.headline + " " + json.dumps(event.facts, ensure_ascii=False),
+                query={"headline": event.headline, "facts": event.facts},
                 hinted_codes=[mapping.company_code for mapping in mappings])
             profile_context.pop("fixedPool", None)
         return {**profile_context, "marketContext": market_context, "historicalCases": historical_context["historicalCases"],
@@ -566,6 +566,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         if binding is not None:
             from .v2_profiles import retrieve_company_context
             payload["companyScope"] = retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=text)
+            payload["companyScope"].pop("fixedPool", None)
             operation += "固定池和本地资料仅作主体关联线索；保留池外主体事实背景，但后续尽调对象必须是有合理关联的池内公司。"
         return operation, payload
 
@@ -779,6 +780,34 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         return EventComparison(raw["summary"], candidates, event_refs)
 
     def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
+        if getattr(self, '_company_profiles_binding', None) is not None:
+            from .v2_identity import IDENTITY_CONTRACT, recommendation_is_complete
+            recommended = recommendation_is_complete(comparison=comparison, verification=verification)
+            kinds = ('independent|material_stage|continuation' if recommended
+                     else 'continuation|needs_review|invalidated|background')
+            return self._json(
+                operation=(
+                    '判断 K10-v2 历史机会身份及生命周期。公司比较已经决定推荐角色，不能重新选股。'
+                    '有效主推、备选、并列均为正式推荐，缺少官方确认不构成待核关卡。'
+                    '同催化同阶段为continuation并关联旧机会，即使已到期也不重开窗口；'
+                    '独立新催化为independent；同催化实质新阶段须说明新增事实、判断变化、两日理由并关联旧机会。'
+                    '非推荐公司的新重要反证仍须更新相关旧机会：待核反证needs_review，核实推翻原理由invalidated；'
+                    '相对吸引力下降或单纯资料未确认不等于原理由被推翻。'
+                    '不得把关系底稿与已完成公司比较中的alternative混淆，不得编造新事实或猜测旧窗口。'
+                    'newFacts和twoDayReason保留本次事实及比较理由；无实质新增时明确说明，不编造新增。'
+                ),
+                payload={
+                    'identityContract': IDENTITY_CONTRACT,
+                    'event': {'canonicalKey': event.canonical_key, 'stageKey': event.stage_key,
+                              'eventState': event.event_state, 'headline': event.headline, 'facts': event.facts},
+                    'companyCode': mapping.company_code,
+                    'verification': {'state': verification.state, 'summary': verification.summary},
+                    'comparison': comparison.differences, 'previousOpportunities': previous,
+                    'output': {'kind': kinds, 'relatedOpportunityId': None, 'reason': 'string',
+                               'newFacts': 'string', 'changedJudgment': 'string|null', 'twoDayReason': 'string'},
+                },
+                model_options=self._model_options('companyComparison'),
+            )
         return self._json(
             operation=("在正式推荐前判断K10-v1.4机会身份。首次事项initial；同公司独立新催化independent；"
                        "同事项新阶段只有新增事实实质改变判断并有新两日理由才能material_stage。"
@@ -897,7 +926,7 @@ class _CheckpointedDiscoveryModel:
         _instruction, request_payload = investigation_request_spec(snapshot=snapshot, action=action,
                                                                       evidence_packet=evidence_packet)
         item: dict[str, Any] = {"snapshot": request_payload["snapshot"], "action": action,
-                                "evidencePacket": dict(evidence_packet)}
+                                "evidencePacket": request_payload["evidencePacket"]}
         item_key = f"{snapshot.snapshot_id}:{action}"
         operation = f"investigation_{action}"
         item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
@@ -1258,6 +1287,10 @@ class _CheckpointedDiscoveryModel:
                 self._base._thread_usage.repair_feedback["requiredCorrection"] = (
                     "上次达到输出长度限制。此次仅输出本 action 必须的增量变化，省略未变命题和问题，"
                     "精简重复解释，保留决定依据、真实引用和合法完整 JSON；不得裁掉必要公司或伪造结论。")
+            elif result is not None and result.safe_error_code == "investigation_reference_invalid":
+                self._base._thread_usage.repair_feedback["requiredCorrection"] = (
+                    "引用只能来自本次请求实际展示且允许的来源。若确需未展示的材料，请仅输出 contextRequests 回读该来源；"
+                    "否则改用已展示的真实证据完成当前 action。不得凭来源 ID 编造事实或将未展示资料用作依据。")
             elif result is not None and "output_truncated" in (result.safe_error_code or ""):
                 self._base._thread_usage.repair_feedback["requiredCorrection"] = (
                     "上次达到输出长度限制。只输出本阶段要求的完整 JSON，用简短理由替代重复解释；"
@@ -1491,11 +1524,22 @@ class _CheckpointedDiscoveryModel:
         item = {"event": _event_payload(event), "verification": _verification_payload(verification),
                 "companyCode": mapping.company_code, "comparison": dict(comparison.differences), "previous": list(previous),
                 "frozenEvidenceContext": self._frozen_evidence_context(event)}
+        v2_identity = getattr(self._base, '_company_profiles_binding', None) is not None
+        if v2_identity:
+            from .v2_identity import IDENTITY_CONTRACT
+            item['identityContract'] = IDENTITY_CONTRACT
         def encode(value: Mapping[str, Any]) -> Mapping[str, Any]:
-            return validate_classification(value, canonical_key=event.canonical_key, stage_key=event.stage_key,
-                                           company_code=mapping.company_code, previous=previous)
+            result = validate_classification(value, canonical_key=event.canonical_key, stage_key=event.stage_key,
+                                             company_code=mapping.company_code, previous=previous)
+            if v2_identity:
+                from .v2_identity import validate_identity_role
+                validate_identity_role(result, comparison=comparison, verification=verification)
+            return result
         def decode(value: Mapping[str, Any] | list[Any]) -> Mapping[str, Any]:
             if not isinstance(value, Mapping): raise PipelineError("分类缓存无效", code="model_cache_corrupt")
+            if v2_identity:
+                from .v2_identity import validate_identity_role
+                validate_identity_role(value, comparison=comparison, verification=verification)
             return dict(value)
         return self._run(operation="classify", stage="companyComparison", item_key=_event_item_key(event, mapping.company_code), item=item,
                          invoke=lambda: self._base.classify_opportunity(event=event, verification=verification, mapping=mapping,

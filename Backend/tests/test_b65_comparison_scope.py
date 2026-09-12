@@ -59,7 +59,7 @@ def test_paid_comparison_recovery_keeps_real_task_and_does_not_rebill(tmp_path, 
     # Reproduce the prior boundary through the actual producer and worker.
     # Omitting the packet disables only the new request-scoped normalization.
     monkeypatch.setattr(pipeline, "decode_stage_result", lambda value, **kw:
-        decode_stage_result(value, action=kw["action"]))
+        decode_stage_result(value, action=kw["action"], **({} if kw["action"] == "compare_companies" else {"evidence_packet":kw.get("evidence_packet")})))
     db, task_id, task, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
     assert task.status == "failed" and calls.count("research:compare_companies") == 2
     monkeypatch.setattr(pipeline, "decode_stage_result", decode_stage_result)

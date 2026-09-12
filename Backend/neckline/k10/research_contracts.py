@@ -383,10 +383,17 @@ class ResearchStageResult:
     fulltext_requests: tuple[FullTextRequest, ...] = ()
     conclusion: Mapping[str, Any] | None = None
     company_assessments: tuple[Mapping[str, Any], ...] = ()
+    context_requests: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         _enum(self.action, RESEARCH_ACTIONS, "action")
         _optional_text(self.safe_error_code, "safeErrorCode")
+        if self.context_requests and (self.claims or self.questions or self.query_paths or self.evidence_updates or self.fulltext_requests or self.company_assessments or self.conclusion):
+            raise ResearchContractError('局部回读不得同时推进研究结果')
+        for request in self.context_requests:
+            if not isinstance(request, Mapping) or request.get('kind') not in {'company_search', 'company_fields', 'claim', 'question', 'source'}:
+                raise ResearchContractError('contextRequests 无效')
+            _text(request.get('purpose'), 'contextRequests.purpose')
         for update in self.evidence_updates:
             validate_evidence_update(update)
         for assessment in self.company_assessments:
@@ -406,7 +413,8 @@ class ResearchStageResult:
                 "evidenceUpdates": [dict(item) for item in self.evidence_updates],
                 "fulltextRequests": [item.to_dict() for item in self.fulltext_requests],
                 "conclusion": None if self.conclusion is None else dict(self.conclusion),
-                "companyAssessments": [dict(item) for item in self.company_assessments]}
+                "companyAssessments": [dict(item) for item in self.company_assessments],
+                **({"contextRequests": [dict(item) for item in self.context_requests]} if self.context_requests else {})}
 
 
 def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:

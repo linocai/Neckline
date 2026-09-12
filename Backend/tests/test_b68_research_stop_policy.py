@@ -17,7 +17,8 @@ def test_real_worker_receives_current_stop_rule_before_comparison_and_publishes_
     db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True,
         pending_ranking='legacy_wrong', request_observer=observe)
     assert task.status == 'completed'
-    assert {'plan_gaps','plan_queries','assess_evidence','close_research','compare_companies'} <= requests.keys()
+    assert 'assess_evidence' not in requests  # no returned documents: no empty reread
+    assert {'plan_gaps','plan_queries','close_research','compare_companies'} <= requests.keys()
     for action, (instruction, payload) in requests.items():
         assert '缺少官方确认不构成待核关卡' in instruction, action
         assert '足以支持当前比较、并能说明剩余不确定性时结束调查' in instruction, action
