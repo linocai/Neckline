@@ -474,8 +474,24 @@ class _Investigation:
                 if question is None or document is None:
                     raise InvestigationError("全文申请的调查上下文丢失", code="investigation_fulltext_scope_invalid")
                 self._external_guard()
-                bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
-                    request=request, cutoff_at=self.cutoff, cutoff_inclusive=self.cutoff_inclusive)
+                if document.evidence_ref in self.event.source_refs:
+                    # The original article was already admitted and read. A
+                    # request to inspect it again must use that exact version,
+                    # not send a TuShare source into Tavily's Extract gateway.
+                    # Same-source rereading never supplies independent proof.
+                    from .verification import VerificationEvidenceBundle
+                    has_body = isinstance(document.original_text, str) and bool(document.original_text.strip())
+                    local = (replace(document, analysis_text=document.original_text),) if has_body else ()
+                    bundle = VerificationEvidenceBundle("available" if has_body else "pending", local,
+                        local if document.evidence_ref in self.allowed else (),
+                        {"provider": "local", "operation": "extract", "requestState": "reused",
+                         "state": "available" if has_body else "pending",
+                         "reason": "original_article_reread" if has_body else "original_fulltext_unavailable",
+                         "admissionState": "fulfilled" if has_body else "rejected",
+                         "independentVerification": False, "questionId": question.question_id})
+                else:
+                    bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
+                        request=request, cutoff_at=self.cutoff, cutoff_inclusive=self.cutoff_inclusive)
                 self._tool(bundle, request=request)
                 received = received or bool(bundle.documents)
                 did_work = True
@@ -516,6 +532,8 @@ class _Investigation:
             "fullTextDocuments": [{**_ref(doc), "text": doc.analysis_text or doc.original_text or "",
                 "publishedAt": doc.published_at, "fetchedAt": doc.fetched_at,
                 "eligibleAtNewsCutoff": doc.evidence_ref in self.allowed,
+                **({"materialOrigin": "original_article", "independentVerification": False}
+                   if doc.evidence_ref in self.event.source_refs else {}),
                 "contentVersionAtCutoff": doc.metadata.get("contentVersionAtCutoff")} for doc in full]})
         return True
 

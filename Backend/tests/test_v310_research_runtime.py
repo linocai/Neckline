@@ -1,5 +1,6 @@
 """Resource and provenance invariants at the real investigation coordinator."""
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ REF = {"documentId": "source-1", "revision": 1}
 
 def _runtime():
     runtime = object.__new__(_Investigation)
+    runtime.event = SimpleNamespace(source_refs=())
     runtime.allowed = {EvidenceRef("source-1", 1)}
     runtime.state = {"claims": [_claim().to_dict()], "questions": [], "paths": [],
                      "fulltextRequests": [], "stageResults": [], "evidenceUpdates": []}

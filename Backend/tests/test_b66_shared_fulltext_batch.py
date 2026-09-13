@@ -37,7 +37,8 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
         payload = json.loads(message.split('<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
         if payload.get('action') == 'assess_evidence':
             packet = payload['evidencePacket']
-            source_ref[:] = [packet['allowedEvidenceRefs'][0]]
+            source_ref[:] = [{'documentId':'b66-external-source', 'revision':1}]
+            assert source_ref[0] in packet['allowedEvidenceRefs']
             model_bodies.extend(row['text'] for row in packet.get('fullTextDocuments', []))
     def fetch_fulltext(self, **kwargs):
         request, doc = kwargs['request'], kwargs['document']
@@ -47,8 +48,16 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
             'admissionState': 'fulfilled', 'admissionRef': request.source_ref})
     def fetch(self, **kwargs):
         self.search_paths.append(kwargs['query_path'].path_id)
-        refs = [{'documentId': ref.document_id, 'revision': ref.revision} for ref in kwargs['event'].source_refs]
-        rows = store.load_document_versions(refs=refs, db_path=tmp_path/'b39-e2e.sqlite')
+        # An external Extract regression must use an actual additional source,
+        # not relabel the already-read original TuShare article as a search hit.
+        stamp = e2e.RUN_AT.isoformat()
+        store.append_document_version(document_id='b66-external-source', source_key='tavily_verification',
+            external_id='b66-external-source', canonical_url='https://example.test/announcement',
+            content_sha256='e'*64, published_at=(e2e.RUN_AT-timedelta(hours=2)).isoformat(),
+            published_precision='exact', fetched_at=stamp, original_text='Additional announcement body',
+            excerpt='Additional announcement excerpt', fetch_version='fixture-search', metadata={},
+            created_at=stamp, db_path=tmp_path/'b39-e2e.sqlite')
+        rows = store.load_document_versions(refs=[{'documentId':'b66-external-source','revision':1}], db_path=tmp_path/'b39-e2e.sqlite')
         from neckline.k10.discovery import DiscoveryDocument
         docs = tuple(DiscoveryDocument(row['documentId'], row['revision'], row['publishedAt'], row['fetchedAt'],
             row['originalText'], row['excerpt'], row['metadata']) for row in rows)
