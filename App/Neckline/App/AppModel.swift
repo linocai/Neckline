@@ -60,6 +60,7 @@ struct K10CacheContext: Hashable {
     private var refreshGeneration = 0
     private var analysisChainReloadGenerations: [String: Int] = [:]
     private var analysisRequestKeys: [String: (signature: String, key: String)] = [:]
+    private let clock: () -> Date
     private weak var config: AppConfig?
 
     init(
@@ -68,7 +69,8 @@ struct K10CacheContext: Hashable {
         cacheLoader: @escaping (K10CacheContext) -> K10CacheSnapshot? = { context in K10Cache.load(baseURL: context.baseURL, scope: context.scope) },
         cacheSaver: @escaping (K10CacheSnapshot, K10CacheContext) -> Void = { snapshot, context in K10Cache.save(snapshot, baseURL: context.baseURL, scope: context.scope) },
         cacheClearer: @escaping () -> Void = { K10Cache.clearAllK10() },
-        adminServiceFactory: @escaping (URL, String) -> any K10AdminServicing = { baseURL, token in K10AdminClient(baseURL: baseURL, token: token) }
+        adminServiceFactory: @escaping (URL, String) -> any K10AdminServicing = { baseURL, token in K10AdminClient(baseURL: baseURL, token: token) },
+        clock: @escaping () -> Date = Date.init
     ) {
         self.serviceFactory = serviceFactory
         self.cacheContextFactory = cacheContextFactory
@@ -76,6 +78,7 @@ struct K10CacheContext: Hashable {
         self.cacheSaver = cacheSaver
         self.cacheClearer = cacheClearer
         self.adminServiceFactory = adminServiceFactory
+        self.clock = clock
     }
     func bind(config: AppConfig) {
         advanceConnectionGeneration()
@@ -289,8 +292,17 @@ struct K10CacheContext: Hashable {
             .filter { !$0.allowsSelection && seen.insert($0.cardId).inserted }
     }
     private var expiredWindowIDs: Set<String> {
-        Set(companyWindows.filter { window in
-            window.opportunities.contains { $0.lifecycle == "expired" }
+        let now = clock()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        return Set(companyWindows.filter { window in
+            // Withdrawal remains a lifecycle fact after D2; the fixed window
+            // deadline determines when its notices belong in home history.
+            if let close = fractional.date(from: window.d2CloseAt) ?? standard.date(from: window.d2CloseAt), close <= now {
+                return true
+            }
+            return window.opportunities.contains { $0.lifecycle == "expired" }
                 && window.opportunities.allSatisfy { ["expired", "withdrawn", "withdrawal"].contains($0.lifecycle) }
         }.map(\.companyWindowId))
     }

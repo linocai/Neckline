@@ -51,6 +51,13 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 - Rulings recorded in `PROJECT_PLAN.md` are settled. Do not reopen them mid-build. Anything genuinely undecided
   must be recorded as 事实 / 选项 / 影响面 / 倾向 — and 倾向 is not a decision.
 
+## Temporary artifacts and backup cleanup
+
+- A task is not complete until its local user-temp, `/tmp` and relevant cloud artifacts are inventoried, ownership/open handles checked, disposable files removed, and before/after usage plus retained recovery points verified. Include pytest batches, `mkdtemp` isolation directories, reviewer/reproducer databases, QA copies and SQLite WAL/SHM files. Never delete other projects' shared pytest directories by prefix alone.
+- Successful tests should not retain their full databases: use pytest `-o tmp_path_retention_policy=failed` pending the tracked fixture/config cleanup. Closed reproductions retain regression source and concise evidence, not every database copy. Preserve independent writable databases; reduce fixture payloads without weakening full-pool and real CLI/worker/API coverage.
+- As of the user-authorized 2026-09-13 cleanup, cloud backups retain only `v3.2.1-b60-predeploy` and `v3.2.1-b61-predeploy`, restoring B59/B60 code respectively; both have verified Schema 8 pre/post snapshots. Older backup and temporary release paths in historical records were deliberately removed. Production DB, parquet, runtime and formal release assets remain intact.
+- Future release closure must remove rehearsal/restore-check databases and their sidecars, check redundant pre/post copies for reuse/compression, and retire superseded recovery points after verifying the retained set. Cleanup applies on success and after closed failures; retained incident data needs a reason and deletion condition. Automated backup retention and fixture lifecycle changes are still tracked work, not claimed implemented by this cleanup.
+
 ## Verification
 
 ```bash

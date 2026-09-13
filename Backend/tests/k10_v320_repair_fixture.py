@@ -47,7 +47,35 @@ def export_repair(path: Path, output: Path):
             (output/(name+'.json')).write_text(json.dumps(response.json(),ensure_ascii=False,indent=2))
 
 
+def export_withdrawal_history(path: Path, output: Path):
+    """Keep the actual all-withdrawn D2 reproduction for the native home regression."""
+    from pytest import MonkeyPatch
+    from tests.test_k10_api import _freeze_k10_clocks
+    if not path.exists():
+        build_repair_fixture(path)
+    output.mkdir(parents=True, exist_ok=True)
+    # Build first: the test clock must never change fixture datetime type checks.
+    for label, instant in (("before", "2026-09-10T14:59:59+08:00"),
+                           ("at", "2026-09-10T15:00:00+08:00"),
+                           ("after", "2026-09-13T18:00:00+08:00")):
+        with MonkeyPatch.context() as patch:
+            _freeze_k10_clocks(patch, instant)
+            with TestClient(create_app(path)) as client:
+                for name, route in {"evening": "/v2/reports/latest?window=evening",
+                                    "morning": "/v2/reports/latest?window=morning",
+                                    "windows": "/company-windows?limit=100"}.items():
+                    response = client.get("/api/v1/k10" + route)
+                    response.raise_for_status()
+                    (output / f"b62_{label}_{name}.json").write_text(
+                        json.dumps(response.json(), ensure_ascii=False, indent=2))
+
+
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser();parser.add_argument('--db',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();export_repair(args.db,args.output)
+    parser.add_argument('--withdrawal-history', action='store_true')
+    args=parser.parse_args()
+    if args.withdrawal_history:
+        export_withdrawal_history(args.db,args.output)
+    else:
+        export_repair(args.db,args.output)

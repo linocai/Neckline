@@ -1225,6 +1225,73 @@ extension K10V3Tests {
     }
 
     @MainActor
+    func testB62ActualWithdrawnWindowNoticesArchiveAtD2() throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_V320_DTO_DIR"] else {
+            throw XCTSkip("Set NK_V320_DTO_DIR to actual withdrawal-history API responses")
+        }
+        for (label, instant) in [("before", "2026-09-10T14:59:59+08:00"),
+                                 ("at", "2026-09-10T15:00:00+08:00"),
+                                 ("after", "2026-09-13T18:00:00+08:00")] {
+            func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+                try JSONDecoder().decode(type, from: Data(contentsOf: URL(fileURLWithPath: root)
+                    .appendingPathComponent("b62_\(label)_\(name).json")))
+            }
+            let now = try XCTUnwrap(ISO8601DateFormatter().date(from: instant))
+            let model = AppModel(clock: { now })
+            model.dailyEvening = try read("evening", as: K10DailyReportResponse.self)
+            model.dailyMorning = try read("morning", as: K10DailyReportResponse.self)
+            model.companyWindows = try read("windows", as: K10CompanyWindowList.self).items
+            let window = try XCTUnwrap(model.companyWindows.first {
+                $0.companyCode == "300004.SZ" && $0.firstBatchId == "v2-batch-evening"
+            })
+            XCTAssertEqual(window.d2CloseAt, "2026-09-10T15:00:00+08:00")
+            XCTAssertFalse(window.opportunities.isEmpty)
+            XCTAssertTrue(window.opportunities.allSatisfy { $0.lifecycle == "withdrawal" })
+            XCTAssertFalse(window.allowsSelection)
+            let original = model.dailyLifecycleUpdates.filter { $0.companyWindowId == window.id }
+            XCTAssertTrue(original.contains { $0.kind == "withdrawal" })
+            let current = model.currentLifecycleUpdates.filter { $0.companyWindowId == window.id }
+            let history = model.historicalLifecycleUpdates.filter { $0.companyWindowId == window.id }
+            XCTAssertEqual(current, label == "before" ? original : [], label)
+            XCTAssertEqual(history, label == "before" ? [] : original, label)
+            XCTAssertEqual(model.dailyLifecycleUpdates.filter { $0.companyWindowId == window.id }, original)
+            if label == "before" {
+                XCTAssertTrue(model.currentLifecycleUpdates.contains { $0.companyCode == "300005.SZ" && $0.kind == "risk" },
+                              "窗口内的当前风险继续可见")
+            }
+        }
+    }
+
+    @MainActor
+    func testB62WithdrawnHistoryAcceptsFractionalUTCDeadline() async throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-10T07:00:00Z"))
+        let model = AppModel(serviceFactory: { K10SyntheticUIService() }, clock: { now })
+        await model.refresh()
+        let window = try XCTUnwrap(model.companyWindows.first)
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(window)) as? [String: Any])
+        payload["d2CloseAt"] = "2026-09-10T07:00:00.000000Z"
+        payload["opportunities"] = (payload["opportunities"] as! [[String: Any]]).map { item in
+            var withdrawn = item; withdrawn["lifecycle"] = "withdrawal"; return withdrawn
+        }
+        let ended = try JSONDecoder().decode(K10CompanyWindow.self, from: JSONSerialization.data(withJSONObject: payload))
+        payload["companyWindowId"] = "independent-future-window"
+        payload["d2CloseAt"] = "2026-09-11T15:00:00+08:00"
+        model.companyWindows = [ended, try JSONDecoder().decode(K10CompanyWindow.self, from: JSONSerialization.data(withJSONObject: payload))]
+        let notices = ["withdrawal", "risk"].map { kind in
+            K10DailyLifecycleUpdate(updateId: kind, opportunityId: "withdrawn-opportunity", companyWindowId: window.id,
+                companyCode: window.companyCode, companyName: "历史公司", kind: kind, reason: "保留原始依据",
+                createdAt: "2026-09-09T09:00:00+08:00", sourceRefs: [])
+        }
+        let current = K10DailyLifecycleUpdate(updateId: "current-risk", opportunityId: "current-opportunity",
+            companyWindowId: "independent-future-window", companyCode: window.companyCode, companyName: "同公司独立窗口",
+            kind: "risk", reason: "仍在观察窗口内", createdAt: "2026-09-10T07:00:00Z", sourceRefs: [])
+        model.dailyEvening?.report?.lifecycleUpdates = notices + [current]
+        model.dailyMorning?.report?.lifecycleUpdates = []
+        XCTAssertEqual(model.currentLifecycleUpdates, [current], "同公司未结束窗口的当前风险不能随旧窗口隐藏")
+        XCTAssertEqual(model.historicalLifecycleUpdates, notices)
+    }
+
+    @MainActor
     func testB60HomeArchivesClosedCardsWithoutChangingPublishedReportOrMixedWindow() async throws {
         let service = K10SyntheticUIService()
         let model = AppModel(serviceFactory: { service })

@@ -121,6 +121,7 @@ Mac 尚未公证，网络下载后的 Gatekeeper 体验未验收。iOS 真机签
 
 本次只更新代码与 wheel；Schema 8、通知 Schema 2 和 85 张表全部数据保持不变，前后备份校验值相同。
 服务器恢复集 `/opt/neckline/data/backups/v3.2.1-b61-predeploy/` 包含 B60 代码、环境/绑定、全部当前数据的前后备份和回执；禁止覆盖后续写入。
+2026-09-13 已按用户授权清理历史备份：当前仅保留 B60、B61 两套 predeploy 恢复集（分别可退回 B59、B60 代码），合计约 1.15 GiB；更早历史记录里的恢复路径已不再存在。正式数据库、行情、发布包及下述 Mac 副本保留。
 Mac 可恢复副本 `/Users/linotsai/Lino/app_backups/Neckline-v3.2.1-build60-pre-b61-20260913.app`。
 回滚前必须停止所有写入者、保存最新现场并核对升级后的业务写入；不得直接拿旧快照覆盖新增数据。
 保持根目录 `root:root /0755`、数据库 `neckline:neckline /0600`，恢复后核对完整性、健康、鉴权、实际配置和暂停状态。
