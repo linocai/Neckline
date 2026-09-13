@@ -190,7 +190,13 @@ def retrieve_company_context(*, db_path: Path, profiles_id: str, query: Any,
             if isinstance(value, dict):
                 for key, item in value.items():
                     if key in {'source_ref', 'source_refs'}:
-                        yield from ([item] if isinstance(item, str) else item)
+                        # Draft fields may explicitly have no source. Preserve
+                        # that field as-is; only actual string references can
+                        # select source metadata for the projected evidence.
+                        if isinstance(item, str):
+                            yield item
+                        elif isinstance(item, list):
+                            yield from (ref for ref in item if isinstance(ref, str))
                     else:
                         yield from source_ids(item)
             elif isinstance(value, list):
