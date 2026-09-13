@@ -539,6 +539,11 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                      "放入 facts.background。若本篇没有当前新增或更新，events 必须是 []。"
                      "同一事项仍沿用 canonicalKey，阶段更新用 stageKey，不得因标题或日期重建旧催化。"
                      "若关键段落不足以判断，请 needsFullText=true；否则 false。")
+        if text_mode == "full_text":
+            operation = operation.replace("若关键段落不足以判断，请 needsFullText=true；否则 false。",
+                "已提供该来源当前可用的全部正文，needsFullText=false。仍缺外部确认或背景资料时，"
+                "保留原文能支持的事实，将缺口写进 facts 和 claims.decisionImpact，交给后续核查；"
+                "不要把资料待核当作本篇没有事件，也不要补造事实。")
         payload = {"documentId": document.document_id, "revision": document.revision,
             "publicationContext": {"publishedAt": document.published_at, "fetchedAt": document.fetched_at,
                                   "scanCutoffAt": self._scan_cutoff_at}, "metadata": document.metadata,
@@ -573,7 +578,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         return operation, payload
 
     @staticmethod
-    def _decode_understand(raw: Mapping[str, Any], *, require_claims: bool = False) -> tuple[tuple[EventDraft, ...], bool]:
+    def _decode_understand(raw: Mapping[str, Any], *, require_claims: bool = False,
+                          full_text: bool = False) -> tuple[tuple[EventDraft, ...], bool]:
         needs_full = raw.get("needsFullText", False)
         if not isinstance(needs_full, bool):
             raise PipelineError("理解输出 needsFullText 无效", code="understand_json_contract_invalid")
@@ -596,7 +602,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                 # B39 has already paid to read this body.  Treat a missing typed
                 # derivative as a protocol failure; never send the body through
                 # a second event-level extraction fallback.
-                raise PipelineError("理解输出缺少 claims", code="investigation_claims_missing")
+                raise PipelineError("理解输出缺少 claims", code="understand_json_contract_invalid") from ResearchContractError(
+                    "每个事件须列出原文支持的事实明细，不能省略 claims", field_name="events[].claims", expected="array")
             raw_claims = row.get("claims", [])
             if not isinstance(raw_claims, list):
                 raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid")
@@ -604,12 +611,34 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                 claims = tuple(Claim.from_dict(item) for item in raw_claims)
             except Exception as exc:
                 raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
-            refs = _refs(row.get("sourceRefs"))
+            raw_refs = row.get("sourceRefs")
+            # Derive a missing duplicate field only from already validated claim
+            # references. Explicit references are never replaced or invented.
+            if raw_refs is None and claims:
+                claim_refs = [claim.source_ref for claim in claims]
+                if all(ref == claim_refs[0] for ref in claim_refs):
+                    raw_refs = [claim_refs[0]]
+            try:
+                refs = _refs(raw_refs)
+            except PipelineError as exc:
+                raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from ResearchContractError(
+                    str(exc), field_name="events[].sourceRefs", expected="single_source_reference_array")
             if len(refs) != 1 or any(claim.source_ref != _ref_payload(refs[0]) for claim in claims):
                 raise PipelineError("理解命题引用不属于当前正文", code="understand_reference_invalid")
             facts = {**dict(row["facts"]), "researchClaims": [claim.to_dict() for claim in claims]}
+            if full_text and needs_full:
+                # This is source uncertainty, not a request to bill the same body
+                # again. Preserve it for downstream research alongside the claims.
+                facts["sourceMaterialCoverage"] = {
+                    "availableBodyRead": True, "modelRequestedMoreMaterial": True,
+                    "state": "additional_material_unresolved",
+                }
             out.append(EventDraft(row["canonicalKey"], row["stageKey"], row["eventState"], row["headline"],
                                   row["eventKind"], facts, refs))
+        if full_text and needs_full and not out:
+            raise PipelineError("资料不足时仍须提取已有事实或明确无新增事件", code="understand_json_contract_invalid") from ResearchContractError(
+                "不得用空事件和还需全文替代已有正文理解；按原文提取，确无新增时明确 needsFullText=false",
+                field_name="events/needsFullText", expected="available_facts_or_explicit_no_new_event")
         return tuple(out), needs_full
 
     def understand(self, *, document: DiscoveryDocument) -> Sequence[EventDraft]:
@@ -1189,7 +1218,8 @@ class _CheckpointedDiscoveryModel:
             previous = item.get("authorizedSemanticRecoveryOf")
             is_title = operation in {"titleBatch", "titleReconcile"}
             is_research = operation in {"investigation_assess_evidence", "investigation_compare_companies"}
-            if not (is_title or is_research) or not previous or not self._allow_failed_research_resume:
+            is_body = operation == "understand"
+            if not (is_title or is_research or is_body) or not previous or not self._allow_failed_research_resume:
                 return None
             folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
             for path in sorted(folder.glob("*.json")):
@@ -1204,7 +1234,7 @@ class _CheckpointedDiscoveryModel:
                         continue
                     # The exact-input paid answer must pass current parsing
                     # AND the same live research evidence boundary before use.
-                    candidate = value["response"] if is_title else decode(value["response"])
+                    candidate = value["response"] if is_title or is_body else decode(value["response"])
                     if is_research:
                         validator = getattr(self._research_validators, "current", None)
                         if validator is None:
@@ -1263,6 +1293,10 @@ class _CheckpointedDiscoveryModel:
             # metering truthful if an injected model does not expose a single record.
             if isinstance(value, LLMResult):
                 return value
+            if recovered_response is not None:
+                # The original paid attempt remains in its immutable ledger;
+                # exact-input local revalidation incurs no additional usage.
+                return ModelInvocation(value=value, input_tokens=0, output_tokens=0, total_tokens=0)
             usage = current_usage()
             return ModelInvocation(value=value, input_tokens=usage.get("inputTokens"),
                                    output_tokens=usage.get("outputTokens"), total_tokens=usage.get("totalTokens"))
@@ -1361,12 +1395,10 @@ class _CheckpointedDiscoveryModel:
                     "textMode": mode, "text": material, "paragraphIndexes": list(indexes)}
             def encode(raw: Mapping[str, Any]) -> Mapping[str, Any]:
                 events, needs_full = self._base._decode_understand(
-                    raw, require_claims=self._base._uses_investigation_contract())
+                    raw, require_claims=self._base._uses_investigation_contract(), full_text=mode == "full_text")
                 expected_refs = {document.evidence_ref}
                 if any(not event.source_refs or any(ref not in expected_refs for ref in event.source_refs) for event in events):
                     raise PipelineError("理解事件引用不属于当前冻结资料", code="understand_reference_invalid")
-                if mode == "full_text" and needs_full:
-                    raise PipelineError("全文理解仍要求更多资料", code="understand_full_incomplete")
                 return {"events": freeze_event_drafts(events), "needsFullText": needs_full}
             def decode(value: Mapping[str, Any] | list[Any]) -> tuple[tuple[EventDraft, ...], bool]:
                 if not isinstance(value, Mapping) or not isinstance(value.get("needsFullText"), bool):
@@ -1399,28 +1431,10 @@ class _CheckpointedDiscoveryModel:
                     return decode(cached["result"])
             item_key = f"{document.document_id}@{document.revision}:{suffix}"
             if self._allow_failed_research_resume:
-                digest, _key, prior = self._research_checkpoint(operation="understand", stage="understand",
-                                                               item_key=item_key, item=item)
-                self._reject_unknown_research_checkpoint(prior)
-                code = prior[1] if prior is not None else None
-                if (prior is not None and prior[0] == "failed" and isinstance(code, str)
-                        and ("json" in code or code in {"execution_paused", "investigation_claims_missing"})):
-                    item = {**item, "authorizedSemanticRecoveryOf": digest}
-                    _digest, _key, resumed = self._research_checkpoint(operation="understand", stage="understand",
-                                                                      item_key=item_key, item=item)
-                    self._reject_unknown_research_checkpoint(resumed)
-                    # A second explicit recovery may repair an already exhausted
-                    # recovery group. Follow its immutable chain, reusing any
-                    # completed group; never create more groups within one grant.
-                    authorization = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
-                    authorized_failures = authorization.get("failedModelInputSha256", [])
-                    while (resumed is not None and resumed[0] == "failed" and isinstance(resumed[1], str)
-                           and ("json" in resumed[1] or resumed[1] in {"execution_paused", "investigation_claims_missing"})
-                           and _digest in authorized_failures):
-                        item = {**item, "authorizedSemanticRecoveryOf": _digest}
-                        _digest, _key, resumed = self._research_checkpoint(operation="understand", stage="understand",
-                                                                          item_key=item_key, item=item)
-                        self._reject_unknown_research_checkpoint(resumed)
+                item, _digest, _key, _prior = self._recovery_target(
+                    operation="understand", stage="understand", item_key=item_key, item=item,
+                    eligible=lambda code: "json" in code or code in {
+                        "execution_paused", "investigation_claims_missing", "understand_full_incomplete", "pipeline_invalid"})
             value = self._run(operation="understand", stage="understand", item_key=item_key,
                              item=item,
                              invoke=lambda: self._base._json(operation=operation, payload=payload,

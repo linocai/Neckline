@@ -217,7 +217,8 @@ def test_b39_understand_requires_an_explicit_claims_array():
     }]}
     with pytest.raises(PipelineError) as raised:
         DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True)
-    assert raised.value.code == "investigation_claims_missing"
+    assert raised.value.code == "understand_json_contract_invalid"
+    assert raised.value.__cause__.field_name == "events[].claims"
 
 
 def test_one_selected_body_can_yield_multiple_typed_events_in_one_model_call():

@@ -211,7 +211,19 @@ class _Investigation:
             for item in self.state["stageResults"] if "runtimePriorEvidence" in (item["result"].get("conclusion") or {})), {})
         fulltext_leads = [ref for item in tool_outcomes if item for ref in item.get("documentRefs", [])
                          if _key(ref) not in self.allowed]
+        material_gaps = []
+        def collect_material_gaps(facts, refs):
+            coverage = facts.get("sourceMaterialCoverage")
+            if isinstance(coverage, Mapping) and coverage.get("modelRequestedMoreMaterial") is True:
+                material_gaps.append({"sourceRefs": refs, **coverage,
+                    "meaning": "已读本来源可用正文，仍需补充资料；已有命题不因此变成已核实，后续按实际缺口核查。"})
+            sources = facts.get("sourceFacts")
+            for source in sources if isinstance(sources, (list, tuple)) else ():
+                if isinstance(source, Mapping) and isinstance(source.get("facts"), Mapping):
+                    collect_material_gaps(source["facts"], source.get("sourceRefs", []))
+        collect_material_gaps(self.event.facts, [_ref(ref) for ref in self.event.source_refs])
         return {"event": {key: self.context[key] for key in ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")},
+            **({"sourceMaterialGaps": material_gaps} if material_gaps else {}),
             "companyScope": self._company_scope(),
             '_localPathOrder': {path['pathId']: stage['revision'] for stage in self.state['stageResults']
                 for path in stage['result'].get('queryPaths', [])
