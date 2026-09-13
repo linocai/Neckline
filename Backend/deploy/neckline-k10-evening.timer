@@ -2,6 +2,7 @@
 Description=Schedule Neckline K10 evening enqueue at Beijing 21:00
 
 [Timer]
+# Every natural day: enqueue checks whether tomorrow is an exchange trading day.
 OnCalendar=*-*-* 21:00:00 Asia/Shanghai
 Persistent=false
 Unit=neckline-k10-evening.service

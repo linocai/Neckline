@@ -15,7 +15,7 @@ from .notification_runtime import create_notification_maintenance
 from .notifications import require_notifications_schema
 from .schema import require_schema, read_connection
 from .pipeline import production_handlers
-from .windows import evening_cutoff, morning_cutoff
+from .windows import evening_cutoff, morning_cutoff, scan_calendar_day
 from .worker import run_once, run_worker
 
 
@@ -68,11 +68,12 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
     control = store.run_control_status(db_path=db_path)
     if control.get("state") != "open":
         raise RuntimeError("K10 运行已暂停，拒绝入队")
-    calendar_state = official_is_trading_day(trading_day, db_path=db_path)
+    calendar_day = scan_calendar_day(kind=kind, run_day=trading_day)
+    calendar_state = official_is_trading_day(calendar_day, db_path=db_path)
     if calendar_state is None:
         raise RuntimeError("交易日历缺覆盖，拒绝猜测交易日")
     if calendar_state is False:
-        raise RuntimeError("该日为非交易日，不能入队")
+        raise RuntimeError("报告对应开盘日为非交易日，不能入队")
     config=store.read_run_config(config_id=config_id,revision=config_revision,db_path=db_path)
     if config is None: raise RuntimeError("指定 K10 配置修订不存在")
     policy=(config["payload"].get("taskPolicies") or {}).get("discovery")
@@ -232,11 +233,13 @@ def main(argv: list[str] | None=None) -> int:
         return 0
     if args.command=="enqueue":
         trading_day = _day(args.trading_day)
-        calendar_state = official_is_trading_day(trading_day, db_path=args.db)
+        calendar_day = scan_calendar_day(kind=args.kind, run_day=trading_day)
+        calendar_state = official_is_trading_day(calendar_day, db_path=args.db)
         if calendar_state is None:
             raise RuntimeError("交易日历缺覆盖，拒绝猜测交易日")
         if calendar_state is False:
-            print(json.dumps({"status": "not_trading_day", "tradingDay": trading_day.isoformat()}, ensure_ascii=False))
+            print(json.dumps({"status": "not_trading_day", "tradingDay": trading_day.isoformat(),
+                              "calendarDay": calendar_day.isoformat()}, ensure_ascii=False))
             return 0
         if args.execution_config_id is None or args.execution_config_revision is None:
             raise RuntimeError("正式扫描入队必须显式绑定执行配置")

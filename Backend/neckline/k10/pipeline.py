@@ -45,7 +45,7 @@ from .tushare_news import TuShareMajorNewsAdapter
 from .universe import CHINEXT, CompanyMetadata, CompanyMetadataProvider
 from .verification import TavilyEvidenceGateway
 from .source_metadata import PublicationMetadataResolver, TransportResponse
-from .windows import ScanWindow, evening_window, morning_window
+from .windows import ScanWindow, evening_window, morning_window, scan_calendar_day
 from .schema import read_connection
 from .worker import TaskContext, TaskResult, run_once
 
@@ -2438,13 +2438,9 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     return TaskResult("not_configured", "source_bootstrap", error=str(exc))
             if start is None:
                 return TaskResult("not_configured", "source_bootstrap", error="晚间扫描缺少来源成功水位和显式首次回补 cutoff")
-            nominal_window = evening_window(trading_day=cutoff_at.date(), source_success_watermark=start)
+            nominal_window = evening_window(trading_day=cutoff_at.astimezone(CN_TZ).date(), source_success_watermark=start)
         else:
-            try:
-                previous = prev_trading_day(cutoff_at.date(), db_path=db_path)
-            except RuntimeError:
-                return TaskResult("not_configured", "calendar", error="交易日历缺少上一交易日覆盖")
-            fixed = morning_window(previous_trading_day=previous, observation_day=cutoff_at.date())
+            fixed = morning_window(observation_day=cutoff_at.astimezone(CN_TZ).date())
             nominal_window = fixed if start is None or start >= fixed.start_at else ScanWindow(
                 kind="morning", start_at=start, cutoff_at=fixed.cutoff_at, start_inclusive=False, cutoff_inclusive=True)
         replay_seconds = _late_arrival_replay_seconds(configuration=configuration, source_key=adapter.coverage.source_key)
@@ -3078,7 +3074,8 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
                 reason="来源分页上限未配置", generated_at=started_at)
         return TaskResult("not_configured","configuration",error="来源分页上限未配置")
-    if not resuming and official_is_trading_day(cutoff.date(),db_path=context.db_path) is not True:
+    calendar_day = scan_calendar_day(kind=kind, run_day=cutoff.astimezone(CN_TZ).date())
+    if not resuming and official_is_trading_day(calendar_day,db_path=context.db_path) is not True:
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
                 reason="交易日历缺覆盖或该日非交易日", generated_at=started_at)

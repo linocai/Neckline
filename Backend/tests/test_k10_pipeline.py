@@ -634,7 +634,9 @@ def test_morning_data_is_retained_without_auto_candidate_replacement(tmp_path):
     assert result.stage == "discovery_completed"
     assert result.checkpoint["candidateCount"] == 1
     assert result.checkpoint["deferredCount"] == 0
-    assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+    # The configured 24-hour late-arrival replay precedes the Sunday 21:00 nominal boundary.
+    assert adapter.request.source_success_watermark == datetime(2026, 9, 6, 21, tzinfo=SHANGHAI)
+    assert adapter.request.window.start_at == datetime(2026, 9, 6, 9, tzinfo=SHANGHAI)
 
 
 class _Provider(LLMProvider):

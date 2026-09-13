@@ -1,13 +1,13 @@
 """K10 固定资料窗口。
 
-交易日由任务调用方明确传入；本模块不猜测周末或节假日。所有边界统一使用北京时间，
+执行自然日由任务调用方明确传入；是否开市由调用方查交易所日历。所有边界统一使用北京时间，
 避免任务实际启动时间把 21:00 / 09:00 的资料截止向后漂移。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -21,8 +21,17 @@ def _cutoff(day: date, at: time) -> datetime:
 
 
 def evening_cutoff(trading_day: date) -> datetime:
-    """D0 晚间扫描的固定截止，**不包含**恰在 21:00 公开的资料。"""
+    """执行自然日晚间的固定截止，**不包含**恰在 21:00 公开的资料。"""
     return _cutoff(trading_day, time(21, 0))
+
+
+def scan_calendar_day(*, kind: str, run_day: date) -> date:
+    """早报查当天是否开市，晚报查翌日；与实际启动时间无关。"""
+    if not isinstance(run_day, date) or isinstance(run_day, datetime):
+        raise TypeError("报告执行日期必须是 date")
+    if kind not in {"evening", "morning"}:
+        raise ValueError("kind 必须是 evening 或 morning")
+    return run_day + timedelta(days=1) if kind == "evening" else run_day
 
 
 def morning_cutoff(observation_day: date) -> datetime:
@@ -85,17 +94,13 @@ def evening_window(*, trading_day: date, source_success_watermark: datetime | No
     )
 
 
-def morning_window(*, previous_trading_day: date, observation_day: date) -> ScanWindow:
-    """D1 增量窗口严格为 ``[D0 21:00, D1 09:00]``。
-
-    两个交易日必须由调用者依据真实日历提供；这里仅拒绝显然倒置的日期。
-    """
-    if previous_trading_day >= observation_day:
-        raise ValueError("previous_trading_day 必须早于 observation_day")
+def morning_window(*, observation_day: date) -> ScanWindow:
+    """增量窗口为前一自然日 21:00 至交易日 09:00，包含两个端点。"""
+    cutoff = morning_cutoff(observation_day)
     return ScanWindow(
         kind="morning",
-        start_at=evening_cutoff(previous_trading_day),
-        cutoff_at=morning_cutoff(observation_day),
+        start_at=evening_cutoff(observation_day - timedelta(days=1)),
+        cutoff_at=cutoff,
         start_inclusive=True,
         cutoff_inclusive=True,
     )
@@ -103,5 +108,5 @@ def morning_window(*, previous_trading_day: date, observation_day: date) -> Scan
 
 __all__ = [
     "SHANGHAI", "ScanWindow", "evening_cutoff", "evening_window", "morning_cutoff",
-    "morning_window",
+    "morning_window", "scan_calendar_day",
 ]

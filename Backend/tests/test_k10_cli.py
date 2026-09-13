@@ -98,12 +98,12 @@ def test_cli_enqueue_closed_calendar_is_a_successful_noop(tmp_path, capsys):
     revision = _db(path)
     execution_revision = _execution(path)
     with sqlite3.connect(path) as conn:
-        conn.execute("INSERT INTO trade_cal VALUES('SSE', '20260906', 0)")
+        conn.execute("INSERT INTO trade_cal VALUES('SSE', '20260912', 0)")
 
-    assert main(["enqueue", "--db", str(path), "--kind", "evening", "--trading-day", "2026-09-06",
+    assert main(["enqueue", "--db", str(path), "--kind", "evening", "--trading-day", "2026-09-11",
                  "--config-id", "fixture", "--config-revision", str(revision),
                  "--execution-config-id", "fixture-execution", "--execution-config-revision", str(execution_revision)]) == 0
-    assert json.loads(capsys.readouterr().out) == {"status": "not_trading_day", "tradingDay": "2026-09-06"}
+    assert json.loads(capsys.readouterr().out) == {"status": "not_trading_day", "tradingDay": "2026-09-11", "calendarDay": "2026-09-12"}
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_tasks").fetchone()[0] == 0
 
