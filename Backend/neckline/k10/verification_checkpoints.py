@@ -158,6 +158,13 @@ class VerificationCheckpointStore:
                         raise VerificationCheckpointError("verification_checkpoint_corrupt")
                     return VerificationRequestClaim("reused", None, used, result)
                 prior_attempts = int(existing[4])
+                task_checkpoint = json.loads(conn.execute(
+                    "SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (self.task_id,)).fetchone()[0])
+                recovery = task_checkpoint.get("verificationRecoveryAttempts", {}).get(item_key, {})
+                recovery_allowed = (existing[1] == "failed"
+                    and existing[5] in {"provider_retry_authorized", "tavily_response_unavailable"}
+                    and recovery.get("inputSha256") == input_sha256
+                    and recovery.get("networkAttemptCount") == prior_attempts)
                 if existing[5] in {"insufficient_balance", "network_attempts_exhausted", "tavily_request_outcome_unknown", "tavily_extract_outcome_unknown"}:
                     return VerificationRequestClaim("pending", existing[5], used)
                 if existing[1] == "failed" and existing[5] == "rate_limited" and prior_attempts < network_max_attempts:
@@ -165,7 +172,7 @@ class VerificationCheckpointStore:
                     retry_at = receipt.get("retryAt")
                     if retry_at and datetime.fromisoformat(updated_at or _now()) < datetime.fromisoformat(retry_at):
                         return VerificationRequestClaim("pending", "rate_limited", used, receipt)
-                if str(existing[1]) == "failed" and prior_attempts < network_max_attempts:
+                if str(existing[1]) == "failed" and (prior_attempts < network_max_attempts or recovery_allowed):
                     conn.execute(
                         "UPDATE k10_execution_item_checkpoints SET status='running',attempt_count=?,network_attempt_count=?,"
                         "safe_error_code=NULL,safe_error_ref=NULL,updated_at=? WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",

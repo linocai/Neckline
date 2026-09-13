@@ -25,7 +25,7 @@ from neckline.settings_store import (
 )
 
 VERSION = "v3.2.1"
-RELEASE_SET = "v3.2.1-b67"
+RELEASE_SET = "v3.2.1-b68"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 

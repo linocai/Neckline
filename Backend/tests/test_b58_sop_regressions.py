@@ -109,7 +109,7 @@ def test_explicit_retry_only_authorizes_confirmed_failed_attempt(tmp_path, monke
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize('status', [402, 429])
+@pytest.mark.parametrize('status', [402, 432, 433, 429])
 def test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, status):
     from neckline.k10.discovery import ProviderThrottleYield
     from neckline.k10.verification import TavilyEvidenceGateway
@@ -139,7 +139,7 @@ def test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, st
         fetch(gateway)
     restarted = TavilyEvidenceGateway(db_path=db, task_id=task_id, client=client,
         clock=lambda: COMPLETED_AT+timedelta(seconds=59), network_max_attempts=2)
-    if status == 402:
+    if status in {402, 432, 433}:
         assert fetch(restarted).coverage['reason'] == 'insufficient_balance'
         assert len(calls) == 1
         return
@@ -298,7 +298,7 @@ def test_next_day_new_articles_reuse_prior_facts_and_relations(tmp_path, monkeyp
     assert 'originalText' not in json.dumps(prior)
 
 
-@pytest.mark.parametrize('status', [402, 429])
+@pytest.mark.parametrize('status', [402, 432, 433, 429])
 def test_real_scan_tavily_failure_stops_or_resumes_affected_step(tmp_path, monkeypatch, status):
     from neckline.k10.verification import TavilyEvidenceGateway
     from neckline.search.tavily import TavilySearchClient
@@ -325,7 +325,7 @@ def test_real_scan_tavily_failure_stops_or_resumes_affected_step(tmp_path, monke
     monkeypatch.setattr(e2e, '_Gateway', gateway)
     db, task_id, task, model_calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
     assert len(calls) == 1
-    if status == 402:
+    if status in {402, 432, 433}:
         assert task.status == 'failed'
         with sqlite3.connect(db) as conn:
             tail = conn.execute('SELECT error_code FROM k10_external_attempts WHERE task_id=? ORDER BY rowid DESC', (task_id,)).fetchone()[0]

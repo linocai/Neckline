@@ -2841,7 +2841,7 @@ def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[st
         parsed = None
     started = _execution_started_at(parsed)
     merged = dict(checkpoint)
-    for key in ("knownFailedResultAttemptIds", "authorizedRetryAttemptIds", "providerBinding"):
+    for key in ("knownFailedResultAttemptIds", "authorizedRetryAttemptIds", "providerBinding", "verificationRecoveryAttempts"):
         merged.pop(key, None)
         if isinstance(parsed, Mapping) and key in parsed:
             merged[key] = parsed[key]
@@ -3066,6 +3066,19 @@ def authorize_discovery_recovery(
         if not isinstance(checkpoint, Mapping):
             raise K10Conflict("任务 checkpoint 无效")
         updated_checkpoint = _authorize_known_external_failures(conn, task_id=task_id, checkpoint=checkpoint)
+        # An explicit frozen-task recovery may retry each definitively rejected
+        # verification request once. Preserve all historical counts and receipts;
+        # normal worker restarts cannot renew this count-bound authorization.
+        updated_checkpoint["verificationRecoveryAttempts"] = {
+            key: {"inputSha256": digest, "networkAttemptCount": count}
+            for key, digest, count in conn.execute(
+                "SELECT c.item_key,c.input_sha256,c.network_attempt_count "
+                "FROM k10_execution_item_checkpoints c WHERE c.task_id=? "
+                "AND c.stage='tavily_evidence' AND c.status='failed' "
+                "AND c.safe_error_code IN ('provider_retry_authorized','tavily_response_unavailable') "
+                "AND EXISTS (SELECT 1 FROM k10_external_attempts a WHERE a.task_id=c.task_id "
+                "AND a.item_key=c.item_key AND a.stage='search' AND a.input_sha256=c.input_sha256 "
+                "AND a.state='failed' AND a.settled_at IS NOT NULL)", (task_id,))}
         if research_max_tokens is not None or completion_deadline_seconds is not None or finalization_max_tokens is not None:
             original = json.loads(conn.execute(
                 "SELECT payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",

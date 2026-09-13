@@ -153,7 +153,12 @@ class TavilyEvidenceGateway:
             return "tavily_request_outcome_unknown"
         if response.reason == "tavily_extract_outcome_unknown" or response.reason.endswith(("Timeout", "TimeoutError", "NetworkError", "ConnectError", "ReadError", "WriteError", "RemoteProtocolError")):
             return "tavily_request_outcome_unknown"
-        return {"tavily_http_402": "insufficient_balance", "tavily_http_429": "rate_limited"}.get(
+        # Tavily uses 432 for a plan cap and 433 for the PAYGO cap. Both
+        # require account action, just like 402; retries cannot restore quota.
+        return {"tavily_http_402": "insufficient_balance",
+                "tavily_http_432": "insufficient_balance",
+                "tavily_http_433": "insufficient_balance",
+                "tavily_http_429": "rate_limited"}.get(
             response.reason, "tavily_response_unavailable")
 
     def _failed_response(self, *, item_key: str, input_sha256: str) -> VerificationEvidenceBundle:
