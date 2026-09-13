@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "3.2.1"
-    CURRENT_PROJECT_VERSION: "60"
+    CURRENT_PROJECT_VERSION: "61"
     K10_SYNTHETIC_UI: "NO"
     # One reusable QA bundle per platform; release builds keep the empty suffix.
     NK_BUNDLE_SUFFIX: ""
@@ -62,7 +62,7 @@ targets:
         # ⚠ 改名要同步四处:本行 / `Assets.xcassets/<名>.appiconset` 目录名 /
         # 守门常量 `Backend/tests/test_v250_s12_app_guard.py::_EXPECTED_PRIMARY_ICON` /
         # `xcodegen generate` 重生成的 pbxproj(⛔ 不许只手改 pbxproj)。
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV321B60
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV321B61
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

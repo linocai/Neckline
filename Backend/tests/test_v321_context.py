@@ -67,7 +67,8 @@ def test_local_projection_ignores_closed_unrelated_history_and_requires_visible_
 
 
 @pytest.mark.parametrize("repeat_request", [False, True])
-def test_real_worker_local_field_read_continues_same_action(tmp_path, monkeypatch, repeat_request):
+@pytest.mark.parametrize("mixed_reply", [False, True])
+def test_real_worker_local_field_read_continues_same_action(tmp_path, monkeypatch, repeat_request, mixed_reply):
     import httpx
     from tests.test_v310_pipeline_e2e import _run
     original=httpx.MockTransport
@@ -80,10 +81,15 @@ def test_real_worker_local_field_read_continues_same_action(tmp_path, monkeypatc
                 seen.append(payload)
                 if not payload['evidencePacket'].get('contextResults') or (repeat_request and len(seen) == 2):
                     return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps({'action':'plan_gaps','contextRequests':[
-                        {'kind':'company_fields','companyCode':'300002.SZ','fields':['relationships'], 'purpose':'认证是否构成订单'}]},ensure_ascii=False)},'finish_reason':'stop'}],
+                        {'kind':'company_fields','companyCode':'300002.SZ','fields':['relationships'], 'purpose':'认证是否构成订单', **({'questionId':'draft-only'} if mixed_reply else {})}], **({'questions':[{'questionId':'draft-only','question':'未读资料前的草稿，不得落库'}], 'conclusion':{'summary':'未读取不能采信'}} if mixed_reply else {})},ensure_ascii=False)},'finish_reason':'stop'}],
                         'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
                 result=payload['evidencePacket']['contextResults'][0]
                 assert result['status']=='found'
+                if mixed_reply:
+                    assert 'questionId' not in result['request']
+                    assert 'draft-only' not in json.dumps(payload['evidencePacket'].get('questions', []))
+                    assert 'contextRequests' not in payload['outputContract']
+                    assert payload['contextReadContract']['action']=='plan_gaps'
                 assert '不把认证扩大为未披露订单' in json.dumps(result,ensure_ascii=False)
             return handler(request)
         return original(respond)
@@ -265,3 +271,54 @@ def test_real_worker_keeps_distinct_queries_with_same_question_intent_and_source
     _,_,task,_,gateway=_run(tmp_path,monkeypatch,v2=True)
     assert task.status=='completed'
     assert len(gateway.search_paths)==2
+
+
+@pytest.mark.parametrize('action', ['plan_gaps', 'plan_queries', 'assess_evidence', 'close_research', 'compare_companies'])
+def test_mixed_reply_reads_first_without_accepting_draft_evidence(action):
+    from neckline.k10.investigation import decode_stage_result
+    from neckline.k10.research_context import read_context
+    request = {'kind':'source','sourceRef':{'documentId':'invented','revision':1},
+               'location':'paragraph:1','purpose':'核对原文','questionId':'draft'}
+    result = decode_stage_result({'action':action,'contextRequests':[request],
+        'questions':[{'questionId':'draft'}], 'claims':'invalid draft',
+        'conclusion':{'companyMappings':[{'companyCode':'invented'}]}},action=action)
+    assert not result.questions and not result.claims and result.conclusion is None
+    assert result.context_requests[0]['sourceRef']==request['sourceRef']
+    read = read_context(result.context_requests[0],state={'questions':[]},documents={},binding=None,eligible_refs=set())
+    assert read['status']=='unknown_reference' and read['value'] is None  # No invented source becomes evidence.
+
+
+def test_context_requests_keep_existing_question_associations_and_reject_bad_shape():
+    from neckline.k10.investigation import decode_stage_result, InvestigationError
+    request={'kind':'question','id':'existing','questionId':'existing','purpose':'查看问题'}
+    value={'action':'plan_gaps','contextRequests':[request],'questions':[{'questionId':'existing'}]}
+    result=decode_stage_result(value,action='plan_gaps',evidence_packet={'_localState':{'questions':[{'questionId':'existing'}]}})
+    assert result.context_requests[0]==request
+    with pytest.raises(InvestigationError) as error:
+        decode_stage_result({'action':'plan_gaps','contextRequests':{'kind':'source'}},action='plan_gaps')
+    assert error.value.__cause__.field_name=='contextRequests'
+
+
+def test_real_worker_retry_reports_innermost_context_constraint(tmp_path, monkeypatch):
+    import httpx
+    from tests.test_v310_pipeline_e2e import _run
+    original = httpx.MockTransport
+    seen = []
+    def transport(handler):
+        def respond(request):
+            text = json.loads(request.content)['messages'][-1]['content']
+            payload = json.loads(text.split('<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
+            if payload.get('action') == 'plan_gaps':
+                seen.append(text)
+                if len(seen) == 1:
+                    return httpx.Response(200, json={'choices':[{'message':{'content':json.dumps({
+                        'action':'plan_gaps','contextRequests':[{'kind':'invalid-kind','purpose':'核对'}]})},'finish_reason':'stop'}],
+                        'usage':{'prompt_tokens':1,'completion_tokens':1,'total_tokens':2}})
+                assert 'contextRequests 无效' in text
+                assert 'constraint' in text
+            return handler(request)
+        return original(respond)
+    monkeypatch.setattr(httpx, 'MockTransport', transport)
+    _, _, task, _, _ = _run(tmp_path, monkeypatch, v2=True)
+    assert task.status == 'completed'
+    assert len(seen) == 2

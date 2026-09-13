@@ -389,7 +389,7 @@ class ResearchStageResult:
         _enum(self.action, RESEARCH_ACTIONS, "action")
         _optional_text(self.safe_error_code, "safeErrorCode")
         if self.context_requests and (self.claims or self.questions or self.query_paths or self.evidence_updates or self.fulltext_requests or self.company_assessments or self.conclusion):
-            raise ResearchContractError('局部回读不得同时推进研究结果')
+            raise ResearchContractError('局部回读不得同时推进研究结果', field_name='contextRequests', expected='context_requests_without_business_results')
         for request in self.context_requests:
             if not isinstance(request, Mapping) or request.get('kind') not in {'company_search', 'company_fields', 'claim', 'question', 'source'}:
                 raise ResearchContractError('contextRequests 无效')

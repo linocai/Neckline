@@ -321,6 +321,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     + json.dumps(output, ensure_ascii=False, sort_keys=True) + "\n") if isinstance(output, Mapping) else ""
         if isinstance(payload.get("action"), str) and "outputContract" in payload:
             contract += "本次根字段 action 必须严格为 " + json.dumps(payload["action"]) + "。\n"
+            if isinstance(payload.get("contextReadContract"), Mapping):
+                contract += "如果需要先读取资料，只输出下列替代对象，不要合并上述研究结果字段：\n" + json.dumps(payload["contextReadContract"], ensure_ascii=False) + "\n"
         content = contract + "<untrusted-k10-evidence>\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n</untrusted-k10-evidence>"
         array_key = (next(iter(output)) if isinstance(output, Mapping) and len(output) == 1
                      and isinstance(next(iter(output.values())), list) else None)
@@ -1141,8 +1143,8 @@ class _CheckpointedDiscoveryModel:
             chain: BaseException | None = exc
             errors = []
             while chain is not None:
-                if isinstance(chain, ResearchContractError) and chain.field_name and chain.expected:
-                    errors.append({"field": chain.field_name, "expected": chain.expected,
+                if isinstance(chain, ResearchContractError):
+                    errors.append({"field": chain.field_name or "result", "expected": chain.expected or "research_contract", "constraint": str(chain),
                                    **({"allowed": list(chain.allowed)} if chain.allowed else {})})
                 chain = chain.__cause__
             if not errors and isinstance(exc, InvestigationError):

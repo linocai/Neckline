@@ -291,6 +291,25 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
         raise InvestigationError("研究输出 action 无效", code="investigation_action_mismatch") from ResearchContractError(
             "根 action 必须匹配请求", field_name="action", expected="enum", allowed=(action,))
     try:
+        requests = value.get("contextRequests")
+        if requests is not None and (not isinstance(requests, list) or any(not isinstance(r, Mapping) for r in requests)):
+            raise ResearchContractError("局部读取请求必须为对象列表", field_name="contextRequests", expected="array_of_objects")
+        if requests:
+            # Model replies may contain a draft alongside tool requests. Read first;
+            # never validate/persist the premature business result as evidence.
+            local = (evidence_packet or {}).get("_localState", evidence_packet or {})
+            known = {q.get("questionId") for q in local.get("questions", ()) if isinstance(q, Mapping)}
+            drafts = value.get("questions", ())
+            draft_ids = {q["questionId"] for q in drafts if isinstance(q, Mapping) and isinstance(q.get("questionId"), str)} if isinstance(drafts, list) else set()
+            normalized = []
+            for request in requests:
+                request = dict(request)
+                # This is an advisory association, not the locator (id/sourceRef).
+                # Discard only IDs belonging to the withheld draft, not unknown refs.
+                if isinstance(request.get("questionId"), str) and request["questionId"] in draft_ids - known:
+                    request.pop("questionId", None)
+                normalized.append(request)
+            return ResearchStageResult(action=action, safe_error_code=value.get("safeErrorCode"), context_requests=tuple(normalized))
         if evidence_packet is not None and action in {"assess_evidence", "close_research"}:
             # Updates may refer to known IDs instead of asking the model to copy
             # immutable source text. Only copy exact fields from this request's
