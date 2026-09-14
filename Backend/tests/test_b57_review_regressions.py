@@ -26,7 +26,7 @@ def test_parent_recovery_preserves_child_terminal_and_retry_budget(tmp_path, mon
         transport = httpx.MockTransport(respond)
         monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
         provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture',
-            model='deepseek-v4-pro', name='fixture', api_url='https://api.deepseek.com/chat/completions',
+            model='deepseek-flash', name='fixture', api_url='https://api.deepseek.com/chat/completions',
             read_timeout=1, use_streaming=False)
         return ProviderResolution('configured', provider, 'fixture', None)
     monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)

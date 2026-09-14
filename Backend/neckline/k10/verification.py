@@ -15,6 +15,7 @@ from neckline.llm.usage import record as record_usage
 
 from .discovery import DiscoveryDocument, EventDraft, ProviderThrottleYield
 from .source_metadata import PublicationMetadataResolver
+from .research_material import admit_material
 from .types import DocumentVersion
 from .schema import read_connection, require_schema
 from . import store
@@ -187,18 +188,69 @@ class TavilyEvidenceGateway:
             raise VerificationCheckpointError("research_query_contract_invalid")
         return value
 
-    @classmethod
-    def _query_context(cls, question: Any, query_path: Any) -> dict[str, Any] | None:
+    def _query_context(self, question: Any, query_path: Any) -> dict[str, Any] | None:
         if question is None and query_path is None:
+            # B69 never turns a bare headline into a new paid search.  A new
+            # route has to be tied to its persisted event question and typed
+            # target; historical snapshots retain their previous fallback.
+            if self.context_protocol == "k10-v2-context-3.3.0":
+                raise VerificationCheckpointError("research_query_scope_invalid")
             return None
-        question, path = cls._mapping(question), cls._mapping(query_path)
+        question, path = self._mapping(question), self._mapping(query_path)
         required = ("questionId", "pathId", "query", "intent", "newPathReason",
                     "expectedInformationGain", "expectedJudgmentChange")
         if any(not isinstance(path.get(key), str) or not path[key].strip() for key in required):
             raise VerificationCheckpointError("research_query_contract_invalid")
         if path["questionId"] != question.get("questionId") or len(path["query"].strip()) > 400:
             raise VerificationCheckpointError("research_query_scope_invalid")
-        return {key: path[key] for key in required} | {"targetSource": path.get("targetSource")}
+        # Historical contexts stay readable and preserve their original
+        # checkpoint identity.  Only B69's new protocol can initiate a fresh
+        # route, and it must carry the stricter local scope binding.
+        if self.context_protocol == "k10-v2-context-3.3.0" and not self._query_scope_is_valid(question, path):
+            raise VerificationCheckpointError("research_query_scope_invalid")
+        return {key: path[key] for key in required} | {key: path[key] for key in
+            ("targetSource", "purposeKind", "targetRefs", "questionScope") if key in path}
+
+    @staticmethod
+    def _query_scope_is_valid(question: Mapping[str, Any], path: Mapping[str, Any]) -> bool:
+        """A direct gateway caller gets the same question-bound guard as runtime."""
+        purpose = path.get("purposeKind")
+        targets = path.get("targetRefs")
+        scope = path.get("questionScope")
+        if purpose not in {"event_fact", "company_event_link", "counterevidence"}:
+            return False
+        if not isinstance(targets, list) or not targets or not isinstance(scope, Mapping):
+            return False
+        claims = {item for item in question.get("claimIds", ()) if isinstance(item, str)}
+        companies = {item for item in question.get("companyCodes", ()) if isinstance(item, str)}
+        has_company = False
+        for target in targets:
+            if not isinstance(target, Mapping):
+                return False
+            if target.get("kind") == "claim" and target.get("claimId") in claims:
+                continue
+            if target.get("kind") == "company" and target.get("companyCode") in companies:
+                has_company = True
+                continue
+            return False
+        if purpose == "company_event_link" and not has_company:
+            return False
+        if scope.get("questionId") != question.get("questionId"):
+            return False
+        if sorted(scope.get("claimIds", ())) != sorted(question.get("claimIds", ())):
+            return False
+        if sorted(scope.get("companyCodes", ())) != sorted(question.get("companyCodes", ())):
+            return False
+        question_projection = {key: question.get(key) for key in
+                               ("questionId", "question", "claimIds", "companyCodes", "supportCondition", "refuteCondition", "missingEvidence")}
+        question_sha = sha256(json.dumps(question_projection, ensure_ascii=False, sort_keys=True,
+                                         separators=(",", ":")).encode()).hexdigest()
+        if scope.get("questionSha256") != question_sha:
+            return False
+        base = {key: value for key, value in scope.items() if key != "scopeSha256"}
+        expected = sha256(json.dumps(base, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
+        return scope.get("scopeSha256") == expected
 
     def fetch(self, *, event: EventDraft, retrieved_at: datetime, cutoff_at: datetime,
               cutoff_inclusive: bool = False, question: Any = None,
@@ -236,24 +288,35 @@ class TavilyEvidenceGateway:
                 cutoff_at=_text(cutoff_at), cutoff_inclusive=cutoff_inclusive,
                 investigation_path=query_context,
             )
+            # The question/path contract above authorizes *this event* to ask
+            # for independent evidence.  It deliberately is not part of the
+            # physical Tavily request identity: two independently authorized
+            # event questions can emit the exact same search wire.  Charging
+            # that wire twice would defeat same-task source sharing merely
+            # because their local claim or company scope differs.
+            #
+            # Keep the frozen time boundary in the key.  A later cut-off can
+            # legitimately see a different source set, while the returned
+            # document revisions themselves remain the durable evidence for
+            # every receiving event.
             if self.context_protocol and query_context:
-                from .research_context import digest, normalized_text, normalized_query
-                q = self._mapping(question)
-                shared = {'protocol': self.context_protocol, 'operation': 'search',
-                    'question': normalized_text(q.get('question')), 'companies': sorted(q.get('companyCodes', [])),
-                    'supportCondition': normalized_text(q.get('supportCondition')),
-                    'refuteCondition': normalized_text(q.get('refuteCondition')),
-                    'knownEvidence': sorted(q.get('knownEvidence', []), key=lambda ref: (ref['documentId'], ref['revision'])),
-                    'sourceRefs': source_refs, 'query': normalized_query(query),
-                    'intent': normalized_text(query_context['intent']), 'targetSource': normalized_text(query_context['targetSource']),
-                    'cutoffAt': cutoff_at.astimezone(timezone.utc).isoformat(), 'cutoffInclusive': cutoff_inclusive}
-                checkpoint_input = digest(shared)
+                from .research_context import digest, normalized_query
+                physical_wire = {
+                    'protocol': self.context_protocol,
+                    'operation': 'search',
+                    'query': normalized_query(query),
+                    'cutoffAt': cutoff_at.astimezone(timezone.utc).isoformat(),
+                    'cutoffInclusive': cutoff_inclusive,
+                }
+                checkpoint_input = digest(physical_wire)
                 checkpoint_key = 'tavily:shared:' + checkpoint_input
             claim = self.checkpoint_store.claim(item_key=checkpoint_key, input_sha256=checkpoint_input,
                                                 network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()))
             self.requests = claim.requests
             if claim.state == "reused":
-                return self._restore_checkpoint_bundle(claim.result)
+                return self._for_current_query_context(
+                    self._restore_checkpoint_bundle(claim.result), query_context=query_context,
+                )
             if claim.state == "pending":
                 return self._pending_claim(claim)
         attempt_id, blocked = self._reserve_search(
@@ -321,6 +384,7 @@ class TavilyEvidenceGateway:
             return self._failed_response(item_key=checkpoint_key, input_sha256=checkpoint_input)
         docs: list[DiscoveryDocument] = []
         eligible: list[DiscoveryDocument] = []
+        material_exclusions: dict[str, int] = {}
         for index, hit in enumerate(response.hits):
             excerpt = (hit.content or hit.title).strip()
             if not excerpt:
@@ -361,6 +425,13 @@ class TavilyEvidenceGateway:
             metadata["afterCutoff"] = bool(published_at and precision == "exact" and
                 (datetime.fromisoformat(published_at) > cutoff_at or
                  (not cutoff_inclusive and datetime.fromisoformat(published_at) == cutoff_at)))
+            provisional = DiscoveryDocument(document_id, 1, published_at, final_obtained_text, None, excerpt, metadata)
+            admission = admit_material(provisional)
+            metadata["materialAdmission"] = {
+                "state": admission.state,
+                "reason": admission.reason,
+                "contentSha256": admission.content_sha256,
+            }
             payload = {"url": hit.link or None, "excerpt": excerpt, "publishedAt": published_at, "precision": precision, "metadata": metadata}
             version: DocumentVersion = store.append_document_version(document_id=document_id, source_key=self.source_key,
                 external_id=external_id, canonical_url=hit.link or None,
@@ -369,6 +440,12 @@ class TavilyEvidenceGateway:
                 original_text=None, excerpt=excerpt, fetch_version="tavily-basic-general-v2", metadata=metadata,
                 created_at=final_obtained_text, db_path=self.db_path)
             document = DiscoveryDocument(version.document_id, version.revision, published_at, final_obtained_text, None, excerpt, metadata)
+            if admission.state == "excluded":
+                # Keep the locally classified search document for title/source
+                # audit, but never return its snippet as a runtime evidence
+                # card, eligible fact, or Extract lead.
+                material_exclusions[admission.reason] = material_exclusions.get(admission.reason, 0) + 1
+                continue
             docs.append(document)
             # A date-only source can prove it predates an earlier day, never a particular
             # intraday cutoff; unknown and late material stays archived/pending.
@@ -383,13 +460,15 @@ class TavilyEvidenceGateway:
             "tavily_response_unavailable" if self.checkpoint_store and not response.ok
             else (response.reason if not response.ok else "coverage_gap_or_usage_unavailable")
         )
-        coverage.update({"state": state, "reason": reason, "documents": len(docs), "eligibleDocuments": len(eligible), "creditsTotal": self.credits})
+        coverage.update({"state": state, "reason": reason, "documents": len(docs), "eligibleDocuments": len(eligible), "creditsTotal": self.credits,
+                         **({"materialExclusions": material_exclusions} if material_exclusions else {})})
         bundle = VerificationEvidenceBundle(state, tuple(docs), tuple(eligible), coverage)
         if self.checkpoint_store is not None:
             safe_coverage = {
                 "provider": "tavily", "state": state, "reason": reason, "requestState": "completed",
                 "requests": self.requests, "credits": response.credits,
                 "creditsTotal": self.credits, "documents": len(docs), "eligibleDocuments": len(eligible),
+                **({"materialExclusions": material_exclusions} if material_exclusions else {}),
             }
             if query_context:
                 safe_coverage.update({"questionId": query_context["questionId"], "pathId": query_context["pathId"],
@@ -453,6 +532,16 @@ class TavilyEvidenceGateway:
                 or any(not isinstance(request.get(key), str) or not request[key].strip()
                        for key in ("reasonExcerptInsufficient", "expectedJudgmentChange"))):
             raise VerificationCheckpointError("research_fulltext_contract_invalid")
+        local_admission = admit_material(document)
+        if local_admission.state == "excluded":
+            # This is a completed local material decision, not a provider or
+            # coverage failure.  The question can close with its real gap while
+            # sibling evidence continues through the normal gateway.
+            return VerificationEvidenceBundle("available", (), (), {
+                "provider": "local", "operation": "extract", "questionId": question["questionId"],
+                "state": "available", "reason": local_admission.reason, "requestState": "completed",
+                "admissionState": "rejected", "sourceContentSha256": local_admission.content_sha256,
+            })
         checkpoint = self.checkpoint_store
         if checkpoint is None:
             return self._pending("fulltext_task_binding_required")
@@ -644,6 +733,17 @@ class TavilyEvidenceGateway:
                 "sourcePublicationInherited": True, "extractCredits": response.credits,
                 "fulltextCoverageState": "available" if time_eligible else "pending",
                 "fulltextCoverageReason": "ok" if time_eligible else "fulltext_publication_time_unconfirmed"})
+            provisional = DiscoveryDocument(document.document_id, document.revision + 1, source.get("publishedAt"),
+                                            obtained_text, response.raw_content, source.get("excerpt"), metadata)
+            material_admission = admit_material(provisional)
+            metadata["materialAdmission"] = {
+                "state": material_admission.state,
+                "reason": material_admission.reason,
+                "contentSha256": material_admission.content_sha256,
+            }
+            if material_admission.state == "excluded":
+                metadata["fulltextCoverageState"] = "pending"
+                metadata["fulltextCoverageReason"] = material_admission.reason
             payload = {"body": response.raw_content, "sourceRef": ref, "metadata": metadata}
             version = store.append_document_version(document_id=document.document_id, source_key=self.source_key,
                 external_id=external_id, canonical_url=url,
@@ -653,11 +753,16 @@ class TavilyEvidenceGateway:
                 fetch_version="tavily-extract-fulltext-v1", metadata=metadata, created_at=obtained_text, db_path=self.db_path)
             full = DiscoveryDocument(version.document_id, version.revision, source.get("publishedAt"),
                 obtained_text, response.raw_content, source.get("excerpt"), metadata)
-            documents = (full,)
-            if time_eligible:
-                eligible = documents
+            if material_admission.state != "excluded":
+                documents = (full,)
+                if time_eligible:
+                    eligible = documents
             coverage.update({"state": "available" if eligible else "pending",
-                "reason": "ok" if eligible else "fulltext_publication_time_unconfirmed"})
+                "reason": "ok" if eligible else (material_admission.reason if material_admission.state == "excluded"
+                                                     else "fulltext_publication_time_unconfirmed"),
+                **({"admissionState": "rejected"} if material_admission.state == "excluded" else {}),
+                **({"materialExclusions": {material_admission.reason: 1}}
+                   if material_admission.state == "excluded" else {})})
         store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
             revision=document.revision, state="completed" if documents else "missing_body",
             reason_code=None if documents else "tavily_fulltext_unavailable", updated_at=obtained_text, db_path=self.db_path)
@@ -679,6 +784,27 @@ class TavilyEvidenceGateway:
             "credits": self.credits,
         })
 
+    def _for_current_query_context(self, bundle: VerificationEvidenceBundle, *,
+                                   query_context: Mapping[str, Any] | None) -> VerificationEvidenceBundle:
+        """Associate a reused physical search with its independently checked path.
+
+        The stored result records the first event that paid for the external
+        query.  A later event never inherits that event's question ID or
+        intent: it receives the same immutable source versions with its own
+        already-validated local relationship in the durable tool checkpoint.
+        """
+        if query_context is None:
+            return bundle
+        coverage = dict(bundle.coverage)
+        coverage.update({
+            "questionId": query_context["questionId"],
+            "pathId": query_context["pathId"],
+            "operation": "search",
+            "queryIntent": query_context["intent"],
+            "requestState": "reused",
+        })
+        return VerificationEvidenceBundle(bundle.state, bundle.documents, bundle.eligible_documents, coverage)
+
     def _restore_checkpoint_bundle(self, result: Mapping[str, Any] | None) -> VerificationEvidenceBundle:
         if not isinstance(result, Mapping):
             raise VerificationCheckpointError("verification_checkpoint_corrupt")
@@ -690,21 +816,45 @@ class TavilyEvidenceGateway:
         docs = store.load_document_versions(refs=raw_refs, db_path=self.db_path, source_keys=(self.source_key,))
         if len(docs) != len(raw_refs):
             return self._pending("checkpoint_documents_unavailable")
-        restored = tuple(DiscoveryDocument(
+        restored_all = tuple(DiscoveryDocument(
             str(item["documentId"]), int(item["revision"]), item.get("publishedAt"), str(item["fetchedAt"]),
             item.get("originalText"), item.get("excerpt"), item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {},
         ) for item in docs)
+        restored = []
+        material_exclusions: dict[str, int] = {}
+        for document in restored_all:
+            admission = admit_material(document)
+            if admission.state == "excluded":
+                material_exclusions[admission.reason] = material_exclusions.get(admission.reason, 0) + 1
+                continue
+            restored.append(document)
         index = {(item.document_id, item.revision): item for item in restored}
-        try:
-            eligible = tuple(index[(str(ref["documentId"]), int(ref["revision"]))] for ref in raw_eligible)
-        except (KeyError, TypeError, ValueError):
-            return self._pending("checkpoint_documents_unavailable")
+        eligible_rows = []
+        for ref in raw_eligible:
+            try:
+                item = index[(str(ref["documentId"]), int(ref["revision"]))]
+            except (KeyError, TypeError, ValueError):
+                # A cached source can become newly recognized as an excluded
+                # prospectus after its raw body/title parser improves.
+                # Preserve its local audit while retaining any sibling source
+                # that remains independently eligible.
+                if material_exclusions:
+                    continue
+                return self._pending("checkpoint_documents_unavailable")
+            eligible_rows.append(item)
+        eligible = tuple(eligible_rows)
         safe_coverage = dict(coverage)
         safe_coverage.update({"requestState": "reused", "requests": self.requests, "creditsTotal": self.credits})
+        if material_exclusions:
+            old = safe_coverage.get("materialExclusions")
+            merged = dict(old) if isinstance(old, Mapping) else {}
+            for reason, count in material_exclusions.items():
+                merged[reason] = int(merged.get(reason, 0)) + count
+            safe_coverage["materialExclusions"] = merged
         state = result.get("state")
         if state not in {"available", "pending"}:
             raise VerificationCheckpointError("verification_checkpoint_corrupt")
-        return VerificationEvidenceBundle(state, restored, eligible, safe_coverage)
+        return VerificationEvidenceBundle(state, tuple(restored), eligible, safe_coverage)
 
 
 __all__ = ["SearchClient", "TavilyEvidenceGateway", "VerificationEvidenceBundle"]

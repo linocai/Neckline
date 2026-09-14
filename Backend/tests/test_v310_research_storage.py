@@ -145,7 +145,7 @@ def test_contract_rejects_verified_rumor_and_migration_forwards_schema_six(tmp_p
         schema._apply_v1(conn); schema._apply_v2(conn); schema._apply_v3(conn); schema._apply_v4(conn); schema._apply_v6(conn)
         for version in (1, 2, 3, 4, 6):
             conn.execute("INSERT INTO k10_schema_migrations VALUES(?,?)", (version, NOW))
-    assert schema.initialize_schema(path) == 8 == schema.schema_version(path)
+    assert schema.initialize_schema(path) == schema.SCHEMA_VERSION == schema.schema_version(path)
     with sqlite3.connect(path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"k10_research_snapshot_revisions", "k10_research_stage_results", "k10_research_company_assessments"} <= tables
@@ -384,6 +384,8 @@ def _seed_pre_b39_database(path: Path, *, schema_version: int) -> dict[str, obje
             for table in ("title_triage_items", "title_selection_manifests", "article_admissions"):
                 conn.execute(f"INSERT INTO k10_{table} SELECT * FROM k10_v2_{table}")
         conn.execute("DROP TABLE k10_morning_review_results")
+        # The fixture deliberately reconstructs the declared pre-Schema-9 database.
+        conn.execute("DROP TABLE k10_model_response_receipts")
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'k10_v2_%'").fetchall():
             conn.execute(f"DROP TABLE {row[0]}")
         for table in _V7_TABLES:
@@ -410,7 +412,7 @@ def test_controlled_pre_b39_migration_and_restore_preserve_history_and_pause(tmp
     before = _seed_pre_b39_database(path, schema_version=prior_version)
     backup = tmp_path / f"schema-{prior_version}.backup.sqlite"
     receipt = migration.migrate_to_v3(target=path, confirmed_target=path, backup=backup, writers_stopped=True)
-    assert schema.schema_version(path) == 8
+    assert schema.schema_version(path) == schema.SCHEMA_VERSION
     assert receipt.backup_sha256 == migration.file_sha256(backup)
     with sqlite3.connect(path) as conn:
         assert tuple(row[1] for row in conn.execute("PRAGMA table_info(k10_candidates)")) == before["candidateColumns"]

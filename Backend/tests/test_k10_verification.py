@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+import json
 import sqlite3
 
 import httpx
@@ -51,6 +53,50 @@ def _bound_task(path, *, task_id="task-verification", opened=True):
     return task_id
 
 
+def _b69_query(event: EventDraft) -> tuple[dict[str, object], dict[str, object]]:
+    """Use a self-consistent B69 question/path for task-bound gateway tests.
+
+    These tests exercise checkpoint, control and transport behavior.  They
+    must still enter the same strict local scope gate as a new B69 task rather
+    than relying on the retired bare-headline fallback.
+    """
+    claim_id = f"claim-{event.canonical_key}"
+    question: dict[str, object] = {
+        "questionId": f"question-{event.canonical_key}",
+        "question": "当前事件是否获得独立确认？",
+        "claimIds": [claim_id], "companyCodes": ["300001.SZ"], "knownEvidence": [],
+        "missingEvidence": ["独立核验来源"], "supportCondition": "原始公告确认",
+        "refuteCondition": "更正或否认公告",
+    }
+    projection = {key: question.get(key) for key in (
+        "questionId", "question", "claimIds", "companyCodes", "supportCondition", "refuteCondition", "missingEvidence",
+    )}
+    scope: dict[str, object] = {
+        "version": "k10-v2-question-scope-1", "questionId": question["questionId"],
+        "claimIds": question["claimIds"], "companyCodes": question["companyCodes"],
+        "questionSha256": sha256(json.dumps(projection, ensure_ascii=False, sort_keys=True,
+                                               separators=(",", ":")).encode()).hexdigest(),
+    }
+    scope["scopeSha256"] = sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True,
+                                                separators=(",", ":")).encode()).hexdigest()
+    path: dict[str, object] = {
+        "questionId": question["questionId"], "pathId": f"path-{event.canonical_key}",
+        "query": f"{event.headline} 独立核验", "intent": "确认当前事件",
+        "targetSource": "原始公告", "newPathReason": "缺少独立来源",
+        "expectedInformationGain": "事实是否成立", "expectedJudgmentChange": "避免把未核实消息当事实",
+        "purposeKind": "event_fact", "targetRefs": [{"kind": "claim", "claimId": claim_id}],
+        "questionScope": scope,
+    }
+    return question, path
+
+
+def _fetch_bound(gateway: TavilyEvidenceGateway, *, event: EventDraft, retrieved_at: datetime,
+                 cutoff_at: datetime):
+    question, path = _b69_query(event)
+    return gateway.fetch(event=event, retrieved_at=retrieved_at, cutoff_at=cutoff_at,
+                         question=question, query_path=path)
+
+
 
 def test_tavily_verification_persists_exact_documents_and_actual_credits(tmp_path):
     path = tmp_path / "verify.sqlite"
@@ -88,7 +134,7 @@ def test_tavily_attempt_refuses_a_paused_v3_task_before_http(tmp_path):
         db_path=path, client=search, task_id=task_id,
         leaseguard=lambda: None, network_max_attempts=1,
     )
-    bundle = gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    bundle = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert bundle.state == "pending"
     assert bundle.coverage["reason"] == "execution_paused"
     assert search.calls == 0
@@ -97,7 +143,7 @@ def test_tavily_attempt_refuses_a_paused_v3_task_before_http(tmp_path):
     # event's sole allowed provider attempt intact.
     store.set_run_control(state="open", reason_code="fixture_resume", changed_at=COMPLETED_AT.isoformat(),
                           changed_by="test", db_path=path)
-    resumed = gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    resumed = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert resumed.state == "available" and search.calls == 1
     with sqlite3.connect(path) as conn:
         assert conn.execute(
@@ -112,23 +158,26 @@ def test_task_bound_tavily_reuses_frozen_bundle_across_restart(tmp_path):
     first_search = _Search()
     first = TavilyEvidenceGateway(db_path=path, client=first_search, clock=lambda: COMPLETED_AT,
                                   task_id=task_id, leaseguard=lambda: None, network_max_attempts=1)
-    bundle = first.fetch(event=_event(), retrieved_at=NOW, cutoff_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
+    bundle = _fetch_bound(first, event=_event(), retrieved_at=NOW, cutoff_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
     assert bundle.state == "available" and first_search.calls == 1
     restarted_search = _Search()
     restarted = TavilyEvidenceGateway(db_path=path, client=restarted_search, task_id=task_id,
                                       leaseguard=lambda: None, network_max_attempts=1)
-    recovered = restarted.fetch(event=_event(), retrieved_at=NOW, cutoff_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
+    recovered = _fetch_bound(restarted, event=_event(), retrieved_at=NOW, cutoff_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
     assert recovered.state == "available" and restarted_search.calls == 0
     assert recovered.coverage["requestState"] == "reused"
     assert [(item.document_id, item.revision) for item in recovered.documents] == [
         (item.document_id, item.revision) for item in bundle.documents
     ]
     other = EventDraft("historical:event", "stage", "confirmed", "历史事件", "disclosure", {}, (EvidenceRef("doc-origin", 1),))
-    independent = restarted.fetch(event=other, retrieved_at=NOW, cutoff_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
+    independent = _fetch_bound(restarted, event=other, retrieved_at=NOW, cutoff_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
     assert independent.state == "available" and restarted_search.calls == 1
-    drifted = restarted.fetch(event=_event(), retrieved_at=NOW, cutoff_at=datetime(2026, 9, 8, tzinfo=timezone.utc))
-    assert drifted.state == "pending" and drifted.coverage["reason"] == "checkpoint_input_mismatch"
-    assert restarted_search.calls == 1
+    drifted = _fetch_bound(restarted, event=_event(), retrieved_at=NOW, cutoff_at=datetime(2026, 9, 8, tzinfo=timezone.utc))
+    # A different frozen cut-off is intentionally not a shared physical
+    # request.  It may observe another source set, so it receives a fresh
+    # response rather than inheriting the earlier event's evidence version.
+    assert drifted.state == "available" and drifted.coverage["requestState"] == "completed"
+    assert restarted_search.calls == 2
 
 
 def test_same_canonical_distinct_stage_is_independently_cached_and_reused_after_restart(tmp_path):
@@ -141,14 +190,14 @@ def test_same_canonical_distinct_stage_is_independently_cached_and_reused_after_
     original = _event()
     later = EventDraft("event", "implementation", "confirmed", "事件进入实施", "disclosure", {"phase": 2},
                        (EvidenceRef("doc-origin", 1),))
-    assert first.fetch(event=original, retrieved_at=NOW, cutoff_at=NOW).state == "available"
-    assert first.fetch(event=later, retrieved_at=NOW, cutoff_at=NOW).state == "available"
+    assert _fetch_bound(first, event=original, retrieved_at=NOW, cutoff_at=NOW).state == "available"
+    assert _fetch_bound(first, event=later, retrieved_at=NOW, cutoff_at=NOW).state == "available"
     assert first_search.calls == 2
     restarted_search = _Search()
     restarted = TavilyEvidenceGateway(db_path=path, client=restarted_search, task_id=task_id,
                                       leaseguard=lambda: None, network_max_attempts=1)
-    assert restarted.fetch(event=original, retrieved_at=NOW, cutoff_at=NOW).coverage["requestState"] == "reused"
-    assert restarted.fetch(event=later, retrieved_at=NOW, cutoff_at=NOW).coverage["requestState"] == "reused"
+    assert _fetch_bound(restarted, event=original, retrieved_at=NOW, cutoff_at=NOW).coverage["requestState"] == "reused"
+    assert _fetch_bound(restarted, event=later, retrieved_at=NOW, cutoff_at=NOW).coverage["requestState"] == "reused"
     assert restarted_search.calls == 0
 
 
@@ -166,12 +215,12 @@ def test_task_bound_network_failure_conservatively_records_unknown_attempt(tmp_p
     failed_search = _Fails()
     gateway = TavilyEvidenceGateway(db_path=path, client=failed_search, task_id=task_id,
                                     leaseguard=lambda: None, network_max_attempts=1)
-    pending = gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    pending = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert pending.coverage["reason"] == "tavily_request_outcome_unknown" and failed_search.calls == 1
     assert "provider timeout" not in str(pending.coverage)
     retry = TavilyEvidenceGateway(db_path=path, client=_Search(), task_id=task_id,
                                   leaseguard=lambda: None, network_max_attempts=1)
-    again = retry.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    again = _fetch_bound(retry, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert again.coverage["reason"] == "tavily_request_outcome_unknown"
     with sqlite3.connect(path) as conn:
         row = conn.execute("SELECT status,network_attempt_count,safe_error_code FROM k10_execution_item_checkpoints").fetchone()
@@ -196,8 +245,8 @@ def test_task_bound_unknown_outcome_blocks_retry_even_with_attempts_remaining(tm
     search = _Flaky()
     gateway = TavilyEvidenceGateway(db_path=path, client=search, clock=lambda: COMPLETED_AT,
                                     task_id=task_id, leaseguard=lambda: None, network_max_attempts=2)
-    assert gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["reason"] == "tavily_request_outcome_unknown"
-    recovered = gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    assert _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["reason"] == "tavily_request_outcome_unknown"
+    recovered = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert recovered.state == "pending" and search.calls == 1
     assert recovered.coverage["reason"] == "tavily_request_outcome_unknown"
     with sqlite3.connect(path) as conn:
@@ -206,7 +255,7 @@ def test_task_bound_unknown_outcome_blocks_retry_even_with_attempts_remaining(tm
     restarted_search = _Search()
     restarted = TavilyEvidenceGateway(db_path=path, client=restarted_search, task_id=task_id,
                                       leaseguard=lambda: None, network_max_attempts=2)
-    assert restarted.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["reason"] == "tavily_request_outcome_unknown"
+    assert _fetch_bound(restarted, event=_event(), retrieved_at=NOW, cutoff_at=NOW).coverage["reason"] == "tavily_request_outcome_unknown"
     assert restarted_search.calls == 0
 
 
@@ -228,10 +277,10 @@ def test_task_bound_failed_provider_response_uses_the_same_bounded_retry_policy(
     search = _ResponseThenSuccess()
     gateway = TavilyEvidenceGateway(db_path=path, client=search, clock=lambda: COMPLETED_AT,
                                     task_id=task_id, leaseguard=lambda: None, network_max_attempts=2)
-    first = gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    first = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert first.coverage["reason"] == "tavily_response_unavailable"
     assert "private provider" not in str(first.coverage)
-    assert gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW).state == "available"
+    assert _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW).state == "available"
     assert search.calls == 2
 
 
@@ -240,9 +289,9 @@ def test_missing_key_does_not_claim_an_external_attempt_or_discard_event(tmp_pat
     initialize_schema(path)
     task_id = _bound_task(path)
     monkeypatch.setattr("neckline.k10.verification.get_tavily_api_key", lambda **_kwargs: None)
-    bundle = TavilyEvidenceGateway(db_path=path, task_id=task_id, leaseguard=lambda: None,
-                                   network_max_attempts=1).fetch(
-        event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    gateway = TavilyEvidenceGateway(db_path=path, task_id=task_id, leaseguard=lambda: None,
+                                    network_max_attempts=1)
+    bundle = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert bundle.state == "pending" and bundle.coverage["reason"] == "tavily_api_key_missing"
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_execution_item_checkpoints").fetchone()[0] == 0
@@ -257,7 +306,7 @@ def test_lost_lease_prevents_attempt_and_provider_call(tmp_path):
                                     leaseguard=lambda: (_ for _ in ()).throw(VerificationCheckpointError("lost_lease")),
                                     network_max_attempts=1)
     with pytest.raises(VerificationCheckpointError, match="lost_lease"):
-        gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+        _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert search.calls == 0
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_execution_item_checkpoints").fetchone()[0] == 0
@@ -277,7 +326,7 @@ def test_transactional_lease_check_rejects_former_owner_after_takeover(tmp_path)
     stale = TavilyEvidenceGateway(db_path=path, client=search, task_id=task_id,
                                   leaseguard=lambda: None, lease_owner="former", network_max_attempts=1)
     with pytest.raises(store.K10Conflict, match="租约"):
-        stale.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+        _fetch_bound(stale, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert search.calls == 0
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_execution_item_checkpoints").fetchone()[0] == 0

@@ -149,7 +149,31 @@ def test_html_preparation_keeps_fallback_and_table_facts_without_executing_marku
     assert prepared.evidence_ref == document.evidence_ref
     assert "订单金额" in prepared.analysis_text and "12亿元" in prepared.analysis_text and "更正公告" in prepared.analysis_text
     assert "drop()" not in prepared.analysis_text
-    assert prepared.extraction["version"] == "html-readable-v1"
+    assert prepared.extraction["version"] == "html-readable-v2"
+
+
+def test_discovery_prepares_real_html_before_local_material_read():
+    from neckline.k10.research_material import read_locator
+    html = '<article><h1>合同公告</h1>' + ''.join(
+        '<p>' + ('客户尚未承诺采购。' if index == 75 else f'背景段落{index}。') + '</p>'
+        for index in range(150)) + '</article>'
+    document = DiscoveryDocument('html-structural-read', 1, NOW_TEXT, NOW_TEXT, html, None, {})
+    seen = []
+
+    class StructuredReader(_Model):
+        def understand(self, *, document):
+            assert document.extraction['version'] == 'html-readable-v2'
+            catalogue = read_locator(document, 'find:客户尚未承诺采购', max_characters=200)
+            assert catalogue['matchingLocatorCount'] == 1
+            value = read_locator(document, catalogue['locators'][0]['locator'], max_characters=200)
+            assert value['text'] == '客户尚未承诺采购。'
+            assert document.analysis_text[value['startOffset']:value['endOffset']] == value['text']
+            seen.append(value['sourceContentSha256'])
+            return ()
+
+    result = run_discovery(documents=(document,), configuration=_configuration(), model=StructuredReader(),
+                           verify=_verify, metadata=_Metadata(), cutoff_at=NOW)
+    assert result.state == 'completed' and len(seen) == 1 and not result.candidates
 
 
 def test_understanding_checkpoint_resumes_only_validated_document_results():

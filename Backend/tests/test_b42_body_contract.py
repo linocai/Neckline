@@ -23,7 +23,7 @@ def test_null_facts_gets_exact_field_feedback_and_repair(tmp_path, monkeypatch):
     assert task.status == "completed" and calls.count("understand") == 2
 
 
-def test_second_explicit_recovery_can_repair_failed_recovery_without_automatic_extra_calls(tmp_path, monkeypatch):
+def test_second_explicit_recovery_reuses_same_failed_wire_without_paid_repeat(tmp_path, monkeypatch):
     db, task_id, first, _, _ = _run(tmp_path, monkeypatch, body_impact="")
     assert first.status == "failed"
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
@@ -45,10 +45,13 @@ def test_second_explicit_recovery_can_repair_failed_recovery_without_automatic_e
     recover()
     calls = _http_transport(monkeypatch)
     done = run_once(db_path=db, worker_id="corrected", lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT)
-    assert done.status == "completed" and calls.count("understand") == 1
+    # A second authorization has not changed the source, contract or corrective
+    # instruction.  Revalidate the paid replies locally and stop again instead
+    # of charging for the same malformed wire request a third time.
+    assert done.status == "failed" and calls.count("understand") == 0
     assert not ({"titleBatch", "titleGlobal", "titleReview"} & set(calls))
     assert store.read_title_selection_manifest(task_id=task_id, db_path=db) == selected
-    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1
+    assert not store.list_candidates(scan_id=scan_id, state="offered", db_path=db)
 
 
 def test_pause_after_body_checkpoint_can_recover_same_running_scan_without_new_call(tmp_path, monkeypatch):

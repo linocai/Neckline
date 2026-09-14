@@ -569,6 +569,234 @@ def begin_external_attempt(
     return {"state": "started", "reason": None, "attemptId": attempt_id}
 
 
+def _receipt_payload(payload: Mapping[str, Any]) -> tuple[str, str]:
+    """Canonicalize the private, prompt-free provider response needed for local revalidation."""
+    required = {
+        "receiptVersion", "ok", "content", "provider", "model", "promptTokens", "completionTokens",
+        "totalTokens", "usageUnavailable", "errorCode", "retryAfterSeconds", "finishReason", "rawResponses", "responseReceived",
+        "rawReceiptOnly",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != required:
+        raise ValueError("模型响应回执字段不完整")
+    if (not isinstance(payload["receiptVersion"], str) or not payload["receiptVersion"]
+            or not isinstance(payload["ok"], bool) or not isinstance(payload["content"], str)
+            or not isinstance(payload["provider"], str) or not isinstance(payload["model"], str)
+            or not isinstance(payload["usageUnavailable"], bool) or not isinstance(payload["responseReceived"], bool)
+            or not isinstance(payload["rawReceiptOnly"], bool)
+            or not isinstance(payload["rawResponses"], list) or any(not isinstance(item, Mapping) for item in payload["rawResponses"])):
+        raise ValueError("模型响应回执字段无效")
+    for field in ("promptTokens", "completionTokens", "totalTokens"):
+        value = payload[field]
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise ValueError("模型响应回执 usage 无效")
+    for field in ("errorCode", "finishReason"):
+        if payload[field] is not None and not isinstance(payload[field], str):
+            raise ValueError("模型响应回执安全字段无效")
+    retry = payload["retryAfterSeconds"]
+    if retry is not None and (isinstance(retry, bool) or not isinstance(retry, (int, float)) or retry < 0):
+        raise ValueError("模型响应回执 retry 无效")
+    canonical = _json(dict(payload))
+    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _model_attempt_admission(conn, *, task_id: str, stage: str, item_key: str, attempt_key: str,
+                             input_sha256: str, reuse_scope_sha256: str, started_at: str) -> dict[str, Any]:
+    """Reserve one wire request, or return the exact committed response without another socket."""
+    control = conn.execute("SELECT state,reason_code FROM k10_run_controls WHERE control_key='k10_discovery'").fetchone()
+    if control is None or control[0] != "open":
+        return {"state": "paused", "reason": "control_missing" if control is None else control[1], "attemptId": None}
+    retired = conn.execute("SELECT reason_code FROM k10_discovery_retirements WHERE task_id=?", (task_id,)).fetchone()
+    if retired is not None:
+        return {"state": "retired", "reason": retired[0], "attemptId": None}
+    _, config_error = _bound_v3_config(conn, task_id=task_id)
+    if config_error is not None:
+        return {"state": "not_configured", "reason": config_error, "attemptId": None}
+    task = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+    if task is None:
+        raise K10Conflict("外部调用任务不存在")
+    checkpoint = json.loads(task[0])
+    authorized = set(checkpoint.get("authorizedRetryAttemptIds", []))
+    terminal = next((row for row in conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND error_code='insufficient_balance'", (task_id,)) if row[0] not in authorized), None)
+    if terminal is not None:
+        return {"state": "terminal", "reason": "insufficient_balance", "attemptId": terminal[0]}
+
+    # Receipt lookup is deliberately keyed by the same task and exact wire,
+    # not by the parser contract that happened to consume the first response.
+    # A later local parser/checkpoint revision must revalidate the immutable
+    # raw provider body, never open a second paid request for the same wire.
+    receipts = conn.execute(
+        "SELECT r.attempt_id,r.payload_json,r.payload_sha256,r.receipt_version,r.received_at "
+        "FROM k10_model_response_receipts r JOIN k10_external_attempts a ON a.attempt_id=r.attempt_id "
+        "WHERE r.task_id=? AND r.request_sha256=? "
+        "AND a.task_id=r.task_id AND a.stage=r.stage AND a.input_sha256=r.request_sha256 AND a.state=r.provider_result_state "
+        # Timestamps have second precision; UUIDs and restored insertion
+        # order cannot establish which row actually contains a paid reply.
+        # Inspect all exact-wire receipts so a refusal cannot shadow a reply.
+        "ORDER BY r.rowid DESC",
+        (task_id, input_sha256),
+    ).fetchall()
+    for receipt in receipts:
+        try:
+            payload = json.loads(receipt[1])
+            canonical, digest = _receipt_payload(payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("模型响应回执损坏，拒绝外呼覆盖") from exc
+        if canonical != receipt[1] or digest != receipt[2]:
+            raise K10Conflict("模型响应回执哈希不匹配，拒绝外呼覆盖")
+        raw_responses = payload.get("rawResponses")
+        if ((bool(payload.get("responseReceived")) or bool(payload.get("ok")))
+                and isinstance(raw_responses, list) and raw_responses):
+            return {"state": "receipt_reused", "reason": None, "attemptId": None,
+                    "receiptAttemptId": receipt[0], "receipt": payload, "receiptVersion": receipt[3], "receivedAt": receipt[4]}
+        received = bool(payload.get("responseReceived") or payload.get("ok") or raw_responses)
+        code = payload.get("errorCode")
+        known_nonresponse = isinstance(code, str) and (
+            code in {"rate_limited", "insufficient_balance", "provider_transport",
+                     "provider_configuration", "provider_dependency"}
+            or (code.startswith("provider_http_") and len(code) == 17 and code[-3:].isdigit())
+        )
+        if received or not known_nonresponse:
+            # An older semantic-only reply is evidence of an answered request.
+            # Without its raw body, changing the parser cannot authorize a repost.
+            return {"state": "receipt_unreplayable", "reason": None, "attemptId": receipt[0]}
+        # A definite HTTP refusal or connection-establishment failure has no
+        # model reply to revalidate. Preserve the immutable failure audit, then
+        # continue the existing terminal/grant, attempt identity and unknown
+        # checks. This does not grant extra retries or bypass the caller policy.
+
+    # A started or unknown request has no durable response.  It is deliberately
+    # not retried by another item/checkpoint merely because the item identity differs.
+    pending = conn.execute(
+        "SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND input_sha256=? "
+        "AND state IN ('started','unknown') ORDER BY rowid DESC LIMIT 1", (task_id, input_sha256),
+    ).fetchone()
+    if pending is not None:
+        return {"state": "pending_outcome", "reason": None, "attemptId": pending[0]}
+    old = conn.execute(
+        "SELECT attempt_id,state,input_sha256 FROM k10_external_attempts WHERE task_id=? AND attempt_key=?", (task_id, attempt_key),
+    ).fetchone()
+    if old is not None:
+        if old[2] != input_sha256:
+            raise K10Conflict("同一外部调用 attempt_key 不可对应不同输入")
+        return {"state": "pending_outcome" if old[1] == "started" else "reused", "reason": None, "attemptId": old[0]}
+    if stage in {"analysisPro", "analysisCon", "morning"}:
+        uncertain = next((row for row in conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown','succeeded')", (task_id, stage, item_key)) if row[0] not in authorized), None)
+        if uncertain is not None:
+            return {"state": "pending_outcome", "reason": None, "attemptId": uncertain[0]}
+    attempt_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO k10_external_attempts(attempt_id,task_id,stage,item_key,attempt_key,input_sha256,state,started_at) "
+        "VALUES(?,?,?,?,?,?, 'started',?)", (attempt_id, task_id, stage, item_key, attempt_key, input_sha256, started_at),
+    )
+    return {"state": "started", "reason": None, "attemptId": attempt_id}
+
+
+def begin_model_external_attempt(
+    *, task_id: str, stage: str, item_key: str, attempt_key: str, input_sha256: str,
+    reuse_scope_sha256: str, started_at: str, db_path: Path,
+) -> dict[str, Any]:
+    """Atomically choose a committed exact response or reserve one new model wire request."""
+    values = (task_id, stage, item_key, attempt_key, input_sha256, reuse_scope_sha256, started_at)
+    if (not all(isinstance(value, str) and value for value in values)
+            or len(input_sha256) != 64 or len(reuse_scope_sha256) != 64):
+        raise ValueError("模型调用 attempt 缺少完整身份或哈希")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        return _model_attempt_admission(conn, task_id=task_id, stage=stage, item_key=item_key,
+                                        attempt_key=attempt_key, input_sha256=input_sha256,
+                                        reuse_scope_sha256=reuse_scope_sha256, started_at=started_at)
+
+
+def settle_model_response_attempt(
+    *, attempt_id: str, request_sha256: str, reuse_scope_sha256: str, payload: Mapping[str, Any],
+    outcome: str, usage: Mapping[str, Any] | None, settled_at: str, error_code: str | None,
+    db_path: Path, record_provider_failure: bool = False, retry_after_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Commit an immutable provider response and the original attempt settlement in one transaction."""
+    if outcome not in {"succeeded", "failed"} or not attempt_id or not settled_at:
+        raise ValueError("模型响应回执结算身份无效")
+    if outcome == "failed" and not error_code:
+        raise ValueError("失败模型调用必须记录安全错误码")
+    if (not isinstance(request_sha256, str) or len(request_sha256) != 64
+            or not isinstance(reuse_scope_sha256, str) or len(reuse_scope_sha256) != 64):
+        raise ValueError("模型响应回执哈希无效")
+    payload_json, payload_sha256 = _receipt_payload(payload)
+    values = _external_usage(usage)
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        attempt = conn.execute(
+            "SELECT task_id,stage,input_sha256,state,prompt_tokens,completion_tokens,total_tokens,search_requests,search_credits,error_code "
+            "FROM k10_external_attempts WHERE attempt_id=?", (attempt_id,),
+        ).fetchone()
+        if attempt is None:
+            raise K10Conflict("模型响应回执 attempt 不存在")
+        task_id, stage, stored_request, state = str(attempt[0]), str(attempt[1]), str(attempt[2]), str(attempt[3])
+        if stored_request != request_sha256:
+            raise K10Conflict("模型响应回执与真实 wire 指纹不一致")
+        existing = conn.execute(
+            "SELECT task_id,stage,request_sha256,reuse_scope_sha256,payload_json,payload_sha256,provider_result_state,receipt_version,received_at "
+            "FROM k10_model_response_receipts WHERE attempt_id=?", (attempt_id,),
+        ).fetchone()
+        expected_receipt = (task_id, stage, request_sha256, reuse_scope_sha256, payload_json, payload_sha256,
+                            outcome, str(payload["receiptVersion"]), settled_at)
+        if existing is not None:
+            if tuple(existing) != expected_receipt:
+                raise K10Conflict("模型响应回执不可被改写")
+        else:
+            if state != "started":
+                raise K10Conflict("已结算模型 attempt 缺少可验证回执，拒绝伪造")
+            conn.execute(
+                "INSERT INTO k10_model_response_receipts(attempt_id,task_id,stage,request_sha256,reuse_scope_sha256,"
+                "payload_json,payload_sha256,provider_result_state,receipt_version,received_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (attempt_id, *expected_receipt),
+            )
+        expected = (outcome, values["promptTokens"], values["completionTokens"], values["totalTokens"],
+                    values["searchRequests"], values["searchCredits"], error_code)
+        old = tuple(attempt[3:])
+        if state != "started":
+            if old != expected:
+                raise K10Conflict("已结算外部调用不可被改写")
+            return {"state": state, "attemptId": attempt_id}
+        conn.execute(
+            "UPDATE k10_external_attempts SET state=?,prompt_tokens=?,completion_tokens=?,total_tokens=?,search_requests=?,"
+            "search_credits=?,error_code=?,settled_at=? WHERE attempt_id=?",
+            (*expected, settled_at, attempt_id),
+        )
+        if record_provider_failure and outcome == "failed" and error_code in {"insufficient_balance", "rate_limited"}:
+            if stage not in {"analysisPro", "analysisCon", "morning"}:
+                raise ValueError("失败回执只用于正反分析和晨间复核")
+            checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+            checkpoint["providerFailureReceipt"] = {"attemptId": attempt_id, "stage": stage,
+                "errorCode": error_code, "receivedAt": settled_at, "retryAfterSeconds": retry_after_seconds}
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+    return {"state": outcome, "attemptId": attempt_id}
+
+
+def load_model_response_receipt(*, task_id: str, attempt_id: str, db_path: Path) -> dict[str, Any] | None:
+    """Read one private receipt only after proving its task/attempt/hash identity."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT r.stage,r.request_sha256,r.reuse_scope_sha256,r.payload_json,r.payload_sha256,r.provider_result_state,"
+            "r.receipt_version,r.received_at,a.task_id,a.input_sha256,a.stage,a.state FROM k10_model_response_receipts r "
+            "JOIN k10_external_attempts a ON a.attempt_id=r.attempt_id WHERE r.attempt_id=? AND r.task_id=?",
+            (attempt_id, task_id),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[3])
+        canonical, digest = _receipt_payload(payload)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise K10Conflict("模型响应回执损坏") from exc
+    if (canonical != row[3] or digest != row[4] or row[8] != task_id or row[9] != row[1]
+            or row[10] != row[0] or row[11] != row[5]):
+        raise K10Conflict("模型响应回执哈希或归属不匹配")
+    return {"attemptId": attempt_id, "taskId": task_id, "stage": row[0], "requestSha256": row[1],
+            "reuseScopeSha256": row[2], "payload": payload, "payloadSha256": row[4],
+            "providerResultState": row[5], "receiptVersion": row[6], "receivedAt": row[7]}
+
+
 def record_external_result_failure(*, task_id: str, attempt_id: str | None, db_path: Path) -> None:
     """Acknowledge a specific paid response rejected by business validation."""
     if attempt_id is None:
@@ -1422,10 +1650,19 @@ def _insert_task(
 
 def enqueue_task(
     *, task_id: str, kind: str, idempotency_key: str, input_version: str, input_cutoff_at: str,
-    payload: Mapping[str, Any], budget: Mapping[str, Any], created_at: str, db_path: Path, execution_binding: Mapping[str, Any] | None = None,
+    payload: Mapping[str, Any], budget: Mapping[str, Any], created_at: str, db_path: Path,
+    execution_binding: Mapping[str, Any] | None = None, require_discovery_control_open: bool = False,
 ) -> Task:
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
+        if require_discovery_control_open:
+            control = conn.execute(
+                "SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'"
+            ).fetchone()
+            if control is None or control[0] != "open":
+                # This runs in the same write transaction as the task insert,
+                # closing the read-open → enqueue race for scheduled scans.
+                raise K10Conflict("K10 运行控制非 open，拒绝入队")
         task = _insert_task(conn, task_id=task_id, kind=kind, idempotency_key=idempotency_key,
                             input_version=input_version, input_cutoff_at=input_cutoff_at, payload=payload,
                             budget=budget, created_at=created_at)
@@ -3836,7 +4073,7 @@ __all__ = [
     "append_company_window_evaluation", "append_document_version", "append_market_day_fact",
     "admit_article", "append_execution_config", "append_morning_update", "append_opportunity_update", "append_run_config", "append_source_watermark",
     "authorize_discovery_recovery",
-    "append_title_triage_policy", "begin_external_attempt",
+    "append_title_triage_policy", "begin_external_attempt", "begin_model_external_attempt",
     "append_event_revision", "candidate_state", "claim_task_by_id", "claim_tasks", "create_candidate",
     "bind_scan_execution", "bind_task_execution", "completed_execution_items", "create_scan",
     "reject_completed_execution_checkpoint", "enqueue_task", "execution_progress_for_scan", "finalize_scan", "finish_task", "freeze_company_window_selection",
@@ -3845,13 +4082,13 @@ __all__ = [
     "list_company_windows", "list_company_window_evaluations", "list_market_day_facts", "list_observations", "list_opportunities", "market_day_fact_id",
     "list_opportunity_lifecycle_events", "list_publication_batches", "list_publication_samples", "list_scans", "list_source_document_versions",
     "load_analysis_revision", "load_candidate_context", "load_document_versions", "load_observation_context",
-    "external_attempt_summary", "freeze_title_selection_manifest", "freeze_title_triage_manifest",
+    "external_attempt_summary", "freeze_title_selection_manifest", "freeze_title_triage_manifest", "load_model_response_receipt",
     "is_discovery_retired", "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities",
     "read_execution_config", "read_fact_cache", "read_run_config", "read_title_selection_manifest",
     "read_title_triage_items", "read_title_triage_manifest", "read_title_triage_policy",
     "record_article_outcome", "record_execution_checkpoint", "record_title_triage_item", "reopen_scan",
     "renew_task_lease", "retire_interrupted_discovery", "retry_task", "run_control_status",
-    "schedule_task_retry", "set_run_control", "settle_external_attempt", "store_fact_cache",
+    "schedule_task_retry", "set_run_control", "settle_external_attempt", "settle_model_response_attempt", "store_fact_cache",
     "task_execution_input", "task_execution_profile", "update_running_scan_coverage",
     "withdraw_opportunity",
 ]

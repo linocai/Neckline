@@ -41,7 +41,7 @@ def _setup(path, *, task="titles", count=95, duplicate=True):
             fetch_version="fixture", metadata=metadata, created_at=NOW, db_path=path)
         documents.append(DiscoveryDocument(row.document_id, row.revision, NOW, NOW, body, None, metadata))
     provider = MeteredProvider(ledger_db=path, ledger_task="discovery", api_key="offline-fixture",
-        model="deepseek-v4-pro", name="fixture", api_url="https://api.deepseek.com/chat/completions")
+        model="deepseek-flash", name="fixture", api_url="https://api.deepseek.com/chat/completions")
     base = DeepSeekDiscoveryModel(provider)
     base.set_execution_policy(binding["payload"]["discovery"])
     base.set_scan_cutoff(datetime.fromisoformat(NOW))

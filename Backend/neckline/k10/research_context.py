@@ -5,7 +5,9 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping
 
-PROTOCOL = 'k10-v2-context-3.2.1'
+from .research_material import MAX_FRAGMENT_CHARACTERS, bounded_excerpt, document_outline, read_locator, requires_current_event_locator
+
+PROTOCOL = 'k10-v2-context-3.3.0'
 
 
 def digest(value: Any) -> str:
@@ -20,11 +22,65 @@ def ref_key(ref):
     return (ref.get('documentId'), ref.get('revision'))
 
 
+def _bounded_visible_text(value: object) -> tuple[str | None, str | None]:
+    if not isinstance(value, str):
+        return None, None
+    if len(value) <= MAX_FRAGMENT_CHARACTERS:
+        return value, None
+    return None, digest(value)
+
+
+def _profile_projection(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose identity and a field catalogue; field values require local read."""
+    allowed = ('identity', 'review_status', 'compiled_at', 'profileContentSha256')
+    projected = {key: row[key] for key in allowed if key in row}
+    summary, summary_hash = _bounded_visible_text(row.get('summary'))
+    if summary is not None:
+        projected['summary'] = summary
+    elif summary_hash is not None:
+        projected.update({'summaryUnavailable': True, 'summarySha256': summary_hash})
+    identity = row.get('identity') if isinstance(row.get('identity'), Mapping) else {}
+    code = identity.get('ts_code')
+    manifests = []
+    for key, value in row.items():
+        if key in {*allowed, 'sources', 'fieldRefs', 'retrieval', 'raw_evidence_file'}:
+            continue
+        manifests.append({'field': key, 'contentSha256': digest(value),
+                          'kind': type(value).__name__})
+    projected['fieldManifest'] = sorted(manifests, key=lambda item: item['field'])
+    if isinstance(code, str):
+        projected['companyCode'] = code
+    return projected
+
+
+def _project_fulltext_document(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Never let a raw body hide in a packet field outside the read protocol."""
+    projected = {key: value for key, value in row.items()
+                 if key not in {'text', 'originalText', 'analysisText', 'body', 'excerpt'}}
+    raw = next((row[key] for key in ('text', 'originalText', 'analysisText', 'body') if isinstance(row.get(key), str)), None)
+    if raw is not None:
+        projected.update({'needsLocator': True, 'contentSha256': digest(raw)})
+    excerpt, excerpt_hash = _bounded_visible_text(row.get('excerpt'))
+    if excerpt is not None:
+        projected['excerpt'] = excerpt
+    elif excerpt_hash is not None:
+        projected.update({'excerptUnavailable': True, 'excerptSha256': excerpt_hash})
+    try:
+        if len(json.dumps(projected, ensure_ascii=False, sort_keys=True, separators=(',', ':'))) > MAX_FRAGMENT_CHARACTERS:
+            # An oversized outline must be refined locally as well; replacing
+            # it with a hash is safer than moving the same whole document into
+            # another packet field.
+            projected = {key: value for key, value in projected.items() if key not in {'outline', 'locators'}}
+            projected.update({'needsLocator': True, 'outlineUnavailable': True,
+                              'contentSha256': projected.get('contentSha256') or digest(row)})
+    except (TypeError, ValueError):
+        return {'needsLocator': True, 'contentSha256': digest(str(row))}
+    return projected
+
+
 def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
-    if not packet.get('companyScope'):
-        return dict(packet)
     result = dict(packet)
-    scope = dict(packet['companyScope'])
+    scope = dict(packet['companyScope']) if isinstance(packet.get('companyScope'), Mapping) else {}
     for key in ('companyProfiles', 'candidateCompanyCodes', 'profileSnapshotId', 'profileStatus', 'scopeRule', 'localProfileQuery'):
         if key in result:
             value = result.pop(key)
@@ -38,10 +94,11 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     # Identity and provenance remain local; a candidate summary is sufficient
     # for planning a source query or reading a new source paragraph.
     if action in {'plan_queries', 'assess_evidence'}:
-        scope['companyProfiles'] = [{key: row[key] for key in
-            ('identity', 'summary', 'review_status', 'profileContentSha256') if key in row}
-            for row in scope.get('companyProfiles', [])]
-    result['companyScope'] = scope
+        scope['companyProfiles'] = [_profile_projection(row) for row in scope.get('companyProfiles', [])]
+    elif action in {'plan_gaps', 'close_research', 'compare_companies'}:
+        scope['companyProfiles'] = [_profile_projection(row) for row in scope.get('companyProfiles', [])]
+    if scope or 'companyScope' in packet:
+        result['companyScope'] = scope
     result['contextProtocol'] = PROTOCOL
     result['_localState'] = {'claims': packet.get('claims', []), 'questions': packet.get('questions', []),
         'fulltextRequests': packet.get('fulltextRequests', []), 'fixedPool': pool,
@@ -82,6 +139,8 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
                     'lastAttempt': {key: last.get(key) for key in ('query', 'intent', 'targetSource', 'state', 'resultSummary')},
                     'attemptedRoutesSha256': digest(sorted(digest({key: row.get(key) for key in ('query', 'intent', 'targetSource', 'state', 'resultSummary')}) for row in paths))})
     result['fulltextRequests'] = [row for row in packet.get('fulltextRequests', []) if row['state'] in {'requested', 'admitted'}]
+    if isinstance(packet.get('fullTextDocuments'), list):
+        result['fullTextDocuments'] = [_project_fulltext_document(row) for row in packet['fullTextDocuments'] if isinstance(row, Mapping)]
     result.pop('toolOutcomes', None)
     reusable = result.pop('reusableSourceEvidence', {})
     shared = reusable.get('claims', [])
@@ -99,19 +158,26 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
         # A claim is represented exactly once, in claims. A naked source ID is
         # insufficient: cards with neither visible claim nor excerpt stay hidden.
         claim_ids = [c['claimId'] for c in [*result.get('claims', []), *result['reusableSourceEvidence']['claims']] if ref_key(c['sourceRef']) == ref_key(card)]
-        if card.get('excerpt') or claim_ids:
-            cards.append({**{key: value for key, value in card.items() if key != 'sourceStatements'}, 'claimIds': claim_ids})
+        excerpt, excerpt_hash = _bounded_visible_text(card.get('excerpt'))
+        if excerpt is not None or claim_ids:
+            visible_card = {key: value for key, value in card.items() if key not in {'sourceStatements', 'excerpt'}}
+            if excerpt is not None:
+                visible_card['excerpt'] = excerpt
+            elif excerpt_hash is not None:
+                visible_card.update({'excerptUnavailable': True, 'excerptSha256': excerpt_hash})
+            cards.append({**visible_card, 'claimIds': claim_ids})
     result['evidenceCards'] = cards
     visible = {ref_key(card) for card in cards}
-    visible.update(ref_key(doc) for doc in packet.get('fullTextDocuments', []) if doc.get('eligibleAtNewsCutoff'))
+    visible.update(ref_key(doc) for doc in result.get('fullTextDocuments', [])
+                   if doc.get('eligibleAtNewsCutoff') and isinstance(doc.get('excerpt'), str) and doc['excerpt'].strip())
     for item in packet.get('contextResults', []):
         value = item.get('value')
         if item.get('status') == 'found' and isinstance(value, dict):
-            if value.get('eligibleAtNewsCutoff'):
+            if value.get('eligibleAtNewsCutoff') and isinstance(value.get('text'), str) and value['text'].strip():
                 visible.add(ref_key(value['sourceRef']))
             if item['request']['kind'] == 'claim' and 'sourceRef' in value:
                 visible.add(ref_key(value['sourceRef']))
-    result['allowedEvidenceRefs'] = [ref for ref in packet['allowedEvidenceRefs'] if ref_key(ref) in visible]
+    result['allowedEvidenceRefs'] = [ref for ref in packet.get('allowedEvidenceRefs', []) if ref_key(ref) in visible]
     result['contextReadCapabilities'] = ['company_search', 'company_fields', 'claim', 'question', 'source']
     result['visibleContext'] = {'claimIds': sorted(ids), 'sourceRefs': result['allowedEvidenceRefs'],
         'companyFields': [{'companyCode': row['identity']['ts_code'], 'fields': sorted(row),
@@ -119,13 +185,14 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def read_context(request: Mapping[str, Any], *, state, documents, binding, eligible_refs):
+def read_context(request: Mapping[str, Any], *, state, documents, binding, eligible_refs, request_fits=None):
     """Resolve only already stored versions; unknown locators return no evidence."""
     kind = request.get('kind')
     if not isinstance(request.get('purpose'), str) or not request['purpose'].strip():
         raise ValueError('context purpose required')
     question_id = request.get('questionId')
-    if question_id is not None and question_id not in {q['questionId'] for q in state['questions']}:
+    questions_by_id = {q['questionId']: q for q in state['questions'] if isinstance(q, Mapping) and isinstance(q.get('questionId'), str)}
+    if question_id is not None and question_id not in questions_by_id:
         raise ValueError('unknown context question')
     identity = {key: value for key, value in request.items() if key != 'purpose'}
     value = None
@@ -136,13 +203,14 @@ def read_context(request: Mapping[str, Any], *, state, documents, binding, eligi
         from .v2_profiles import retrieve_company_context
         value = retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=request.get('query', ''))
         value.pop('fixedPool', None)
+        value['companyProfiles'] = [_profile_projection(row) for row in value.get('companyProfiles', [])]
     elif kind == 'company_fields' and binding:
         from .v2_profiles import read_profiles
         rows = read_profiles(db_path=binding[0], profiles_id=binding[1], codes=[request.get('companyCode')])
         if rows and isinstance(request.get('fields'), list):
             profile = rows[0]
             fields = request['fields']
-            if all(isinstance(key, str) and key in profile and key not in {'raw_evidence_file'} for key in fields):
+            if all(isinstance(key, str) and key in profile and key not in {'raw_evidence_file', 'sources'} for key in fields):
                 selected = {key: profile[key] for key in fields}
                 def references(item):
                     if isinstance(item, dict):
@@ -155,32 +223,85 @@ def read_context(request: Mapping[str, Any], *, state, documents, binding, eligi
                         for child in item:
                             yield from references(child)
                 refs = set(references(selected))
-                sources = [] if 'sources' in fields else [source for source in profile['sources']
+                sources = [source for source in profile['sources']
                     if any(ref == source['source_id'] or ref.startswith(source['source_id'] + '.') for ref in refs)]
-                value = {'profileSnapshotId': binding[1], 'identity': profile['identity'],
+                candidate = {'profileSnapshotId': binding[1], 'identity': profile['identity'],
                     'review_status': profile['review_status'], 'fields': selected,
                     'sources': sources, 'contentSha256': digest(profile)}
+                if callable(request_fits) or len(json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(',', ':'))) <= MAX_FRAGMENT_CHARACTERS:
+                    value = candidate
+                else:
+                    value = {'profileSnapshotId': binding[1], 'identity': profile['identity'],
+                        'review_status': profile['review_status'], 'contentSha256': digest(profile),
+                        'needsFieldRefinement': True,
+                        'fieldManifest': _profile_projection(profile).get('fieldManifest', [])}
     elif kind == 'source':
         ref = request.get('sourceRef') or {}
         doc = next((doc for key, doc in documents.items() if (key.document_id, key.revision) == ref_key(ref)), None)
         location = request.get('location')
         if doc is not None:
-            if location == 'excerpt':
-                value = doc.excerpt
-            elif isinstance(location, str) and location.startswith('paragraph:'):
-                try:
-                    index = int(location.split(':', 1)[1]) - 1
-                    paragraphs = (doc.analysis_text or doc.original_text or '').splitlines()
-                    value = paragraphs[index] if 0 <= index < len(paragraphs) else None
-                except ValueError:
-                    pass
-            if value:
+            text = doc.analysis_text or doc.original_text or doc.excerpt or ''
+            budget = max(1, len(text)*2) if callable(request_fits) else MAX_FRAGMENT_CHARACTERS
+            question = questions_by_id.get(question_id) if isinstance(question_id, str) else None
+            if requires_current_event_locator(doc):
+                # A report document is background until a persisted open
+                # question ties a direct structural read to this event.  A
+                # free-form purpose, outline or excerpt cannot turn it into
+                # evidence or silently load the whole annual report.
+                if question is None or question.get('state') != 'open' or not question.get('claimIds'):
+                    value = {'sourceRef': ref, 'status': 'requires_current_event_question',
+                             'needsLocator': True, 'reason': 'background_requires_event_question'}
+                elif not isinstance(location, str):
+                    value = {'sourceRef': ref, 'status': 'requires_direct_locator',
+                             'needsLocator': True, 'reason': 'background_requires_direct_locator',
+                             'questionId': question_id}
+                elif location.startswith('find:'):
+                    # A scoped keyword lookup returns only the document's real
+                    # locator catalogue.  It does not reveal an outline or
+                    # body, and the next request still has to name one exact
+                    # paragraph/table/line before it can become evidence.
+                    term = location.removeprefix('find:').strip()
+                    import re
+                    question_terms = normalized_text(' '.join(str(question.get(key, ''))
+                        for key in ('question', 'supportCondition', 'refuteCondition', 'missingEvidence')))
+                    if not term or normalized_text(term) not in question_terms:
+                        value = {'sourceRef': ref, 'status': 'requires_direct_locator',
+                                 'needsLocator': True, 'reason': 'background_find_outside_question',
+                                 'questionId': question_id}
+                    else:
+                        value = read_locator(doc, location, max_characters=budget)
+                elif not __import__('re').fullmatch(r'(?:paragraph|table|line):\d+', location):
+                    value = {'sourceRef': ref, 'status': 'requires_direct_locator',
+                             'needsLocator': True, 'reason': 'background_requires_direct_locator',
+                             'questionId': question_id}
+                else:
+                    value = read_locator(doc, location, max_characters=budget)
+            elif location == 'excerpt':
+                value = bounded_excerpt(doc, max_characters=budget)
+            elif isinstance(location, str):
+                value = read_locator(doc, location, max_characters=budget)
+            if isinstance(value, Mapping):
+                value = {**value, 'sourceRef': ref,
+                    'eligibleAtNewsCutoff': ref_key(ref) in eligible_refs,
+                    'contentVersionAtCutoff': doc.metadata.get('contentVersionAtCutoff')}
+            elif value:
                 value = {'sourceRef': ref, 'location': location, 'text': value,
                     'publishedAt': doc.published_at, 'fetchedAt': doc.fetched_at,
                     'eligibleAtNewsCutoff': ref_key(ref) in eligible_refs,
                     'contentVersionAtCutoff': doc.metadata.get('contentVersionAtCutoff')}
-    return {'request': identity, 'status': 'found' if value is not None else 'unknown_reference',
-            'value': value, 'contentSha256': digest(value)}
+    result = {'request': identity, 'status': 'found' if value is not None else 'unknown_reference',
+              'value': value, 'contentSha256': digest(value)}
+    if value is not None and callable(request_fits) and not request_fits(result):
+        # The complete evidence unit is either visible or withheld. Do not trim
+        # a trailing negation, unit, footnote, or nested company field to fit.
+        reduced = {key: value[key] for key in ('sourceRef', 'sourceContentSha256', 'indexVersion',
+            'locator', 'startOffset', 'endOffset', 'profileSnapshotId', 'identity', 'contentVersionAtCutoff')
+            if isinstance(value, Mapping) and key in value}
+        reduced.update({'status': 'not_safely_readable', 'needsLocator': kind == 'source',
+            'needsFieldRefinement': kind == 'company_fields', 'contentSha256': digest(value),
+            'reason': '完整资料连同限定说明无法放入本次实际请求；未截断，需进一步定位或保留资料缺口。'})
+        return {**result, 'value': reduced, 'contentSha256': digest(reduced)}
+    return result
 
 
 def normalized_text(value):

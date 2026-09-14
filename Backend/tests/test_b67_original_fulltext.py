@@ -79,7 +79,8 @@ def test_cli_worker_rereads_original_without_external_extract(tmp_path, monkeypa
             assert all(row in conn.execute('select attempt_id from k10_external_attempts where task_id=?', (task_id,)).fetchall() for row in paid)
     assert task.status == 'completed', task.status
     assert tools == []
-    assert len(reads) == 1 and reads[0]['text'] == '供应商称创业板公司可能进入新项目送样阶段。'
+    assert len(reads) == 1 and 'text' not in reads[0]
+    assert reads[0]['locatorCount'] == 1 and reads[0]['locators'][0]['locator'] == 'paragraph:1'
     assert reads[0]['materialOrigin'] == 'original_article' and reads[0]['independentVerification'] is False
     assert {k: reads[0][k] for k in ('documentId', 'revision')} == requested[0]
     assert calls.count('understand') == 1 and calls.count('titleBatch') == 1

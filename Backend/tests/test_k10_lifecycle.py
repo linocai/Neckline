@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from neckline.k10 import store
-from neckline.k10.schema import initialize_schema, schema_version
+from neckline.k10.schema import SCHEMA_VERSION, initialize_schema, schema_version
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.k10.windows import SHANGHAI
 
@@ -43,7 +43,7 @@ def _input(candidate_id: str, event_id: str, *, key: str, company: str = "300001
 def test_schema_v1_migrates_to_v2_without_partial_tables(tmp_path):
     path=tmp_path/"v1.sqlite"
     initialize_schema(path)
-    assert schema_version(path) == 8
+    assert schema_version(path) == SCHEMA_VERSION
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
@@ -56,9 +56,9 @@ def test_existing_v1_schema_forwards_to_v2_in_one_controlled_transaction(tmp_pat
         conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
         schema._apply_v1(conn)
         conn.execute("INSERT INTO k10_schema_migrations VALUES(1,'2026-09-01T00:00:00+00:00')")
-    assert initialize_schema(path) == 8
+    assert initialize_schema(path) == SCHEMA_VERSION
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (8,)
+        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (SCHEMA_VERSION,)
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
 
@@ -207,10 +207,9 @@ def test_window_action_uses_one_representative_and_one_shared_analysis_chain(tmp
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_company_window_observations").fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM k10_tasks WHERE kind='analysis'").fetchone() == (1,)
-    from neckline.k10.schema import rollback_schema
-    from neckline.k10.schema import K10SchemaError
+    from neckline.k10.schema import rollback_schema, K10SchemaError
     before = path.read_bytes()
-    with pytest.raises(K10SchemaError, match="schema 8"):
+    with pytest.raises(K10SchemaError, match="schema 9"):
         rollback_schema(path)
     assert path.read_bytes() == before
 

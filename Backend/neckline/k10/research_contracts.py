@@ -18,6 +18,7 @@ COMPANY_ROLES = frozenset({"primary", "alternative", "tied", "pending", "exclude
 EVIDENCE_RELATIONS = frozenset({"supports", "partially_supports", "contradicts", "duplicate", "irrelevant", "conflicts"})
 QUESTION_STATES = frozenset({"open", "answered", "blocked", "abandoned"})
 QUERY_STATES = frozenset({"planned", "searched", "no_result", "blocked"})
+QUERY_PURPOSE_KINDS = frozenset({"event_fact", "company_event_link", "counterevidence"})
 FULLTEXT_STATES = frozenset({"requested", "admitted", "rejected", "fulfilled"})
 RESEARCH_ACTIONS = frozenset({
     "extract_claims", "plan_gaps", "plan_queries", "assess_evidence", "close_research", "compare_companies",
@@ -69,6 +70,30 @@ def _refs(value: Any, field_name: str) -> tuple[dict[str, Any], ...]:
         seen.add(key)
         refs.append({"documentId": document_id, "revision": revision})
     return tuple(refs)
+
+
+def _query_target_refs(value: Any, field_name: str) -> tuple[dict[str, str], ...]:
+    """References to the question's own claim or company, never source bodies."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ResearchContractError(f"{field_name} 必须为问题目标引用列表", field_name=field_name,
+                                    expected="query_target_reference_array")
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ResearchContractError(f"{field_name} 包含无效问题目标引用", field_name=field_name + "[]",
+                                        expected="query_target_reference")
+        kind = _enum(item.get("kind"), frozenset({"claim", "company"}), f"{field_name}.kind")
+        key = "claimId" if kind == "claim" else "companyCode"
+        identifier = _text(item.get(key), f"{field_name}.{key}")
+        marker = (kind, identifier)
+        if marker not in seen:
+            seen.add(marker)
+            result.append({"kind": kind, key: identifier})
+    if not result:
+        raise ResearchContractError(f"{field_name} 不可为空", field_name=field_name,
+                                    expected="non_empty_query_target_reference_array")
+    return tuple(result)
 
 
 def _optional_text(value: Any, field_name: str) -> str | None:
@@ -228,6 +253,12 @@ class QueryPath:
     expected_judgment_change: str
     state: str
     result_summary: str | None = None
+    # The model declares a bounded semantic purpose and targets.  The runtime
+    # derives question_scope after validating those declarations against the
+    # persisted question and the fields actually shown to this request.
+    purpose_kind: str | None = None
+    target_refs: tuple[Mapping[str, Any], ...] = ()
+    question_scope: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _text(self.path_id, "pathId"); _text(self.question_id, "questionId"); _text(self.query, "query")
@@ -236,19 +267,36 @@ class QueryPath:
         _text(self.expected_information_gain, "expectedInformationGain")
         _text(self.expected_judgment_change, "expectedJudgmentChange")
         _enum(self.state, QUERY_STATES, "queryState")
+        if self.purpose_kind is not None or self.target_refs:
+            _enum(self.purpose_kind, QUERY_PURPOSE_KINDS, "purposeKind")
+            object.__setattr__(self, "target_refs", _query_target_refs(self.target_refs, "targetRefs"))
+        if self.question_scope is not None:
+            if not isinstance(self.question_scope, Mapping):
+                raise ResearchContractError("questionScope 必须为对象", field_name="questionScope", expected="object")
+            if self.question_scope.get("questionId") != self.question_id:
+                raise ResearchContractError("questionScope 必须属于同一问题", field_name="questionScope.questionId",
+                                            expected="queryPath.questionId")
+            _text(self.question_scope.get("scopeSha256"), "questionScope.scopeSha256")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"pathId": self.path_id, "questionId": self.question_id, "query": self.query, "intent": self.intent,
+        result = {"pathId": self.path_id, "questionId": self.question_id, "query": self.query, "intent": self.intent,
                 "targetSource": self.target_source, "newPathReason": self.new_path_reason,
                 "expectedInformationGain": self.expected_information_gain,
                 "expectedJudgmentChange": self.expected_judgment_change,
                 "state": self.state, "resultSummary": self.result_summary}
+        if self.purpose_kind is not None:
+            result["purposeKind"] = self.purpose_kind
+            result["targetRefs"] = [dict(item) for item in self.target_refs]
+        if self.question_scope is not None:
+            result["questionScope"] = dict(self.question_scope)
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "QueryPath":
         return cls(value.get("pathId"), value.get("questionId"), value.get("query"), value.get("intent"),
                    value.get("targetSource"), value.get("newPathReason"), value.get("expectedInformationGain"),
-                   value.get("expectedJudgmentChange"), value.get("state"), value.get("resultSummary"))
+                   value.get("expectedJudgmentChange"), value.get("state"), value.get("resultSummary"),
+                   value.get("purposeKind"), tuple(value.get("targetRefs", ())), value.get("questionScope"))
 
 
 @dataclass(frozen=True)

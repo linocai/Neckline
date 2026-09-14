@@ -37,6 +37,14 @@ class _RetryableUpstreamStatus(RuntimeError):
 
 _RETRYABLE_UPSTREAM_CODES = {"1302", "1305"}
 
+# A HTTP 200 only says that the upstream accepted and answered the request.  It
+# does not prove the answer obeys the OpenAI JSON-object protocol.  Keep an
+# otherwise-unparseable received body in this private envelope so K10 can make
+# it durable before returning a local protocol failure.  The envelope never
+# contains request material, headers, or credentials, and is only consumed by
+# the private response-receipt path.
+_RAW_HTTP_RESPONSE_KEY = "_k10_raw_http_response"
+
 
 def _upstream_business_code(response: Any) -> Optional[str]:
     """Return the provider business code without retaining the error body."""
@@ -100,7 +108,7 @@ def _model_options(options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     """Only explicit, validated execution controls may extend the wire request."""
     if options is None:
         return {}
-    if not isinstance(options, Mapping) or set(options) - {"maxTokens", "thinking", "reasoningEffort"}:
+    if not isinstance(options, Mapping) or set(options) - {"maxTokens", "thinking", "reasoningEffort", "temperature"}:
         raise ValueError("模型执行选项包含未知字段")
     result: Dict[str, Any] = {}
     if "maxTokens" in options:
@@ -121,6 +129,11 @@ def _model_options(options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
         if result.get("thinking", {}).get("type") == "disabled":
             raise ValueError("关闭思考时不能同时指定思考强度")
         result["reasoning_effort"] = value
+    if "temperature" in options:
+        value = options["temperature"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 2:
+            raise ValueError("temperature 必须是 0 到 2 的数值")
+        result["temperature"] = value
     return result
 
 
@@ -134,6 +147,8 @@ def _failure_code(reason: str) -> str:
         return "provider_http_" + status if status.isdigit() and len(status) == 3 else "provider_http_error"
     if reason.startswith("响应解析异常"):
         return "response_json_invalid"
+    if reason.startswith("请求结果未知"):
+        return "provider_request_outcome_unknown"
     return "provider_transport"
 
 
@@ -236,6 +251,176 @@ class OpenAICompatProvider(LLMProvider):
         该值与 ``_search_tools`` 使用同一配置源。"""
         return self.search_engine if self.has_web_search else None
 
+    def _wire_payload(
+        self,
+        *,
+        wire_messages: List[Dict[str, Any]],
+        explicit_options: Mapping[str, Any],
+        response_format: Optional[Mapping[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Build the exact initial/round payload sent to ``chat/completions``.
+
+        Metered K10 calls use this same builder before opening a socket.  Keeping
+        the request fingerprint on this boundary prevents its accounting view
+        from drifting when a protocol option is added here.
+        """
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": wire_messages,
+            "stream": bool(self.use_streaming),
+            **dict(explicit_options),
+        }
+        if response_format is not None:
+            # Keep legacy generic-provider diagnostics representable in the
+            # fingerprint even if a caller supplied an upstream-invalid value;
+            # the actual server remains authoritative for that protocol error.
+            payload["response_format"] = (dict(response_format) if isinstance(response_format, Mapping)
+                                          else response_format)
+        if tools:
+            payload["tools"] = tools
+        return payload
+
+    def initial_wire_payload(
+        self,
+        messages: List[ChatMessage],
+        *,
+        enable_search: bool = True,
+        search_query: Optional[str] = None,
+        response_format: Optional[Mapping[str, Any]] = None,
+        model_options: Optional[Mapping[str, Any]] = None,
+        json_array_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return the first payload exactly as :meth:`chat` will post it.
+
+        ``json_array_key`` affects only local JSON normalization, but is
+        validated here so preflight and the actual call reject the same input.
+        It is intentionally absent from the wire body.
+        """
+        explicit_options = _model_options(model_options)
+        if json_array_key is not None and (not isinstance(json_array_key, str) or not json_array_key
+                or response_format != {"type": "json_object"}):
+            raise ValueError("array normalization requires an explicit object field and JSON mode")
+        wire_messages = [message.to_api() for message in messages]
+        tools = self._search_tools(search_query) if enable_search else None
+        return self._wire_payload(
+            wire_messages=wire_messages,
+            explicit_options=explicit_options,
+            response_format=response_format,
+            tools=tools,
+        )
+
+    def _finalize_provider_result(self, result: LLMResult) -> LLMResult:
+        """Hook after a provider response is decoded and before callers consume it.
+
+        The base provider is intentionally side-effect free.  K10's metered
+        subclass uses this boundary to make a received provider body durable
+        before pipeline-level JSON/domain checkpoint code runs.
+        """
+        return result
+
+    def _received_provider_body(self, body: Mapping[str, Any]) -> None:
+        """Observe one decoded HTTP JSON body before protocol validation.
+
+        The base provider intentionally does nothing.  Metered K10 overrides
+        this hook to make the unparsed response durable before this method
+        reads ``choices`` or the JSON-mode content.  It must not inspect or
+        mutate the body: callers still own all protocol validation below.
+        """
+
+    def _provider_request_outcome_unknown(self) -> None:
+        """Mark a dispatched request whose provider outcome cannot be known.
+
+        A concrete metered implementation keeps its reserved external attempt
+        in ``started`` state.  The ordinary provider has no persistence and
+        intentionally remains side-effect free.
+        """
+
+    def revalidate_received_response(
+        self,
+        raw_responses: List[Dict[str, Any]],
+        *,
+        enable_search: bool,
+        response_format: Optional[Mapping[str, Any]],
+        json_array_key: Optional[str],
+    ) -> LLMResult:
+        """Locally reapply the no-tool response protocol to a saved body.
+
+        This is deliberately narrow.  K10's metered admission forbids native
+        tools and search for requests that use the receipt path, so a saved
+        single response can be checked again without opening a socket.  An
+        unsupported receipt remains a local failure and never authorizes a
+        second provider call.
+        """
+        if enable_search or len(raw_responses) != 1 or not isinstance(raw_responses[0], Mapping):
+            return LLMResult(ok=False, reason="模型响应回执不能离线重放", provider=self.name, model=self.model,
+                             error_code="provider_response_receipt_unreplayable", usage_unavailable=True,
+                             raw_responses=[dict(item) for item in raw_responses if isinstance(item, Mapping)])
+        body = raw_responses[0]
+        usage = _actual_usage(raw_responses)
+        raw_http = body.get(_RAW_HTTP_RESPONSE_KEY)
+        if isinstance(raw_http, Mapping):
+            # The original HTTP response was received and stored before any
+            # OpenAI shape validation.  It is a permanent local protocol
+            # rejection for this exact wire, never authority to post again.
+            code = ("response_json_invalid" if raw_http.get("kind") == "json_decode_failure"
+                    else "response_structure_invalid")
+            return LLMResult(
+                ok=False,
+                reason=("模型未返回有效 JSON 对象" if code == "response_json_invalid" else "响应结构异常"),
+                error_code=code,
+                provider=self.name,
+                model=self.model,
+                raw_responses=list(raw_responses),
+                **usage,
+            )
+        try:
+            choice = body["choices"][0]
+            msg = choice.get("message") or {}
+            finish_reason = choice.get("finish_reason")
+            if not isinstance(msg, Mapping) or not isinstance(finish_reason, (str, type(None))):
+                raise TypeError("message")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            return LLMResult(ok=False, reason="响应结构异常", error_code="response_structure_invalid",
+                             provider=self.name, model=self.model, raw_responses=list(raw_responses), **usage)
+        if msg.get("tool_calls"):
+            return LLMResult(ok=False, reason="模型响应回执包含不可重放工具调用",
+                             error_code="provider_response_receipt_unreplayable", provider=self.name, model=self.model,
+                             finish_reason=finish_reason, raw_responses=list(raw_responses), **usage)
+        if finish_reason in {"length", "content_filter"}:
+            return LLMResult(ok=False, reason="模型响应未完整结束",
+                             error_code="response_truncated" if finish_reason == "length" else "response_filtered",
+                             finish_reason=finish_reason, provider=self.name, model=self.model,
+                             raw_responses=list(raw_responses), **usage)
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return LLMResult(ok=False, reason="模型输出为空", error_code="response_empty",
+                             finish_reason=finish_reason, provider=self.name, model=self.model,
+                             raw_responses=list(raw_responses), **usage)
+        diagnostics: Dict[str, Any] = {}
+        if response_format is not None and response_format.get("type") == "json_object":
+            diagnostics = {"contentLength": len(content), "contentSha256": sha256(content.encode()).hexdigest(),
+                           "finishReason": finish_reason}
+            try:
+                parsed = json.loads(content)
+                diagnostics["rootType"] = type(parsed).__name__
+                if isinstance(parsed, list) and json_array_key is not None:
+                    parsed = {json_array_key: parsed}
+                    content = json.dumps(parsed, ensure_ascii=False)
+                    diagnostics["normalization"] = "single_array_envelope"
+                valid_object = isinstance(parsed, dict)
+            except json.JSONDecodeError as exc:
+                diagnostics["syntaxError"] = {"message": exc.msg, "line": exc.lineno,
+                                               "column": exc.colno, "position": exc.pos}
+                valid_object = False
+            if not valid_object:
+                return LLMResult(ok=False, reason="模型未返回有效 JSON 对象", error_code="response_json_invalid",
+                                 finish_reason=finish_reason, provider=self.name, model=self.model,
+                                 json_diagnostics=diagnostics, raw_responses=list(raw_responses), **usage)
+        return LLMResult(ok=True, content=content, provider=self.name, model=self.model,
+                         raw_responses=list(raw_responses), finish_reason=finish_reason,
+                         json_diagnostics=diagnostics, **usage)
+
     # —— 共享逻辑 ——————————————————————————————————————————————
     def chat(
         self,
@@ -248,10 +433,17 @@ class OpenAICompatProvider(LLMProvider):
         json_array_key: Optional[str] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
+        # Keep all validation and initial serialization in one place with the
+        # preflight/accounting representation used by MeteredProvider.
+        initial_payload = self.initial_wire_payload(
+            messages,
+            enable_search=enable_search,
+            search_query=search_query,
+            response_format=response_format,
+            model_options=model_options,
+            json_array_key=json_array_key,
+        )
         explicit_options = _model_options(model_options)
-        if json_array_key is not None and (not isinstance(json_array_key, str) or not json_array_key
-                or response_format != {"type": "json_object"}):
-            raise ValueError("array normalization requires an explicit object field and JSON mode")
         if not self.api_key:
             return LLMResult(ok=False, reason="缺少 API key", provider=self.name, model=self.model,
                              error_code="provider_configuration")
@@ -261,28 +453,44 @@ class OpenAICompatProvider(LLMProvider):
             return LLMResult(ok=False, reason="httpx 未安装", provider=self.name, model=self.model,
                              error_code="provider_dependency")
 
-        wire_messages: List[Dict[str, Any]] = [m.to_api() for m in messages]
+        wire_messages: List[Dict[str, Any]] = list(initial_payload["messages"])
         tools = self._search_tools(search_query) if enable_search else None
         all_hits: List[SearchHit] = []
         raw_responses: List[Dict[str, Any]] = []
 
         for _round in range(self.max_tool_rounds):
-            # `use_streaming=False` 时保持非流式 payload，
-            # 逐字节相同 —— 检索类/所有直接 new 出来的 provider 的 wire 格式未变。
-            payload: Dict[str, Any] = {
-                "model": self.model, "messages": wire_messages, "stream": bool(self.use_streaming),
-                **explicit_options,
-            }
-            if response_format is not None:
-                payload["response_format"] = dict(response_format)
-            if tools:
-                payload["tools"] = tools
+            # `use_streaming=False` 时保持非流式 payload，逐字节格式未变。
+            payload = self._wire_payload(
+                wire_messages=wire_messages,
+                explicit_options=explicit_options,
+                response_format=response_format,
+                tools=tools,
+            )
             body, err = self._post(payload, transport)
             if err is not None:
-                return LLMResult(ok=False, reason=err, error_code=_failure_code(err), retry_after_seconds=getattr(self, "_last_retry_after_seconds", None),
+                return self._finalize_provider_result(LLMResult(ok=False, reason=err, error_code=_failure_code(err), retry_after_seconds=getattr(self, "_last_retry_after_seconds", None),
                                  provider=self.name, model=self.model, raw_responses=raw_responses,
-                                 **_actual_usage(raw_responses))
+                                 **_actual_usage(raw_responses)))
+            # This runs before the in-memory collection and any
+            # ``choices``/JSON-mode dereference.  A metered provider persists
+            # the received body here; a process loss after HTTP success cannot
+            # turn into a blind second request.
+            self._received_provider_body(body)
             raw_responses.append(body)
+
+            raw_http = body.get(_RAW_HTTP_RESPONSE_KEY)
+            if isinstance(raw_http, Mapping):
+                code = ("response_json_invalid" if raw_http.get("kind") == "json_decode_failure"
+                        else "response_structure_invalid")
+                return self._finalize_provider_result(LLMResult(
+                    ok=False,
+                    reason=("模型未返回有效 JSON 对象" if code == "response_json_invalid" else "响应结构异常"),
+                    error_code=code,
+                    provider=self.name,
+                    model=self.model,
+                    raw_responses=raw_responses,
+                    **_actual_usage(raw_responses),
+                ))
 
             try:
                 choice = body["choices"][0]
@@ -293,21 +501,32 @@ class OpenAICompatProvider(LLMProvider):
                 if finish_reason is not None and not isinstance(finish_reason, str):
                     raise TypeError("finish_reason")
             except (KeyError, IndexError, TypeError, AttributeError):
-                return LLMResult(
+                return self._finalize_provider_result(LLMResult(
                     ok=False, reason="响应结构异常", error_code="response_structure_invalid",
                     provider=self.name, model=self.model, raw_responses=raw_responses,
                     **_actual_usage(raw_responses),
-                )
+                ))
 
             if finish_reason in {"length", "content_filter"}:
                 code = "response_truncated" if finish_reason == "length" else "response_filtered"
-                return LLMResult(ok=False, reason="模型响应未完整结束", error_code=code,
+                return self._finalize_provider_result(LLMResult(ok=False, reason="模型响应未完整结束", error_code=code,
                                  finish_reason=finish_reason, provider=self.name, model=self.model,
-                                 raw_responses=raw_responses, **_actual_usage(raw_responses))
+                                 raw_responses=raw_responses, **_actual_usage(raw_responses)))
 
             all_hits.extend(self._extract_top_level_search_hits(body))
 
             tool_calls = msg.get("tool_calls")
+            # K10 never grants native provider tools.  A provider that returns
+            # ``tool_calls`` anyway has already produced a paid first body,
+            # which the hook above made durable; it must become the same local
+            # protocol rejection replay sees, never a second unguarded wire.
+            if tool_calls and not tools:
+                return self._finalize_provider_result(LLMResult(
+                    ok=False, reason="模型响应回执包含不可重放工具调用",
+                    error_code="provider_response_receipt_unreplayable", provider=self.name, model=self.model,
+                    finish_reason=finish_reason, raw_responses=raw_responses,
+                    **_actual_usage(raw_responses),
+                ))
             if finish_reason == "tool_calls" and tool_calls:
                 wire_messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": tool_calls})
                 for tc in tool_calls:
@@ -319,11 +538,11 @@ class OpenAICompatProvider(LLMProvider):
 
             content = msg.get("content")
             if not isinstance(content, str) or not content.strip():
-                return LLMResult(
+                return self._finalize_provider_result(LLMResult(
                     ok=False, reason="模型输出为空", provider=self.name, model=self.model,
                     error_code="response_empty", finish_reason=finish_reason,
                     raw_responses=raw_responses, **_actual_usage(raw_responses),
-                )
+                ))
             diagnostics: Dict[str, Any] = {}
             if response_format is not None and response_format.get("type") == "json_object":
                 diagnostics = {"contentLength": len(content), "contentSha256": sha256(content.encode()).hexdigest(),
@@ -347,10 +566,10 @@ class OpenAICompatProvider(LLMProvider):
                     logger.warning("JSON protocol rejected: %s", json.dumps(diagnostics, sort_keys=True))
                     # HTTP success is not success of the requested JSON protocol. Keep
                     # the actual paid usage while withholding malformed model material.
-                    return LLMResult(ok=False, reason="模型未返回有效 JSON 对象", error_code="response_json_invalid",
+                    return self._finalize_provider_result(LLMResult(ok=False, reason="模型未返回有效 JSON 对象", error_code="response_json_invalid",
                                      finish_reason=finish_reason, provider=self.name, model=self.model,
                                      json_diagnostics=diagnostics,
-                                     raw_responses=raw_responses, **_actual_usage(raw_responses))
+                                     raw_responses=raw_responses, **_actual_usage(raw_responses)))
             if enable_search and not all_hits:
                 # 开了搜索却一条都没回来属于静默失效，必须留痕。
                 logger.warning(
@@ -358,7 +577,7 @@ class OpenAICompatProvider(LLMProvider):
                     "检索词=%s)——若持续出现,先查 search_engine 取值是否仍被上游认识",
                     self.name, (search_query or "<由供应商自行推导>"),
                 )
-            return LLMResult(
+            return self._finalize_provider_result(LLMResult(
                 ok=True, content=content, search_hits=all_hits, provider=self.name, model=self.model,
                 raw_responses=raw_responses, finish_reason=finish_reason,
                 json_diagnostics=diagnostics,
@@ -366,21 +585,23 @@ class OpenAICompatProvider(LLMProvider):
                 # 才读 `_search_engine_value()`(P1-7 基线捞的就是这个值)。
                 search_engine=(self._search_engine_value() if enable_search else None),
                 **_actual_usage(raw_responses),
-            )
+            ))
 
-        return LLMResult(
+        return self._finalize_provider_result(LLMResult(
             ok=False, reason=f"工具调用轮数超过上限({self.max_tool_rounds})",
             error_code="provider_tool_limit", provider=self.name, model=self.model,
             raw_responses=raw_responses, **_actual_usage(raw_responses),
-        )
+        ))
 
     def _post(self, payload: Dict[str, Any], transport: Optional[Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """一次 HTTP 往返(短读超时 + 每次全新连接重试,继承 LinoN deepseek.py 姿势)。
         返回 `(body, None)` 成功,或 `(None, 降级原因)`。
 
-        网络层异常(超时 / 连接断)与明确的 1302/1305 限流业务码走现有重试次数；
-        限流优先尊重上游 `Retry-After`，缺失时短暂退避。余额不足 1113 等其他
-        429、其余非 200 与响应解析异常仍是已经拿到的明确答复，当场降级、不重放。
+        只有明确尚未建立连接的 ConnectTimeout/ConnectError/PoolTimeout 与明确
+        的 1302/1305 限流业务码走现有重试次数；限流优先尊重上游
+        `Retry-After`，缺失时短暂退避。POST 一旦进入且出现其他 HTTPX 异常，
+        其请求结果可能未知，必须交给计量层保留 started 尝试，不能重放。余额
+        不足 1113 等其他 429 与其余非 200 仍是已经拿到的明确答复，当场降级。
 
         `payload["stream"]` 决定走哪条:流式那条的读超时语义是 **chunk 间隔**,
         见 `__init__` 的 `read_timeout` 文档。"""
@@ -425,7 +646,20 @@ class OpenAICompatProvider(LLMProvider):
 
     def _attempt_post(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """等待完整的非流式 JSON 响应；读超时由 `_post` 的 httpx 客户端执行。"""
-        resp = client.post(self.api_url, json=payload, headers=self._headers())
+        import httpx
+
+        try:
+            resp = client.post(self.api_url, json=payload, headers=self._headers())
+        except httpx.HTTPError as exc:
+            # These are the narrow pre-dispatch failures that httpx can prove
+            # did not establish a provider connection.  Preserve their legacy
+            # retry path.  Every other HTTPX error (including DecodingError
+            # while reading a HTTP 200 body) may follow a delivered POST, so a
+            # metered caller must leave the reservation unknown instead.
+            if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)):
+                raise
+            self._provider_request_outcome_unknown()
+            return None, "请求结果未知"
         business_code = _upstream_business_code(resp) if resp.status_code != 200 else None
         if resp.status_code == 429 and business_code != "1113":
             raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
@@ -433,9 +667,27 @@ class OpenAICompatProvider(LLMProvider):
             suffix = f"/{business_code}" if business_code else ""
             return None, f"上游 {resp.status_code}{suffix}"
         try:
-            return resp.json(), None
-        except Exception:  # noqa: BLE001
-            return None, "响应解析异常"
+            body = resp.json()
+        except Exception:  # noqa: BLE001 - a received non-JSON 200 can still be billable
+            return {
+                _RAW_HTTP_RESPONSE_KEY: {
+                    "statusCode": 200,
+                    "kind": "json_decode_failure",
+                    "body": resp.text,
+                },
+            }, None
+        if not isinstance(body, dict):
+            # JSON arrays/scalars are a received response too.  Preserve the
+            # exact textual body so a restart is blocked locally rather than
+            # attempting another paid post for a different checkpoint ID.
+            return {
+                _RAW_HTTP_RESPONSE_KEY: {
+                    "statusCode": 200,
+                    "kind": "json_top_level_not_object",
+                    "body": resp.text,
+                },
+            }, None
+        return body, None
 
     def _attempt_stream(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """累积完整 SSE 响应；中断时抛给重试层，绝不返回半截 JSON。

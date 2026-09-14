@@ -21,7 +21,7 @@ import tests.test_v310_pipeline_e2e as e2e
 
 
 @pytest.mark.parametrize('role', ['pro', 'con'])
-def test_known_failure_receipt_survives_before_artifact_write(tmp_path, monkeypatch, role):
+def test_same_failed_analysis_wire_revalidates_without_another_paid_attempt(tmp_path, monkeypatch, role):
     from neckline.k10.metering import MeteredProvider
     from tests.debate_fixture import debate_text
     db, _, _, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
@@ -38,7 +38,7 @@ def test_known_failure_receipt_survives_before_artifact_write(tmp_path, monkeypa
         return httpx.Response(200,json={'choices':[{'message':{'content':content},'finish_reason':'stop'}]})
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx,'Client',lambda **kw:e2e._HTTPX_CLIENT(**{**kw,'transport':transport}))
-    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',
+    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-flash',
         name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
     monkeypatch.setattr(runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'fixture',None))
     record = runtime.record_analysis_artifact
@@ -59,10 +59,13 @@ def test_known_failure_receipt_survives_before_artifact_write(tmp_path, monkeypa
     assert resumed.status=='failed' and len(calls)==failure_index
     with client_for(db) as client:
         assert client.post('/api/v1/k10/jobs/'+task_id+'/retry',json={'expectedAttemptCount':resumed.attempt_count}).status_code==200
-    assert work(at+timedelta(seconds=1)).status=='completed' and len(calls)==3
+    # The fresh authorization carries no source, contract or corrective-input
+    # change. Revalidate the paid invalid reply locally instead of buying the
+    # transport fixture's later valid answer.
+    assert work(at+timedelta(seconds=1)).status == 'failed' and len(calls) == failure_index
     with sqlite3.connect(db) as conn:
         counts=dict(conn.execute('SELECT stage,COUNT(*) FROM k10_external_attempts WHERE task_id=? GROUP BY stage',(task_id,)))
-    assert counts==({'analysisPro':2,'analysisCon':1} if role=='pro' else {'analysisPro':1,'analysisCon':2})
+    assert counts == ({'analysisPro': 1} if role == 'pro' else {'analysisPro': 1, 'analysisCon': 1})
 
 
 @pytest.mark.parametrize('first_status,lose_retry_result', [(402,False),(200,False),(200,True)])
@@ -83,7 +86,7 @@ def test_explicit_retry_only_authorizes_confirmed_failed_attempt(tmp_path, monke
         return httpx.Response(200, json={'choices':[{'message':{'content':debate_text('有效输出')},'finish_reason':'stop'}]})
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx,'Client',lambda **kw:e2e._HTTPX_CLIENT(**{**kw,'transport':transport}))
-    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',
+    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-flash',
         name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
     monkeypatch.setattr(runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'fixture',None))
     def work(at):
@@ -94,6 +97,10 @@ def test_explicit_retry_only_authorizes_confirmed_failed_attempt(tmp_path, monke
     with client_for(db) as client:
         response = client.post('/api/v1/k10/jobs/'+task_id+'/retry',json={'expectedAttemptCount':first.attempt_count})
         assert response.status_code == 200,response.text
+    if first_status == 200 and not lose_retry_result:
+        assert work(e2e.RUN_AT+timedelta(seconds=1)).status == 'failed'
+        assert len(calls) == 1
+        return
     if not lose_retry_result:
         assert work(e2e.RUN_AT+timedelta(seconds=1)).status == 'completed'
         assert len(calls) == 3
@@ -106,7 +113,7 @@ def test_explicit_retry_only_authorizes_confirmed_failed_attempt(tmp_path, monke
         work(e2e.RUN_AT+timedelta(seconds=1))
     monkeypatch.setattr(runtime,'record_analysis_artifact',record)
     assert work(e2e.RUN_AT+timedelta(minutes=6)).status == 'failed'
-    assert len(calls) == 2
+    assert len(calls) == (1 if first_status == 200 else 2)
 
 
 @pytest.mark.parametrize('status', [402, 432, 433, 429])
@@ -139,6 +146,7 @@ def test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, st
         fetch(gateway)
     restarted = TavilyEvidenceGateway(db_path=db, task_id=task_id, client=client,
         clock=lambda: COMPLETED_AT+timedelta(seconds=59), network_max_attempts=2)
+    restarted.context_protocol = "k10-v2-context-3.2.1"
     if status in {402, 432, 433}:
         assert fetch(restarted).coverage['reason'] == 'insufficient_balance'
         assert len(calls) == 1
@@ -163,7 +171,7 @@ def test_morning_user_retry_accepts_confirmed_failure(tmp_path, monkeypatch, ini
                 json={'choices':[{'message':{'content':json.dumps(answer)},'finish_reason':'stop'}]})
         transport = httpx.MockTransport(respond)
         monkeypatch.setattr(httpx,'Client',lambda **kw:e2e._HTTPX_CLIENT(**{**kw,'transport':transport}))
-        provider = MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-v4-pro',
+        provider = MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-flash',
             name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
         return ProviderResolution('configured',provider,'fixture',None)
     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',resolve)
@@ -177,7 +185,10 @@ def test_morning_user_retry_accepts_confirmed_failure(tmp_path, monkeypatch, ini
     at = datetime(2026,9,9,9,11,tzinfo=SHANGHAI)
     result = run_once(db_path=db,worker_id='morning-explicit',lease_for=timedelta(minutes=5),clock=lambda:at,
         handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),task_id=task_id)
-    assert result.status == 'completed' and len(calls) == 2
+    if initial_status == 200:
+        assert result.status == 'failed' and len(calls) == 1
+    else:
+        assert result.status == 'completed' and len(calls) == 2
 
 
 def test_historical_evidence_rejects_superseded_source_revision(tmp_path):
@@ -259,7 +270,7 @@ def test_morning_success_before_cache_interruption_never_repeats_payment(tmp_pat
     transport = httpx.MockTransport(respond)
     def resolve(**kwargs):
         monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
-        provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture', model='deepseek-v4-pro',
+        provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture', model='deepseek-flash',
             name='fixture', api_url='https://api.deepseek.com/chat/completions', read_timeout=1, use_streaming=False)
         return ProviderResolution('configured', provider, 'fixture', None)
     monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)
@@ -277,7 +288,7 @@ def test_morning_success_before_cache_interruption_never_repeats_payment(tmp_pat
     at = datetime.fromisoformat(lease_until)+timedelta(seconds=1)
     task = run_once(db_path=db, worker_id='morning-interruption', lease_for=timedelta(minutes=5), clock=lambda: at,
         handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'), task_id=task_id)
-    assert task.status == 'failed' and len(calls) == 1
+    assert task.status == 'completed' and len(calls) == 1
 
 
 def test_next_day_new_articles_reuse_prior_facts_and_relations(tmp_path, monkeypatch):
@@ -364,7 +375,7 @@ def test_successful_paid_call_without_artifact_is_not_sent_again(tmp_path, monke
         return httpx.Response(200, json={'choices': [{'message': {'content': debate_text('已付费结果')}, 'finish_reason': 'stop'}]})
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
-    provider = MeteredProvider(ledger_db=db, ledger_task='analysis', api_key='fixture', model='deepseek-v4-pro',
+    provider = MeteredProvider(ledger_db=db, ledger_task='analysis', api_key='fixture', model='deepseek-flash',
         name='fixture', api_url='https://api.deepseek.com/chat/completions', read_timeout=1, use_streaming=False)
     monkeypatch.setattr(runtime, 'resolve_deepseek_v4_pro', lambda **_: ProviderResolution('configured', provider, 'fixture', None))
     record = runtime.record_analysis_artifact
@@ -384,8 +395,13 @@ def test_successful_paid_call_without_artifact_is_not_sent_again(tmp_path, monke
         assert conn.execute('SELECT state FROM k10_external_attempts WHERE task_id=? ORDER BY rowid DESC LIMIT 1', (task_id,)).fetchone()[0] == 'succeeded'
     monkeypatch.setattr(runtime, 'record_analysis_artifact', record)
     task = work(e2e.RUN_AT+timedelta(minutes=6))
-    assert len(calls) == before, 'a lost paid result must never authorize another natural attempt'
-    assert task.status == 'failed'
+    # The saved role is replayed locally. A later role that was never called
+    # remains entitled to one separate provider attempt.
+    assert len(calls) == before + (1 if role == 'pro' else 0)
+    assert task.status == 'completed'
+    with sqlite3.connect(db) as conn:
+        counts = dict(conn.execute('SELECT stage,COUNT(*) FROM k10_external_attempts WHERE task_id=? GROUP BY stage', (task_id,)))
+    assert counts == {'analysisPro': 1, 'analysisCon': 1}
 
 
 def test_morning_reads_original_documents_fetched_after_news_cutoff(tmp_path, monkeypatch):

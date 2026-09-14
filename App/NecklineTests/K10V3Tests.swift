@@ -9,6 +9,60 @@ import UIKit
 @testable import Neckline
 
 final class K10V3Tests: XCTestCase {
+    func testB69ActualCLIWorkerReportsPreserveCompletionAndFailure() throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_B69_DTO_DIR"] else {
+            throw XCTSkip("Set NK_B69_DTO_DIR to the actual B69 CLI/worker FastAPI exports")
+        }
+        struct Expected: Decodable {
+            let completedTaskId: String
+            let completedScanId: String
+            let failedTaskId: String
+            let failedScanId: String
+        }
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+            let url = URL(fileURLWithPath: root).appendingPathComponent(name + ".json")
+            return try JSONDecoder().decode(type, from: Data(contentsOf: url))
+        }
+        let expected = try read("b69-expected", as: Expected.self)
+        let completed = try read("b69-completed-report", as: K10DailyReportResponse.self)
+        let completedScan = try read("b69-completed-scan", as: K10Scan.self)
+        let report = try XCTUnwrap(completed.report)
+        XCTAssertEqual(completed.schemaVersion, 8)
+        XCTAssertEqual(completed.state, "available")
+        XCTAssertNil(completed.reason)
+        XCTAssertEqual(report.status, "completed")
+        XCTAssertNotNil(report.availableAt)
+        XCTAssertEqual(report.strategyVersion, "K10-v2")
+        XCTAssertEqual(completedScan.scanId, expected.completedScanId)
+        XCTAssertEqual(completedScan.status, "completed")
+        let research = try XCTUnwrap(completedScan.researchSummary)
+        XCTAssertEqual(research.taskId, expected.completedTaskId)
+        XCTAssertFalse(research.executionFailed)
+        XCTAssertTrue(research.comparisonComplete)
+        let cards = report.eveningCards + report.updatedCards + report.addedCards
+        XCTAssertFalse(cards.isEmpty)
+        for card in cards {
+            XCTAssertFalse(card.companyWindowId.isEmpty)
+            XCTAssertFalse(card.sourceRefs.isEmpty)
+            XCTAssertTrue(["kept", "skipped", "unhandled"].contains(card.currentSelectionState))
+        }
+
+        let failed = try read("b69-failed-report", as: K10DailyReportResponse.self)
+        let failedScan = try read("b69-failed-scan", as: K10Scan.self)
+        let failedReport = try XCTUnwrap(failed.report)
+        XCTAssertEqual(failedScan.scanId, expected.failedScanId)
+        XCTAssertEqual(failedScan.status, "failed")
+        XCTAssertEqual(failedReport.status, "failed")
+        XCTAssertNil(failedReport.availableAt)
+        XCTAssertNotNil(failed.reason)
+        XCTAssertTrue(failedReport.eveningCards.isEmpty)
+        XCTAssertTrue(failedReport.updatedCards.isEmpty)
+        XCTAssertTrue(failedReport.addedCards.isEmpty)
+        let failedResearch = try XCTUnwrap(failedScan.researchSummary)
+        XCTAssertEqual(failedResearch.taskId, expected.failedTaskId)
+        XCTAssertTrue(failedResearch.executionFailed)
+    }
+
     func testSyntheticWindowActionsAreIndependentAndWithdrawalKeepsAnalysisHistory() async throws {
         let service = K10SyntheticUIService()
         let before = try await service.companyWindows()

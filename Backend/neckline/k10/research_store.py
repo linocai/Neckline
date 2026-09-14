@@ -368,11 +368,14 @@ def read_research_state(*, snapshot_id: str, db_path: Path) -> dict[str, Any] | 
 
 def _eligible_prior_source(
     conn, *, ref: Mapping[str, Any], allowed: set[tuple[str, int]], cutoff: datetime,
-    include_historical_sources: bool = False,
+    include_historical_sources: bool = False, same_task_frozen: bool = False,
+    verification_cutoff: datetime | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Return a source timing decision without selecting any article body."""
     document_id, revision = _ref(ref, "sourceRef")
     provenance = {"sourceRef": {"documentId": document_id, "revision": revision}}
+    if same_task_frozen and (document_id, revision) not in allowed:
+        return False, {**provenance, "reason": "not_same_task_frozen_input"}
     if (document_id, revision) not in allowed and not include_historical_sources:
         return False, {**provenance, "reason": "not_current_input"}
     if (document_id, revision) not in allowed:
@@ -396,6 +399,16 @@ def _eligible_prior_source(
         return False, {**provenance, "reason": "unknown_source_time"}
     if published > cutoff:
         return False, {**provenance, "reason": "published_after_cutoff", "publishedAt": str(published_at)}
+    effective_verification_cutoff = verification_cutoff or cutoff
+    if same_task_frozen:
+        # A normal collection may complete moments after the nominal report
+        # cutoff.  Its exact version is still usable only when it is an input
+        # frozen for this receiving task and the provider fact snapshot existed
+        # before the verification action's cutoff.
+        if fetched > effective_verification_cutoff:
+            return False, {**provenance, "reason": "fetched_after_verification_cutoff", "fetchedAt": str(fetched_at)}
+        return True, {**provenance, "publishedAt": str(published_at), "fetchedAt": str(fetched_at),
+                      "sameTaskFrozenInput": True}
     if fetched > cutoff:
         return False, {**provenance, "reason": "fetched_after_cutoff", "fetchedAt": str(fetched_at)}
     return True, {**provenance, "publishedAt": str(published_at), "fetchedAt": str(fetched_at)}
@@ -492,7 +505,9 @@ def load_prior_research_evidence(
                 ref = claim.get("sourceRef")
                 try:
                     eligible, timing = _eligible_prior_source(conn, ref=ref, allowed=allowed, cutoff=news_cutoff,
-                        include_historical_sources=include_historical_sources)
+                        include_historical_sources=include_historical_sources,
+                        same_task_frozen=prior_task_id == task_id,
+                        verification_cutoff=verification_cutoff)
                 except ResearchContractError:
                     eligible, timing = False, {"sourceRef": ref, "reason": "invalid_source_ref"}
                 if not eligible:
@@ -539,7 +554,9 @@ def load_prior_research_evidence(
                     for ref in refs:
                         try:
                             eligible, timing = _eligible_prior_source(conn, ref=ref, allowed=allowed, cutoff=verification_cutoff,
-                                include_historical_sources=include_historical_sources)
+                                include_historical_sources=include_historical_sources,
+                                same_task_frozen=prior_task_id == task_id,
+                                verification_cutoff=verification_cutoff)
                         except ResearchContractError:
                             eligible, timing = False, {"sourceRef": ref, "reason": "invalid_source_ref"}
                         if not eligible:
@@ -634,6 +651,14 @@ def research_summary_for_scan(*, scan_id: str, db_path: Path) -> dict[str, Any] 
         task_id = _task_for_scan(conn, scan_id)
         if task_id is None:
             return None
+        # A provider can fail in title triage before any event exists, so there
+        # is no per-event research snapshot to carry the failure.  That is
+        # still an execution failure of this scan, never an empty/clean
+        # research result.  The immutable scan binding supplies the task used
+        # for this summary; historical scans without that binding remain
+        # ``None`` above.
+        task_row = conn.execute("SELECT status FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        task_execution_failed = task_row is not None and str(task_row[0]) == "failed"
         snapshots = _latest_snapshots_for_task(conn, task_id)
         research_counts: dict[str, int] = {}
         execution_counts: dict[str, int] = {}
@@ -660,7 +685,7 @@ def research_summary_for_scan(*, scan_id: str, db_path: Path) -> dict[str, Any] 
         "researchStatusCounts": research_counts, "executionStatusCounts": execution_counts,
         "safeFailureCounts": safe_failure_counts,
         "comparisonComplete": bool(snapshots) and all(item.research_status == "comparison_complete" for item in snapshots),
-        "executionFailed": any(item.execution_status == "failed" for item in snapshots),
+        "executionFailed": task_execution_failed or any(item.execution_status == "failed" for item in snapshots),
     }
 
 

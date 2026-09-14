@@ -1,5 +1,28 @@
 # Project learnings
 
+## [LRN-20260914-001] correction
+
+**Logged**: 2026-09-14T18:42:20+08:00
+**Priority**: critical
+**Status**: in_progress
+**Area**: backend
+
+### Summary
+日报研究先判断问题和资料的必要性；切短大文件不能替代研究范围控制。
+
+### Details
+9月13日原任务记录23,633,932模型token，包含仅为核实客户身份而送入807,670字符招股书的请求。同任务事实共享被抓取时间检查误挡，86次加载返回0条。单事件全文去重和检查点续做通过，并不能证明跨事件事实复用或完整生产成本问题已解决。用户明确要求日报补证排除招股书，围绕当前事件的必要缺口查证，避免扩成企业尽调。
+
+### Suggested Action
+3.3.0（69）同时修复资料准入、按需读取、冻结来源事实共享、公司资料投影、最终请求守卫及付费结果复用；用已保存的真实输入离线验证。字符减少、下载缓存与合成调用次数不能冒充真实token或费用节省。
+
+### Metadata
+- Source: user_feedback
+- Related Files: Backend/neckline/k10/research_runtime.py, Backend/neckline/k10/research_store.py, Backend/neckline/k10/research_context.py, Backend/neckline/k10/metering.py
+- Evidence: archive/v3.2.1-b59_execution.md 第17节
+
+---
+
 ## [LRN-20260903-003] best_practice
 
 **Logged**: 2026-09-03T11:02:00+08:00

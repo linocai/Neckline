@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from hashlib import sha256
-from html import unescape
 from html.parser import HTMLParser
 import json
 from pathlib import Path
@@ -60,7 +59,7 @@ class DiscoveryDocument:
         return EvidenceRef(self.document_id, self.revision)
 
 
-_READABLE_TEXT_EXTRACTION_VERSION = "html-readable-v1"
+_READABLE_TEXT_EXTRACTION_VERSION = "html-readable-v2"
 
 
 class _ReadableTextParser(HTMLParser):
@@ -73,12 +72,15 @@ class _ReadableTextParser(HTMLParser):
 
     _DROP_CONTAINERS = frozenset({"script", "style", "template", "iframe", "object", "svg", "canvas"})
     _DROP_VOID = frozenset({"embed"})
-    _BREAK = frozenset({"p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article"})
+    _BLOCKS = frozenset({"p", "div", "li", "section", "article", "blockquote", "caption", "dt", "dd"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._dropped = 0
         self._parts: list[str] = []
+        self._table_depth = 0
+        self._in_row = False
+        self._row_cells = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.lower()
@@ -89,7 +91,28 @@ class _ReadableTextParser(HTMLParser):
             return
         if self._dropped:
             return
-        if lowered in self._BREAK:
+        if lowered == "table":
+            self._table_depth += 1
+            self._parts.append("\n\n" if self._table_depth == 1 else " ")
+        elif self._table_depth > 1 and lowered in {"tr", "td", "th"}:
+            # A nested table stays in its enclosing atomic cell. Preserve all
+            # labels/values without splitting the outer row or losing cells.
+            self._parts.append(" / " if lowered == "tr" else " | ")
+        elif lowered == "tr":
+            if self._parts and not self._parts[-1].endswith("\n"):
+                self._parts.append("\n")
+            self._in_row, self._row_cells = True, 0
+        elif lowered in {"td", "th"}:
+            if self._row_cells:
+                self._parts.append("\t")
+            self._row_cells += 1
+        elif self._in_row and (lowered in self._BLOCKS or lowered == "br"):
+            self._parts.append(" ")
+        elif re.fullmatch(r"h[1-6]", lowered):
+            self._parts.append("\n\n" + "#" * int(lowered[1]) + " ")
+        elif lowered in self._BLOCKS:
+            self._parts.append("\n\n")
+        elif lowered == "br":
             self._parts.append("\n")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -103,17 +126,36 @@ class _ReadableTextParser(HTMLParser):
             if self._dropped:
                 self._dropped -= 1
             return
-        if not self._dropped and lowered in self._BREAK:
+        if self._dropped:
+            return
+        if lowered == "table":
+            self._table_depth = max(0, self._table_depth - 1)
+            if not self._table_depth:
+                self._in_row = False
+                self._parts.append("\n\n")
+        elif lowered == "tr" and self._table_depth <= 1:
+            self._in_row = False
             self._parts.append("\n")
+        elif self._table_depth > 1 or self._in_row:
+            if lowered in self._BLOCKS:
+                self._parts.append(" ")
+        elif lowered in self._BLOCKS or re.fullmatch(r"h[1-6]", lowered):
+            self._parts.append("\n\n")
 
     def handle_data(self, data: str) -> None:
         if not self._dropped:
-            self._parts.append(data)
+            if self._table_depth and not self._in_row and not data.strip():
+                return
+            self._parts.append(re.sub(r"\s+", " ", data) if self._in_row else data)
 
     def text(self) -> str:
-        # Keep paragraph boundaries but make arbitrary markup whitespace deterministic.
-        lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in "".join(self._parts).splitlines()]
-        return "\n".join(line for line in lines if line)
+        # Blank lines separate paragraphs; tabs preserve real table cells.
+        # The old removal of empty lines flattened a whole HTML article into
+        # one unaddressable block before structural reads ever saw it.
+        lines = [re.sub(r"[ \r\f\v]+", " ", line).strip(" \r\f\v")
+                 for line in "".join(self._parts).splitlines()]
+        lines = [re.sub(r" *\t *", "\t", line) for line in lines]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(" \r\n")
 
 
 def prepare_document_for_analysis(document: DiscoveryDocument) -> DiscoveryDocument:
@@ -126,21 +168,25 @@ def prepare_document_for_analysis(document: DiscoveryDocument) -> DiscoveryDocum
     if document.extraction.get("version") == _READABLE_TEXT_EXTRACTION_VERSION:
         return document
     raw = document.original_text or document.excerpt or ""
-    parser = _ReadableTextParser()
-    try:
-        parser.feed(raw)
-        parser.close()
-        readable = parser.text()
-    except (AssertionError, ValueError):
-        # HTMLParser can reject pathological declarations.  Preserve the literal text as
-        # plain input rather than interpreting it or silently losing a frozen document.
-        readable = re.sub(r"\s+", " ", unescape(raw)).strip()
-    if not readable:
-        readable = re.sub(r"\s+", " ", unescape(raw)).strip()
+    readable = raw
+    # Plain-text/PDF extraction already owns meaningful original whitespace.
+    # Do not feed it through HTML whitespace normalization or entity rewriting.
+    if re.search(r"</?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*?)?/?>", raw):
+        parser = _ReadableTextParser()
+        try:
+            parser.feed(raw)
+            parser.close()
+            readable = parser.text() or raw
+        except (AssertionError, ValueError):
+            # Preserve the literal source and its boundaries on malformed
+            # markup; it remains untrusted text and is never executed.
+            readable = raw
     return replace(document, analysis_text=readable, extraction={
         "version": _READABLE_TEXT_EXTRACTION_VERSION,
         "sourceCharacters": len(raw),
         "readableCharacters": len(readable),
+        "sourceContentSha256": sha256(raw.encode()).hexdigest(),
+        "readableContentSha256": sha256(readable.encode()).hexdigest(),
     })
 
 
@@ -784,10 +830,15 @@ def run_discovery(
         used_full_text = bool(full_text_used(document=document)) if callable(full_text_used) else False
         full_text_requested = getattr(model, "full_text_requested", None)
         requested_full_text = bool(full_text_requested(document=document)) if callable(full_text_requested) else used_full_text
+        material_admission = getattr(model, "material_admission", None)
+        disposition = material_admission(document=document) if callable(material_admission) else None
         if checkpoint is not None:
-            checkpoint({"stage": "understand", "state": "completed", "documentRef": _ref_payload(document.evidence_ref),
-                        "events": freeze_event_drafts(events_for_document), "extraction": dict(document.extraction),
-                        "fullTextUsed": used_full_text})
+            record = {"stage": "understand", "state": "completed", "documentRef": _ref_payload(document.evidence_ref),
+                      "events": freeze_event_drafts(events_for_document), "extraction": dict(document.extraction),
+                      "fullTextUsed": used_full_text}
+            if isinstance(disposition, Mapping):
+                record["materialAdmission"] = dict(disposition)
+            checkpoint(record)
 
     def fail_understanding(document: DiscoveryDocument, exc: Exception) -> str | None:
         code = _safe_issue_code(exc)

@@ -162,11 +162,18 @@ def _validate_model_options(value: Any, errors: list[str]) -> None:
             errors.append(f"discovery.modelOptions.{stage}.maxTokens 必须是正整数")
         thinking = option.get("thinking")
         mode = thinking.get("type") if isinstance(thinking, Mapping) else None
+        temperature = option.get("temperature")
+        has_temperature = "temperature" in option
+        if has_temperature and (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
+                                or not 0 <= float(temperature) <= 2):
+            errors.append(f"discovery.modelOptions.{stage}.temperature 必须是 0 到 2 的数值")
+        allowed_disabled = {"maxTokens", "thinking"} | ({"temperature"} if has_temperature else set())
+        allowed_enabled = {"maxTokens", "thinking", "reasoningEffort"} | ({"temperature"} if has_temperature else set())
         if mode == "disabled":
-            if set(thinking) != {"type"} or set(option) != {"maxTokens", "thinking"}:
+            if set(thinking) != {"type"} or set(option) != allowed_disabled:
                 errors.append(f"discovery.modelOptions.{stage}.thinking disabled 时不能附带推理强度")
         elif mode == "enabled":
-            if (set(thinking) != {"type"} or set(option) != {"maxTokens", "thinking", "reasoningEffort"}
+            if (set(thinking) != {"type"} or set(option) != allowed_enabled
                     or option.get("reasoningEffort") not in {"low", "high", "max"}):
                 errors.append(f"discovery.modelOptions.{stage}.thinking enabled 时必须明确 reasoningEffort")
         else:

@@ -61,13 +61,19 @@ def _approved_v3_execution(*, db_path: Path, config_id: str, revision: int) -> b
     return (isinstance(payload, dict) and payload.get("executionVersion") == "k10-execution-v4"
             and validate_execution_config(payload).ready)
 
+
+def _scheduled_closed_skip(*, control: dict[str, object], scheduled: bool) -> dict[str, object] | None:
+    """Return the one normal scheduled pause outcome, never a missing switch."""
+    reason = control.get("reasonCode")
+    if (scheduled and control.get("state") == "closed" and isinstance(reason, str) and reason
+            and reason != "control_missing"):
+        return {"status": "skipped", "reason": reason, "taskId": None}
+    return None
+
 def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str, config_revision: int, now: datetime,
                  bootstrap_cutoff: str | None = None, execution_config_id: str | None = None,
-                 execution_config_revision: int | None = None) -> str:
+                 execution_config_revision: int | None = None, scheduled: bool = False) -> str | dict[str, object]:
     if kind not in {"evening","morning"}: raise ValueError("kind 必须是 evening 或 morning")
-    control = store.run_control_status(db_path=db_path)
-    if control.get("state") != "open":
-        raise RuntimeError("K10 运行已暂停，拒绝入队")
     calendar_day = scan_calendar_day(kind=kind, run_day=trading_day)
     calendar_state = official_is_trading_day(calendar_day, db_path=db_path)
     if calendar_state is None:
@@ -99,15 +105,34 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
         execution = store.read_execution_config(config_id=execution_config_id, revision=execution_config_revision, db_path=db_path)
         if binding_status(db_path=db_path, config=config, execution=execution)["state"] != "configured":
             raise RuntimeError("今天没跑成 · 参数未配置")
+    control = store.run_control_status(db_path=db_path)
+    skipped = _scheduled_closed_skip(control=control, scheduled=scheduled)
+    if skipped is not None:
+        return skipped
+    if control.get("state") != "open":
+        raise RuntimeError("K10 运行已暂停，拒绝入队")
     task_id=_id("task",kind,cutoff.isoformat(),config_id,str(config_revision),bootstrap_cutoff or "")
     task_kind=f"{kind}_scan"
-    store.enqueue_task(task_id=task_id,kind=task_kind,idempotency_key=f"{task_kind}:{cutoff.isoformat()}:{config_id}:{config_revision}:{bootstrap_cutoff or ''}",
-                       input_version=str(config["contentSha256"]),input_cutoff_at=cutoff.isoformat(),
-                       payload={"windowKind":kind,"tradingDay":trading_day.isoformat(),"configId":config_id,"configRevision":config_revision,
-                                **({"strategySnapshotId":config["payload"]["strategySnapshotId"]} if config["payload"].get("configVersion")=="k10-v2" else {}),
-                                **({"sourceBootstrapCutoff": bootstrap_cutoff} if bootstrap_cutoff is not None else {})},
-                       budget={},created_at=now.isoformat(),db_path=db_path,
-                       execution_binding={"configId":execution_config_id,"revision":execution_config_revision,"bindingKind":"scheduled"})
+    try:
+        store.enqueue_task(task_id=task_id,kind=task_kind,idempotency_key=f"{task_kind}:{cutoff.isoformat()}:{config_id}:{config_revision}:{bootstrap_cutoff or ''}",
+                           input_version=str(config["contentSha256"]),input_cutoff_at=cutoff.isoformat(),
+                           payload={"windowKind":kind,"tradingDay":trading_day.isoformat(),"configId":config_id,"configRevision":config_revision,
+                                    **({"strategySnapshotId":config["payload"]["strategySnapshotId"]} if config["payload"].get("configVersion")=="k10-v2" else {}),
+                                    **({"sourceBootstrapCutoff": bootstrap_cutoff} if bootstrap_cutoff is not None else {})},
+                           budget={},created_at=now.isoformat(),db_path=db_path,
+                           execution_binding={"configId":execution_config_id,"revision":execution_config_revision,"bindingKind":"scheduled"},
+                           require_discovery_control_open=True)
+    except store.K10Conflict:
+        # A close that won the race after the read above is a normal scheduled
+        # pause only when the durable control itself says so.  Other conflicts
+        # (including idempotency corruption) retain their original failure.
+        current_control = store.run_control_status(db_path=db_path)
+        skipped = _scheduled_closed_skip(control=current_control, scheduled=scheduled)
+        if skipped is not None:
+            return skipped
+        if current_control.get("state") != "open":
+            raise RuntimeError("K10 运行已暂停，拒绝入队") from None
+        raise
     return task_id
 
 
@@ -190,7 +215,7 @@ def main(argv: list[str] | None=None) -> int:
     parser=argparse.ArgumentParser(); sub=parser.add_subparsers(dest="command",required=True)
     config=sub.add_parser("configure"); config.add_argument("--db",required=True,type=Path); config.add_argument("--config-id",required=True); config.add_argument("--file",required=True,type=Path)
     execution_config=sub.add_parser("configure-execution"); execution_config.add_argument("--db",required=True,type=Path); execution_config.add_argument("--config-id",required=True); execution_config.add_argument("--file",required=True,type=Path)
-    enqueue=sub.add_parser("enqueue"); enqueue.add_argument("--db",required=True,type=Path); enqueue.add_argument("--kind",choices=("evening","morning"),required=True); enqueue.add_argument("--trading-day",required=True); enqueue.add_argument("--config-id",required=True); enqueue.add_argument("--config-revision",required=True,type=int); enqueue.add_argument("--bootstrap-cutoff"); enqueue.add_argument("--execution-config-id"); enqueue.add_argument("--execution-config-revision",type=int)
+    enqueue=sub.add_parser("enqueue"); enqueue.add_argument("--db",required=True,type=Path); enqueue.add_argument("--kind",choices=("evening","morning"),required=True); enqueue.add_argument("--trading-day",required=True); enqueue.add_argument("--config-id",required=True); enqueue.add_argument("--config-revision",required=True,type=int); enqueue.add_argument("--bootstrap-cutoff"); enqueue.add_argument("--execution-config-id"); enqueue.add_argument("--execution-config-revision",type=int); enqueue.add_argument("--scheduled",action="store_true")
     recover=sub.add_parser("recover-scan"); recover.add_argument("--db",required=True,type=Path); recover.add_argument("--scan-id",required=True); recover.add_argument("--execution-config-id",required=True); recover.add_argument("--execution-config-revision",required=True,type=int); recover.add_argument("--confirm-frozen-input-sha256",required=True)
     recover.add_argument("--finalization-max-tokens",type=int)
     recover.add_argument("--research-max-tokens",type=int); recover.add_argument("--completion-deadline-seconds",type=int)
@@ -243,7 +268,8 @@ def main(argv: list[str] | None=None) -> int:
             return 0
         if args.execution_config_id is None or args.execution_config_revision is None:
             raise RuntimeError("正式扫描入队必须显式绑定执行配置")
-        print(enqueue_scan(db_path=args.db,kind=args.kind,trading_day=trading_day,config_id=args.config_id,config_revision=args.config_revision,now=datetime.now(evening_cutoff(trading_day).tzinfo),bootstrap_cutoff=args.bootstrap_cutoff,execution_config_id=args.execution_config_id,execution_config_revision=args.execution_config_revision))
+        result = enqueue_scan(db_path=args.db,kind=args.kind,trading_day=trading_day,config_id=args.config_id,config_revision=args.config_revision,now=datetime.now(evening_cutoff(trading_day).tzinfo),bootstrap_cutoff=args.bootstrap_cutoff,execution_config_id=args.execution_config_id,execution_config_revision=args.execution_config_revision,scheduled=args.scheduled)
+        print(json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else result)
         return 0
     if args.command=="recover-scan":
         print(recover_scan(db_path=args.db, scan_id=args.scan_id, execution_config_id=args.execution_config_id,
@@ -257,8 +283,9 @@ def main(argv: list[str] | None=None) -> int:
     # command, owns creation/upgrades of either schema.
     with read_connection(args.db) as connection:
         require_schema(connection)
-    if store.run_control_status(db_path=args.db).get("state") != "open":
-        print(json.dumps({"status": "paused"}, ensure_ascii=False))
+    control = store.run_control_status(db_path=args.db)
+    if control.get("state") != "open":
+        print(json.dumps({"status": "paused", "reason": control.get("reasonCode"), "taskId": None}, ensure_ascii=False))
         return 0
     require_notifications_schema(args.db)
     handlers = production_handlers(tushare_token=token, parquet_dir=args.parquet_dir)

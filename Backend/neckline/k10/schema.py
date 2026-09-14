@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from hashlib import sha256
 from contextlib import contextmanager
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class K10SchemaError(RuntimeError):
@@ -749,6 +751,24 @@ CREATE TABLE k10_research_company_assessments (
 CREATE INDEX idx_k10_research_assessments_latest ON k10_research_company_assessments(snapshot_id, company_code, snapshot_revision DESC);
 """
 
+_V9 = """
+CREATE TABLE k10_model_response_receipts (
+  attempt_id TEXT PRIMARY KEY REFERENCES k10_external_attempts(attempt_id) ON DELETE RESTRICT,
+  task_id TEXT NOT NULL REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  stage TEXT NOT NULL,
+  request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64),
+  reuse_scope_sha256 TEXT NOT NULL CHECK(length(reuse_scope_sha256)=64),
+  payload_json TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256)=64),
+  provider_result_state TEXT NOT NULL CHECK(provider_result_state IN ('succeeded','failed')),
+  receipt_version TEXT NOT NULL,
+  received_at TEXT NOT NULL
+);
+CREATE INDEX idx_k10_model_response_receipts_reuse
+  ON k10_model_response_receipts(task_id,request_sha256,reuse_scope_sha256,received_at,attempt_id);
+"""
+
+
 _DROP_V1 = (
     # Delete dependency children first.  This path is exercised only after a verified backup,
     # but must still work on a populated V1.4 database with foreign keys enabled.
@@ -878,7 +898,7 @@ def initialize_schema(db_path: Path) -> int:
         elif version == 5:
             _apply_v6(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version in {6, 7}:
+        elif version in {6, 7, 8}:
             pass
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
@@ -889,6 +909,9 @@ def initialize_schema(db_path: Path) -> int:
             from .v2_schema import apply
             apply(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (8,?)", (_now(),))
+        if _version(conn) == 8:
+            _apply_v9(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (9,?)", (_now(),))
     return SCHEMA_VERSION
 
 
@@ -940,6 +963,14 @@ def _apply_v6(conn: sqlite3.Connection) -> None:
 
 def _apply_v7(conn: sqlite3.Connection) -> None:
     for statement in _V7.split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+
+
+def _apply_v9(conn: sqlite3.Connection) -> None:
+    """Add private immutable provider response receipts without rewriting Schema 8 rows."""
+    for statement in _V9.split(";"):
         statement = statement.strip()
         if statement:
             conn.execute(statement)
@@ -1106,12 +1137,161 @@ def _downgrade_v7(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
-def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
-    """仅用于演练/受控回滚；调用方必须先完成备份验证。"""
-    if target_version not in {0, 2, 3}:
-        raise ValueError("当前 K10 仅支持回滚到 schema 0、2 或 3")
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _receipt_export_manifest(conn: sqlite3.Connection) -> dict[str, object]:
+    """Return exact private receipt rows plus their stable manifest; never log payloads."""
+    raw_count = conn.execute("SELECT COUNT(*) FROM k10_model_response_receipts").fetchone()[0]
+    rows = conn.execute(
+        "SELECT r.attempt_id,r.task_id,r.stage,r.request_sha256,r.reuse_scope_sha256,r.payload_json,r.payload_sha256,"
+        "r.provider_result_state,r.receipt_version,r.received_at,a.item_key,a.attempt_key,a.input_sha256,a.state,a.task_id "
+        "FROM k10_model_response_receipts r JOIN k10_external_attempts a ON a.attempt_id=r.attempt_id "
+        "ORDER BY r.attempt_id"
+    ).fetchall()
+    if int(raw_count) != len(rows):
+        raise K10SchemaError("schema 9 回执存在孤儿 attempt，拒绝导出")
+    receipts: list[dict[str, object]] = []
+    for row in rows:
+        payload_json, payload_sha = row[5], row[6]
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10SchemaError("schema 9 私有回执无法解码") from exc
+        if (not isinstance(payload, dict) or sha256(str(payload_json).encode("utf-8")).hexdigest() != payload_sha
+                or row[1] != row[14] or row[3] != row[12] or row[7] != row[13]):
+            raise K10SchemaError("schema 9 私有回执哈希或 attempt 归属不匹配")
+        receipts.append({
+            "attemptId": row[0], "taskId": row[1], "stage": row[2], "requestSha256": row[3],
+            "reuseScopeSha256": row[4], "payloadJson": payload_json, "payloadSha256": payload_sha,
+            "providerResultState": row[7], "receiptVersion": row[8], "receivedAt": row[9],
+            "itemKey": row[10], "attemptKey": row[11], "inputSha256": row[12], "attemptState": row[13],
+        })
+    canonical = _canonical_json(receipts)
+    return {"exportVersion": "k10-schema9-model-receipts-v1", "schemaVersion": 9, "receipts": receipts,
+            "receiptCount": len(receipts), "manifestSha256": sha256(canonical.encode("utf-8")).hexdigest()}
+
+
+def export_model_response_receipts(db_path: Path, *, export_path: Path) -> dict[str, object]:
+    """Create one private, immutable Schema-9 receipt export for a verified rollback set."""
+    if not isinstance(export_path, Path) or export_path.exists():
+        raise ValueError("回执导出路径必须是不存在的明确文件")
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        if _version(conn) != 9:
+            raise K10SchemaError("只有 schema 9 可导出模型回执")
+        manifest = _receipt_export_manifest(conn)
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _canonical_json(manifest) + "\n"
+    try:
+        descriptor = os.open(export_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise ValueError("回执导出路径已存在") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        export_path.unlink(missing_ok=True)
+        raise
+    return {key: value for key, value in manifest.items() if key != "receipts"} | {"exportPath": str(export_path)}
+
+
+def _load_receipt_export(export_path: Path) -> dict[str, object]:
+    try:
+        raw = json.loads(export_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise K10SchemaError("私有回执导出不可读") from exc
+    if (not isinstance(raw, dict) or raw.get("exportVersion") != "k10-schema9-model-receipts-v1"
+            or raw.get("schemaVersion") != 9 or not isinstance(raw.get("receipts"), list)
+            or not isinstance(raw.get("manifestSha256"), str)):
+        raise K10SchemaError("私有回执导出合同无效")
+    canonical = _canonical_json(raw["receipts"])
+    if sha256(canonical.encode("utf-8")).hexdigest() != raw["manifestSha256"]:
+        raise K10SchemaError("私有回执导出 manifest 哈希不匹配")
+    if raw.get("receiptCount") != len(raw["receipts"]):
+        raise K10SchemaError("私有回执导出数量不匹配")
+    return raw
+
+
+def restore_model_response_receipts(db_path: Path, *, export_path: Path) -> int:
+    """Restore a verified private export only into matching Schema-9 attempts, idempotently."""
+    exported = _load_receipt_export(export_path)
+    receipts = exported["receipts"]
+    assert isinstance(receipts, list)
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        if _version(conn) != 9:
+            raise K10SchemaError("只有 schema 9 可恢复模型回执")
+        for item in receipts:
+            if not isinstance(item, dict):
+                raise K10SchemaError("私有回执导出条目无效")
+            required = {"attemptId", "taskId", "stage", "requestSha256", "reuseScopeSha256", "payloadJson",
+                        "payloadSha256", "providerResultState", "receiptVersion", "receivedAt", "itemKey", "attemptKey",
+                        "inputSha256", "attemptState"}
+            if set(item) != required or sha256(str(item["payloadJson"]).encode("utf-8")).hexdigest() != item["payloadSha256"]:
+                raise K10SchemaError("私有回执导出条目哈希无效")
+            try:
+                parsed_payload = json.loads(str(item["payloadJson"]))
+                canonical_payload = _canonical_json(parsed_payload)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise K10SchemaError("私有回执导出条目无法解码") from exc
+            if canonical_payload != item["payloadJson"]:
+                raise K10SchemaError("私有回执导出条目不是不可变规范 JSON")
+            attempt = conn.execute("SELECT task_id,stage,item_key,attempt_key,input_sha256,state FROM k10_external_attempts WHERE attempt_id=?", (item["attemptId"],)).fetchone()
+            expected_attempt = (item["taskId"], item["stage"], item["itemKey"], item["attemptKey"], item["inputSha256"], item["attemptState"])
+            if (attempt is None or tuple(attempt) != expected_attempt or item["requestSha256"] != item["inputSha256"]
+                    or item["providerResultState"] != item["attemptState"]):
+                raise K10SchemaError("私有回执与目标外部账本不匹配")
+            expected = (item["attemptId"], item["taskId"], item["stage"], item["requestSha256"], item["reuseScopeSha256"],
+                        item["payloadJson"], item["payloadSha256"], item["providerResultState"], item["receiptVersion"], item["receivedAt"])
+            old = conn.execute("SELECT attempt_id,task_id,stage,request_sha256,reuse_scope_sha256,payload_json,payload_sha256,provider_result_state,receipt_version,received_at FROM k10_model_response_receipts WHERE attempt_id=?", (item["attemptId"],)).fetchone()
+            if old is not None:
+                if tuple(old) != expected:
+                    raise K10SchemaError("目标模型回执不可被改写")
+                continue
+            conn.execute("INSERT INTO k10_model_response_receipts(attempt_id,task_id,stage,request_sha256,reuse_scope_sha256,payload_json,payload_sha256,provider_result_state,receipt_version,received_at) VALUES(?,?,?,?,?,?,?,?,?,?)", expected)
+    return len(receipts)
+
+
+def _downgrade_v9(conn: sqlite3.Connection, *, allow_receipts: bool) -> None:
+    """Drop only Schema-9 structures after checked closed control and a stable export manifest."""
+    control = conn.execute("SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'").fetchone()
+    if control is None or control[0] != "closed":
+        raise K10SchemaError("schema 9 回退必须保持运行控制 closed")
+    if conn.execute("SELECT 1 FROM k10_external_attempts WHERE state IN ('started','unknown') LIMIT 1").fetchone() is not None:
+        raise K10SchemaError("schema 9 含未决外部调用，拒绝降级丢失恢复边界")
+    if conn.execute("SELECT 1 FROM k10_tasks WHERE status='running' AND lease_owner IS NOT NULL LIMIT 1").fetchone() is not None:
+        raise K10SchemaError("schema 9 存在活动写入租约，拒绝降级")
+    if not allow_receipts and conn.execute("SELECT 1 FROM k10_model_response_receipts LIMIT 1").fetchone() is not None:
+        raise K10SchemaError("schema 9 含私有模型回执；须先完成导出与独立恢复验证")
+    conn.execute("DROP INDEX IF EXISTS idx_k10_model_response_receipts_reuse")
+    conn.execute("DROP TABLE k10_model_response_receipts")
+
+
+def rollback_schema(db_path: Path, *, target_version: int = 0, receipt_export_path: Path | None = None) -> int:
+    """Only a stopped, closed database may take the narrow 9→8 path; other targets are rehearsal-only."""
+    if target_version not in {0, 2, 3, 8}:
+        raise ValueError("当前 K10 仅支持回滚到 schema 0、2、3 或 8")
     with write_connection(db_path) as conn:
         version = _version(conn)
+        if target_version == 8:
+            if version == 8:
+                return 8
+            if version != 9:
+                raise K10SchemaError(f"不能从未知 K10 schema {version} 回滚到 8")
+            current = _receipt_export_manifest(conn)
+            if current["receipts"]:
+                # A standalone export is available for recovery investigation, but
+                # no automatic proof can establish every caller/checkpoint has
+                # consumed each response.  Keep Schema 9 closed instead of deleting
+                # a paid recovery boundary merely to run the older binary.
+                raise K10SchemaError("schema 9 含私有模型回执，当前受控回退拒绝；保留 closed 并先完成独立恢复验收")
+            _downgrade_v9(conn, allow_receipts=False)
+            conn.execute("DELETE FROM k10_schema_migrations WHERE version=9")
+            return 8
         if version == 7:
             _downgrade_v7(conn)
             conn.execute("DELETE FROM k10_schema_migrations WHERE version=7")
@@ -1160,6 +1340,6 @@ def rollback_schema(db_path: Path, *, target_version: int = 0) -> int:
 
 
 __all__ = [
-    "K10SchemaError", "SCHEMA_VERSION", "SchemaUnavailable", "initialize_schema",
-    "read_connection", "require_schema", "rollback_schema", "schema_version", "write_connection",
+    "K10SchemaError", "SCHEMA_VERSION", "SchemaUnavailable", "export_model_response_receipts", "initialize_schema",
+    "read_connection", "require_schema", "restore_model_response_receipts", "rollback_schema", "schema_version", "write_connection",
 ]

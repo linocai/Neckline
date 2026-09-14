@@ -6,7 +6,7 @@ from datetime import datetime
 import pytest
 
 from neckline.k10 import store
-from neckline.k10.schema import initialize_schema, rollback_schema, schema_version
+from neckline.k10.schema import SCHEMA_VERSION, initialize_schema, rollback_schema, schema_version
 from neckline.k10.types import OpportunityPublicationInput
 from neckline.k10.windows import SHANGHAI
 
@@ -81,7 +81,7 @@ def test_v3_migrates_v2_market_rows_without_loss_and_allows_explicit_anomaly(tmp
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT INTO k10_market_day_fact_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      ("300001.SZ", "2026-09-08", 1, "available", 1, 2, 1, 2, 1, 2, 1, 1, None, "{}", "[]", NOW, NOW))
-    assert initialize_schema(path) == 8
+    assert initialize_schema(path) == SCHEMA_VERSION
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT availability,open,high,close FROM k10_market_day_fact_revisions").fetchone() == ("available", 1.0, 2.0, 2.0)
     assert store.append_market_day_fact(company_code="300001.SZ", trade_date="2026-09-08", availability="anomaly",

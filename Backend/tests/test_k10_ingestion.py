@@ -95,7 +95,7 @@ def _complete(documents, *, watermark: datetime = _moment(9)) -> SourceFetchResu
 
 
 def _window():
-    return morning_window(previous_trading_day=date(2026, 9, 4), observation_day=date(2026, 9, 7))
+    return morning_window(observation_day=date(2026, 9, 7))
 
 
 def test_no_source_config_is_not_configured_not_an_empty_market():

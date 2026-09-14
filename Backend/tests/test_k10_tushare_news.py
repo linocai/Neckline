@@ -18,7 +18,7 @@ def _moment(day: int, hour: int, minute: int = 0, second: int = 0) -> datetime:
 
 def _request(*, window=None) -> SourceFetchRequest:
     return SourceFetchRequest(
-        window=window or morning_window(previous_trading_day=date(2026, 9, 4), observation_day=date(2026, 9, 7)),
+        window=window or morning_window(observation_day=date(2026, 9, 7)),
         previous_cursor=None,
         source_success_watermark=_moment(4, 21),
     )
@@ -28,7 +28,7 @@ def _body(items):
     return {"code": 0, "msg": "", "data": {"fields": MAJOR_NEWS_FIELDS.split(","), "items": items}}
 
 
-def _record(pub_time="2026-09-05 22:00:00", source="新华社", title="测试通讯", content="完整通讯正文"):
+def _record(pub_time="2026-09-06 22:00:00", source="新华社", title="测试通讯", content="完整通讯正文"):
     return [pub_time, source, title, content]
 
 
@@ -49,14 +49,14 @@ def test_major_news_uses_official_endpoint_and_exact_second_parameters_with_mock
     assert seen["payload"]["api_name"] == "major_news"
     assert seen["payload"]["fields"] == MAJOR_NEWS_FIELDS
     assert seen["payload"]["params"] == {
-        "start_date": "2026-09-04 21:00:00", "end_date": "2026-09-07 09:00:00", "src": "新华社",
+        "start_date": "2026-09-06 21:00:00", "end_date": "2026-09-07 09:00:00", "src": "新华社",
     }
     assert result.complete is True
     assert result.success_watermark == _moment(7, 9)
     document = result.documents[0]
     assert document.canonical_url is None
     assert document.original_text == "完整通讯正文"
-    assert document.metadata == {"provider": "tushare", "source": "新华社", "title": "测试通讯", "rawPubTime": "2026-09-05 22:00:00"}
+    assert document.metadata == {"provider": "tushare", "source": "新华社", "title": "测试通讯", "rawPubTime": "2026-09-06 22:00:00"}
     assert "announcements" in " ".join(adapter.coverage.limitations)
 
 
@@ -73,7 +73,7 @@ def test_saturated_result_recursively_splits_second_intervals_without_last_times
             return _body([_record("2026-09-07 09:00:00", title=f"full-{index}") for index in range(SATURATION_RECORDS * 2)])
         return _body([_record(interval[0], title=f"{interval[0]}-{interval[1]}")])
 
-    window = morning_window(previous_trading_day=date(2026, 9, 4), observation_day=date(2026, 9, 7))
+    window = morning_window(observation_day=date(2026, 9, 7))
     # Use a focused inclusive sub-window to make every second observable in the assertion.
     window = type(window)(kind="morning", start_at=_moment(7, 9), cutoff_at=_moment(7, 9, 0, 2), start_inclusive=True, cutoff_inclusive=True)
     result = TuShareMajorNewsAdapter(token="runtime-token", request_callable=request_callable, clock=lambda: _moment(7, 10)).fetch_incremental(_request(window=window))
@@ -91,7 +91,7 @@ def test_same_second_saturation_is_partial_and_never_advances_watermark():
     def request_callable(_payload):
         return _body([_record("2026-09-07 09:00:00", title=f"same-second-{index}") for index in range(SATURATION_RECORDS)])
 
-    window = morning_window(previous_trading_day=date(2026, 9, 4), observation_day=date(2026, 9, 7))
+    window = morning_window(observation_day=date(2026, 9, 7))
     window = type(window)(kind="morning", start_at=_moment(7, 9), cutoff_at=_moment(7, 9), start_inclusive=True, cutoff_inclusive=True)
     result = TuShareMajorNewsAdapter(token="runtime-token", request_callable=request_callable, clock=lambda: _moment(7, 10)).fetch_incremental(_request(window=window))
 

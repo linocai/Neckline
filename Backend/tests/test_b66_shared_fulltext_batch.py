@@ -19,6 +19,8 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
     fulltext_reads = []
     model_bodies = []
     assessments = [0]
+    latest_packet = [{}]
+    read_requested = [False]
     def edit(value):
         if value.get('action') == 'plan_gaps':
             value['questions'].append({**copy.deepcopy(value['questions'][0]), 'questionId': 'q-2',
@@ -30,6 +32,13 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
                     'sourceRef': source_ref[0], 'reasonExcerptInsufficient': '需要正文条件',
                     'expectedJudgmentChange': '确认阶段', 'state': 'requested', 'admissionRef': None}
                     for qid in ('q-1', 'q-2')]
+            elif latest_packet[0].get('fullTextDocuments') and not read_requested[0]:
+                # B69 admits the fetched source first, then the model explicitly
+                # reads its needed structural unit rather than receiving a body dump.
+                read_requested[0] = True
+                value['contextRequests'] = [{'kind': 'source', 'sourceRef': source_ref[0],
+                    'location': 'paragraph:1', 'purpose': 'Check the announcement condition',
+                    'questionId': 'q-1'}]
     edit_responses(monkeypatch, edit)
     source_ref = []
     def observe(request):
@@ -38,8 +47,16 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
         if payload.get('action') == 'assess_evidence':
             packet = payload['evidencePacket']
             source_ref[:] = [{'documentId':'b66-external-source', 'revision':1}]
-            assert source_ref[0] in packet['allowedEvidenceRefs']
-            model_bodies.extend(row['text'] for row in packet.get('fullTextDocuments', []))
+            latest_packet[0] = packet
+            if assessments[0] == 0:
+                assert source_ref[0] in packet['allowedEvidenceRefs']
+            for row in packet.get('fullTextDocuments', []):
+                assert 'text' not in row
+                assert row['locators'][0]['locator'] == 'paragraph:1'
+            for row in packet.get('contextResults', []):
+                if row.get('value', {}).get('sourceRef') == source_ref[0]:
+                    model_bodies.append(row['value']['text'])
+                    assert source_ref[0] in packet['allowedEvidenceRefs']
     def fetch_fulltext(self, **kwargs):
         request, doc = kwargs['request'], kwargs['document']
         fulltext_reads.append(request.request_id)
@@ -83,7 +100,7 @@ def test_real_worker_batches_admitted_requests_and_resumes_between_writes(tmp_pa
             handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
             clock=lambda: due+timedelta(seconds=1))
     else:
-        assert calls.count('research:assess_evidence') == 2  # first source plus shared fulltext; repeated same source is not reread
+        assert calls.count('research:assess_evidence') == 3  # excerpt, structural directory, then the one requested paragraph
     assert task.status == 'completed' and fulltext_reads == ['read-q-1', 'read-q-2']
     assert len(model_bodies) == 1 and model_bodies[0].strip()  # shared source body read once, including across a pause
     assert calls.count('understand') == 1 and calls.count('titleBatch') == 1

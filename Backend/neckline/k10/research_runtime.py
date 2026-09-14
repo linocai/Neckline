@@ -26,6 +26,7 @@ from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError, advance_research, decode_stage_result, query_path_signature, validate_stage_result
 from .opportunity_discovery import validate_event_comparison
 from .research_contracts import Claim, FullTextRequest, Question, QueryPath, ResearchSnapshot, ResearchStageResult, validate_company_mapping
+from .research_material import admit_material, document_outline, requires_current_event_locator
 from .research_store import (create_research_snapshot, advance_research_snapshot,
                              read_research_state, load_prior_research_evidence)
 
@@ -42,6 +43,15 @@ def _text(value: datetime) -> str:
 
 def _hash(value: Any) -> str:
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _prior_evidence_identity(value: Mapping[str, Any]) -> str:
+    """Stable, visible facts only; timestamps and snapshot bookkeeping do not refresh a wire."""
+    def project(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: row[key] for key in sorted(row) if key not in {"provenance", "scope"}}
+    claims = [project(item) for item in value.get("claims", ()) if isinstance(item, Mapping)]
+    relations = [project(item) for item in value.get("companyRelations", ()) if isinstance(item, Mapping)]
+    return _hash({"claims": sorted(claims, key=_hash), "companyRelations": sorted(relations, key=_hash)})
 
 
 def _ref(value: EvidenceRef | DiscoveryDocument) -> dict[str, Any]:
@@ -131,18 +141,22 @@ class _Investigation:
 
     def _restore_sources(self) -> None:
         refs: set[EvidenceRef] = set()
+        allowed: set[EvidenceRef] = set(self.event.source_refs)
         for stage in self.state["stageResults"]:
             conclusion = stage["result"].get("conclusion") or {}
             tool = conclusion.get("runtimeEvidence")
             if isinstance(tool, Mapping):
                 refs.update(_refs(tool.get("documentRefs", [])))
-                self.allowed.update(_refs(tool.get("eligibleDocumentRefs", [])))
-            prior = conclusion.get("runtimePriorEvidence")
-            if isinstance(prior, Mapping):
-                historical = _refs([item["sourceRef"] for item in prior.get("claims", [])]
-                    + [ref for item in prior.get("companyRelations", []) for ref in item["relationEvidence"]])
-                refs.update(historical)
-                self.allowed.update(historical)
+                allowed.update(_refs(tool.get("eligibleDocumentRefs", [])))
+        prior = next(((item["result"].get("conclusion") or {}).get("runtimePriorEvidence")
+                      for item in reversed(self.state["stageResults"])
+                      if isinstance((item["result"].get("conclusion") or {}).get("runtimePriorEvidence"), Mapping)), None)
+        if isinstance(prior, Mapping):
+            historical = _refs([item["sourceRef"] for item in prior.get("claims", [])]
+                + [ref for item in prior.get("companyRelations", []) for ref in item["relationEvidence"]])
+            refs.update(historical)
+            allowed.update(historical)
+        self.allowed = allowed
         if refs:
             for row in store.load_document_versions(refs=[_ref(ref) for ref in refs], db_path=self.db_path):
                 key = _key(row)
@@ -150,6 +164,14 @@ class _Investigation:
                     row["fetchedAt"], row.get("originalText"), row.get("excerpt"), row.get("metadata") or {})
             if not refs <= set(self.documents):
                 raise InvestigationError("已保存调查来源不可读取", code="investigation_source_missing")
+        # Older checkpoints can predate the local document classifier.  Keep
+        # their source rows and snapshot history intact, but never carry a
+        # newly recognized prospectus into cards, allowed evidence, Extract
+        # leads, or the next model packet.
+        self.allowed = {
+            ref for ref in allowed
+            if ref not in self.documents or admit_material(self.documents[ref]).state != "excluded"
+        }
 
     def _record(self, result: ResearchStageResult, *, digest: str, research_status: str | None = None,
                 execution_status: str = "ok") -> None:
@@ -164,13 +186,16 @@ class _Investigation:
     def _cards(self) -> list[dict[str, Any]]:
         cards = []
         claims = list(self.state["claims"])
-        for stage in self.state["stageResults"]:
-            prior = (stage["result"].get("conclusion") or {}).get("runtimePriorEvidence") or {}
-            claims.extend(prior.get("claims", []))
+        prior = next(((stage["result"].get("conclusion") or {}).get("runtimePriorEvidence")
+                      for stage in reversed(self.state["stageResults"])
+                      if isinstance((stage["result"].get("conclusion") or {}).get("runtimePriorEvidence"), Mapping)), {})
+        claims.extend(prior.get("claims", []))
         for ref in sorted(self.allowed, key=lambda item: (item.document_id, item.revision)):
             doc = self.documents.get(ref)
             if doc is None:
                 raise InvestigationError("调查引用未提供文档", code="investigation_source_missing")
+            if admit_material(doc).state == "excluded":
+                continue
             metadata = doc.metadata
             # Metadata and publisher bodies are never forwarded wholesale.
             provenance = {key: metadata[key] for key in ("publisher", "media", "originStatus", "originEvidenceRef",
@@ -207,16 +232,28 @@ class _Investigation:
     def _packet(self) -> dict[str, Any]:
         tool_outcomes = [(item["result"].get("conclusion") or {}).get("runtimeEvidence")
                          for item in self.state["stageResults"]]
+        # The same-task source-fact projection can gain a newly committed peer
+        # fact while this investigation is alive.  Only the latest immutable
+        # projection belongs on the next wire; an earlier empty refresh must
+        # never shadow it.
         reusable = next(((item["result"].get("conclusion") or {})["runtimePriorEvidence"]
-            for item in self.state["stageResults"] if "runtimePriorEvidence" in (item["result"].get("conclusion") or {})), {})
+            for item in reversed(self.state["stageResults"])
+            if "runtimePriorEvidence" in (item["result"].get("conclusion") or {})), {})
+        def admitted_ref(ref: Mapping[str, Any]) -> bool:
+            document = self.documents.get(_key(ref))
+            return document is not None and admit_material(document).state != "excluded"
+
         fulltext_leads = [ref for item in tool_outcomes if item for ref in item.get("documentRefs", [])
-                         if _key(ref) not in self.allowed]
+                         if _key(ref) not in self.allowed and admitted_ref(ref)]
+        visible_claims = [claim for claim in self.state["claims"]
+                          if isinstance(claim, Mapping) and isinstance(claim.get("sourceRef"), Mapping)
+                          and _key(claim["sourceRef"]) in self.allowed]
         material_gaps = []
         def collect_material_gaps(facts, refs):
             coverage = facts.get("sourceMaterialCoverage")
             if isinstance(coverage, Mapping) and coverage.get("modelRequestedMoreMaterial") is True:
                 material_gaps.append({"sourceRefs": refs, **coverage,
-                    "meaning": "已读本来源可用正文，仍需补充资料；已有命题不因此变成已核实，后续按实际缺口核查。"})
+                    "meaning": "按availableBodyRead与readRanges区分全文和局部已读；缺失资料保持未知，已有命题不因此变成已核实。"})
             sources = facts.get("sourceFacts")
             for source in sources if isinstance(sources, (list, tuple)) else ():
                 if isinstance(source, Mapping) and isinstance(source.get("facts"), Mapping):
@@ -234,7 +271,7 @@ class _Investigation:
                 for path in stage['result'].get('queryPaths', [])},
             "newsCutoffAt": self.snapshot.news_cutoff_at,
             "allowedEvidenceRefs": [_ref(ref) for ref in sorted(self.allowed, key=lambda item: (item.document_id, item.revision))],
-            "claims": self.state["claims"], "questions": self.state["questions"], "queryPaths": self.state["paths"],
+            "claims": visible_claims, "questions": self.state["questions"], "queryPaths": self.state["paths"],
             "evidenceCards": self._cards(), "evidenceUpdates": self.state["evidenceUpdates"],
             "fulltextRequests": self.state["fulltextRequests"], "toolOutcomes": [item for item in tool_outcomes if item],
             "availableArticlePolicy": {"fullTextQuota": None, "eventShared": True},
@@ -244,9 +281,131 @@ class _Investigation:
             "reusableSourceEvidence": reusable,
         }
 
+    def _question_scope(self, question: Mapping[str, Any], packet: Mapping[str, Any]) -> dict[str, Any]:
+        """Bind a paid route to the current event, question and shown company fields.
+
+        The model gets only this compact projection.  The scope is derived here
+        from durable state, so a free-form purpose or a regenerated path ID
+        cannot authorize a broader company or background-document read.
+        """
+        question_id = question.get("questionId")
+        claim_ids = sorted(str(item) for item in question.get("claimIds", ()) if isinstance(item, str))
+        company_codes = sorted(str(item) for item in question.get("companyCodes", ()) if isinstance(item, str))
+        local = packet.get("_localState", {}) if isinstance(packet.get("_localState"), Mapping) else {}
+        claims = [item for item in local.get("claims", ()) if isinstance(item, Mapping) and item.get("claimId") in set(claim_ids)]
+        scope = packet.get("companyScope", {}) if isinstance(packet.get("companyScope"), Mapping) else {}
+        profiles = scope.get("companyProfiles", ()) if isinstance(scope.get("companyProfiles"), (list, tuple)) else ()
+        visible_fields = []
+        for code in company_codes:
+            row = next((item for item in profiles if isinstance(item, Mapping)
+                        and isinstance(item.get("identity"), Mapping)
+                        and item["identity"].get("ts_code") == code), None)
+            if row is None:
+                visible_fields.append({"companyCode": code, "status": "not_visible"})
+                continue
+            visible_fields.append({"companyCode": code,
+                "profileContentSha256": row.get("profileContentSha256"),
+                "fields": sorted(key for key in row if key not in {"identity", "companyCode", "profileContentSha256"}),
+                "contentSha256": _hash(dict(row))})
+        base = {"version": "k10-v2-question-scope-1", "questionId": question_id,
+            "event": {key: self.context[key] for key in ("canonicalKey", "stageKey", "eventState")},
+            "claimIds": claim_ids, "claimSha256": _hash(sorted(claims, key=lambda item: str(item.get("claimId")))),
+            "companyCodes": company_codes, "visibleCompanyFields": visible_fields,
+            "profileSnapshotId": scope.get("profileSnapshotId"),
+            "questionSha256": _hash({key: question.get(key) for key in
+                ("questionId", "question", "claimIds", "companyCodes", "supportCondition", "refuteCondition", "missingEvidence")})}
+        return {**base, "scopeSha256": _hash(base)}
+
+    def _query_path_scope_error(self, path: QueryPath, question: Mapping[str, Any],
+                                packet: Mapping[str, Any]) -> str | None:
+        """Return a safe block reason; never turn a legacy route into a paid call."""
+        if not self.context_protocol:
+            return None
+        if path.purpose_kind not in {"event_fact", "company_event_link", "counterevidence"} or not path.target_refs:
+            return "legacy_query_path_scope_missing"
+        claim_ids = {item for item in question.get("claimIds", ()) if isinstance(item, str)}
+        company_codes = {item for item in question.get("companyCodes", ()) if isinstance(item, str)}
+        has_company = False
+        for target in path.target_refs:
+            if not isinstance(target, Mapping):
+                return "query_path_target_invalid"
+            if target.get("kind") == "claim" and target.get("claimId") in claim_ids:
+                continue
+            if target.get("kind") == "company" and target.get("companyCode") in company_codes:
+                has_company = True
+                continue
+            return "query_path_target_outside_question"
+        if path.purpose_kind == "company_event_link" and not has_company:
+            return "query_path_company_target_missing"
+        expected = self._question_scope(question, packet)
+        if not isinstance(path.question_scope, Mapping):
+            return "legacy_query_path_scope_missing"
+        if path.question_scope.get("scopeSha256") != expected["scopeSha256"]:
+            return "query_path_scope_stale"
+        return None
+
+    def _bind_query_paths(self, action: str, result: ResearchStageResult,
+                          packet: Mapping[str, Any]) -> ResearchStageResult:
+        """Attach system-derived scope only after the model route is validated."""
+        if action != "plan_queries" or not self.context_protocol or not result.query_paths:
+            return result
+        questions = {item["questionId"]: item for item in self.state["questions"]
+                     if isinstance(item, Mapping) and isinstance(item.get("questionId"), str)}
+        bound = []
+        for path in result.query_paths:
+            question = questions.get(path.question_id)
+            if question is None or question.get("state") != "open":
+                raise InvestigationError("查询路径未关联开放问题", code="investigation_path_question_invalid")
+            # Model output may not provide an authority-looking scope.  It is
+            # always reconstructed from the persisted question and packet.
+            if path.question_scope is not None:
+                raise InvestigationError("查询路径范围必须由本地运行时绑定", code="investigation_path_scope_invalid")
+            candidate = replace(path, question_scope=self._question_scope(question, packet))
+            reason = self._query_path_scope_error(candidate, question, packet)
+            if reason is not None:
+                raise InvestigationError("查询路径目标越出当前问题", code="investigation_path_scope_invalid")
+            bound.append(candidate)
+        return replace(result, query_paths=tuple(bound))
+
+    def _background_read_plan(self, request: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        """Authorize an annual-report paragraph only through an existing route."""
+        if request.get("kind") != "source" or not isinstance(request.get("sourceRef"), Mapping):
+            return None, None
+        document = self.documents.get(_key(request["sourceRef"]))
+        if document is None or not requires_current_event_locator(document):
+            return None, None
+        question_id = request.get("questionId")
+        question = next((item for item in self.state["questions"] if item.get("questionId") == question_id), None)
+        if not isinstance(question, Mapping) or question.get("state") != "open":
+            return None, "background_requires_current_event_question"
+        path = next((item for item in reversed(self.state["paths"])
+                     if item.get("questionId") == question_id and isinstance(item.get("questionScope"), Mapping)), None)
+        if path is None:
+            # An old question remains auditable, but cannot silently gain a
+            # new annual-report read through a generic purpose string.
+            return None, "background_requires_scoped_query_path"
+        typed = QueryPath.from_dict(path)
+        current_packet = project_packet("plan_queries", self._packet()) if self.context_protocol else self._packet()
+        reason = self._query_path_scope_error(typed, question, current_packet)
+        if reason is not None:
+            return None, reason
+        location = request.get("location")
+        is_direct = isinstance(location, str) and re.fullmatch(r"(?:paragraph|table|line):\d+", location) is not None
+        normalize = lambda value: re.sub(r"[\W_]+", "", str(value).casefold())
+        is_scoped_find = (isinstance(location, str) and location.startswith("find:")
+                          and normalize(location.removeprefix("find:")) in normalize(" ".join(
+                              str(question.get(key, "")) for key in ("question", "supportCondition", "refuteCondition", "missingEvidence"))))
+        if not is_direct and not is_scoped_find:
+            return None, "background_requires_direct_locator"
+        return {"version": "k10-v2-background-read-plan-1", "questionId": question_id,
+            "questionScopeSha256": typed.question_scope["scopeSha256"],
+            "sourceRef": dict(request["sourceRef"]), "locator": location,
+            "locatorSearch": is_scoped_find,
+            "purposeKind": typed.purpose_kind, "targetRefs": [dict(item) for item in typed.target_refs],
+            "newPathReason": typed.new_path_reason,
+            "expectedJudgmentChange": typed.expected_judgment_change}, None
+
     def _freeze_prior_evidence(self) -> None:
-        if any("runtimePriorEvidence" in (item["result"].get("conclusion") or {}) for item in self.state["stageResults"]):
-            return
         value = load_prior_research_evidence(task_id=self.task_id, event_id=self.snapshot.event_id,
             input_source_refs=[_ref(ref) for ref in self.event.source_refs],
             news_cutoff_at=self.snapshot.news_cutoff_at, verification_cutoff_at=_text(max(self.clock(), datetime.fromisoformat(self.snapshot.verification_cutoff_at))),
@@ -254,6 +413,16 @@ class _Investigation:
             model_parameters_sha256=self.snapshot.model_parameters_sha256, db_path=self.db_path,
             include_historical_sources=True,
             exclude_snapshot_id=self.identity if getattr(getattr(self, "model", None), "_company_profiles_binding", None) else None)
+        previous = next(((item["result"].get("conclusion") or {}).get("runtimePriorEvidence")
+                         for item in reversed(self.state["stageResults"])
+                         if "runtimePriorEvidence" in (item["result"].get("conclusion") or {})), None)
+        if previous is not None and _prior_evidence_identity(previous) == _prior_evidence_identity(value):
+            return
+        # Related events run concurrently.  A receiver can therefore freeze an
+        # empty shared set before another event durably saves the same frozen
+        # source fact.  Append only when the source-fact projection changed;
+        # the next model action then receives that nonzero fact on its actual
+        # wire, without reopening a paid search or mutating old evidence.
         self._record(ResearchStageResult("close_research", conclusion={
             "researchStatus": self.snapshot.research_status, "runtimePriorEvidence": value}), digest=_hash(value))
         self._restore_sources()
@@ -264,8 +433,16 @@ class _Investigation:
         if action == 'close_research' and packet.get('pathsExhausted') and (result.conclusion or {}).get('researchStatus') == 'continue_research':
             raise InvestigationError('当前无可执行查询路径，必须基于已有证据收口公司关联：待核、可比较或放弃，不可继续空转', code='investigation_closure_required')
         scope = packet.get("companyScope")
-        if scope:
-            allowed = {item["companyCode"] for item in packet.get("_localState", {}).get("fixedPool", scope.get("fixedPool", []))}
+        scope_mapping = scope if isinstance(scope, Mapping) else {}
+        local_scope = packet.get("_localState", {})
+        frozen_pool = local_scope.get("fixedPool", scope_mapping.get("fixedPool", [])) if isinstance(local_scope, Mapping) else []
+        allowed = {item["companyCode"] for item in frozen_pool
+                   if isinstance(item, Mapping) and isinstance(item.get("companyCode"), str)} if isinstance(frozen_pool, (list, tuple)) else set()
+        if scope and allowed:
+            # Only a bound selector pool may prohibit a company mapping.  The
+            # compact context protocol deliberately emits an empty public
+            # presentation scope for legacy/non-v2 tasks; treating it as an
+            # empty universe would erase legitimate questions before search.
             for question in result.questions:
                 if not question.company_codes or not set(question.company_codes) <= allowed:
                     raise InvestigationError("研究问题必须关联合理的池内公司，无法映射应结束研究", code="company_outside_fixed_pool")
@@ -282,9 +459,29 @@ class _Investigation:
             if original and any(claim.to_dict()[key] != original[key] for key in ("text", "kind", "novelty", "sourceRef", "location", "speaker", "subject", "object", "action", "stageOrCondition", "timeText")):
                 raise InvestigationError("审读不能改写原始命题", code="investigation_claim_scope_invalid")
             known_claims[claim.claim_id] = claim.to_dict()
+        visible_locations = {}
+        partial_refs = set()
+        for item in packet.get("contextResults", []):
+            value = item.get("value")
+            if not isinstance(value, Mapping) or not isinstance(value.get("sourceRef"), Mapping):
+                continue
+            ref = _key(value["sourceRef"])
+            if value.get("indexVersion") and isinstance(value.get("text"), str):
+                partial_refs.add(ref)
+                locations = visible_locations.setdefault(ref, set())
+                locations.add(value.get("locator"))
+                locations.update(f"line:{line}" for line in range(value.get("lineStart", 0), value.get("lineEnd", -1)+1))
+        # Existing attributed facts remain visible at their original location;
+        # a new structural read does not authorize citing another hidden block.
+        for claim in packet.get("claims", []):
+            if isinstance(claim.get("sourceRef"), Mapping):
+                visible_locations.setdefault(_key(claim["sourceRef"]), set()).add(claim.get("location"))
         for update in result.evidence_updates:
             if update.get("claimId") not in known_claims or _key(update["sourceRef"]) not in permitted:
                 raise InvestigationError("证据关联越出当前命题或来源", code="investigation_reference_invalid")
+            ref = _key(update["sourceRef"])
+            if ref in partial_refs and update.get("location") not in visible_locations.get(ref, set()):
+                raise InvestigationError("证据关联引用了尚未读取的结构片段", code="investigation_reference_invalid")
         links = [*self.state["evidenceUpdates"], *result.evidence_updates]
         for claim in result.claims:
             if claim.verification_status == "verified" and not any(
@@ -314,6 +511,12 @@ class _Investigation:
                            ("questionId", "query", "intent", "targetSource", "newPathReason",
                             "expectedInformationGain", "expectedJudgmentChange")):
                 raise InvestigationError("已保存查询路径不可改写", code="investigation_path_scope_invalid")
+            if self.context_protocol and path.question_scope is not None:
+                question = known_questions.get(path.question_id)
+                if question is None:
+                    raise InvestigationError("查询路径未关联开放问题", code="investigation_path_question_invalid")
+                if self._query_path_scope_error(path, question, packet) is not None:
+                    raise InvestigationError("查询路径超出持久问题范围", code="investigation_path_scope_invalid")
         for row in result.company_assessments:
             disclosure = row["evidenceDisclosure"]
             origin = disclosure.get("originEvidenceRef")
@@ -337,6 +540,8 @@ class _Investigation:
 
     def _call(self, action: str, extra: Mapping[str, Any] | None = None) -> ResearchStageResult:
         self._external_guard()
+        if self.context_protocol:
+            self._freeze_prior_evidence()
         packet = self._packet()
         if extra:
             packet.update(extra)
@@ -371,31 +576,32 @@ class _Investigation:
             scope = getattr(self.model, "research_validation", None)
             with (scope(lambda result: self._validate_result(action, result, packet)) if callable(scope) else nullcontext()):
                 step = advance_research(model=self.model, snapshot=self.snapshot, action=action, evidence_packet=packet)
-            self._validate_result(action, step.result, packet)
+            bound = self._bind_query_paths(action, step.result, packet)
+            self._validate_result(action, bound, packet)
         except (InvestigationError, ValueError, KeyError, TypeError) as exc:
             reject = getattr(self.model, "reject_research_result", None)
             if callable(reject):
                 reject(snapshot=self.snapshot, action=action, evidence_packet=packet,
                        safe_error_code=getattr(exc, "code", "investigation_contract_invalid"))
             raise
-        if step.result.context_requests:
+        if bound.context_requests:
             # Save the exact paid reply before any local read, without closing
             # questions or advancing this action's business result.
-            self._record(step.result, digest=digest)
-            return self._continue_context(action, step.result, extra, request_input=digest)
+            self._record(bound, digest=digest)
+            return self._continue_context(action, bound, extra, request_input=digest)
         status = None
         if action == "close_research":
-            status = step.result.conclusion["researchStatus"]
-        persisted = step.result
+            status = bound.conclusion["researchStatus"]
+        persisted = bound
         if action == "assess_evidence" and extra and extra.get("fullTextDocuments"):
-            persisted = replace(step.result, conclusion={**(step.result.conclusion or {}),
-                "runtimeReadFulltextRefs": list(extra["admittedFulltextRefs"])})
+            persisted = replace(bound, conclusion={**(bound.conclusion or {}),
+                "runtimePresentedFulltextRefs": list(extra["admittedFulltextRefs"])})
         if action == 'assess_evidence' and extra and extra.get('newEvidenceRefs'):
             persisted = replace(persisted, conclusion={**(persisted.conclusion or {}),
                 'runtimeReadEvidenceRefs': list(extra['newEvidenceRefs'])})
         self._record(persisted, digest=digest, research_status=status)
         self.pending_model_action = None
-        return step.result
+        return bound
 
     def _continue_context(self, action, result, extra, *, request_input):
         values = list((extra or {}).get('contextResults', []))
@@ -415,16 +621,44 @@ class _Investigation:
                 and (stage['result'].get('conclusion') or {}).get('runtimeContextObjectSha256') == object_version
                 and (stage['result'].get('conclusion') or {}).get('runtimeContextRead', {}).get('request') == identity), None)
             try:
-                value = saved or read_context(request, state=self.state, documents=self.documents,
-                    binding=getattr(getattr(self, 'model', None), '_company_profiles_binding', None),
-                    eligible_refs={(ref.document_id, ref.revision) for ref in self.allowed})
+                background_plan, background_block = self._background_read_plan(request)
+                checker = getattr(self.model, 'source_context_request_fits', None)
+                def fits(candidate):
+                    return checker(snapshot=self.snapshot, action=action,
+                        evidence_packet={**self._packet(), **(extra or {}), 'contextResults': values},
+                        candidate=candidate)
+                if background_block is not None:
+                    value = {'request': identity, 'status': 'found',
+                        'value': {'sourceRef': dict(request.get('sourceRef') or {}), 'status': background_block,
+                                  'needsLocator': True},
+                        'contentSha256': _hash({'sourceRef': request.get('sourceRef'), 'status': background_block})}
+                else:
+                    value = saved if saved is not None and (not callable(checker) or fits(saved)) else read_context(
+                        request, state=self.state, documents=self.documents,
+                        binding=getattr(self.model, '_company_profiles_binding', None),
+                        eligible_refs={(ref.document_id, ref.revision) for ref in self.allowed},
+                        request_fits=fits if callable(checker) else None)
+                    if background_plan is not None and isinstance(value.get('value'), Mapping):
+                        value = {**value, 'value': {**value['value'], 'backgroundReadPlan': background_plan},
+                                 'contentSha256': _hash({**value['value'], 'backgroundReadPlan': background_plan})}
             except ValueError as exc:
                 raise InvestigationError('局部回读引用无效', code='investigation_context_reference_invalid') from exc
             if saved is None:
-                self._record(ResearchStageResult('close_research', conclusion={
+                conclusion = {
                     'runtimeContextRead': value, 'runtimeContextReadInputSha256': request_input,
                     'runtimeContextObjectSha256': object_version,
-                    'researchStatus': self.snapshot.research_status}), digest=_hash({'input': request_input, 'value': value}))
+                    'researchStatus': self.snapshot.research_status,
+                }
+                if request.get('kind') == 'source' and isinstance(value.get('value'), Mapping) and isinstance(value['value'].get('text'), str):
+                    source_ref = value['value'].get('sourceRef')
+                    if isinstance(source_ref, Mapping):
+                        conclusion['runtimeReadSourceRanges'] = [{**dict(source_ref), **{key: value['value'][key]
+                            for key in ('startOffset', 'endOffset', 'textSha256', 'sourceContentSha256', 'locator')
+                            if key in value['value']}}]
+                if background_plan is not None:
+                    conclusion['runtimeBackgroundReadPlan'] = background_plan
+                self._record(ResearchStageResult('close_research', conclusion={
+                    **conclusion}), digest=_hash({'input': request_input, 'value': value}))
             values.append(value)
             known.add(key)
             changed = True
@@ -480,13 +714,15 @@ class _Investigation:
                     # not send a TuShare source into Tavily's Extract gateway.
                     # Same-source rereading never supplies independent proof.
                     from .verification import VerificationEvidenceBundle
-                    has_body = isinstance(document.original_text, str) and bool(document.original_text.strip())
+                    local_admission = admit_material(document)
+                    has_body = (local_admission.state == 'admit' and isinstance(document.original_text, str)
+                                and bool(document.original_text.strip()))
                     local = (replace(document, analysis_text=document.original_text),) if has_body else ()
                     bundle = VerificationEvidenceBundle("available" if has_body else "pending", local,
                         local if document.evidence_ref in self.allowed else (),
                         {"provider": "local", "operation": "extract", "requestState": "reused",
-                         "state": "available" if has_body else "pending",
-                         "reason": "original_article_reread" if has_body else "original_fulltext_unavailable",
+                         "state": "available" if has_body or local_admission.state == 'excluded' else "pending",
+                         "reason": "original_article_reread" if has_body else (local_admission.reason if local_admission.state == 'excluded' else "original_fulltext_unavailable"),
                          "admissionState": "fulfilled" if has_body else "rejected",
                          "independentVerification": False, "questionId": question.question_id})
                 else:
@@ -505,10 +741,11 @@ class _Investigation:
             and not stage["result"].get("safeErrorCode") and not stage["result"].get("contextRequests")), default=0)
         unassessed = [stage for stage in self.state["stageResults"] if stage["revision"] > last_assessed
                      and (stage["result"].get("conclusion") or {}).get("runtimeEvidence")]
-        full_refs, already_read = set(), set()
+        full_refs, already_read, announced = set(), set(), set()
         for stage in self.state["stageResults"]:
             tool = (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
             already_read.update(_refs((stage["result"].get("conclusion") or {}).get("runtimeReadFulltextRefs", [])))
+            announced.update(_refs((stage["result"].get("conclusion") or {}).get("runtimePresentedFulltextRefs", [])))
             if tool and stage["revision"] <= last_assessed and tool["coverage"].get("operation") == "extract":
                 # Prior builds only passed the time-eligible bodies to the
                 # assessor. Do not falsely count their undated bodies as read.
@@ -516,9 +753,9 @@ class _Investigation:
             if tool and tool["coverage"].get("operation") == "extract" and tool["coverage"].get("admissionState") == "fulfilled":
                 full_refs.update(_refs(tool["documentRefs"]))
         unassessed = [stage for stage in unassessed if not self._denied_fulltext(stage)]
-        if not unassessed and not (full_refs - already_read):
+        if not unassessed and not (full_refs - announced):
             return False
-        full = [self.documents[ref] for ref in sorted(full_refs - already_read, key=lambda item: (item.document_id, item.revision))]
+        full = [self.documents[ref] for ref in sorted(full_refs - announced, key=lambda item: (item.document_id, item.revision))]
         new_refs = list(dict.fromkeys(ref for stage in unassessed for ref in _refs((stage['result'].get('conclusion') or {})['runtimeEvidence']['documentRefs'])))
         read_refs = {_key(ref) for stage in self.state['stageResults']
             for ref in (stage['result'].get('conclusion') or {}).get('runtimeReadEvidenceRefs', [])}
@@ -529,12 +766,10 @@ class _Investigation:
         affected = list(dict.fromkeys(row['questionId'] for stage in unassessed
             for row in [*stage['result'].get('queryPaths', []), *stage['result'].get('fulltextRequests', [])]))
         self._call("assess_evidence", {"newEvidenceRefs": [_ref(ref) for ref in new_refs], "affectedQuestionIds": affected, "admittedFulltextRefs": [_ref(doc) for doc in full],
-            "fullTextDocuments": [{**_ref(doc), "text": doc.analysis_text or doc.original_text or "",
-                "publishedAt": doc.published_at, "fetchedAt": doc.fetched_at,
+            "fullTextDocuments": [{**document_outline(doc),
                 "eligibleAtNewsCutoff": doc.evidence_ref in self.allowed,
                 **({"materialOrigin": "original_article", "independentVerification": False}
-                   if doc.evidence_ref in self.event.source_refs else {}),
-                "contentVersionAtCutoff": doc.metadata.get("contentVersionAtCutoff")} for doc in full]})
+                   if doc.evidence_ref in self.event.source_refs else {})} for doc in full]})
         return True
 
     @staticmethod
@@ -731,6 +966,22 @@ class _Investigation:
                         question = next((Question.from_dict(item) for item in self.state["questions"] if item["questionId"] == path.question_id), None)
                         if question is None or question.state != "open":
                             raise InvestigationError("查询没有关联开放问题", code="investigation_path_question_invalid")
+                        if self.context_protocol:
+                            current_packet = project_packet("plan_queries", self._packet())
+                            scope_error = self._query_path_scope_error(path, question.to_dict(), current_packet)
+                            if scope_error is not None:
+                                # A pre-B69 persisted route is still readable in
+                                # history, but it cannot authorize a fresh paid
+                                # search.  Close only this route and let the
+                                # normal evidence workflow disclose its gap.
+                                runtime = {"pathScopeBlocked": scope_error, "questionId": path.question_id,
+                                           "pathId": path.path_id, "operation": "search", "requestState": "blocked"}
+                                self._record(ResearchStageResult("assess_evidence", conclusion={"runtimeEvidence": runtime},
+                                    query_paths=(replace(path, state="blocked", result_summary=scope_error),)),
+                                    digest=_hash({"runtime": runtime, "path": path.to_dict()}),
+                                    research_status="continue_research")
+                                used.add(work_identity(path))
+                                continue
                         scope = self._company_scope()
                         if scope and (not question.company_codes or not set(question.company_codes) <= {row['companyCode'] for row in scope['fixedPool']}):
                             raise InvestigationError('搜索问题越过固定池', code='company_outside_fixed_pool')

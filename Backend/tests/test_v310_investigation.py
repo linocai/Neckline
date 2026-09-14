@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pytest
 
-from neckline.k10 import store
+from neckline.k10 import metering, store
 from neckline.k10.investigation import (
     InvestigationError, advance_research, decode_stage_result, query_path_signature,
 )
@@ -421,7 +421,13 @@ def test_unknown_actual_provider_attempt_blocks_repeat_http_request(tmp_path, mo
     }))[1])
     original_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kwargs: original_client(**{**kwargs, "transport": transport}))
-    provider = MeteredProvider(ledger_db=path, ledger_task="fixture", api_key="fixture", model="deepseek-v4-pro",
+    # This fake endpoint has no production capability. Declare the fixture's
+    # deterministic Flash-shaped limit explicitly so the test reaches its
+    # unknown-outcome assertion instead of borrowing a production alias.
+    monkeypatch.setitem(metering._MODEL_CAPABILITIES, ("https://example.invalid/chat", "deepseek-flash"), {
+        "contextTokens": 1_000_000, "maxOutputTokens": 384_000, "counter": "isolated-test-v41-bound",
+    })
+    provider = MeteredProvider(ledger_db=path, ledger_task="fixture", api_key="fixture", model="deepseek-flash",
                                name="fixture", api_url="https://example.invalid/chat", read_timeout=1, use_streaming=False)
     bind_provider_execution_spending(provider=provider, task_id="task-provider", execution_profile=profile)
     # Simulate a process loss after the upstream response: the durable intent is
@@ -484,12 +490,20 @@ def test_authorized_semantic_recovery_does_not_bypass_unknown_derived_checkpoint
     packet, snapshot = {"allowedEvidenceRefs": []}, _snapshot()
     with pytest.raises(PipelineError):
         first.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet)
-    operation, item_key, base_digest, _base_ledger = _investigation_checkpoint_identity(first, snapshot, "close_research", packet)
-    _operation, _item_key, derived_digest, derived_ledger = _investigation_checkpoint_identity(
-        first, snapshot, "close_research", packet, recovery_of=base_digest)
-    _write_investigation_checkpoint(path, operation=operation, item_key=item_key, digest=derived_digest,
-                                    ledger=derived_ledger, status="failed",
-                                    code="provider_request_outcome_unknown", network_attempts=1)
+    # Let the real recovery producer create its derived input, including the
+    # correction feedback. A manually reconstructed old digest would miss the
+    # actual checkpoint and could hide an unknown-result retry regression.
+    unknown = _FailingResearchModel("provider_request_outcome_unknown")
+    _, recovery = _checkpointed_research_wrapper(tmp_path, unknown, allow_failed_research_resume=True)
+    with pytest.raises(PipelineError) as dispatched:
+        recovery.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet)
+    assert dispatched.value.code == "provider_request_outcome_unknown"
+    assert unknown.calls == 1
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute("SELECT input_sha256,safe_error_code FROM k10_execution_item_checkpoints "
+                            "WHERE stage='model:investigation_close_research'").fetchall()
+    assert len(rows) == 2 and len({row[0] for row in rows}) == 2
+    assert {row[1] for row in rows} == {"investigation_result_invalid", "provider_request_outcome_unknown"}
     valid = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
     _, resumed = _checkpointed_research_wrapper(tmp_path, valid, allow_failed_research_resume=True)
     with pytest.raises(PipelineError, match="结果未知") as raised:

@@ -14,7 +14,7 @@ import json
 from typing import Any, Mapping, Protocol, Sequence
 
 from .research_contracts import (
-    RESEARCH_ACTIONS, RESEARCH_STATUSES, Claim, FullTextRequest, QueryPath, Question,
+    RESEARCH_ACTIONS, RESEARCH_STATUSES, QUERY_PURPOSE_KINDS, Claim, FullTextRequest, QueryPath, Question,
     ResearchContractError, ResearchSnapshot, ResearchStageResult,
     validate_company_assessment, validate_company_mapping,
 )
@@ -140,6 +140,13 @@ def _require_result(action: str, result: ResearchStageResult, packet: Mapping[st
             if signature in seen_paths:
                 raise InvestigationError("查询路径没有新增证据路径", code="investigation_path_duplicate")
             seen_paths.add(signature)
+            # This is a new context-protocol request. Legacy persisted paths
+            # may still be inspected, but a freshly proposed paid route must
+            # name the current-event question target before the runtime can
+            # bind its durable scope.
+            if packet.get("contextProtocol"):
+                if path.purpose_kind not in QUERY_PURPOSE_KINDS or not path.target_refs:
+                    raise InvestigationError("查询路径缺少问题范围目标", code="investigation_path_scope_invalid")
     elif action == "close_research":
         if not isinstance(result.conclusion, Mapping):
             raise InvestigationError("研究收口缺少结论", code="investigation_conclusion_missing")
@@ -173,7 +180,9 @@ def query_path_signature(path: QueryPath) -> str:
              "intent": path.intent.strip().casefold(),
              "targetSource": path.target_source.strip().casefold(),
              "expectedInformationGain": path.expected_information_gain.strip().casefold(),
-             "expectedJudgmentChange": path.expected_judgment_change.strip().casefold()}
+             "expectedJudgmentChange": path.expected_judgment_change.strip().casefold(),
+             "purposeKind": path.purpose_kind,
+             "targetRefs": [dict(item) for item in path.target_refs]}
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -321,11 +330,18 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
                 if isinstance(updates, list) and all(isinstance(item, Mapping) for item in updates):
                     value[collection] = [{**originals.get(item.get(key), {}), **item} for item in updates]
         scope = (evidence_packet or {}).get("companyScope")
-        if scope:
+        scope_mapping = scope if isinstance(scope, Mapping) else {}
+        local_scope = (evidence_packet or {}).get("_localState", {})
+        frozen_pool = local_scope.get("fixedPool", scope_mapping.get("fixedPool", [])) if isinstance(local_scope, Mapping) else []
+        allowed = {row["companyCode"] for row in frozen_pool
+                   if isinstance(row, Mapping) and isinstance(row.get("companyCode"), str)} if isinstance(frozen_pool, (list, tuple)) else set()
+        if scope and allowed:
             # A model may mention background companies outside this selector's
-            # universe. Exclude those hints locally, before planning any paid
-            # search; keep in-pool questions, mappings and assessments intact.
-            allowed = {row["companyCode"] for row in (evidence_packet or {}).get("_localState", {}).get("fixedPool", scope.get("fixedPool", []))}
+            # frozen universe. Exclude those hints locally, before planning any
+            # paid search; keep in-pool questions, mappings and assessments
+            # intact.  A legacy/non-v2 packet can carry an empty presentation
+            # scope, but is not a selector universe and must not erase every
+            # otherwise valid question merely because no pool was bound.
             value = dict(value)
             questions, excluded_questions = [], set()
             for question in value.get("questions", ()):

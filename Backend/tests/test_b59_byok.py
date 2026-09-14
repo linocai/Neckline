@@ -9,6 +9,7 @@ import pytest
 
 from neckline import settings_store
 from neckline.k10 import pipeline, runtime, store
+from neckline.k10 import metering
 from neckline.k10.providers import resolve_deepseek_v4_pro, runtime_execution_profile
 from neckline.k10.worker import run_once
 from neckline.k10.v2_store import read_report
@@ -17,6 +18,13 @@ from tests.test_k10_api import _freeze_k10_clocks
 import tests.test_v310_pipeline_e2e as e2e
 
 PATH = '/api/v1/settings/providers'
+
+
+def _allow_isolated_capacity(monkeypatch, *, endpoint: str, model: str) -> None:
+    """Tests must name a reviewed endpoint/model bound; production has none for arbitrary BYOK."""
+    monkeypatch.setitem(metering._MODEL_CAPABILITIES, (endpoint, model), {
+        "contextTokens": 1_000_000, "maxOutputTokens": 384_000, "counter": "isolated-test-v41-bound",
+    })
 
 
 def test_settings_edit_switch_rotate_clear_delete(client, AUTH, api_env):
@@ -72,6 +80,7 @@ def test_real_analysis_worker_uses_saved_endpoint_model_key_and_pins_resume(tmp_
     db,task_id=_analysis_task(tmp_path,monkeypatch)
     monkeypatch.setattr(api,'_DB_PATH_OVERRIDE',db)
     assert client.post(PATH,headers=AUTH,json={'name':'my-model','baseUrl':'https://gateway.example/custom/v1','model':'vendor/model-x','apiKey':'key-x'}).status_code==201
+    _allow_isolated_capacity(monkeypatch, endpoint='https://gateway.example/custom/v1/chat/completions', model='vendor/model-x')
     calls=[]
     def respond(request):
         calls.append(request)
@@ -129,6 +138,7 @@ def test_saved_byok_drives_real_cli_discovery_through_publication(tmp_path,monke
         monkeypatch.setattr(api,'_DB_PATH_OVERRIDE',db)
         response=client.post(PATH,headers=AUTH,json={'name':'my-gateway','baseUrl':'https://gateway.example/v1','model':'vendor/custom-model','apiKey':'custom-fixture'})
         assert response.status_code==201,response.text
+        _allow_isolated_capacity(monkeypatch, endpoint='https://gateway.example/v1/chat/completions', model='vendor/custom-model')
     def observe(request):
         wire=json.loads(request.content)
         observed.append(wire['model'])

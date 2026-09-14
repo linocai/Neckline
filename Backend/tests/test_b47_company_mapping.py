@@ -38,10 +38,17 @@ def test_already_fetched_undated_fulltext_is_really_read_once_without_promoting_
     calls=[]
     def call(action, packet):
         calls.append(packet)
-        runtime.state['stageResults'].append({'revision':3,'action':action,'result':{'conclusion':{'runtimeReadFulltextRefs':packet['admittedFulltextRefs']}}})
+        runtime.state['stageResults'].append({'revision':3,'action':action,'result':{'conclusion':{'runtimePresentedFulltextRefs':packet['admittedFulltextRefs']}}})
     runtime._call=call
     assert runtime._assess_due()
-    assert calls[0]['fullTextDocuments'][0]['text']=='admitted undated body'
+    outline = calls[0]['fullTextDocuments'][0]
+    assert 'text' not in outline and outline['locators'][0]['locator'] == 'paragraph:1'
+    from neckline.k10.research_context import read_context
+    read = read_context({'kind': 'source', 'sourceRef': ref, 'location': 'paragraph:1',
+        'purpose': 'Check the undated wording'}, state=runtime.state, documents=runtime.documents,
+        binding=None, eligible_refs=set())
+    assert read['value']['text'] == 'admitted undated body'
+    assert read['value']['eligibleAtNewsCutoff'] is False
     assert calls[0]['fullTextDocuments'][0]['eligibleAtNewsCutoff'] is False
     assert not runtime._assess_due() and len(calls)==1
     assert runtime.allowed==set()

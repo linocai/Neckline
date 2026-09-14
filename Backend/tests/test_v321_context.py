@@ -43,9 +43,8 @@ def test_real_worker_never_sends_pool_or_history_as_research_input(tmp_path, mon
         packet=payload['evidencePacket']
         assert 'fixedPool' not in packet['companyScope']
         assert not packet.get('toolOutcomes')
-        assert packet['contextProtocol']=='k10-v2-context-3.2.1'
-    from pathlib import Path
-    Path('/tmp/neckline-v321-context-target.json').write_text(json.dumps(requests,ensure_ascii=False))
+        from neckline.k10.research_context import PROTOCOL
+        assert packet['contextProtocol'] == PROTOCOL
 
 
 def test_local_projection_ignores_closed_unrelated_history_and_requires_visible_source():
@@ -100,7 +99,8 @@ def test_real_worker_local_field_read_continues_same_action(tmp_path, monkeypatc
     if repeat_request:
         assert seen[-1]['evidencePacket']['contextFeedback']['code']=='already_read'
     from neckline.k10 import store
-    assert store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['contextProtocol']=='k10-v2-context-3.2.1'
+    from neckline.k10.research_context import PROTOCOL
+    assert store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['contextProtocol'] == PROTOCOL
 
 
 def test_shared_search_and_extract_ignore_event_and_invented_question_ids(tmp_path):

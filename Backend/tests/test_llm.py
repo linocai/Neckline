@@ -404,7 +404,11 @@ class TestOpenAICompatSharedDegradation:
         p = _provider(api_key="sk-xxx")
         result = p.chat([ChatMessage(role="user", content="hi")], transport=transport)
         assert result.ok is False
-        assert "响应解析异常" in result.reason
+        # A received 200 non-JSON body is a JSON-protocol rejection, not proof
+        # that no request reached the provider.  Metered K10 callers persist
+        # its private envelope before returning this same local degradation.
+        assert result.reason == "模型未返回有效 JSON 对象"
+        assert result.error_code == "response_json_invalid"
 
     def test_missing_choices_field_degrades(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"id": "x"}))

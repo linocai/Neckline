@@ -15,7 +15,7 @@ from neckline.k10 import store
 from neckline.k10.cli import frozen_scan_input_sha256, recover_scan
 from neckline.k10.config import validate_execution_config
 from neckline.k10.model_execution import SemanticValidationError, execute_model_operation
-from neckline.k10.schema import K10SchemaError, initialize_schema, rollback_schema, schema_version
+from neckline.k10.schema import SCHEMA_VERSION, K10SchemaError, initialize_schema, rollback_schema, schema_version
 from neckline.k10.worker import TaskResult, run_once
 from neckline.llm.base import LLMResult
 from tests.k10_v306_fixture import append_approved_execution_profile, execution_payload
@@ -546,6 +546,6 @@ def test_recovery_binds_new_execution_profile_to_the_exact_failed_snapshot(tmp_p
     task = store.get_task(task_id=task_id, db_path=path)
     assert task is not None and task.payload["resumeScanId"] == "failed-scan" and task.payload["sourceCollection"] == "forbidden"
     assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
-    with pytest.raises(K10SchemaError, match="schema 8"):
+    with pytest.raises(K10SchemaError, match="schema 9"):
         rollback_schema(path, target_version=3)
-    assert schema_version(path) == 8
+    assert schema_version(path) == SCHEMA_VERSION

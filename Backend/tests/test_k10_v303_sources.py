@@ -51,7 +51,7 @@ def test_v303_imprecise_publication_time_is_saved_but_not_a_precise_discovery_in
     path = tmp_path / f"{precision}.sqlite"
     initialize_schema(path)
     cutoff = _at(8, 9)
-    window = morning_window(previous_trading_day=date(2026, 9, 7), observation_day=date(2026, 9, 8))
+    window = morning_window(observation_day=date(2026, 9, 8))
     adapter = TuShareMajorNewsAdapter(
         token="offline", clock=lambda: cutoff,
         request_callable=lambda _request: _payload([[raw_time, "fixture", "时间待核", "原始资料没有精确发布时间"]]),
@@ -154,7 +154,7 @@ def test_v303_each_successful_response_records_its_own_actual_fetch_time():
         return _payload([["2026-09-07 21:00:00", "fixture", "慢响应", "五分钟后才取得的资料"]])
 
     adapter = TuShareMajorNewsAdapter(token="offline", request_callable=source, clock=lambda: clock[0])
-    window = morning_window(previous_trading_day=date(2026, 9, 7), observation_day=date(2026, 9, 8))
+    window = morning_window(observation_day=date(2026, 9, 8))
     result = adapter.fetch_incremental(SourceFetchRequest(window=window, previous_cursor=None,
                                                           source_success_watermark=window.start_at))
     assert result.documents[0].fetched_at == _at(7, 21, 5)

@@ -1046,7 +1046,7 @@ def test_compare_role_failure_keeps_external_usage_and_does_not_repeat_same_inpu
     binding = _bound_v306_execution(path, task_id="task-compare-invalid")
     store.set_run_control(state="open", reason_code="fixture", changed_at=CREATED.isoformat(),
                           changed_by="test", db_path=path)
-    provider = MeteredProvider(ledger_db=path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
+    provider = MeteredProvider(ledger_db=path, ledger_task="discovery", api_key="fixture", model="deepseek-flash",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions")
     bind_provider_execution_spending(provider=provider, task_id="task-compare-invalid", execution_profile=binding)
     upstream_calls = 0

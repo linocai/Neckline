@@ -57,8 +57,13 @@ class _SearchExtract(_Search):
 def _gateway(path, client):
     initialize_schema(path)
     task = _bound_task(path)
-    return TavilyEvidenceGateway(db_path=path, client=client, clock=lambda: COMPLETED_AT,
-        task_id=task, network_max_attempts=2), task
+    gateway = TavilyEvidenceGateway(db_path=path, client=client, clock=lambda: COMPLETED_AT,
+        task_id=task, network_max_attempts=2)
+    # These tests exercise the prior shared-search checkpoint contract.  They
+    # intentionally use its compact historical question fixture; B69's real
+    # CLI path has its own scoped provider tests.
+    gateway.context_protocol = "k10-v2-context-3.2.1"
+    return gateway, task
 
 
 def _request(document):
@@ -79,6 +84,7 @@ def test_questions_use_the_planned_query_and_restart_each_path_without_new_http(
     assert client.calls == 2
     restarted = TavilyEvidenceGateway(db_path=path, client=client, clock=lambda: COMPLETED_AT,
         task_id=task, network_max_attempts=2)
+    restarted.context_protocol = "k10-v2-context-3.2.1"
     for query_path in (PATH, second_path):
         result = restarted.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW, question=QUESTION, query_path=query_path)
         assert result.coverage["requestState"] == "reused"
@@ -128,6 +134,7 @@ def test_fulltext_admitted_before_request_and_restart_reuses_real_body(tmp_path)
     assert result.documents[0].metadata["contentVersionAtCutoff"] == "unconfirmed"
     assert result.documents[0].metadata["bodyObservedAt"] == COMPLETED_AT.isoformat(timespec="seconds")
     restored = TavilyEvidenceGateway(db_path=path, client=client, task_id=task, network_max_attempts=2)
+    restored.context_protocol = "k10-v2-context-3.2.1"
     again = restored.fetch_fulltext(event=_event(), document=document, question=QUESTION, request=request, cutoff_at=NOW)
     assert again.coverage["requestState"] == "reused" and client.extract_calls == 1
     assert again.documents[0].original_text == result.documents[0].original_text
@@ -189,6 +196,7 @@ def test_restart_after_body_persisted_before_article_outcome_does_not_pay_again(
         gateway.fetch_fulltext(event=_event(), document=doc, question=QUESTION, request=_request(doc), cutoff_at=NOW)
     monkeypatch.setattr(store, "record_article_outcome", original)
     restarted = TavilyEvidenceGateway(db_path=path, client=client, task_id=task, network_max_attempts=2)
+    restarted.context_protocol = "k10-v2-context-3.2.1"
     recovered = restarted.fetch_fulltext(event=_event(), document=doc, question=QUESTION, request=_request(doc), cutoff_at=NOW)
     assert recovered.documents[0].original_text and recovered.coverage["requestState"] == "reused"
     assert client.extract_calls == 1

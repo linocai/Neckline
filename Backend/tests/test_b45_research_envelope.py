@@ -34,7 +34,7 @@ def test_resolved_question_can_clear_gap_but_open_question_cannot(state):
         assert Question.from_dict(payload).missing_evidence == ()
 
 
-def test_failed_research_recovery_group_needs_a_new_explicit_grant_to_retry(tmp_path, monkeypatch):
+def test_failed_research_recovery_grant_cannot_rebill_same_invalid_request(tmp_path, monkeypatch):
     db, task_id, first, _, _ = _run(tmp_path, monkeypatch, malformed_action='close_research')
     assert first.status == 'failed'
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)['checkpoint']['scanId']
@@ -52,6 +52,8 @@ def test_failed_research_recovery_group_needs_a_new_explicit_grant_to_retry(tmp_
     recover()
     calls = _http_transport(monkeypatch, initial_query_round=1)
     done = run_once(db_path=db, worker_id='fixed', lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT)
-    assert done.status == 'completed'
-    assert not {'titleBatch','titleGlobal','titleReview','understand','research:plan_gaps'} & set(calls)
-    assert len(store.list_candidates(scan_id=scan_id, state='offered', db_path=db)) == 1
+    # Changing the local recovery ID is not new evidence or new correction
+    # feedback. The exact same paid malformed response is revalidated locally.
+    assert done.status == 'failed'
+    assert calls == []
+    assert store.list_candidates(scan_id=scan_id, state='offered', db_path=db) == []

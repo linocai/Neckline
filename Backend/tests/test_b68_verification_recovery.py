@@ -87,6 +87,12 @@ def test_explicit_recovery_after_legacy_quota_retries_keeps_original_task(tmp_pa
     if not quota_restored:
         # A plain restart cannot renew the consumed grant or send another call.
         assert work() is None
-        assert gateway().fetch(event=_event(),
-            retrieved_at=e2e.RUN_AT, cutoff_at=e2e.RUN_AT).coverage['reason'] == 'insufficient_balance'
+        # A bare headline is no longer a billable route in B69. It cannot
+        # bypass the consumed quota grant by creating a replacement question.
+        from neckline.k10.verification_checkpoints import VerificationCheckpointError
+        with pytest.raises(VerificationCheckpointError, match='research_query_scope_invalid'):
+            gateway().fetch(event=_event(), retrieved_at=e2e.RUN_AT, cutoff_at=e2e.RUN_AT)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT error_code FROM k10_external_attempts WHERE stage='search' "
+                                "ORDER BY rowid DESC LIMIT 1").fetchone() == ('insufficient_balance',)
         assert len(calls) == 3

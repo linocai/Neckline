@@ -55,7 +55,7 @@ def _tool_stage(revision):
             "coverage": {"operation": "extract", "admissionState": "fulfilled"}}}}}
 
 
-def test_shared_fulltext_is_sent_to_the_model_once_and_only_after_admission():
+def test_shared_fulltext_is_presented_once_and_read_by_locator_only_after_admission():
     runtime = _runtime()
     runtime.documents = {EvidenceRef("source-1", 1): DiscoveryDocument("source-1", 1, None,
         "2026-09-08T13:00:00+00:00", "the admitted article", None, {})}
@@ -63,10 +63,17 @@ def test_shared_fulltext_is_sent_to_the_model_once_and_only_after_admission():
     calls = []
     def call(action, packet):
         calls.append((action, packet))
-        runtime.state["stageResults"].append({"revision": 3, "action": "assess_evidence", "result": {}})
+        runtime.state["stageResults"].append({"revision": 3, "action": "assess_evidence", "result": {
+            "conclusion": {"runtimePresentedFulltextRefs": packet["admittedFulltextRefs"]}}})
     runtime._call = call
     assert runtime._assess_due()
-    assert calls[0][1]["fullTextDocuments"][0]["text"] == "the admitted article"
+    outline = calls[0][1]["fullTextDocuments"][0]
+    assert "text" not in outline and outline["locators"][0]["locator"] == "paragraph:1"
+    from neckline.k10.research_context import read_context
+    read = read_context({"kind": "source", "sourceRef": REF, "location": "paragraph:1",
+        "purpose": "Read the admitted wording"}, state=runtime.state, documents=runtime.documents,
+        binding=None, eligible_refs={("source-1", 1)})
+    assert read["value"]["text"] == "the admitted article"
     assert calls[0][1]["admittedFulltextRefs"] == [REF]
     runtime.state["stageResults"].append(_tool_stage(4))
     assert runtime._assess_due()

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
 import sqlite3
@@ -12,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from neckline.api.k10 import create_router
 from neckline.k10 import pipeline, store
-from neckline.k10.cli import enqueue_scan, frozen_scan_input_sha256, recover_scan
+from neckline.k10.cli import enqueue_scan, frozen_scan_input_sha256, recover_scan, main as cli_main
 from neckline.k10.metering import MeteredProvider
 from neckline.k10.providers import ProviderResolution
 from neckline.k10.schema import initialize_schema
@@ -57,6 +59,32 @@ class _News:
         )
 
 
+class _FreshSharedNews(_News):
+    """A frozen 21:00:16 source used by two related events in one CLI task."""
+    def fetch_incremental(self, request):
+        fetched = request.window.start_at + timedelta(seconds=16)
+        return SourceFetchResult(
+            documents=(SourceDocumentInput("news-1", None, "供应商称两个项目均进入送样核实阶段。", None,
+                                           request.window.start_at + timedelta(seconds=1), "exact", fetched,
+                                           "fixture-shared-v1", {"title": "供应商称项目送样传闻"}),),
+            next_cursor="fixture", success_watermark=request.window.cutoff_at,
+            pages_fetched=1, pages_expected=1, exhausted=True,
+        )
+
+
+class _ProspectusNews(_News):
+    def fetch_incremental(self, request):
+        published = request.window.start_at + timedelta(minutes=1)
+        return SourceFetchResult(
+            documents=(SourceDocumentInput("prospectus-1", None,
+                "招股说明书\n发行人声明\n重大事项提示\n募集资金运用\n本文件不构成投资承诺。", None,
+                published, "exact", published + timedelta(seconds=16), "fixture-prospectus-v1",
+                {"title": "甲公司首次公开发行股票并在创业板上市招股说明书（注册稿）"}),),
+            next_cursor="fixture", success_watermark=request.window.cutoff_at,
+            pages_fetched=1, pages_expected=1, exhausted=True,
+        )
+
+
 class _Metadata:
     def lookup(self, *, company_code, as_of):
         return CompanyMetadata(company_code, "chinext", False, "801080.SI", as_of)
@@ -80,7 +108,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                     malformed_close_round: int | None = None,
                     close_status: str = "ready_for_comparison", initial_query_round: int = 0,
                     title_response: str = "object", body_impact: str | None = None, truncate_action: str | None = None,
-                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, request_observer=None, require_title_hint=True):
+                    action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, request_observer=None, require_title_hint=True, invalid_query_target: bool = False, shared_same_source_events: bool = False):
     calls: list[str] = []
     query_round = initial_query_round
     close_round = 0
@@ -119,7 +147,8 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                 result = {"action": action, "claims": "wrong-shape"}
             elif action == "plan_gaps":
                 ref = payload["evidencePacket"]["allowedEvidenceRefs"][0]
-                result = {"action": action, "questions": [{"questionId": "q-1", "claimIds": ["article-claim-1"],
+                claim_id = payload["evidencePacket"]["claims"][0]["claimId"]
+                result = {"action": action, "questions": [{"questionId": "q-1", "claimIds": [claim_id],
                           "companyCodes": ["300001.SZ"], "question": "送样是否获公司确认", "knownEvidence": [ref],
                           "missingEvidence": ["公司确认"], "supportCondition": "公司确认", "refuteCondition": "公司否认",
                           "decisionImpact": "影响主推", "state": "open", "resumeCondition": "出现公司公告"}]}
@@ -131,7 +160,10 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                           "targetSource": "公司公告" if query_round == 1 else "投资者关系记录",
                           "newPathReason": "首个路径无结果" if query_round > 1 else "没有已尝试路径",
                           "expectedInformationGain": "确认主体", "expectedJudgmentChange": "改变比较",
+                          "purposeKind": "event_fact", "targetRefs": [{"kind": "claim", "claimId": payload["evidencePacket"]["claims"][0]["claimId"]}],
                           "state": "planned", "resultSummary": None}]}
+                if invalid_query_target:
+                    result["queryPaths"][0]["targetRefs"] = [{"kind": "claim", "claimId": "not-this-question"}]
             elif action == "assess_evidence":
                 result = {"action": action, "evidenceUpdates": [], "fulltextRequests": []}
                 if evidence_location is not None:
@@ -214,6 +246,12 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
                                                 "verificationStatus": "unverified", "decisionImpact": "影响比较",
                                                 "sourceRef": source_ref, "location": "paragraph:1"}]}],
                       "needsFullText": False}
+            if shared_same_source_events:
+                first = result["events"][0]
+                second_claim = {**first["claims"][0], "claimId": "article-claim-2", "text": "供应商称第二项目送样待确认",
+                                "subject": "第二项目", "action": "送样"}
+                result["events"].append({**first, "canonicalKey": "project-delivery-b", "headline": "第二项目送样传闻",
+                                         "facts": {"sharedFixture": True}, "claims": [second_claim]})
             if body_impact is not None:
                 if body_impact == "repair_facts":
                     if "上次输出未通过校验" not in message:
@@ -259,7 +297,7 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
 def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
          malformed_close_round: int | None = None,
          close_status: str = "ready_for_comparison", title_response: str = "object", body_impact: str | None = None,
-         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, provider_setup=None, request_observer=None, require_title_hint=True):
+         truncate_action: str | None = None, action_shape: str | None = None, evidence_location: str | None = None, pending_ranking: str | None = None, finalization_truncate: str | None = None, v2: bool = False, provider_status: int | None = None, outside_pool: bool = False, failure_action: str | None = None, provider_setup=None, request_observer=None, require_title_hint=True, cli_entry: bool = False, invalid_query_target: bool = False, shared_same_source_events: bool = False, news_adapter=None):
     monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     db_path = tmp_path / "b39-e2e.sqlite"
     initialize_schema(db_path)
@@ -282,21 +320,36 @@ def _run(tmp_path, monkeypatch, *, malformed_action: str | None = None,
             db_path=db_path,confirmed_target=db_path,universe_id=UNIVERSE_ID,profiles_id=PROFILES_ID,imported_at=NOW.isoformat())
         bind_strategy(db_path=db_path,snapshot_id='k10-v2-20260909',config_id=config_id,config_revision=config_revision,
             execution_config_id=execution_id,execution_config_revision=execution_revision,created_at=NOW.isoformat())
-    task_id = enqueue_scan(db_path=db_path, kind="evening", trading_day=DAY, config_id=config_id, config_revision=config_revision,
-                           execution_config_id=execution_id, execution_config_revision=execution_revision, now=NOW,
-                           bootstrap_cutoff=(evening_cutoff(DAY) - timedelta(hours=2)).isoformat())
+    if cli_entry:
+        output = StringIO()
+        with redirect_stdout(output):
+            assert cli_main([
+                "enqueue", "--db", str(db_path), "--kind", "evening", "--trading-day", DAY.isoformat(),
+                "--config-id", config_id, "--config-revision", str(config_revision),
+                "--execution-config-id", execution_id, "--execution-config-revision", str(execution_revision),
+                "--bootstrap-cutoff", (evening_cutoff(DAY) - timedelta(hours=2)).isoformat(),
+            ]) == 0
+        # The production CLI intentionally prints the task ID as a single
+        # plain line on successful enqueue (scheduled pause is structured
+        # JSON).  This test derives the worker identity from that real output.
+        task_id = output.getvalue().strip()
+        assert task_id.startswith("task_")
+    else:
+        task_id = enqueue_scan(db_path=db_path, kind="evening", trading_day=DAY, config_id=config_id, config_revision=config_revision,
+                               execution_config_id=execution_id, execution_config_revision=execution_revision, now=NOW,
+                               bootstrap_cutoff=(evening_cutoff(DAY) - timedelta(hours=2)).isoformat())
     calls = _http_transport(monkeypatch, malformed_action=malformed_action,
                             malformed_close_round=malformed_close_round, close_status=close_status,
                             title_response=title_response, body_impact=body_impact, truncate_action=truncate_action,
-                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate, v2=v2, provider_status=provider_status, outside_pool=outside_pool, failure_action=failure_action, request_observer=request_observer, require_title_hint=require_title_hint)
-    provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
+                            action_shape=action_shape, evidence_location=evidence_location, pending_ranking=pending_ranking, finalization_truncate=finalization_truncate, v2=v2, provider_status=provider_status, outside_pool=outside_pool, failure_action=failure_action, request_observer=request_observer, require_title_hint=require_title_hint, invalid_query_target=invalid_query_target, shared_same_source_events=shared_same_source_events)
+    provider = MeteredProvider(ledger_db=db_path, ledger_task="discovery", api_key="fixture", model="deepseek-flash",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions", read_timeout=1, use_streaming=False)
     provider.max_attempts = 1
     if provider_setup is None:
         monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: ProviderResolution("configured", provider, "fixture", None))
     else:
         provider_setup(db_path)
-    monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", _News)
+    monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", news_adapter or _News)
     gateway = _Gateway()
     monkeypatch.setattr(pipeline, "TavilyEvidenceGateway", lambda **_: gateway)
     monkeypatch.setattr(pipeline, "SqliteCompanyMetadataProvider", lambda **_: _Metadata())
@@ -329,6 +382,72 @@ def test_cli_worker_real_deepseek_transport_publishes_unverified_primary_and_kee
         ("300001.SZ", "primary"), ("300002.SZ", "pending"), ("300003.SZ", "excluded"),
     }
     assert (opportunity["d1TradeDate"], opportunity["d2TradeDate"]) == ("2026-09-09", "2026-09-10")
+
+
+def test_real_cli_binds_new_query_to_question_scope_before_one_search(tmp_path, monkeypatch):
+    db_path, task_id, task, _, gateway = _run(tmp_path, monkeypatch, v2=True, cli_entry=True)
+    assert task is not None and task.status == "completed"
+    assert gateway.search_paths == ["path-1", "path-2"]
+    with sqlite3.connect(db_path) as conn:
+        rows = [json.loads(row[0]) for row in conn.execute(
+            "SELECT path_json FROM k10_research_query_paths ORDER BY created_at, path_id")]
+    assert rows
+    for row in rows:
+        assert row["purposeKind"] == "event_fact"
+        assert row["targetRefs"] == [{"kind": "claim", "claimId": "article-claim-1"}]
+        scope = row["questionScope"]
+        assert scope["questionId"] == row["questionId"]
+        assert scope["scopeSha256"]
+    assert store.task_execution_input(task_id=task_id, db_path=db_path)["checkpoint"]["scanId"]
+
+
+def test_real_cli_rejects_out_of_question_query_before_tavily(tmp_path, monkeypatch):
+    db_path, task_id, task, calls, gateway = _run(
+        tmp_path, monkeypatch, v2=True, cli_entry=True, invalid_query_target=True)
+    assert task is not None and task.status == "failed"
+    assert calls.count("research:plan_queries") == 1
+    assert gateway.search_paths == []
+    execution = store.task_execution_input(task_id=task_id, db_path=db_path)
+    assert store.list_candidates(scan_id=execution["checkpoint"]["scanId"], state="offered", db_path=db_path) == []
+
+
+def test_real_cli_second_same_task_event_receives_fresh_shared_fact_on_wire(tmp_path, monkeypatch):
+    packets = []
+    def observe(request):
+        wire = json.loads(request.content)
+        message = wire["messages"][-1]["content"]
+        payload = json.loads(message.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
+        if payload.get("action") == "plan_gaps":
+            packets.append(payload["evidencePacket"])
+    db_path, task_id, task, _, _ = _run(
+        tmp_path, monkeypatch, v2=True, cli_entry=True, news_adapter=_FreshSharedNews,
+        shared_same_source_events=True, request_observer=observe, close_status="pending_verification")
+    assert task is not None and task.status == "completed"
+    assert len(packets) >= 2
+    receiving = next(packet for packet in packets
+                     if packet["event"]["canonicalKey"] == "project-delivery-b")
+    shared = receiving["reusableSourceEvidence"]["claims"]
+    assert shared and shared[0]["text"] == "供应商称项目送样"
+    assert datetime.fromisoformat(shared[0]["sourceTiming"]["fetchedAt"]).astimezone(SHANGHAI).strftime("%H:%M:%S") == "21:00:16"
+    with sqlite3.connect(db_path) as conn:
+        fetched = conn.execute("SELECT fetched_at FROM k10_source_document_versions WHERE document_id LIKE 'doc_%'").fetchone()[0]
+    assert datetime.fromisoformat(fetched).astimezone(SHANGHAI).strftime("%H:%M:%S") == "21:00:16"
+    assert store.task_execution_input(task_id=task_id, db_path=db_path)["checkpoint"]["scanId"]
+
+
+def test_real_cli_selected_prospectus_checkpoints_exclusion_without_model_body_read(tmp_path, monkeypatch):
+    db_path, task_id, task, calls, _ = _run(
+        tmp_path, monkeypatch, cli_entry=True, news_adapter=_ProspectusNews)
+    assert task is not None and task.status == "completed"
+    assert {"titleBatch", "titleGlobal", "titleReview"} <= set(calls)
+    assert "understand" not in calls and not any(call.startswith("research:") for call in calls)
+    with sqlite3.connect(db_path) as conn:
+        admissions = conn.execute(
+            "SELECT admission_kind,state,reason_code FROM k10_v2_article_admissions WHERE task_id=?", (task_id,)).fetchall()
+    assert admissions == [("selected", "completed", None)]
+    understand_rows = store.completed_execution_items(task_id=task_id, item_kind="document", stage="understand", db_path=db_path)
+    assert understand_rows and understand_rows[0]["result"]["materialAdmission"]["reason"] == "prospectus_document"
+    assert understand_rows[0]["result"]["events"] == [] and understand_rows[0]["result"]["fullTextUsed"] is False
 
 
 def test_cli_worker_malformed_research_output_fails_snapshot_and_never_publishes(tmp_path, monkeypatch):

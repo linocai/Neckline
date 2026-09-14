@@ -33,7 +33,7 @@ def test_paid_analysis_error_contract(tmp_path, monkeypatch, status, retry_succe
         return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic provider failure'}})
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: e2e._HTTPX_CLIENT(**{**kwargs,'transport':transport}))
-    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
+    provider = MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-flash',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
     monkeypatch.setattr(runtime, 'resolve_deepseek_v4_pro', lambda **_:ProviderResolution('configured',provider,'fixture',None))
     def initial_work(at):
         return run_once(db_path=db,worker_id='independent-review',lease_for=timedelta(minutes=5), handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'), clock=lambda:at,task_id=task_id)
@@ -123,7 +123,7 @@ def test_paid_morning_review_error_contract(tmp_path, monkeypatch, status, late_
             return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic morning failure'}})
         transport=httpx.MockTransport(respond)
         monkeypatch.setattr(httpx,'Client',lambda **opts:e2e._HTTPX_CLIENT(**{**opts,'transport':transport}))
-        provider=MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
+        provider=MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-flash',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
         return ProviderResolution('configured',provider,'fixture',None)
     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',resolve)
     if interrupt_after_failure:
@@ -287,7 +287,7 @@ def test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_pa
         return httpx.Response(status,headers={'Retry-After':'60'},json={'error':{'message':'synthetic error'}})
     transport=httpx.MockTransport(respond)
     monkeypatch.setattr(httpx,'Client',lambda **kwargs:e2e._HTTPX_CLIENT(**{**kwargs,'transport':transport}))
-    provider=MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-v4-pro',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
+    provider=MeteredProvider(ledger_db=db,ledger_task='analysis',api_key='fixture',model='deepseek-flash',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
     monkeypatch.setattr(runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'fixture',None))
     record=runtime.record_analysis_artifact
     def interrupted(**kwargs):

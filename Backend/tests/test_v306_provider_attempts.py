@@ -22,7 +22,7 @@ def _bound_provider(path: Path) -> MeteredProvider:
                        input_version="fixture", input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)
     store.bind_task_execution(task_id="attempt-task", execution_config_id=config_id,
                               execution_config_revision=revision, binding_kind="scheduled", bound_at=NOW, db_path=path)
-    provider = MeteredProvider(ledger_db=path, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro",
+    provider = MeteredProvider(ledger_db=path, ledger_task="discovery", api_key="fixture", model="deepseek-flash",
                                name="fixture", api_url="https://api.deepseek.com/chat/completions")
     bind_provider_execution_spending(provider=provider, task_id="attempt-task",
                                      execution_profile=store.task_execution_profile(task_id="attempt-task", db_path=path))
