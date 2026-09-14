@@ -4,7 +4,7 @@
 
 **Logged**: 2026-09-14T18:42:20+08:00
 **Priority**: critical
-**Status**: in_progress
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -20,6 +20,11 @@
 - Source: user_feedback
 - Related Files: Backend/neckline/k10/research_runtime.py, Backend/neckline/k10/research_store.py, Backend/neckline/k10/research_context.py, Backend/neckline/k10/metering.py
 - Evidence: archive/v3.2.1-b59_execution.md 第17节
+
+### Resolution
+- **Resolved**: 2026-09-14T22:09:27+08:00
+- **Commit/Tag**: `988a7b5` / `v3.3.0-b69`
+- **Notes**: P01–P09修复、1363项回归、真实冻结材料离线回放及生产发布完成；未恢复付费运行，原报告仍过期失败，正式全量费用节省未验证。
 
 ---
 
