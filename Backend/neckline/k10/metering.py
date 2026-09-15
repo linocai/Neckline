@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import logging
 import json
+import os
 from pathlib import Path
 from time import monotonic
 from threading import local
@@ -456,6 +457,33 @@ class MeteredProvider(OpenAICompatProvider):
         active = getattr(self._thread_usage, "active_response_receipt", None)
         if isinstance(active, dict) and active.get("attemptId"):
             active["providerOutcomeUnknown"] = True
+
+    def _received_http_refusal(self, *, status: int, body: str) -> None:
+        # A definite refusal is not a paid model reply. Keep its diagnostic
+        # separate from immutable response-reuse semantics and public results.
+        active = getattr(self._thread_usage, "active_response_receipt", None)
+        if not isinstance(active, dict) or not active.get("attemptId"):
+            return
+        try:
+            folder = Path(self._ledger_db).parent / "provider-diagnostics" / sha256(self._spend_task_id.encode()).hexdigest()
+            folder.parent.mkdir(mode=0o700, exist_ok=True)
+            folder.mkdir(mode=0o700, exist_ok=True)
+            value = {"taskId": self._spend_task_id, "attemptId": active["attemptId"],
+                     "requestSha256": active["requestSha256"], "statusCode": status,
+                     "responseBody": body.replace(self.api_key, "[redacted]") if self.api_key else body}
+            content = (json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n").encode()
+            target = folder / (sha256(content).hexdigest() + ".json")
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except FileExistsError:
+            pass
+        except Exception as exc:
+            # Failure to save diagnostics must not turn a received HTTP
+            # refusal into a transport exception and trigger another POST.
+            logger.warning("Provider refusal diagnostics unavailable (%s)", type(exc).__name__)
 
     def _settle_attempt(self, *, attempt_id: str, request_sha256: str, reuse_scope_sha256: str, result: LLMResult | None) -> None:
         from . import store

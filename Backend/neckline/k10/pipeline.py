@@ -1088,6 +1088,16 @@ class _CheckpointedDiscoveryModel:
         operation = f"investigation_{action}"
         item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
             item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code)
+        if self._allow_failed_research_resume and row is not None and row[0] == "failed" and row[1] == "provider_http_400":
+            grant = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
+            if digest in set(grant.get("failedModelInputSha256", [])):
+                # Exactly one derived checkpoint per explicitly authorized
+                # frozen input. Do not alter the wire, renew this group after
+                # another refusal, or touch the original failed/paid rows.
+                item = {**item, "authorizedHttpRefusalRecoveryOf": digest}
+                digest, ledger_key, row = self._research_checkpoint(
+                    operation=operation, stage="investigation", item_key=item_key, item=item)
+                self._reject_unknown_research_checkpoint(row)
         repair = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("runtimeRepair")
         if repair is not None and (row is None or row[0] != "completed"):
             if repair.get("originalExecutionContentSha256") != self._binding.get("contentSha256"):
@@ -1463,7 +1473,10 @@ class _CheckpointedDiscoveryModel:
         # The ledger owns each reservation/attempt.  Drive it immediately through
         # the explicitly bound retry budget so a terminal scan does not strand a
         # first transient failure waiting for a coincidental later slice.
-        maximum_calls = int(self._policy["networkMaxAttempts"]) + int(self._policy["jsonRepairMaxAttempts"])
+        call_policy = ({**self._policy, "networkMaxAttempts": 1}
+                       if item.get("authorizedHttpRefusalRecoveryOf") else self._policy)
+        maximum_calls = (1 if item.get("authorizedHttpRefusalRecoveryOf") else
+                         int(call_policy["networkMaxAttempts"]) + int(call_policy["jsonRepairMaxAttempts"]))
         digest = self._digest(operation=operation, stage=stage, item=item)
         spend_stage = ({"understand": "fullText" if item.get("textMode") == "full_text" else "lightweight",
                         "map": "map", "classify": "classify", "compare": "companyComparison"}.get(operation, stage))
@@ -1499,7 +1512,7 @@ class _CheckpointedDiscoveryModel:
         for _ in range(maximum_calls):
             result = execute_model_operation(
                 task_id=self._task_id, operation=operation, item_key=item_key,
-                input_sha256=digest, policy=self._policy,
+                input_sha256=digest, policy=call_policy,
                 operation_call=metered_invoke, repair_call=repair_invoke, validate=validate_with_feedback,
                 db_path=self._db_path, leaseguard=self._leaseguard,
                 spend_context_factory=lambda attempt, repair: provider_spend_context(

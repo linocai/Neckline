@@ -336,6 +336,9 @@ class OpenAICompatProvider(LLMProvider):
         intentionally remains side-effect free.
         """
 
+    def _received_http_refusal(self, *, status: int, body: str) -> None:
+        """Optional private diagnostics; never expose upstream bodies as results."""
+
     def revalidate_received_response(
         self,
         raw_responses: List[Dict[str, Any]],
@@ -664,6 +667,7 @@ class OpenAICompatProvider(LLMProvider):
         if resp.status_code == 429 and business_code != "1113":
             raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
         if resp.status_code != 200:
+            self._received_http_refusal(status=resp.status_code, body=resp.text)
             suffix = f"/{business_code}" if business_code else ""
             return None, f"上游 {resp.status_code}{suffix}"
         try:
@@ -701,6 +705,7 @@ class OpenAICompatProvider(LLMProvider):
             if resp.status_code == 429 and business_code != "1113":
                 raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
             if resp.status_code != 200:
+                self._received_http_refusal(status=resp.status_code, body=resp.text)
                 suffix = f"/{business_code}" if business_code else ""
                 return None, f"上游 {resp.status_code}{suffix}"
             return self._assemble_stream(resp.iter_lines())
