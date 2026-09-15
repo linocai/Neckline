@@ -557,11 +557,18 @@ def _footnotes(text: str, blocks: list[_Block]) -> dict[str, list[_Block]]:
     return result
 
 
-def _identity(document: Any, text: str) -> dict[str, Any]:
+def source_navigation_projection(document: Any) -> dict[str, Any] | None:
     enabled = sina_source(_metadata(document))
-    _view, projection = navigation_view(text, enabled=enabled)
-    if projection is None and isinstance(getattr(document, 'excerpt', None), str):
-        _view, projection = navigation_view(document.excerpt, enabled=enabled)
+    for text in (_source_text(document), getattr(document, 'excerpt', None)):
+        if isinstance(text, str):
+            _view, projection = navigation_view(text, enabled=enabled)
+            if projection:
+                return projection
+    return None
+
+
+def _identity(document: Any, text: str) -> dict[str, Any]:
+    projection = source_navigation_projection(document)
     return {"sourceRef":{"documentId":getattr(document,"document_id"),"revision":getattr(document,"revision")},
             "sourceContentSha256":sha256(text.encode("utf-8")).hexdigest(),"indexVersion":INDEX_VERSION,
             **({'sourceViewProjection':projection} if projection else {}),

@@ -34,7 +34,7 @@ def test_only_redundant_cross_question_path_removed_without_mutating_paid_reply(
     packet,raw=fixture();before=copy.deepcopy(raw)
     result=investigation.decode_stage_result(raw,action='plan_queries',evidence_packet=packet)
     assert [p.path_id for p in result.query_paths]==['valid']
-    assert result.conclusion['runtimeOutputSanitization']['discardedCrossQuestionPaths']==1
+    assert result.conclusion['runtimeOutputSanitization']['discardedUnusableQueryPaths']==1
     assert raw==before
 
 

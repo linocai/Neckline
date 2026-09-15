@@ -28,7 +28,7 @@ from .investigation import InvestigationError, advance_research, decode_stage_re
 from .opportunity_discovery import validate_event_comparison
 from .research_contracts import Claim, FullTextRequest, Question, QueryPath, ResearchSnapshot, ResearchStageResult, validate_company_mapping
 from .research_material import (INDEX_VERSION, admit_material, document_outline, requires_current_event_locator,
-    scoped_find, direct_location, catalogue_restart_location)
+    scoped_find, direct_location, catalogue_restart_location, source_navigation_projection)
 from .research_store import (create_research_snapshot, advance_research_snapshot,
                              read_research_state, load_prior_research_evidence)
 
@@ -212,7 +212,8 @@ class _Investigation:
             # Original sources already have typed, attributed statements.
             # Only query-result snippets, not frozen article bodies, recur.
             excerpt = doc.excerpt if ref not in self.event.source_refs else None
-            cards.append({**_ref(ref), "publishedAt": doc.published_at, "fetchedAt": doc.fetched_at,
+            projection = source_navigation_projection(doc)
+            cards.append({**_ref(ref), **({"sourceViewProjection": projection} if projection else {}), "publishedAt": doc.published_at, "fetchedAt": doc.fetched_at,
                           "excerpt": excerpt, "sourceStatements": statements, "provenance": provenance})
         return cards
 

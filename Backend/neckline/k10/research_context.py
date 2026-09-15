@@ -123,11 +123,11 @@ def _safe_context_results(packet):
                 for row in (packet[key] if isinstance(packet.get(key), list) else [])]:
         if not isinstance(row, Mapping):
             continue
-        excerpt = row.get('excerpt')
         projection = row.get('sourceViewProjection')
-        if isinstance(excerpt, str):
-            _view, found = navigation_view(excerpt, enabled=sina_source(row))
-            projection = found or projection
+        for key in ('excerpt', 'text', 'originalText', 'analysisText', 'body'):
+            if isinstance(row.get(key), str):
+                _view, found = navigation_view(row[key], enabled=sina_source(row))
+                projection = found or projection
         if isinstance(projection, Mapping) and projection.get('version') == NAVIGATION_VERSION:
             navigation_refs.add(ref_key(row))
     safe = []
@@ -167,6 +167,9 @@ def _project_fulltext_document(row: Mapping[str, Any]) -> dict[str, Any]:
     raw = next((row[key] for key in ('text', 'originalText', 'analysisText', 'body') if isinstance(row.get(key), str)), None)
     if raw is not None:
         projected.update({'needsLocator': True, 'contentSha256': digest(raw)})
+        _view, projection = navigation_view(raw, enabled=sina_source(row))
+        if projection:
+            projected['sourceViewProjection'] = projection
     raw_excerpt = row.get('excerpt')
     if isinstance(raw_excerpt, str):
         raw_excerpt, projection = navigation_view(raw_excerpt, enabled=sina_source(row))

@@ -283,10 +283,12 @@ def _prune_assessment_references(value: Mapping[str, Any], packet: Mapping[str, 
 
 
 def _prune_cross_question_paths(paths: tuple[QueryPath, ...], packet: Mapping[str, Any]) -> tuple[tuple[QueryPath, ...], int]:
-    """Drop an optional mixed-company route, never narrow or execute it.
+    """Drop an optional unusable route, never narrow or execute it.
 
     Require another fully scoped route for the same open question. Unknown
     claims/companies, missing targets and an entirely invalid plan stay errors.
+    A company-link route naming only known claims is redundant only when a
+    different valid route still covers that same question.
     """
     if not packet.get("contextProtocol"):
         return paths, 0
@@ -312,12 +314,12 @@ def _prune_cross_question_paths(paths: tuple[QueryPath, ...], packet: Mapping[st
                 continue
             return "invalid"
         if path.purpose_kind == "company_event_link" and not has_company:
-            return "invalid"
+            return "redundant"
         return "mixed" if outside else "valid"
 
     kinds = [scope(path) for path in paths]
     covered = {path.question_id for path, kind in zip(paths, kinds) if kind == "valid"}
-    kept = tuple(path for path, kind in zip(paths, kinds) if kind != "mixed" or path.question_id not in covered)
+    kept = tuple(path for path, kind in zip(paths, kinds) if kind not in {"mixed", "redundant"} or path.question_id not in covered)
     return kept, len(paths) - len(kept)
 
 
@@ -440,7 +442,7 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
             paths, discarded = _prune_cross_question_paths(paths, evidence_packet)
             if discarded:
                 value = {**value, "conclusion": {**(value.get("conclusion") or {}),
-                    "runtimeOutputSanitization": {"discardedCrossQuestionPaths": discarded}}}
+                    "runtimeOutputSanitization": {"discardedUnusableQueryPaths": discarded}}}
         updates = value.get("evidenceUpdates", ())
         requests = value.get("fulltextRequests", ())
         assessments = value.get("companyAssessments", ())

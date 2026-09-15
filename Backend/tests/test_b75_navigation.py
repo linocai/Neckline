@@ -170,3 +170,25 @@ def test_real_cli_recovery_cleans_only_navigation_and_never_loops_content_refusa
         assert all(r in c.execute('select * from k10_source_document_versions').fetchall() for r in sources)
     assert frozen_scan_input_sha256(scan_id=scan,db_path=db)==frozen
     assert store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['executionStartedAt']==original['checkpoint']['executionStartedAt']
+
+
+def test_restored_partial_widget_is_invalidated_when_only_raw_body_has_navigation():
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from neckline.k10.research_runtime import _Investigation
+    from neckline.k10.discovery import EvidenceRef
+    doc=replace(document(),excerpt='注册资本5000万元，双方各持股45%。')
+    ref={'documentId':doc.document_id,'revision':1};key=EvidenceRef(doc.document_id,1)
+    obj=object.__new__(_Investigation);obj.allowed={key};obj.documents={key:doc};obj.event=SimpleNamespace(source_refs=(key,))
+    obj.state={'stageResults':[],'claims':[{'claimId':'c1','sourceRef':ref,'text':'双方各持股45%',
+        'location':'paragraph:1','kind':'factual_assertion','verificationStatus':'unverified'}]}
+    p=packet();p['claims']=obj.state['claims'];p['evidenceCards']=obj._cards();p.pop('fullTextDocuments')
+    assert p['evidenceCards'][0]['excerpt'] is None
+    stale={'sourceRef':ref,'indexVersion':material.INDEX_VERSION,'text':'操盘必读：旧局部片段'}
+    p['contextResults']=[{'request':{'kind':'source','sourceRef':ref,'location':'paragraph:1'},'value':stale,'contentSha256':digest(stale)}]
+    result=project_packet('plan_gaps',p)
+    assert result['contextResults'][0]['value']['status']=='requires_current_read_protocol'
+    assert '操盘必读' not in json.dumps(result,ensure_ascii=False)
+    p['evidenceCards']=[];p['fullTextDocuments']=[{**ref,'text':article(),'excerpt':'注册资本5000万元','publisher':'finance.sina.com.cn'}]
+    result=project_packet('assess_evidence',p)
+    assert result['contextResults'][0]['value']['status']=='requires_current_read_protocol'
