@@ -1,16 +1,16 @@
 # Neckline
 
-Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-14 当前发布为
-**3.3.0 / 双端发布 Build 69 / 后端 Build 69 / K10-v2 / 内部 Schema 9**，公开报告协议保持 Schema 8，发布集合为 `v3.3.0-b69`。K9 已退出活动生产。
-[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.3.0-b69)；Mac 已安装并验收 3.3.0（69）；iOS 签名归档就绪，通过 Xcode 由用户直接安装，不生成 IPA。
+Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-15 当前发布为
+**3.3.0 / 双端发布 Build 69 / 后端 Build 70 / K10-v2 / 内部 Schema 9**，公开报告协议保持 Schema 8，后端发布集合为 `v3.3.0-b70`。K9 已退出活动生产。
+[后端B70与校验值](https://github.com/linocai/Neckline/releases/tag/v3.3.0-b70)；[客户端B69下载](https://github.com/linocai/Neckline/releases/tag/v3.3.0-b69)；Mac 已安装并验收 3.3.0（69）；iOS 签名归档就绪，通过 Xcode 由用户直接安装，不生成 IPA。
 
 **9月13日原晚报尚未完成，原截止时间9月14日03:00:13已经过去。** 68/86事件完成、3项待核结论、15项查证执行失败，累计23,633,932模型token。付费执行保持暂停；Tavily可用额度未经确认，过期原任务如何处置也须明确，不能自动延长或新建替代任务。9月10日及更早报告已清除，不恢复或重推。
 
 固定 1,089 公司池与完整资料已显式导入生产库，资料仍是 `local_draft_awaiting_user`；批处理全部标题、按事件共享研究及定向资料召回，删除 80／40 全文配额。晚间最多 30 家公司卡，晨间独立更新／新增；日报卡与机会两日成绩分离，混合新旧催化的操作明确对应窗口。未核信息可以条件化推荐并披露来源。
 
-**3.3.0（69）已发布并部署。** 本轮排除日报招股书补证，限制查证于当前事件必要问题；正文按结构定位，公司资料按动作读取，共享来源事实随新增内容更新，原始付费回复可本地重验。实际请求容量检查不新增策略总用量上限；字符回放和离线测试不能证明真实费用节省。
+**3.3.0后端Build70已发布并部署。** B69排除日报招股书补证，限制查证于当前事件必要问题；正文按结构定位，公司资料按动作读取，共享来源事实随新增内容更新，原始付费回复可本地重验。B70进一步修复必要限定遗漏、普通词内误报、跨句共享及旧目录恢复。实际请求容量检查不新增策略总用量上限；字符回放和离线测试不能证明真实费用节省。
 
-正式节奏保持每个交易日09:00晨报、交易日前一自然日21:00晚报，使用交易所日历。B69将明确暂停记为正常跳过（已通过离线真实入口验收，部署后下一次定时触发尚待观察），配置、日历和存储错误仍报错。异地自动备份功能已删除，发布回退副本保留。
+正式节奏保持每个交易日09:00晨报、交易日前一自然日21:00晚报，使用交易所日历。B69将明确暂停记为正常跳过（9月15日09:00真实晨间定时触发已验证：退出0、未建任务），配置、日历和存储错误仍报错。异地自动备份功能已删除，发布回退副本保留。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -105,20 +105,21 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-后端发布源码 `988a7b5dc3c943c99167daba38c16103016eadf3`，不可变标签 `v3.3.0-b69`；后续文档提交不移动标签。服务器 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
+后端发布源码 `2e7f22f500c9b4217d6de8505c0dafa0f6cfe2de`，不可变标签 `v3.3.0-b70`；后续文档提交不移动标签。服务器 `ser657204219523`（`114.66.2.205`），数据库 `/opt/neckline/data/neckline.db`，公网 `https://nk.linotsai.top`。
 
-2026-09-14 22:09 CST核验：API、四个timer均active+enabled，通知已就绪；运行开关仍`closed/tavily_plan_limit`、worker inactive+enabled。四项配置均已就绪，暂停不等于缺配置。新版定时入口已安装，清除了旧B68受控暂停产生的失败单元标记，未手动触发任何任务；B69首次线上定时触发尚待观察。
+2026-09-15 18:50 CST核验：B70 API、四个timer均active+enabled，通知已就绪；运行开关仍`closed/tavily_plan_limit`、worker inactive+enabled。四项配置均已就绪，暂停不等于缺配置。9月15日09:00晨间定时入口因暂停正常跳过，退出0且未建task；本轮未手动触发任务或新增付费调用。
 
 9月13日原报告仍失败／未发布／0卡；592次模型调用、23,633,932 token（输入19,451,196、输出4,182,736）均未增加。9月14日03:00:13原期限已经过去；恢复付费前须确认Tavily可用额度并明确过期原报告处置，不能自动续跑、延期或创建替代。9月10日及此前的报告、关注和成绩保持删除，配置、股票池、来源进度、行情及付费／送达账本保留。
 
 `/etc/neckline/k10.env`仍显式绑定策略`k10-v2-production`第1修订、执行`k10-v2-execution-production`第1修订及`k10-v2-20260909`快照。无scan的独立配置检查和当前线上真实接口均通过；不能以HTTP200代替DTO状态验证。
 
 Mac `/Applications/Neckline.app`已换装3.3.0（69），Developer ID严格验签、通用架构、Dock目标和单实例通过，实际页面显示新版号、配置就绪和暂停。iOS签名归档及工程Build69就绪，仍由用户通过Xcode安装，本轮未安装真机或导出IPA。Mac未公证，网络下载后的Gatekeeper体验未验收。
-本地发布目录：`/Users/linotsai/Lino/releases/Neckline/v3.3.0-b69-20260914/`；服务器正式后端包、wheel与manifest：`/opt/neckline/releases/v3.3.0-b69/`；GitHub六份资产与本地SHA256一致。
+B70客户端源码相对B69无差异，60份源文件与原验收哈希一致，现有Mac安装及双端签名归档再次严格验签通过；本次后端发布沿用客户端，不重新构建或换装。
+本地后端发布目录：`/Users/linotsai/Lino/releases/Neckline/v3.3.0-b70-20260915/`；服务器正式后端包、wheel与manifest：`/opt/neckline/releases/v3.3.0-b70/`；GitHub五份后端资产与本地SHA256一致。B69客户端归档仍在原`v3.3.0-b69-20260914/`目录。
 
-服务器仅留`/opt/neckline/data/backups/v3.2.1-b68-predeploy/`和`v3.3.0-b69-predeploy/`，分别保留B67／B68代码恢复能力；pre/post为经过解压哈希验证的`.db.gz`，相同内容硬链接复用，最终合计314,599,562字节（约0.293GiB）。B69 pre为Schema8、post为Schema9；最新DB不允许被旧快照覆盖。仅在停写、closed、无未决调用且私有回执为空时，执行保留新业务行的Schema9→8受控回退；有回执时保留Schema9并前向修复。
+服务器仅留`/opt/neckline/data/backups/v3.3.0-b69-predeploy/`和`v3.3.0-b70-predeploy/`，分别保留B68／B69代码恢复能力，合计315,280,657字节（约0.294GiB）。快照gzip解压哈希已验证，B70相同pre/post共用一个inode；B70部署没有schema迁移，86张表指纹未变，已验证B69 runtime可在当前Schema9上仅回退代码并保留新写。B69 pre为Schema8、post为Schema9；只有停写、closed、无未决调用且私有回执为空时，才可执行保留新业务行的Schema9→8受控回退；有回执时保持Schema9并前向修复。任何旧快照都不能覆盖后续业务写入。
 
 清报告专用`/opt/neckline/data/archive/report-cleanup-20260913/pre-cleanup.db.gz`继续保留，首份清理后正式报告完成且可读再回收；原事故私有付费回复仍是未解决报告的证据。两者不能作为恢复整库覆盖新写入的理由。
-Mac可恢复副本为`/Users/linotsai/Lino/app_backups/Neckline-v3.2.1-build62-pre-v3.3.0-b69-20260914.app`。根目录`root:root /0755`、数据库`neckline:neckline /0600`已经复核。本轮测试、QA、回放和远端上传／演练临时产物已按精确归属清理，签名归档、安装包、必要证据与上述恢复集保留。
+Mac可恢复副本为`/Users/linotsai/Lino/app_backups/Neckline-v3.2.1-build62-pre-v3.3.0-b69-20260914.app`。根目录`root:root /0755`、数据库`neckline:neckline /0600`已经复核。B70临时构建、用户临时目录和远端上传／演练产物已按精确归属核验清理，签名归档、安装包、必要证据与上述恢复集保留。
 
 当前发布、失败演练修正及清理证据见[3.3.0执行记录](archive/v3.3.0-b69_execution.md)；原报告事故见前版第17节。正式全量运行的耗时和费用尚未验证，不能将本地字符减少或离线复用测试当作实际节省。
