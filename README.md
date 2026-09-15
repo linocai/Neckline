@@ -117,7 +117,7 @@ Mac `/Applications/Neckline.app`已换装3.3.0（69），Developer ID严格验�
 B75相对B69没有App源码改动，沿用B69客户端与既有验签／验收记录；本次后端快修没有新增Apple构建或换装。
 本地后端发布目录：`/Users/linotsai/Lino/releases/Neckline/v3.3.0-b75-20260915/`；服务器正式后端包、wheel与manifest：`/opt/neckline/releases/v3.3.0-b75/`；GitHub五份后端资产与本地SHA256一致。B69客户端归档仍在原`v3.3.0-b69-20260914/`目录。
 
-B75恢复集仅保留B74/B75（恢复B73/B74代码），清理时266,815,498字节；B75相同pre/post gzip共用inode，新旧代码当前Schema9读取已验证。禁止旧库覆盖新写。B75本地临时33,973,646字节→0，436文件及13个fixture根已清理；远端上传/演练副本已回收。清报告专用快照仍待正式报告完成且可读后删除。
+仅保留`/opt/neckline/data/backups/v3.3.0-b74-predeploy`与`v3.3.0-b75-predeploy`两套发布恢复集，分别恢复B73/B74代码。Schema9与新写入必须保留；禁止用旧数据库整库覆盖。压缩、去重和清理证据见版本记录第16.5节。
 
 清报告专用`/opt/neckline/data/archive/report-cleanup-20260913/pre-cleanup.db.gz`继续保留，首份清理后正式报告完成且可读再回收；原事故私有付费回复仍是未解决报告的证据。两者不能作为恢复整库覆盖新写入的理由。
 Mac可恢复副本为`/Users/linotsai/Lino/app_backups/Neckline-v3.2.1-build62-pre-v3.3.0-b69-20260914.app`。根目录`root:root /0755`、数据库`neckline:neckline /0600`已经复核。B75临时构建、私有原回复、用户／系统测试隔离目录和远端上传／演练产物已按精确归属核验清理，签名归档、安装包、必要证据与上述恢复集保留。
