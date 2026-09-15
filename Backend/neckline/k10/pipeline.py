@@ -1121,13 +1121,17 @@ class _CheckpointedDiscoveryModel:
         )
 
     @contextmanager
-    def research_validation(self, validator: Callable[[ResearchStageResult], None]):
+    def research_validation(self, validator: Callable[[ResearchStageResult], None], *,
+                            recovered_validator: Callable[[ResearchStageResult], None] | None = None):
         previous = getattr(self._research_validators, "current", None)
+        previous_recovered = getattr(self._research_validators, "recovered", None)
         self._research_validators.current = validator
+        self._research_validators.recovered = recovered_validator or validator
         try:
             yield
         finally:
             self._research_validators.current = previous
+            self._research_validators.recovered = previous_recovered
 
     def full_text_used(self, *, document: DiscoveryDocument) -> bool:
         return document.evidence_ref in self._full_text_used
@@ -1370,7 +1374,7 @@ class _CheckpointedDiscoveryModel:
                 if prior is not None:
                     try:
                         candidate = decode(json.loads(prior[0]))
-                        validator = getattr(self._research_validators, "current", None)
+                        validator = getattr(self._research_validators, "recovered", None)
                         if validator is not None:
                             validator(candidate)
                             encode(candidate)
@@ -1392,7 +1396,7 @@ class _CheckpointedDiscoveryModel:
                     # AND the same live research evidence boundary before use.
                     candidate = value["response"] if is_title or is_body else decode(value["response"])
                     if is_research:
-                        validator = getattr(self._research_validators, "current", None)
+                        validator = getattr(self._research_validators, "recovered", None)
                         if validator is None:
                             continue
                         validator(candidate)

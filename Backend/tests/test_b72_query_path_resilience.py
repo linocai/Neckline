@@ -89,7 +89,7 @@ def test_real_cli_worker_keeps_scoped_searches_and_reuses_paid_failed_plan(tmp_p
     if recover:
         monkeypatch.setattr(investigation,'_prune_cross_question_paths',lambda paths,packet:(paths,0))
         @contextmanager
-        def legacy_validation(self,validator):
+        def legacy_validation(self,validator,**kwargs):
             yield
         monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel,'research_validation',legacy_validation)
     db,tid,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
