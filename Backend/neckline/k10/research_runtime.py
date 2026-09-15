@@ -15,7 +15,8 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Sequence
 
-from .research_context import project_packet, public_packet, read_context, question_dependency, route_identity
+from .research_context import (PROTOCOL, project_packet, public_packet, read_context,
+    question_dependency, route_identity, company_field_scope_error, company_question_scope_error)
 from . import store
 from .discovery import (
     CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoverySliceYield,
@@ -26,10 +27,14 @@ from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError, advance_research, decode_stage_result, query_path_signature, validate_stage_result
 from .opportunity_discovery import validate_event_comparison
 from .research_contracts import Claim, FullTextRequest, Question, QueryPath, ResearchSnapshot, ResearchStageResult, validate_company_mapping
-from .research_material import admit_material, document_outline, requires_current_event_locator
+from .research_material import (INDEX_VERSION, admit_material, document_outline, requires_current_event_locator,
+    scoped_find, direct_location, catalogue_restart_location)
 from .research_store import (create_research_snapshot, advance_research_snapshot,
                              read_research_state, load_prior_research_evidence)
 
+# Local interpretation changes invalidate local read receipts, without changing
+# the identity of an otherwise identical paid model request.
+_READ_PROTOCOL = f'{PROTOCOL}:{INDEX_VERSION}'
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -390,11 +395,8 @@ class _Investigation:
         if reason is not None:
             return None, reason
         location = request.get("location")
-        is_direct = isinstance(location, str) and re.fullmatch(r"(?:paragraph|table|line):\d+", location) is not None
-        normalize = lambda value: re.sub(r"[\W_]+", "", str(value).casefold())
-        is_scoped_find = (isinstance(location, str) and location.startswith("find:")
-                          and normalize(location.removeprefix("find:")) in normalize(" ".join(
-                              str(question.get(key, "")) for key in ("question", "supportCondition", "refuteCondition", "missingEvidence"))))
+        is_direct = direct_location(location)
+        is_scoped_find = scoped_find(location, question)
         if not is_direct and not is_scoped_find:
             return None, "background_requires_direct_locator"
         return {"version": "k10-v2-background-read-plan-1", "questionId": question_id,
@@ -470,7 +472,8 @@ class _Investigation:
                 partial_refs.add(ref)
                 locations = visible_locations.setdefault(ref, set())
                 locations.add(value.get("locator"))
-                locations.update(f"line:{line}" for line in range(value.get("lineStart", 0), value.get("lineEnd", -1)+1))
+                if value.get('kind') not in {'sentence', 'sentence_span'}:
+                    locations.update(f"line:{line}" for line in range(value.get("lineStart", 0), value.get("lineEnd", -1)+1))
         # Existing attributed facts remain visible at their original location;
         # a new structural read does not authorize citing another hidden block.
         for claim in packet.get("claims", []):
@@ -604,10 +607,23 @@ class _Investigation:
         return bound
 
     def _continue_context(self, action, result, extra, *, request_input):
-        values = list((extra or {}).get('contextResults', []))
+        current_packet = project_packet(action, {**self._packet(), **(extra or {})})
+        obsolete = [item for item in current_packet.get('contextResults', [])
+                    if (item.get('value') or {}).get('status') == 'requires_current_read_protocol']
+        values = [item for item in current_packet.get('contextResults', [])
+                  if (item.get('value') or {}).get('status') != 'requires_current_read_protocol']
         known = {_hash(item['request']) for item in values}
         changed = False
         for request in result.context_requests:
+            restart = catalogue_restart_location(request.get('location')) if request.get('kind') == 'source' else None
+            if restart is not None and any(
+                    (item.get('value') or {}).get('restartLocation') == restart
+                    and item['request'].get('sourceRef') == request.get('sourceRef')
+                    and item['request'].get('questionId') == request.get('questionId') for item in obsolete):
+                # Replayed replies can name an ordinal from an older index.
+                # Keep the paid reply intact; the new local read starts at zero
+                # and gets its effective identity, leaving the next cursor free.
+                request = {**request, 'location': restart}
             identity = {key: value for key, value in request.items() if key != 'purpose'}
             key = _hash(identity)
             if key in known:
@@ -618,6 +634,7 @@ class _Investigation:
             saved = next(((stage['result'].get('conclusion') or {}).get('runtimeContextRead')
                 for stage in self.state['stageResults']
                 if (stage['result'].get('conclusion') or {}).get('runtimeContextReadInputSha256') == request_input
+                and (stage['result'].get('conclusion') or {}).get('runtimeContextReadProtocol') == _READ_PROTOCOL
                 and (stage['result'].get('conclusion') or {}).get('runtimeContextObjectSha256') == object_version
                 and (stage['result'].get('conclusion') or {}).get('runtimeContextRead', {}).get('request') == identity), None)
             try:
@@ -633,11 +650,14 @@ class _Investigation:
                                   'needsLocator': True},
                         'contentSha256': _hash({'sourceRef': request.get('sourceRef'), 'status': background_block})}
                 else:
-                    value = saved if saved is not None and (not callable(checker) or fits(saved)) else read_context(
+                    visible_packet = project_packet(action, {**self._packet(), **(extra or {}), 'contextResults': values})
+                    scope_error = (company_field_scope_error(request, visible_packet) if request.get('kind') == 'company_fields'
+                        else company_question_scope_error(request, visible_packet) if request.get('kind') == 'company_search' else None)
+                    value = saved if saved is not None and scope_error is None and (not callable(checker) or fits(saved)) else read_context(
                         request, state=self.state, documents=self.documents,
                         binding=getattr(self.model, '_company_profiles_binding', None),
                         eligible_refs={(ref.document_id, ref.revision) for ref in self.allowed},
-                        request_fits=fits if callable(checker) else None)
+                        request_fits=fits if callable(checker) else None, visible_packet=visible_packet)
                     if background_plan is not None and isinstance(value.get('value'), Mapping):
                         value = {**value, 'value': {**value['value'], 'backgroundReadPlan': background_plan},
                                  'contentSha256': _hash({**value['value'], 'backgroundReadPlan': background_plan})}
@@ -647,6 +667,7 @@ class _Investigation:
                 conclusion = {
                     'runtimeContextRead': value, 'runtimeContextReadInputSha256': request_input,
                     'runtimeContextObjectSha256': object_version,
+                    'runtimeContextReadProtocol': _READ_PROTOCOL,
                     'researchStatus': self.snapshot.research_status,
                 }
                 if request.get('kind') == 'source' and isinstance(value.get('value'), Mapping) and isinstance(value['value'].get('text'), str):
@@ -667,7 +688,7 @@ class _Investigation:
                 raise InvestigationError('局部回读协议纠错后仍未完成', code='investigation_context_no_increment')
             return self._call(action, {**(extra or {}), 'contextResults': values,
                 'contextFeedback': {'code': 'already_read',
-                    'instruction': '请求的字段已在 contextResults 中完整提供。请使用已有值完成当前 action 的业务判断；若确有未展示且必要的新字段，可请求新字段。不要重复请求已提供的字段。'}})
+                    'instruction': '相同请求已处理，结果见 contextResults；只有对应 value 实际包含本次请求所需内容时才表示已提供。拒绝、未知引用或 needsLocator/needsFieldRefinement 不表示已读证据。不要重复同一请求，请按返回目录提出必要且获准的新请求，无法取得时保留资料缺口并完成当前 action。'}})
         return self._call(action, {**(extra or {}), 'contextResults': values})
 
     def _tool(self, bundle: Any, *, path: QueryPath | None = None, request: FullTextRequest | None = None) -> None:

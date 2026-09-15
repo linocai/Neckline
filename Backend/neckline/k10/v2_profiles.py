@@ -107,6 +107,22 @@ def read_profiles(*, db_path: Path, profiles_id: str, codes: list[str] | None = 
         return [json.loads(row[0]) for row in conn.execute(query + " ORDER BY company_code", args)]
 
 
+def source_ids(value):
+    """Extract actual references without turning draft unknowns into errors."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {'source_ref', 'source_refs'}:
+                if isinstance(item, str):
+                    yield item
+                elif isinstance(item, list):
+                    yield from (ref for ref in item if isinstance(ref, str))
+            else:
+                yield from source_ids(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from source_ids(item)
+
+
 # Only business values contribute retrieval terms. These runtime fields are
 # identities/status, never business evidence, even when nested under facts.
 _NON_SEMANTIC = {'claimId', 'questionId', 'pathId', 'documentId', 'revision',
@@ -170,6 +186,12 @@ def retrieve_company_context(*, db_path: Path, profiles_id: str, query: Any,
         fields = {'identity': profile['identity'], 'summary': profile['summary'],
                   'review_status': profile['review_status'], 'compiled_at': profile['compiled_at'],
                   'profileContentSha256': sha256(_json(profile).encode()).hexdigest()}
+        # Retrieval may omit unmatched values, but a known candidate still
+        # needs a truthful catalogue to request a necessary missing field.
+        # Names/hashes authorize local reads; they are not visible evidence.
+        fields['fieldManifest'] = [{'field': key, 'contentSha256': sha256(_json(value).encode()).hexdigest(),
+            'kind': type(value).__name__} for key, value in sorted(profile.items())
+            if key not in {'raw_evidence_file', 'sources', 'identity', 'review_status', 'compiled_at'}]
         for key in ('businesses', 'relationships', 'revenue_structure', 'market_distribution', 'industry_chain'):
             value = profile.get(key)
             if isinstance(value, list):
@@ -186,27 +208,11 @@ def retrieve_company_context(*, db_path: Path, profiles_id: str, query: Any,
                 else:
                     fields[key] = value
         # Source metadata remains available without resending raw evidence/full archives.
-        def source_ids(value):
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if key in {'source_ref', 'source_refs'}:
-                        # Draft fields may explicitly have no source. Preserve
-                        # that field as-is; only actual string references can
-                        # select source metadata for the projected evidence.
-                        if isinstance(item, str):
-                            yield item
-                        elif isinstance(item, list):
-                            yield from (ref for ref in item if isinstance(ref, str))
-                    else:
-                        yield from source_ids(item)
-            elif isinstance(value, list):
-                for item in value:
-                    yield from source_ids(item)
         refs = set(source_ids(fields))
         fields['sources'] = [source for source in profile['sources']
             if any(ref == source['source_id'] or ref.startswith(source['source_id'] + '.') for ref in refs)]
         fields['fieldRefs'] = [{'field': key, 'contentSha256': sha256(_json(value).encode()).hexdigest()}
-            for key, value in fields.items() if key not in {'sources', 'identity'}]
+            for key, value in fields.items() if key not in {'sources', 'identity', 'fieldManifest'}]
         fields['retrieval'] = {'matchedTerms': matches[code], 'titleHint': code in hints,
                                'missingFields': [key for key in ('businesses','relationships','revenue_structure','market_distribution','industry_chain') if key not in fields]}
         projected.append(fields)

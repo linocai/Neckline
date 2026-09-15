@@ -5,9 +5,10 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping
 
-from .research_material import MAX_FRAGMENT_CHARACTERS, bounded_excerpt, document_outline, read_locator, requires_current_event_locator
+from .research_material import (INDEX_VERSION, MAX_FRAGMENT_CHARACTERS, bounded_excerpt, document_outline,
+    read_locator, requires_current_event_locator, scoped_find, direct_location, resize_catalogue, catalogue_restart_location)
 
-PROTOCOL = 'k10-v2-context-3.3.0'
+PROTOCOL = 'k10-v2-context-3.3.0-b70'
 
 
 def digest(value: Any) -> str:
@@ -41,16 +42,106 @@ def _profile_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         projected.update({'summaryUnavailable': True, 'summarySha256': summary_hash})
     identity = row.get('identity') if isinstance(row.get('identity'), Mapping) else {}
     code = identity.get('ts_code')
-    manifests = []
-    for key, value in row.items():
-        if key in {*allowed, 'sources', 'fieldRefs', 'retrieval', 'raw_evidence_file'}:
-            continue
-        manifests.append({'field': key, 'contentSha256': digest(value),
-                          'kind': type(value).__name__})
+    # Runtime and final request assembly both project. Do not replace the
+    # original visible field catalogue with a catalogue of the catalogue.
+    manifests = list(row['fieldManifest']) if isinstance(row.get('fieldManifest'), list) else []
+    if 'fieldManifest' not in row:
+        for key, value in row.items():
+            if key in {*allowed, 'sources', 'fieldRefs', 'retrieval', 'raw_evidence_file', 'companyCode'}:
+                continue
+            manifests.append({'field': key, 'contentSha256': digest(value),
+                              'kind': type(value).__name__})
     projected['fieldManifest'] = sorted(manifests, key=lambda item: item['field'])
     if isinstance(code, str):
         projected['companyCode'] = code
     return projected
+
+
+def company_question_scope_error(request: Mapping[str, Any], packet: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(packet, Mapping):
+        return 'outside_company_scope'
+    questions = packet.get('_localState', packet).get('questions', [])
+    question_id = request.get('questionId')
+    if (questions and question_id is None) or (question_id is not None and
+            not any(q.get('questionId') == question_id for q in questions)):
+        return 'outside_company_scope'
+    return None
+
+
+def company_field_scope_error(request: Mapping[str, Any], packet: Mapping[str, Any] | None) -> str | None:
+    """Authorize local fields from what this action actually showed, not the DB."""
+    reason = company_question_scope_error(request, packet)
+    if reason:
+        return reason
+    question_id = request.get('questionId')
+    questions = packet.get('_localState', packet).get('questions', [])
+    question = next((q for q in questions if q.get('questionId') == question_id), None)
+    if question_id is not None and question is None:
+        return 'outside_company_scope'
+    scope = packet.get('companyScope') or {}
+    code = request.get('companyCode')
+    visible = [row for row in scope.get('companyProfiles', [])
+        if row.get('identity', {}).get('ts_code') == code]
+    if question is not None and code not in question.get('companyCodes', []):
+        visible = []
+    # A local search can reveal a new candidate, but only its actual returned
+    # manifest in the same question scope grants subsequent field access.
+    for result in packet.get('contextResults', []):
+        identity, value = result.get('request', {}), result.get('value') or {}
+        if (identity.get('kind') == 'company_search' and identity.get('questionId') == question_id
+                and result.get('status') == 'found'
+                and value.get('profileSnapshotId') == scope.get('profileSnapshotId')):
+            visible.extend(row for row in value.get('companyProfiles', [])
+                if row.get('identity', {}).get('ts_code') == code)
+    if not visible:
+        return 'outside_company_scope'
+    fields = request.get('fields')
+    allowed = {entry.get('field') for row in visible for entry in row.get('fieldManifest', [])}
+    allowed.update(key for row in visible for key in ('identity', 'review_status', 'compiled_at') if key in row)
+    if (not isinstance(fields, list) or not fields or any(not isinstance(key, str) or key not in allowed
+            or key in {'raw_evidence_file', 'sources'} for key in fields)):
+        return 'outside_company_field_manifest'
+    return None
+
+
+def _refine_company_fields(value, manifest=None):
+    """Withhold an oversized complete field together with its qualifications."""
+    if len(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))) <= MAX_FRAGMENT_CHARACTERS:
+        return value
+    return {**{key: value[key] for key in ('profileSnapshotId', 'identity', 'review_status', 'contentSha256') if key in value},
+        'status': 'not_safely_readable', 'needsFieldRefinement': True,
+        'fieldManifest': manifest if manifest is not None else [
+            {'field': key, 'contentSha256': digest(field), 'kind': type(field).__name__}
+            for key, field in (value.get('fields') or {}).items()]}
+
+
+def _safe_context_results(packet):
+    """Recheck restored reads before any model request, including pending extras."""
+    safe = []
+    for item in packet.get('contextResults', []):
+        request, value = item.get('request', {}), item.get('value')
+        reason = company_field_scope_error(request, {**packet, 'contextResults': safe}) if request.get('kind') == 'company_fields' else None
+        if reason:
+            item = {**item, 'value': {'status': reason}, 'contentSha256': digest({'status': reason})}
+        elif request.get('kind') == 'company_search' and company_question_scope_error(request, packet):
+            reduced = {'status': 'outside_company_scope'}
+            item = {**item, 'value': reduced, 'contentSha256': digest(reduced)}
+        elif request.get('kind') == 'company_fields' and isinstance(value, Mapping) and 'fields' in value:
+            reduced = _refine_company_fields(value)
+            item = {**item, 'value': reduced, 'contentSha256': digest(reduced)}
+        elif request.get('kind') == 'source' and isinstance(value, Mapping):
+            material_result = any(key in value for key in ('indexVersion', 'text', 'locators', 'locatorCount'))
+            if (material_result and value.get('indexVersion') != INDEX_VERSION or
+                    isinstance(value.get('text'), str) and len(value['text']) + sum(
+                        len(part.get('text', '')) for part in value.get('supportingContext', [])) > MAX_FRAGMENT_CHARACTERS):
+                reduced = {'sourceRef': value.get('sourceRef'), 'status': 'requires_current_read_protocol',
+                    'needsLocator': True, 'previousContentSha256': item.get('contentSha256')}
+                restart = catalogue_restart_location(request.get('location'))
+                if restart is not None:
+                    reduced['restartLocation'] = restart
+                item = {**item, 'value': reduced, 'contentSha256': digest(reduced)}
+        safe.append(item)
+    return safe
 
 
 def _project_fulltext_document(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -100,7 +191,7 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     if scope or 'companyScope' in packet:
         result['companyScope'] = scope
     result['contextProtocol'] = PROTOCOL
-    result['_localState'] = {'claims': packet.get('claims', []), 'questions': packet.get('questions', []),
+    result['_localState'] = packet.get('_localState') or {'claims': packet.get('claims', []), 'questions': packet.get('questions', []),
         'fulltextRequests': packet.get('fulltextRequests', []), 'fixedPool': pool,
         'evidenceUpdates': packet.get('evidenceUpdates', []), 'queryPaths': packet.get('queryPaths', []),
         'pathDependencies': packet.get('_localPathDependencies', {})}
@@ -118,6 +209,8 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
         codes = {code for q in questions for code in q.get('companyCodes', [])}
         scope['companyProfiles'] = [row for row in scope.get('companyProfiles', []) if row['identity']['ts_code'] in codes]
         scope['candidateCompanyCodes'] = [code for code in scope.get('candidateCompanyCodes', []) if code in codes]
+    if 'contextResults' in result:
+        result['contextResults'] = _safe_context_results(result)
     if action in {'plan_queries', 'assess_evidence'}:
         ids = {claim for q in questions for claim in q['claimIds']}
         result['claims'] = [claim for claim in packet.get('claims', []) if claim['claimId'] in ids]
@@ -170,7 +263,7 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     visible = {ref_key(card) for card in cards}
     visible.update(ref_key(doc) for doc in result.get('fullTextDocuments', [])
                    if doc.get('eligibleAtNewsCutoff') and isinstance(doc.get('excerpt'), str) and doc['excerpt'].strip())
-    for item in packet.get('contextResults', []):
+    for item in result.get('contextResults', []):
         value = item.get('value')
         if item.get('status') == 'found' and isinstance(value, dict):
             if value.get('eligibleAtNewsCutoff') and isinstance(value.get('text'), str) and value['text'].strip():
@@ -185,14 +278,15 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def read_context(request: Mapping[str, Any], *, state, documents, binding, eligible_refs, request_fits=None):
+def read_context(request: Mapping[str, Any], *, state, documents, binding, eligible_refs, request_fits=None,
+                 visible_packet=None):
     """Resolve only already stored versions; unknown locators return no evidence."""
     kind = request.get('kind')
     if not isinstance(request.get('purpose'), str) or not request['purpose'].strip():
         raise ValueError('context purpose required')
     question_id = request.get('questionId')
     questions_by_id = {q['questionId']: q for q in state['questions'] if isinstance(q, Mapping) and isinstance(q.get('questionId'), str)}
-    if question_id is not None and question_id not in questions_by_id:
+    if kind not in {'company_search', 'company_fields'} and question_id is not None and question_id not in questions_by_id:
         raise ValueError('unknown context question')
     identity = {key: value for key, value in request.items() if key != 'purpose'}
     value = None
@@ -201,40 +295,31 @@ def read_context(request: Mapping[str, Any], *, state, documents, binding, eligi
         value = next((row for row in state[collection] if row[key] == request.get('id')), None)
     elif kind == 'company_search' and binding:
         from .v2_profiles import retrieve_company_context
-        value = retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=request.get('query', ''))
-        value.pop('fixedPool', None)
-        value['companyProfiles'] = [_profile_projection(row) for row in value.get('companyProfiles', [])]
+        scope_error = company_question_scope_error(request, visible_packet)
+        if scope_error:
+            value = {'status': scope_error}
+        else:
+            value = retrieve_company_context(db_path=binding[0], profiles_id=binding[1], query=request.get('query', ''))
+            value.pop('fixedPool', None)
+            value['companyProfiles'] = [_profile_projection(row) for row in value.get('companyProfiles', [])]
     elif kind == 'company_fields' and binding:
-        from .v2_profiles import read_profiles
-        rows = read_profiles(db_path=binding[0], profiles_id=binding[1], codes=[request.get('companyCode')])
+        from .v2_profiles import read_profiles, source_ids
+        scope_error = company_field_scope_error(request, visible_packet)
+        if scope_error:
+            value = {'status': scope_error}
+        rows = [] if scope_error else read_profiles(db_path=binding[0], profiles_id=binding[1], codes=[request.get('companyCode')])
         if rows and isinstance(request.get('fields'), list):
             profile = rows[0]
             fields = request['fields']
             if all(isinstance(key, str) and key in profile and key not in {'raw_evidence_file', 'sources'} for key in fields):
                 selected = {key: profile[key] for key in fields}
-                def references(item):
-                    if isinstance(item, dict):
-                        for key, child in item.items():
-                            if key in {'source_ref', 'source_refs'}:
-                                yield from ([child] if isinstance(child, str) else child)
-                            else:
-                                yield from references(child)
-                    elif isinstance(item, list):
-                        for child in item:
-                            yield from references(child)
-                refs = set(references(selected))
+                refs = set(source_ids(selected))
                 sources = [source for source in profile['sources']
                     if any(ref == source['source_id'] or ref.startswith(source['source_id'] + '.') for ref in refs)]
                 candidate = {'profileSnapshotId': binding[1], 'identity': profile['identity'],
                     'review_status': profile['review_status'], 'fields': selected,
                     'sources': sources, 'contentSha256': digest(profile)}
-                if callable(request_fits) or len(json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(',', ':'))) <= MAX_FRAGMENT_CHARACTERS:
-                    value = candidate
-                else:
-                    value = {'profileSnapshotId': binding[1], 'identity': profile['identity'],
-                        'review_status': profile['review_status'], 'contentSha256': digest(profile),
-                        'needsFieldRefinement': True,
-                        'fieldManifest': _profile_projection(profile).get('fieldManifest', [])}
+                value = _refine_company_fields(candidate, _profile_projection(profile).get('fieldManifest', []))
     elif kind == 'source':
         ref = request.get('sourceRef') or {}
         doc = next((doc for key, doc in documents.items() if (key.document_id, key.revision) == ref_key(ref)), None)
@@ -260,17 +345,13 @@ def read_context(request: Mapping[str, Any], *, state, documents, binding, eligi
                     # locator catalogue.  It does not reveal an outline or
                     # body, and the next request still has to name one exact
                     # paragraph/table/line before it can become evidence.
-                    term = location.removeprefix('find:').strip()
-                    import re
-                    question_terms = normalized_text(' '.join(str(question.get(key, ''))
-                        for key in ('question', 'supportCondition', 'refuteCondition', 'missingEvidence')))
-                    if not term or normalized_text(term) not in question_terms:
+                    if not scoped_find(location, question):
                         value = {'sourceRef': ref, 'status': 'requires_direct_locator',
                                  'needsLocator': True, 'reason': 'background_find_outside_question',
                                  'questionId': question_id}
                     else:
                         value = read_locator(doc, location, max_characters=budget)
-                elif not __import__('re').fullmatch(r'(?:paragraph|table|line):\d+', location):
+                elif not direct_location(location):
                     value = {'sourceRef': ref, 'status': 'requires_direct_locator',
                              'needsLocator': True, 'reason': 'background_requires_direct_locator',
                              'questionId': question_id}
@@ -291,6 +372,10 @@ def read_context(request: Mapping[str, Any], *, state, documents, binding, eligi
                     'contentVersionAtCutoff': doc.metadata.get('contentVersionAtCutoff')}
     result = {'request': identity, 'status': 'found' if value is not None else 'unknown_reference',
               'value': value, 'contentSha256': digest(value)}
+    if callable(request_fits) and isinstance(value, Mapping) and isinstance(value.get('locators'), list):
+        while len(value['locators']) > 1 and not request_fits(result):
+            value = resize_catalogue(value, len(value['locators']) // 2)
+            result = {**result, 'value': value, 'contentSha256': digest(value)}
     if value is not None and callable(request_fits) and not request_fits(result):
         # The complete evidence unit is either visible or withheld. Do not trim
         # a trailing negation, unit, footnote, or nested company field to fit.

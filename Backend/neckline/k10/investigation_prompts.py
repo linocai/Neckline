@@ -71,14 +71,14 @@ def request_spec(*, snapshot: ResearchSnapshot, action: str, evidence_packet: Ma
 
     if evidence_packet.get('contextProtocol'):
         context_contract = {'action': action, 'contextRequests': [{'kind': 'company_search|company_fields|claim|question|source',
-            'purpose': '说明影响当前判断的原因', 'questionId': '已持久化的相关问题ID或null，不可使用本轮草稿ID',
-            'companyCode': 'company_fields使用', 'fields': ['真实档案字段'],
+            'purpose': '说明影响当前判断的原因', 'questionId': '已持久化的相关问题ID，不可使用本轮草稿ID；company_search/company_fields仅在尚无持久问题时可为null',
+            'companyCode': 'company_fields仅可用当前问题的可见公司，或同问题company_search已返回的公司', 'fields': ['该公司fieldManifest中的字段'],
             'id': 'claim/question的真实ID', 'query': 'company_search的业务查询',
-            'sourceRef': {'documentId': '真实ID', 'revision': 1}, 'location': '普通材料：excerpt、outline、find:<当前问题关键词>，或目录给出的paragraph:N／table:N／line:N；更多目录沿nextLocation读取'}]}
+            'sourceRef': {'documentId': '真实ID', 'revision': 1}, 'location': '普通材料：excerpt、outline、find:<当前问题关键词>，或目录给出的paragraph:N／table:N／line:N／sentence:N:offset；更多目录沿nextLocation读取'}]}
         instruction += ('两种回复互斥：资料充分时按outputContract返回研究结果；资料不足时按contextReadContract只返回action和contextRequests，不附questions、claims或conclusion。程序本地回读后继续同一action；'
             '不依赖会话记忆。未知引用不是事实。只能用本轮可见正文或可归因命题的来源建立新支持；'
             '不能仅凭来源ID升级证据。回读结果在contextResults，每项保存版本/内容哈希。'
-            '同一版本相同字段无需重复申请；目录预览不是完整证据，选择真实paragraph:N／table:N／line:N后读取包含限定语的完整单元。'
+            '同一版本相同字段无需重复申请；目录预览不是完整证据，选择真实paragraph:N／table:N／line:N／sentence:N:offset后读取包含限定语的完整单元。超长段落只提供句子目录；按当前问题选择必要句子，不遍历整本。'
             '招股书本体不属于日报补证材料，不请求正文或Extract。年报等背景材料必须绑定已持久化的当前事件必要问题questionId；'
             '不能请求其outline或excerpt，只能用该问题里的关键词find:<关键词>查找，或直接读已知真实段落／表格位置。'
             '局部返回needsLocator或未找到时，按返回的真实位置选择；没有新证据或新定位就保留缺口并结束，不重复同一请求。')

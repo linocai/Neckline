@@ -133,14 +133,15 @@ def test_same_task_frozen_source_allows_collection_after_nominal_news_cutoff(tmp
     assert accepted, timing
 
 
-def test_b69_scoped_gateway_refuses_headline_fallback_before_http(tmp_path) -> None:
+@pytest.mark.parametrize('protocol', ['k10-v2-context-3.3.0', 'k10-v2-context-3.3.0-b70'])
+def test_b69_scoped_gateway_refuses_headline_fallback_before_http(tmp_path, protocol) -> None:
     from neckline.k10.verification_checkpoints import VerificationCheckpointError
     from tests.test_k10_verification import _event, NOW
     from tests.test_v310_tavily import _SearchExtract, _gateway
 
     client = _SearchExtract()
     gateway, _ = _gateway(tmp_path / "scoped-headline.sqlite", client)
-    gateway.context_protocol = "k10-v2-context-3.3.0"
+    gateway.context_protocol = protocol
     with pytest.raises(VerificationCheckpointError, match="research_query_scope_invalid"):
         gateway.fetch(event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert client.calls == 0

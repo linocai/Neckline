@@ -1,5 +1,33 @@
 # Project learnings
 
+## [LRN-20260915-001] best_practice
+
+**Logged**: 2026-09-15
+**Priority**: critical
+**Status**: resolved
+**Area**: backend
+
+### Summary
+局部资料读取必须同时通过证据范围、完整单元粒度与实际请求容量检查；模型放得下不等于允许整本输入。
+
+### Details
+B69在真实request_fits回调存在时绕过局部正文和公司字段大小检查；仅测无回调路径未覆盖生产。复审还发现nullable来源、无问题绑定的company_search→company_fields、find分页与旧缓存旁路。协议版本升级后按旧字符串比较的网关准入也会失效。子句限定区间重叠须在计数与外送前统一去重，不能只改单侧。第二次独立复审又发现：支持范围里的脚注也必须递归闭包；段落改成句子后，跨句excerpt不能沿用单块包含判断而回退裸文本。
+
+### Suggested Action
+每个确认复现固化为真实容量或CLI→worker回归，并覆盖中断恢复及下一次外送的实际内容。协议门禁和缓存版本须分清职责；结构粒度变化须同步检查摘录、引用位置和恢复缓存，目录与正文同样校验索引版本，旧ordinal不能直接套进新索引。限定语既测主语后／不同位置的真条件，也测词内复合误报，不能用不完整动作白名单冒充语义覆盖。支持区间及跨句span共用父段并集和引用索引，以工作量回归防止重复展开。离线通过不宣称生产全量费用已验证。
+
+### Metadata
+- Source: independent_review
+- Related Files: Backend/tests/test_b70_context_repair.py
+- Evidence: archive/v3.3.0-b69_execution.md 第10–13节
+
+
+### Resolution
+- **Resolved**: 2026-09-15
+- **Notes**: B70历次复审确认的限定／恢复／词内误报及性能问题已修，最终完整门禁1,497通过／1跳过、定向201通过及独立复查完成，源码hash一致；临时产物已精确清理。尚未提交／部署，生产费用与耗时未新增验证。
+
+---
+
 ## [LRN-20260914-001] correction
 
 **Logged**: 2026-09-14T18:42:20+08:00

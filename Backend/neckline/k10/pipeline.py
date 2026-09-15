@@ -37,7 +37,7 @@ from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError, decode_stage_result, validate_stage_result
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_contracts import Claim, ResearchSnapshot, ResearchStageResult, ResearchContractError
-from .research_material import admit_material, source_material_for_understand, read_locator
+from .research_material import admit_material, source_material_for_understand, read_locator, resize_catalogue
 from .model_execution import JsonRepairError, ModelInvocation, ModelNetworkError, SemanticValidationError, execute_model_operation
 from .metering import bind_provider_execution_spending, provider_spend_context
 from .opportunity_discovery import ComparisonValidationError, validate_classification, validate_event_comparison
@@ -697,6 +697,13 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                         raise PipelineError("理解命题引用了未读段落", code="understand_reference_invalid")
         return {"events": freeze_event_drafts(events), "needsFullText": needs_full}
 
+    def _fit_material_catalogue(self, document, material):
+        index = material.get('sourceIndex')
+        while isinstance(index, Mapping) and len(index.get('locators', [])) > 1 and not self._material_fits(document, material):
+            index = resize_catalogue(index, len(index['locators']) // 2)
+            material = {**material, 'sourceIndex': index}
+        return material
+
     def _understand_flow(self, *, document, invoke):
         text = document.analysis_text or document.original_text or document.excerpt or ""
         material = source_material_for_understand(document, max_characters=len(text))
@@ -707,6 +714,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             return ()
         if not self._material_fits(document, material):
             material = source_material_for_understand(document, max_characters=0)
+        material = self._fit_material_catalogue(document, material)
         seen = set()
         while True:
             try:
@@ -715,6 +723,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                 if exc.code != "execution_context_exceeded" or material["textMode"] != "full_text":
                     raise
                 material = source_material_for_understand(document, max_characters=0)
+                material = self._fit_material_catalogue(document, material)
                 continue
             if "sourceRead" not in reply:
                 events = thaw_event_drafts(reply["events"])
@@ -745,6 +754,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             seen.add(identity)
             if isinstance(local, Mapping) and "locators" in local:
                 candidate = {**material, "sourceIndex": local}
+                candidate = self._fit_material_catalogue(document, candidate)
             else:
                 reads = list(material.get("readResults", []))
                 candidate = {**material, "textMode": "structural_read", "isExcerpt": True,

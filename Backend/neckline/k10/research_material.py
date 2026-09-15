@@ -7,18 +7,67 @@ including its headings, units, notes and adjacent qualifying statements.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import re
 from typing import Any, Mapping
 from urllib.parse import quote, unquote
 
-INDEX_VERSION = "k10-source-index-3.3.0"
-# Legacy offline read compatibility only. Production reads pass the complete
-# selected unit through actual request preflight; this is not a strategy quota.
+INDEX_VERSION = "k10-source-index-3.3.0-b70-qualified-3"
+# Local read transport granularity, not a source/report quota. Larger prose
+# remains searchable through exact sentence locators; nothing is sampled or
+# discarded. Physical model capacity must never enlarge this reading unit.
 MAX_FRAGMENT_CHARACTERS = 12_000
 MAX_OUTLINE_LOCATORS = 128
 _PREVIEW_CHARACTERS = 240
+
+
+def _merge_support_ranges(ranges):
+    merged = []
+    priority = {'heading': 0, 'sentence_context': 1, 'qualifier': 2, 'footnote': 3}
+    for start, end, kind in sorted(ranges):
+        if merged and start < merged[-1][1]:
+            a, b, previous_kind = merged[-1]
+            merged[-1] = (a, max(b, end), max((previous_kind, kind), key=priority.__getitem__))
+        else:
+            merged.append((start, end, kind))
+    return merged
+
+
+class _SupportRanges:
+    """Shared disjoint context with exact overlap counts, without per-child copies."""
+    def __init__(self, ranges):
+        self.ranges = _merge_support_ranges(ranges)
+        self.starts = [a for a, _, _ in self.ranges]
+        self.ends = [b for _, b, _ in self.ranges]
+        self.prefix = [0]
+        for a, b, _ in self.ranges:
+            self.prefix.append(self.prefix[-1] + b-a)
+
+    def overlap(self, start, end):
+        first, last = bisect_right(self.ends, start), bisect_left(self.starts, end)
+        if first >= last:
+            return 0
+        return (self.prefix[last] - self.prefix[first]
+                - max(0, start-self.starts[first]) - max(0, self.ends[last-1]-end))
+
+
+class _ReferenceIndex:
+    """Parse references once; overlapping support ranges share indexed lookups."""
+    def __init__(self, text: str):
+        self.matches = [(match.start(), match.end(), f'[{match[1]}]' if match[1] else match[2])
+            for match in re.finditer(r'\[(\d+)\]|([①②③④⑤⑥⑦⑧⑨⑩])', text)]
+        self.starts = [start for start, _, _ in self.matches]
+        self.ranges: dict[tuple[int, int], tuple[str, ...]] = {}
+        self.parent_support: dict[str, _SupportRanges] = {}
+
+    def within(self, start: int, end: int) -> tuple[str, ...]:
+        key = (start, end)
+        if key not in self.ranges:
+            first, last = bisect_left(self.starts, start), bisect_left(self.starts, end)
+            self.ranges[key] = tuple(dict.fromkeys(ref for _, stop, ref in self.matches[first:last] if stop <= end))
+        return self.ranges[key]
 
 
 @dataclass(frozen=True)
@@ -46,6 +95,8 @@ class _Block:
     line_start: int
     line_end: int
     headings: tuple[tuple[int, int], ...] = ()
+    parent_locator: str | None = None
+    parent_qualifiers: tuple[tuple[int, int], ...] = ()
 
 
 def _source_text(document: Any) -> str:
@@ -197,11 +248,33 @@ def _qualifier(value: str) -> bool:
     return bool(re.match(r"^(?:[\s>*]*)(?:(?i:note[s]?:|footnote|unit[s]?:|period:|however\b|but\b|subject to\b|not\b|only\b)|注(?:释|意)?\s*[:：\d]|尾注|脚注|附注|说明[:：]|来源[:：]|数据来源|单位[:：]|口径[:：]|报告期[:：]|统计期间|截至|特别提示|风险提示|但(?:[，,是])?|不过|然而|上述|前述|其中|仅(?:为|供|指|包括)|尚未|并未|不(?:构成|代表|适用|包括)|\[\d+\]\s|[①②③④⑤⑥⑦⑧⑨⑩]|\*\s)", value))
 
 
+def _sentence_qualifier(value: str) -> bool:
+    # Prose often names its subject before stating the condition. Preserve
+    # modal obligations, negation, conditional
+    # connectives, effectiveness and measurement qualifications. This is a
+    # conservative context-retention rule, not a classifier of legal meaning:
+    # retaining an extra sentence is preferable to removing a prerequisite.
+    # Paragraph/table boundaries still use the narrower structural label rule.
+    return _qualifier(value) or bool(re.search(
+        r'尚(?:未|需|须|待)|仍(?:需|须|待)|有待|必须|应当|应该|'
+        r'(?<![所刚供内外按军])需(?!求|品)|(?<![胡触])须|'
+        r'(?<![供响反效适顺相感呼对])应(?!用|答|对|急|届|收|付|聘|邀|诉|酬|景|声|试|力|变)|'
+        r'未(?!来|央|名)|'
+        r'不(?!断|同(?!意)|少(?!于)|锈|动产|错)|无法|无(?:须|需|权|效|约束|保证|承诺)|能否|是否|'
+        r'仅(?:为|系|供|指|限)|只(?:有|要|能|可|是|为|限)|若(?!干)|如果|倘|除非|一旦|'
+        r'可能|或将|(?<![虚模])拟(?!合)|预计|预期|有望|前提|(?:为|先决|必要|附加|附带|限制性)条件|'
+        r'条件(?:下|成就|满足|未|尚|不|是|为)|取决于|假设|为准|生效|方可|方能|才能|才可|'
+        r'可(?:撤销|取消|终止)|'
+        r'\b(?:subject\s+to|contingent|conditional|uncertain(?:ty)?|not|no|without|only|unless|if|'
+        r'must|shall|should|require[sd]?|pending|upon|provided|may|might|could|would|'
+        r'estimated?|expected?|provisional)\b', value, re.I))
+
+
 def _caption(value: str) -> bool:
     return bool(re.match(r"^\s*(?:表\s*[\d一二三四五六七八九十]|table\s*\d|[（(]?单位\s*[:：]|[（(]?报告期\s*[:：]|[（(]?统计期间\s*[:：])", value, re.I))
 
 
-def _blocks(text: str) -> list[_Block]:
+def _paragraph_blocks(text: str) -> list[_Block]:
     lines = _lines(text)
     result = []
     headings: list[tuple[int, int, int]] = []
@@ -265,6 +338,112 @@ def _blocks(text: str) -> list[_Block]:
     return result
 
 
+def _continuous_ranges(text: str, ranges) -> tuple[tuple[int, int], ...]:
+    """Combine original adjacent qualifications without copying their text."""
+    merged = []
+    for start, end in sorted(set(ranges)):
+        if merged and (start <= merged[-1][1] or re.compile(r'\s*').fullmatch(text, merged[-1][1], start)):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _blocks(text: str) -> list[_Block]:
+    """Refine oversized paragraphs at real sentence endings, retaining offsets.
+
+    An indivisible long sentence is left explicitly unreadable. Commas, byte
+    counts and arbitrary character positions cannot manufacture evidence units.
+    Old paragraph/line locators remain catalogue parents, never aliases for the
+    first sentence or the entire flattened source.
+    """
+    result = []
+    paragraphs = _paragraph_blocks(text)
+    reference_index = _ReferenceIndex(text)
+    for position, block in enumerate(paragraphs):
+        if block.kind != "paragraph" or block.end - block.start <= MAX_FRAGMENT_CHARACTERS:
+            result.append(block)
+            continue
+        value = text[block.start:block.end]
+        # A dot between digits or inside an identifier is not a sentence end.
+        endings = list(re.finditer(r'(?:[。！？!?]+|(?<!\d)\.(?=\s|$))[”’"\')）]*(?:\[\d+\]|[①②③④⑤⑥⑦⑧⑨⑩])*', value))
+        if not any(match.end() < len(value.rstrip()) for match in endings):
+            # There is no real subdivision. Keep the original locator and
+            # explicitly request a structured source instead of fabricating a
+            # sentence that is merely the same entire paragraph.
+            result.append(block)
+            continue
+        start = block.start
+        children = []
+        for end in [*(block.start + match.end() for match in endings), block.end]:
+            if end <= start:
+                continue
+            if text[start:end].strip():
+                children.append(_Block(f"sentence:{block.line_start}:{start}", "sentence", start, end,
+                    block.line_start, block.line_end, block.headings, block.locator))
+            start = end
+        # Inherit structural caveats before footnote ranges are merged. A
+        # numbered caveat can also be a definition; its kind must not erase it.
+        qualifiers = [(a, b) for a, b, kind in _support(text, block, paragraphs, position=position, footnotes={},
+                      reference_index=reference_index)
+                      if kind == 'qualifier']
+        qualifiers.extend((child.start, child.end) for child in children
+                          if _sentence_qualifier(text[child.start:child.end]))
+        qualifiers = _continuous_ranges(text, qualifiers)
+        # Every child shares the same immutable ranges; sparse/interleaved
+        # caveats must not create quadratic copies or repeated capacity scans.
+        result.extend(replace(child, parent_qualifiers=qualifiers) for child in children)
+    return result
+
+
+def parse_find_location(location: Any) -> tuple[int, str] | None:
+    if not isinstance(location, str):
+        return None
+    match = re.fullmatch(r"find:(?:(\d+):)?(.+)", location)
+    if not match:
+        return None
+    term = unquote(match[2]).strip()
+    return (int(match[1] or 0), term) if term else None
+
+
+def catalogue_restart_location(location: Any) -> str | None:
+    """An obsolete ordinal cursor must restart against the current index."""
+    parsed = parse_find_location(location)
+    if parsed:
+        return f"find:0:{quote(parsed[1], safe='')}"
+    if isinstance(location, str) and re.fullmatch(r'outline(?::\d+)?', location):
+        return 'outline'
+    within = re.fullmatch(r'within:(paragraph:\d+):\d+', location or '')
+    return f'within:{within[1]}:0' if within else None
+
+
+def scoped_find(location: Any, question: Mapping[str, Any]) -> bool:
+    parsed = parse_find_location(location)
+    if parsed is None:
+        return False
+    normalize = lambda value: re.sub(r"[\W_]+", "", str(value).casefold())
+    term = normalize(parsed[1])
+    return bool(term) and term in normalize(" ".join(str(question.get(key, "")) for key in
+        ("question", "supportCondition", "refuteCondition", "missingEvidence")))
+
+
+def direct_location(location: Any) -> bool:
+    return isinstance(location, str) and re.fullmatch(
+        r"(?:(?:paragraph|table|line):\d+|sentence:\d+:\d+|sentences:\d+:\d+:\d+|within:paragraph:\d+:\d+)", location) is not None
+
+
+def resize_catalogue(value: Mapping[str, Any], count: int) -> dict[str, Any]:
+    """Shrink a transport page and preserve an exact cursor to every omitted entry."""
+    locators = value['locators'][:max(1, count)]
+    following = value['offset'] + len(locators)
+    query, parent = value.get('query'), value.get('catalogueParent')
+    more = following < value['matchingLocatorCount']
+    next_location = (f"within:{parent}:{following}" if parent else
+        f"find:{following}:{quote(query, safe='')}" if query else f"outline:{following}") if more else None
+    return {**value, 'locators': locators, 'visibleLocatorCount': len(locators),
+        'nextLocation': next_location, 'locatorsTruncated': more}
+
+
 def _preview(text: str) -> str | None:
     """An intact heading/sentence preview, never a cut factual assertion."""
     first = text.strip().splitlines()[0] if text.strip() else ""
@@ -281,34 +460,96 @@ def _budget(max_characters: int | None) -> int:
     return value
 
 
-def _support(text: str, block: _Block, blocks: list[_Block], *, position: int | None = None,
-             footnotes: Mapping[str, list[_Block]] | None = None) -> list[tuple[int, int, str]]:
-    result = [(a,b,"heading") for a,b in block.headings]
+def _support_parts(text, block, blocks, *, position=None, footnotes=None, reference_index=None):
+    if reference_index is None:
+        reference_index = _ReferenceIndex(text)
+    if block.parent_locator:
+        if block.parent_locator not in reference_index.parent_support:
+            shared = [(a, b, 'heading') for a, b in block.headings]
+            shared.extend((a, b, 'qualifier') for a, b in block.parent_qualifiers)
+            shared.extend(_note_closure(text, [(a, b) for a, b, _ in shared], blocks, footnotes, reference_index))
+            reference_index.parent_support[block.parent_locator] = _SupportRanges(shared)
+        common = reference_index.parent_support[block.parent_locator]
+        result = []
+    else:
+        common = _SupportRanges(())
+        result = [(a, b, 'heading') for a, b in block.headings]
     if position is None:
         position = blocks.index(block)
+    if block.parent_locator:
+        # A sentence is not a free-standing summary. Keep its adjacent context
+        # (including antecedents) and the existing qualifier/footnote closure.
+        for index in (position - 1, position + 1):
+            if 0 <= index < len(blocks) and blocks[index].parent_locator == block.parent_locator:
+                other = blocks[index]
+                result.append((other.start, other.end, "sentence_context"))
     # A direct caveat in the following paragraph qualifies the selected facts.
     for following_position in range(position+1, len(blocks)):
+        if block.parent_locator:
+            # The original parent and following-sentence closure was computed
+            # above; scanning every remaining sibling would be quadratic.
+            break
         following = blocks[following_position]
         if following.kind == "heading" or following.headings != block.headings:
             break
         if not _qualifier(text[following.start:following.end]):
             break
         result.append((following.start, following.end, "qualifier"))
-    # Resolve explicit numbered footnote references without dropping a distant note.
-    references = set(re.findall(r"\[(\d+)\]|([①②③④⑤⑥⑦⑧⑨⑩])", text[block.start:block.end]))
-    if references:
-        if footnotes is None:
-            footnotes = _footnotes(text, blocks)
-        for number, circled in references:
-            for other in footnotes.get(f"[{number}]" if number else circled, []):
-                if other is not block:
-                    result.append((other.start, other.end, "footnote"))
-    return list(dict.fromkeys(result))
+    result.extend(_note_closure(text, [(block.start, block.end), *((a, b) for a, b, _ in result)],
+                                blocks, footnotes, reference_index))
+    return common, result
+
+
+def _note_closure(text, pending, blocks, footnotes, reference_index):
+    result = []
+    scanned, resolved = set(), set()
+    while pending:
+        start, end = pending.pop()
+        if (start, end) in scanned:
+            continue
+        scanned.add((start, end))
+        for reference in reference_index.within(start, end):
+            if reference in resolved:
+                continue
+            resolved.add(reference)
+            if footnotes is None:
+                footnotes = _footnotes(text, blocks)
+            for other in footnotes.get(reference, []):
+                result.append((other.start, other.end, "footnote"))
+                pending.append((other.start, other.end))
+    return result
+
+
+def _support(text: str, block: _Block, blocks: list[_Block], *, position: int | None = None,
+             footnotes: Mapping[str, list[_Block]] | None = None,
+             reference_index: _ReferenceIndex | None = None) -> list[tuple[int, int, str]]:
+    common, extra = _support_parts(text, block, blocks, position=position, footnotes=footnotes,
+                                   reference_index=reference_index)
+    # The enclosing qualifier range may already contain an adjacent sentence
+    # or the selected sentence itself. Count and send each original character
+    # once, without dropping any of the complete qualifying context.
+    ranges = []
+    for start, end, kind in (*common.ranges, *extra):
+        if end <= block.start or start >= block.end:
+            ranges.append((start, end, kind))
+        else:
+            if start < block.start:
+                ranges.append((start, block.start, kind))
+            if end > block.end:
+                ranges.append((block.end, end, kind))
+    return _merge_support_ranges(ranges)
 
 
 def _footnotes(text: str, blocks: list[_Block]) -> dict[str, list[_Block]]:
     result: dict[str, list[_Block]] = {}
+    # A definition can itself be refined into sentences. Its first marker
+    # still refers to the complete original paragraph, never only child one.
+    parents: dict[str, _Block] = {}
     for block in blocks:
+        key = block.parent_locator or block.locator
+        first = parents.get(key)
+        parents[key] = replace(first, end=block.end, line_end=block.line_end) if first else block
+    for block in parents.values():
         match = re.match(r"\s*(\[\d+\]|[①②③④⑤⑥⑦⑧⑨⑩])", text[block.start:block.end])
         if match:
             result.setdefault(match[1], []).append(block)
@@ -323,21 +564,27 @@ def _identity(document: Any, text: str) -> dict[str, Any]:
 
 
 def _entry(text: str, block: _Block, blocks: list[_Block], budget: int, *, position: int | None = None,
-           footnotes: Mapping[str, list[_Block]] | None = None) -> dict[str, Any]:
-    support = _support(text,block,blocks,position=position,footnotes=footnotes)
-    total = block.end-block.start + sum(b-a for a,b,_ in support)
+           footnotes: Mapping[str, list[_Block]] | None = None,
+           reference_index: _ReferenceIndex | None = None) -> dict[str, Any]:
+    common, extra = _support_parts(text,block,blocks,position=position,footnotes=footnotes,reference_index=reference_index)
+    # Count the union exactly without copying a parent's shared qualifications
+    # into every catalogue entry. Materialize support only for an actual read.
+    unique = _merge_support_ranges([(block.start, block.end, 'sentence_context'), *extra])
+    total = common.prefix[-1] + sum(b-a-common.overlap(a,b) for a,b,_ in unique)
     value = {"locator":block.locator,"kind":block.kind,"startOffset":block.start,"endOffset":block.end,
              "lineStart":block.line_start,"lineEnd":block.line_end,"characters":block.end-block.start,
-             "evidenceUnitCharacters":total,"readable":total<=budget,
+             "evidenceUnitCharacters":total,"readable":total<=min(budget, MAX_FRAGMENT_CHARACTERS),
              "headingPath":[text[a:b] for a,b in block.headings]}
     preview = _preview(text[block.start:block.end])
     if preview is not None:
         value["preview"] = preview
+    if block.parent_locator:
+        value["parentLocator"] = block.parent_locator
     return value
 
 
 def document_outline(document: Any, *, offset: int = 0, query: str | None = None,
-                     max_characters: int | None = None) -> dict[str, Any]:
+                     max_characters: int | None = None, parent: str | None = None) -> dict[str, Any]:
     text = _source_text(document)
     budget = _budget(max_characters) if max_characters is not None else max(1, len(text)*2)
     admission = admit_material(document)
@@ -347,26 +594,31 @@ def document_outline(document: Any, *, offset: int = 0, query: str | None = None
         raise ValueError("Invalid local catalogue offset")
     blocks = _blocks(text)
     terms = [x.casefold() for x in (query or "").split()]
-    matches = [b for b in blocks if not terms or all(term in (text[b.start:b.end]+" "+" ".join(text[a:z] for a,z in b.headings)).casefold() for term in terms)]
+    matches = [b for b in blocks if (parent is None or b.parent_locator == parent) and
+        (not terms or all(term in (text[b.start:b.end]+" "+" ".join(text[a:z] for a,z in b.headings)).casefold() for term in terms))]
     selected = matches[offset:offset+MAX_OUTLINE_LOCATORS]
     following = offset+len(selected)
-    next_location = ((f"find:{following}:{quote(query,safe='')}" if query else f"outline:{following}")
+    next_location = ((f"within:{parent}:{following}" if parent else f"find:{following}:{quote(query,safe='')}" if query else f"outline:{following}")
                      if following<len(matches) else None)
     title = _title(document)
     footnotes = _footnotes(text, blocks)
-    entries = {block.locator: _entry(text, block, blocks, budget, position=position, footnotes=footnotes)
+    reference_index = _ReferenceIndex(text)
+    entries = {block.locator: _entry(text, block, blocks, budget, position=position, footnotes=footnotes,
+                                   reference_index=reference_index)
                for position, block in enumerate(blocks)}
     if max_characters is None:
         for entry in entries.values():
-            entry["readable"] = None
+            if entry["evidenceUnitCharacters"] <= MAX_FRAGMENT_CHARACTERS:
+                entry["readable"] = None
             entry["requiresRequestPreflight"] = True
     return {**_identity(document,text),"documentId":getattr(document,"document_id"),"revision":getattr(document,"revision"),
             "title":title if len(title)<=512 else None,"titleSha256":sha256(title.encode()).hexdigest(),
             "locatorCount":len(blocks),"matchingLocatorCount":len(matches),"visibleLocatorCount":len(selected),
             "locatorsTruncated":next_location is not None,"nextLocation":next_location,"offset":offset,"query":query,
+            "catalogueParent": parent,
             "unreadableLocatorCount":sum(entry["readable"] is False for entry in entries.values()),
             "requestBudgetChecked":max_characters is not None,
-            "readInstructions":"Read an exact locator. Search all original blocks with find:<space-separated exact terms>; follow nextLocation for remaining catalogue entries. Previews guide selection and are not complete evidence; read the locator with its qualifiers before citing.",
+            "readInstructions":"Read an exact paragraph/table/sentence locator. Oversized paragraphs have sentence children. Search all original blocks with find:<space-separated exact terms>; follow nextLocation for remaining catalogue entries. Previews guide selection and are not complete evidence; read the locator with its qualifiers before citing.",
             "locators":[entries[b.locator] for b in selected]}
 
 
@@ -382,23 +634,49 @@ def read_locator(document: Any, location: str | None, *, max_characters: int | N
     if isinstance(location,str) and re.fullmatch(r"outline:\d+",location):
         return document_outline(document,offset=int(location.split(':')[1]),max_characters=budget)
     if isinstance(location,str) and location.startswith('find:'):
-        match = re.fullmatch(r"find:(?:(\d+):)?(.+)",location)
-        return document_outline(document,offset=int(match[1] or 0),query=unquote(match[2]),max_characters=budget) if match else None
+        parsed = parse_find_location(location)
+        return document_outline(document,offset=parsed[0],query=parsed[1],max_characters=budget) if parsed else None
+    within = re.fullmatch(r"within:(paragraph:\d+):(\d+)", location or "")
+    if within:
+        return document_outline(document, parent=within[1], offset=int(within[2]), max_characters=budget)
     blocks = _blocks(text)
+    span = re.fullmatch(r"sentences:(\d+):(\d+):(\d+)", location or "")
+    if span:
+        parent, start, end = f"paragraph:{span[1]}", int(span[2]), int(span[3])
+        covered = [(i, b) for i, b in enumerate(blocks)
+                   if b.parent_locator == parent and b.start >= start and b.end <= end]
+        # Only original sentence boundaries are addressable. A caller cannot
+        # turn a character slice or a cross-paragraph gap into a source unit.
+        if not covered or covered[0][1].start != start or covered[-1][1].end != end:
+            return None
+        first, last = covered[0][1], covered[-1][1]
+        # All children share the complete immutable parent qualifications.
+        # Expanding that tuple once per covered sentence is quadratic for a
+        # long excerpt with sparse caveats; retain the first child's tuple.
+        combined = replace(first, locator=location, kind='sentence_span', end=last.end)
+        blocks = [*blocks[:covered[0][0]], combined, *blocks[covered[-1][0]+1:]]
     selected = next((b for b in blocks if b.locator == location),None)
+    children = [b for b in blocks if b.parent_locator == location]
     if selected is None and isinstance(location,str) and re.fullmatch(r"line:\d+",location):
         line = int(location.split(':')[1])
-        selected = next((b for b in blocks if b.line_start<=line<=b.line_end),None)
+        matching = [b for b in blocks if b.line_start<=line<=b.line_end]
+        children = [b for b in matching if b.parent_locator]
+        selected = None if children else next(iter(matching), None)
+    if children:
+        return {**document_outline(document, parent=children[0].parent_locator, max_characters=budget),
+                "needsLocator": True, "status": "requires_refined_locator", "requestedLocator": location,
+                "locatorHint": children[0].locator}
     if selected is None:
         return None
-    details = _entry(text,selected,blocks,budget)
+    reference_index = _ReferenceIndex(text)
+    details = _entry(text,selected,blocks,budget,reference_index=reference_index)
     if not details['readable']:
         return {**identity,**details,"needsLocator":True,"status":"not_safely_readable","needsStructuredSource":True,
-                "requiredCharacters":details['evidenceUnitCharacters'],"availableCharacters":budget,
+                "requiredCharacters":details['evidenceUnitCharacters'],"availableCharacters":min(budget, MAX_FRAGMENT_CHARACTERS),
                 "locatorHint":f"line:{selected.line_start}","unreadableLocatorCount":1,
                 "reason":"The complete structural unit and its qualifiers exceed this request budget; no text has been sliced."}
     context = [{"kind":kind,"startOffset":a,"endOffset":b,"text":text[a:b],"sha256":sha256(text[a:b].encode()).hexdigest()}
-               for a,b,kind in _support(text,selected,blocks)]
+               for a,b,kind in _support(text,selected,blocks,reference_index=reference_index)]
     return {**identity,**details,"needsLocator":False,"text":text[selected.start:selected.end],
             "textSha256":sha256(text[selected.start:selected.end].encode()).hexdigest(),"supportingContext":context}
 
@@ -414,7 +692,7 @@ def bounded_excerpt(document: Any, *, max_characters: int | None = None) -> dict
         return {**identity,"needsLocator":True,"locatorHint":"outline"}
     budget=_budget(max_characters)
     digest=sha256(excerpt.encode()).hexdigest()
-    if len(excerpt)>budget:
+    if len(excerpt)>min(budget, MAX_FRAGMENT_CHARACTERS):
         return {**identity,"status":"not_safely_readable","needsLocator":True,"needsStructuredSource":True,
                 "locatorHint":"outline","characters":len(excerpt),"excerptSha256":digest}
     # A stored excerpt is explicitly an excerpt, not proof that omitted source
@@ -426,6 +704,15 @@ def bounded_excerpt(document: Any, *, max_characters: int | None = None) -> dict
         block=next((b for b in blocks if b.start<=start and b.end>=start+len(excerpt)),None)
         if block:
             return {**read_locator(document,block.locator,max_characters=budget),"requestedMaterial":"stored_excerpt"}
+        covered = [b for b in blocks if b.end > start and b.start < start+len(excerpt)]
+        if covered and covered[0].parent_locator and all(b.parent_locator == covered[0].parent_locator for b in covered):
+            location = f"sentences:{covered[0].line_start}:{covered[0].start}:{covered[-1].end}"
+            return {**read_locator(document, location, max_characters=budget), "requestedMaterial": "stored_excerpt"}
+        # An exact excerpt across different structural units is not a new
+        # unqualified source. Supply their addressable catalogue for refinement.
+        return {**document_outline(document, max_characters=budget), 'needsLocator': True,
+                'status': 'requires_refined_locator', 'requestedMaterial': 'stored_excerpt',
+                'locatorHint': covered[0].locator if covered else 'outline'}
     return {**identity,"text":excerpt,"characters":len(excerpt),"excerptSha256":digest,
             "materialKind":"stored_excerpt","notFullSource":True,"needsQualificationCheck":True,
             "qualificationReadLocation":"outline"}
@@ -444,7 +731,7 @@ def source_material_for_understand(document: Any, *, max_characters: int) -> dic
     if admission.requires_current_event_locator:
         return {**base,"textMode":"background_requires_event_question","text":"","isExcerpt":False,
                 "needsLocator":True,"requiresCurrentEventQuestion":True}
-    if len(text)<=budget:
+    if len(text)<=min(budget, MAX_FRAGMENT_CHARACTERS):
         return {**base,"textMode":"full_text","text":text,"isExcerpt":False,"needsLocator":False,
                 "contentRanges":[{"startOffset":0,"endOffset":len(text),"sha256":sha256(text.encode()).hexdigest()}]}
     return {**base,"textMode":"structural_outline","text":"","isExcerpt":True,"needsLocator":True,
@@ -452,4 +739,5 @@ def source_material_for_understand(document: Any, *, max_characters: int) -> dic
 
 
 __all__=["INDEX_VERSION","MAX_FRAGMENT_CHARACTERS","MAX_OUTLINE_LOCATORS","MaterialAdmission","admit_material",
-         "bounded_excerpt","document_outline","read_locator","source_material_for_understand","requires_current_event_locator"]
+         "bounded_excerpt","document_outline","read_locator","source_material_for_understand","requires_current_event_locator",
+         "parse_find_location", "scoped_find", "direct_location"]

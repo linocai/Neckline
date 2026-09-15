@@ -189,11 +189,14 @@ class TavilyEvidenceGateway:
         return value
 
     def _query_context(self, question: Any, query_path: Any) -> dict[str, Any] | None:
+        # Only the explicitly frozen pre-scope protocol keeps its old input
+        # identity. A later protocol/build must never fall back to legacy scope.
+        scoped = bool(self.context_protocol) and self.context_protocol != "k10-v2-context-3.2.1"
         if question is None and query_path is None:
             # B69 never turns a bare headline into a new paid search.  A new
             # route has to be tied to its persisted event question and typed
             # target; historical snapshots retain their previous fallback.
-            if self.context_protocol == "k10-v2-context-3.3.0":
+            if scoped:
                 raise VerificationCheckpointError("research_query_scope_invalid")
             return None
         question, path = self._mapping(question), self._mapping(query_path)
@@ -206,7 +209,7 @@ class TavilyEvidenceGateway:
         # Historical contexts stay readable and preserve their original
         # checkpoint identity.  Only B69's new protocol can initiate a fresh
         # route, and it must carry the stricter local scope binding.
-        if self.context_protocol == "k10-v2-context-3.3.0" and not self._query_scope_is_valid(question, path):
+        if scoped and not self._query_scope_is_valid(question, path):
             raise VerificationCheckpointError("research_query_scope_invalid")
         return {key: path[key] for key in required} | {key: path[key] for key in
             ("targetSource", "purposeKind", "targetRefs", "questionScope") if key in path}

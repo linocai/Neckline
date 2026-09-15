@@ -317,14 +317,16 @@ def test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_pa
 def test_build56_health_and_operator_config_paths():
     from pathlib import Path
     from fastapi.testclient import TestClient
-    from neckline.api.app import app
+    from neckline.api.app import app, VERSION, RELEASE_SET
     # No startup or operational database access is needed by this public endpoint.
     response=TestClient(app).get('/api/v1/health')
     import re
     project = (Path(__file__).parents[2]/'App/project.yml').read_text()
     version = re.search(r'MARKETING_VERSION:\s*"([^"]+)"', project).group(1)
-    build = re.search(r'CURRENT_PROJECT_VERSION:\s*"([^"]+)"', project).group(1)
-    assert response.status_code==200 and response.json()['releaseSet']==f'v{version}-b{build}'
+    # A backend-only hotfix deliberately keeps the installed client build.
+    assert VERSION == f'v{version}'
+    assert response.status_code == 200 and response.json()['releaseSet'] == RELEASE_SET
+    assert re.fullmatch(rf'v{re.escape(version)}-b[1-9][0-9]*', RELEASE_SET)
     root=Path(__file__).parents[2]
     for name in ('k10-v2.json','k10-execution-v4.json'):
         assert (root/'Backend/neckline/config'/name).is_file()

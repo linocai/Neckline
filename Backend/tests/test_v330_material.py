@@ -146,12 +146,20 @@ def test_monolithic_body_never_sliced_or_sampled():
     assert result["status"] == "not_safely_readable" and "text" not in result
 
 
-def test_explicit_budget_overrides_arbitrary_character_limit():
+def test_capacity_cannot_override_structural_refinement_and_all_content_remains_addressable():
     body = "完整普通公告正文。"*2000
     doc = source(body)
     assert len(body)>12000
-    assert source_material_for_understand(doc, max_characters=len(body))["text"] == body
-    assert read_locator(doc, "paragraph:1", max_characters=len(body))["text"] == body
+    material = source_material_for_understand(doc, max_characters=len(body))
+    assert material['text'] == '' and material['textMode'] == 'structural_outline'
+    page = read_locator(doc, "paragraph:1", max_characters=len(body))
+    locators = list(page['locators'])
+    while page['nextLocation']:
+        page = read_locator(doc, page['nextLocation'], max_characters=len(body))
+        locators.extend(page['locators'])
+    assert len(locators) == 2000
+    assert ''.join(body[row['startOffset']:row['endOffset']] for row in locators) == body
+    assert read_locator(doc, locators[-1]['locator'], max_characters=len(body))['text'] == '完整普通公告正文。'
     assert source_material_for_understand(doc, max_characters=0)["textMode"] == "structural_outline"
 
 
@@ -175,7 +183,11 @@ def test_understand_uses_actual_request_preflight_and_reads_selected_late_paragr
             if len(self.calls) == 1:
                 assert not packet['text']
                 assert packet['sourceMaterial']['textMode'] == 'structural_outline'
-                return LLMResult(ok=True, content=json.dumps({'sourceRead': {'location': 'paragraph:7'}}))
+                return LLMResult(ok=True, content=json.dumps({'sourceRead': {'location': 'find:尚未正式签约'}}))
+            if len(self.calls) == 2:
+                index = packet['sourceMaterial']['sourceIndex']
+                assert index['matchingLocatorCount'] == 1
+                return LLMResult(ok=True, content=json.dumps({'sourceRead': {'location': index['locators'][0]['locator']}}))
             material = packet['sourceMaterial']
             assert material['readResults'][0]['text'].endswith('但尚未正式签约。')
             return LLMResult(ok=True, content=json.dumps({'events': [{
@@ -190,9 +202,9 @@ def test_understand_uses_actual_request_preflight_and_reads_selected_late_paragr
     model = _deepseek(provider)
     doc = source(body)
     events = model.understand(document=doc)
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     assert events[0].facts['sourceMaterialCoverage']['availableBodyRead'] is False
-    assert events[0].facts['sourceMaterialCoverage']['readRanges'][0]['locator'] == 'paragraph:7'
+    assert events[0].facts['sourceMaterialCoverage']['readRanges'][0]['locator'].startswith('sentence:7:')
     assert not model.full_text_used(document=doc)
     assert model.full_text_requested(document=doc)
     assert body not in json.dumps(provider.calls, ensure_ascii=False)
@@ -207,10 +219,10 @@ def test_context_complete_evidence_is_checked_against_assembled_request():
         seen.append(result)
         return False
     result = read_context({'kind':'source','purpose':'验证必要限定语','sourceRef':{'documentId':'source','revision':2},
-                           'location':'paragraph:1'}, state={'questions':[]}, documents={doc.evidence_ref:doc},
+                           'location':read_locator(doc, 'find:公司意向')['locators'][0]['locator']}, state={'questions':[]}, documents={doc.evidence_ref:doc},
                           binding=None, eligible_refs={('source',2)}, request_fits=fits)
-    assert seen[0]['value']['text'] == '公司意向。'*3000
-    assert seen[0]['value']['supportingContext'][0]['text'] == '但不保证采购，尚未签约。'
+    assert seen[0]['value']['text'] == '公司意向。'
+    assert any(part['text'] == '但不保证采购，尚未签约。' for part in seen[0]['value']['supportingContext'])
     assert result['value']['status'] == 'not_safely_readable'
     assert 'text' not in result['value'] and 'supportingContext' not in result['value']
 
