@@ -429,6 +429,44 @@ class _Investigation:
             "researchStatus": self.snapshot.research_status, "runtimePriorEvidence": value}), digest=_hash(value))
         self._restore_sources()
 
+    def _bind_shared_claims(self, result: ResearchStageResult, packet: Mapping[str, Any]) -> ResearchStageResult:
+        """Materialize referenced visible source facts, never hidden peer judgments.
+
+        Shared IDs are local to their origin. Ambiguous IDs cannot be guessed;
+        existing local IDs keep their meaning. Import only displayed values,
+        and never inherit a verified status without its actual support links.
+        The original shared status/provenance remains in append-only evidence.
+        """
+        if result.context_requests:
+            return result
+        known = {row["claimId"] for row in self.state["claims"]} | {row.claim_id for row in result.claims}
+        needed = {identity for question in result.questions for identity in question.claim_ids}
+        needed.update(row.get("claimId") for row in result.evidence_updates)
+        needed -= known
+        shared = (packet.get("reusableSourceEvidence") or {}).get("claims", [])
+        permitted = set(_refs(packet["allowedEvidenceRefs"]))
+        imported = []
+        origins = []
+        for identity in sorted(needed):
+            candidates = [row for row in shared if row.get("claimId") == identity]
+            # Repeated identical facts may have more than one origin; distinct
+            # text/source/location with one ID is not an unambiguous reference.
+            unique = {_hash({key: row.get(key) for key in ("text", "kind", "novelty", "sourceRef", "location")}): row
+                      for row in candidates}
+            if len(unique) != 1:
+                continue  # ordinary scope validation rejects unknown/ambiguous IDs
+            row = next(iter(unique.values()))
+            if _key(row["sourceRef"]) not in permitted:
+                continue
+            value = Claim.from_dict({**row, "verificationStatus": "unverified" if row.get("verificationStatus") == "verified" else row.get("verificationStatus")})
+            imported.append(value)
+            origins.append({"claimId": identity, "sharedFact": dict(row),
+                            "registration": "visible_source_fact_without_inherited_verification"})
+        if not imported:
+            return result
+        return replace(result, claims=(*result.claims, *imported), conclusion={
+            **(result.conclusion or {}), "runtimeImportedSourceClaims": origins})
+
     def _validate_result(self, action: str, result: ResearchStageResult, packet: Mapping[str, Any]) -> None:
         if result.context_requests:
             return
@@ -556,7 +594,7 @@ class _Investigation:
             if stage is None:
                 break
             try:
-                cached = decode_stage_result(stage["result"], action=action, evidence_packet=packet)
+                cached = self._bind_shared_claims(decode_stage_result(stage["result"], action=action, evidence_packet=packet), packet)
                 validate_stage_result(action=action, result=cached, evidence_packet=packet)
                 self._validate_result(action, cached, packet)
             except InvestigationError:
@@ -578,11 +616,11 @@ class _Investigation:
         try:
             scope = getattr(self.model, "research_validation", None)
             def validate_live(result):
-                self._validate_result(action, self._bind_query_paths(action, result, packet), packet)
-            with (scope(lambda result: self._validate_result(action, result, packet),
+                self._validate_result(action, self._bind_shared_claims(self._bind_query_paths(action, result, packet), packet), packet)
+            with (scope(lambda result: self._validate_result(action, self._bind_shared_claims(result, packet), packet),
                         recovered_validator=validate_live) if callable(scope) else nullcontext()):
                 step = advance_research(model=self.model, snapshot=self.snapshot, action=action, evidence_packet=packet)
-            bound = self._bind_query_paths(action, step.result, packet)
+            bound = self._bind_shared_claims(self._bind_query_paths(action, step.result, packet), packet)
             self._validate_result(action, bound, packet)
         except (InvestigationError, ValueError, KeyError, TypeError) as exc:
             reject = getattr(self.model, "reject_research_result", None)

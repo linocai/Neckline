@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from .research_material import (INDEX_VERSION, MAX_FRAGMENT_CHARACTERS, bounded_excerpt, document_outline,
     read_locator, requires_current_event_locator, scoped_find, direct_location, resize_catalogue, catalogue_restart_location)
+from .research_navigation import NAVIGATION_VERSION, navigation_view, sina_source
 
 PROTOCOL = 'k10-v2-context-3.3.0-b70'
 
@@ -117,6 +118,18 @@ def _refine_company_fields(value, manifest=None):
 
 def _safe_context_results(packet):
     """Recheck restored reads before any model request, including pending extras."""
+    navigation_refs = set()
+    for row in [row for key in ('evidenceCards', 'fullTextDocuments')
+                for row in (packet[key] if isinstance(packet.get(key), list) else [])]:
+        if not isinstance(row, Mapping):
+            continue
+        excerpt = row.get('excerpt')
+        projection = row.get('sourceViewProjection')
+        if isinstance(excerpt, str):
+            _view, found = navigation_view(excerpt, enabled=sina_source(row))
+            projection = found or projection
+        if isinstance(projection, Mapping) and projection.get('version') == NAVIGATION_VERSION:
+            navigation_refs.add(ref_key(row))
     safe = []
     for item in packet.get('contextResults', []):
         request, value = item.get('request', {}), item.get('value')
@@ -131,7 +144,10 @@ def _safe_context_results(packet):
             item = {**item, 'value': reduced, 'contentSha256': digest(reduced)}
         elif request.get('kind') == 'source' and isinstance(value, Mapping):
             material_result = any(key in value for key in ('indexVersion', 'text', 'locators', 'locatorCount'))
-            if (material_result and value.get('indexVersion') != INDEX_VERSION or
+            view_projection = value.get('sourceViewProjection')
+            stale_navigation = (material_result and ref_key(request.get('sourceRef') or value.get('sourceRef') or {}) in navigation_refs
+                                and (not isinstance(view_projection, Mapping) or view_projection.get('version') != NAVIGATION_VERSION))
+            if (stale_navigation or material_result and value.get('indexVersion') != INDEX_VERSION or
                     isinstance(value.get('text'), str) and len(value['text']) + sum(
                         len(part.get('text', '')) for part in value.get('supportingContext', [])) > MAX_FRAGMENT_CHARACTERS):
                 reduced = {'sourceRef': value.get('sourceRef'), 'status': 'requires_current_read_protocol',
@@ -151,7 +167,12 @@ def _project_fulltext_document(row: Mapping[str, Any]) -> dict[str, Any]:
     raw = next((row[key] for key in ('text', 'originalText', 'analysisText', 'body') if isinstance(row.get(key), str)), None)
     if raw is not None:
         projected.update({'needsLocator': True, 'contentSha256': digest(raw)})
-    excerpt, excerpt_hash = _bounded_visible_text(row.get('excerpt'))
+    raw_excerpt = row.get('excerpt')
+    if isinstance(raw_excerpt, str):
+        raw_excerpt, projection = navigation_view(raw_excerpt, enabled=sina_source(row))
+        if projection:
+            projected['sourceViewProjection'] = projection
+    excerpt, excerpt_hash = _bounded_visible_text(raw_excerpt)
     if excerpt is not None:
         projected['excerpt'] = excerpt
     elif excerpt_hash is not None:
@@ -239,6 +260,17 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     shared = reusable.get('claims', [])
     own = {(c.get('text'), ref_key(c['sourceRef'])) for c in result.get('claims', [])}
     shared = [c for c in shared if (c.get('text'), ref_key(c['sourceRef'])) not in own]
+    # A source snapshot owns its short IDs; two different shared facts must
+    # never be shown with one ID, or shadow a local claim. Only collisions
+    # receive a stable namespace, keeping unaffected paid request identities.
+    identities = {}
+    for claim in shared:
+        identities.setdefault(claim['claimId'], set()).add(digest({key: claim.get(key)
+            for key in ('text', 'kind', 'novelty', 'sourceRef', 'location')}))
+    local_ids = {claim['claimId'] for claim in packet.get('_localState', packet).get('claims', [])}
+    shared = [{**claim, 'claimId': 'shared_' + digest({key: claim.get(key)
+                    for key in ('claimId', 'text', 'kind', 'novelty', 'sourceRef', 'location')})[:24]}
+              if claim['claimId'] in local_ids or len(identities[claim['claimId']]) > 1 else claim for claim in shared]
     result['reusableSourceEvidence'] = {'claims': shared, 'companyRelations': reusable.get('companyRelations', []), 'isolated': reusable.get('isolated', [])} if action in {'plan_gaps', 'close_research', 'compare_companies'} else {'claims': []}
     relevant_refs = {ref_key(c['sourceRef']) for c in result.get('claims', [])}
     relevant_refs.update(ref_key(row['sourceRef']) for row in result['evidenceUpdates'])
@@ -251,9 +283,15 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
         # A claim is represented exactly once, in claims. A naked source ID is
         # insufficient: cards with neither visible claim nor excerpt stay hidden.
         claim_ids = [c['claimId'] for c in [*result.get('claims', []), *result['reusableSourceEvidence']['claims']] if ref_key(c['sourceRef']) == ref_key(card)]
-        excerpt, excerpt_hash = _bounded_visible_text(card.get('excerpt'))
+        raw_excerpt = card.get('excerpt')
+        projection = None
+        if isinstance(raw_excerpt, str):
+            raw_excerpt, projection = navigation_view(raw_excerpt, enabled=sina_source(card))
+        excerpt, excerpt_hash = _bounded_visible_text(raw_excerpt)
         if excerpt is not None or claim_ids:
             visible_card = {key: value for key, value in card.items() if key not in {'sourceStatements', 'excerpt'}}
+            if projection:
+                visible_card['sourceViewProjection'] = projection
             if excerpt is not None:
                 visible_card['excerpt'] = excerpt
             elif excerpt_hash is not None:

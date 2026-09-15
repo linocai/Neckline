@@ -138,6 +138,8 @@ def _model_options(options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
 
 
 def _failure_code(reason: str) -> str:
+    if reason == "上游内容风控拒绝":
+        return "content_policy_refused"
     if reason.startswith("上游 402") or reason.startswith("上游 429/1113"):
         return "insufficient_balance"
     if reason.startswith("上游 429"):
@@ -150,6 +152,18 @@ def _failure_code(reason: str) -> str:
     if reason.startswith("请求结果未知"):
         return "provider_request_outcome_unknown"
     return "provider_transport"
+
+
+def _content_policy_refused(response: Any) -> bool:
+    if response.status_code != 400:
+        return False
+    try:
+        body = response.json()
+        error = body.get('error') if isinstance(body, Mapping) else None
+        return (isinstance(error, Mapping) and error.get('code') == 'invalid_request_error'
+                and error.get('message') == 'Content Exists Risk')
+    except (ValueError, TypeError):
+        return False
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -668,6 +682,8 @@ class OpenAICompatProvider(LLMProvider):
             raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
         if resp.status_code != 200:
             self._received_http_refusal(status=resp.status_code, body=resp.text)
+            if _content_policy_refused(resp):
+                return None, "上游内容风控拒绝"
             suffix = f"/{business_code}" if business_code else ""
             return None, f"上游 {resp.status_code}{suffix}"
         try:
@@ -706,6 +722,8 @@ class OpenAICompatProvider(LLMProvider):
                 raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
             if resp.status_code != 200:
                 self._received_http_refusal(status=resp.status_code, body=resp.text)
+                if _content_policy_refused(resp):
+                    return None, "上游内容风控拒绝"
                 suffix = f"/{business_code}" if business_code else ""
                 return None, f"上游 {resp.status_code}{suffix}"
             return self._assemble_stream(resp.iter_lines())

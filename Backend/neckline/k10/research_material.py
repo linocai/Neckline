@@ -13,6 +13,7 @@ from hashlib import sha256
 import re
 from typing import Any, Mapping
 from urllib.parse import quote, unquote
+from .research_navigation import navigation_view, sina_source
 
 INDEX_VERSION = "k10-source-index-3.3.0-b70-qualified-3"
 # Local read transport granularity, not a source/report quota. Larger prose
@@ -557,8 +558,13 @@ def _footnotes(text: str, blocks: list[_Block]) -> dict[str, list[_Block]]:
 
 
 def _identity(document: Any, text: str) -> dict[str, Any]:
+    enabled = sina_source(_metadata(document))
+    _view, projection = navigation_view(text, enabled=enabled)
+    if projection is None and isinstance(getattr(document, 'excerpt', None), str):
+        _view, projection = navigation_view(document.excerpt, enabled=enabled)
     return {"sourceRef":{"documentId":getattr(document,"document_id"),"revision":getattr(document,"revision")},
             "sourceContentSha256":sha256(text.encode("utf-8")).hexdigest(),"indexVersion":INDEX_VERSION,
+            **({'sourceViewProjection':projection} if projection else {}),
             "offsetUnit":"python_unicode_codepoint","publishedAt":getattr(document,"published_at",None),
             "fetchedAt":getattr(document,"fetched_at",None),"contentVersionAtCutoff":_metadata(document).get("contentVersionAtCutoff")}
 
@@ -593,6 +599,8 @@ def document_outline(document: Any, *, offset: int = 0, query: str | None = None
     if isinstance(offset,bool) or not isinstance(offset,int) or offset<0:
         raise ValueError("Invalid local catalogue offset")
     blocks = _blocks(text)
+    identity = _identity(document, text)
+    text, _projection = navigation_view(text, enabled=sina_source(_metadata(document)))
     terms = [x.casefold() for x in (query or "").split()]
     matches = [b for b in blocks if (parent is None or b.parent_locator == parent) and
         (not terms or all(term in (text[b.start:b.end]+" "+" ".join(text[a:z] for a,z in b.headings)).casefold() for term in terms))]
@@ -611,7 +619,7 @@ def document_outline(document: Any, *, offset: int = 0, query: str | None = None
             if entry["evidenceUnitCharacters"] <= MAX_FRAGMENT_CHARACTERS:
                 entry["readable"] = None
             entry["requiresRequestPreflight"] = True
-    return {**_identity(document,text),"documentId":getattr(document,"document_id"),"revision":getattr(document,"revision"),
+    return {**identity,"documentId":getattr(document,"document_id"),"revision":getattr(document,"revision"),
             "title":title if len(title)<=512 else None,"titleSha256":sha256(title.encode()).hexdigest(),
             "locatorCount":len(blocks),"matchingLocatorCount":len(matches),"visibleLocatorCount":len(selected),
             "locatorsTruncated":next_location is not None,"nextLocation":next_location,"offset":offset,"query":query,
@@ -640,6 +648,9 @@ def read_locator(document: Any, location: str | None, *, max_characters: int | N
     if within:
         return document_outline(document, parent=within[1], offset=int(within[2]), max_characters=budget)
     blocks = _blocks(text)
+    # Keep blocks from the unchanged source. Only the visible characters in
+    # the known navigation ranges are blanked; paragraph/sentence IDs survive.
+    text, _projection = navigation_view(text, enabled=sina_source(_metadata(document)))
     span = re.fullmatch(r"sentences:(\d+):(\d+):(\d+)", location or "")
     if span:
         parent, start, end = f"paragraph:{span[1]}", int(span[2]), int(span[3])
@@ -713,7 +724,9 @@ def bounded_excerpt(document: Any, *, max_characters: int | None = None) -> dict
         return {**document_outline(document, max_characters=budget), 'needsLocator': True,
                 'status': 'requires_refined_locator', 'requestedMaterial': 'stored_excerpt',
                 'locatorHint': covered[0].locator if covered else 'outline'}
+    excerpt, projection = navigation_view(excerpt, enabled=sina_source(_metadata(document)))
     return {**identity,"text":excerpt,"characters":len(excerpt),"excerptSha256":digest,
+            **({'sourceViewProjection':projection} if projection else {}),
             "materialKind":"stored_excerpt","notFullSource":True,"needsQualificationCheck":True,
             "qualificationReadLocation":"outline"}
 
@@ -732,6 +745,7 @@ def source_material_for_understand(document: Any, *, max_characters: int) -> dic
         return {**base,"textMode":"background_requires_event_question","text":"","isExcerpt":False,
                 "needsLocator":True,"requiresCurrentEventQuestion":True}
     if len(text)<=min(budget, MAX_FRAGMENT_CHARACTERS):
+        text, _projection = navigation_view(text, enabled=sina_source(_metadata(document)))
         return {**base,"textMode":"full_text","text":text,"isExcerpt":False,"needsLocator":False,
                 "contentRanges":[{"startOffset":0,"endOffset":len(text),"sha256":sha256(text.encode()).hexdigest()}]}
     return {**base,"textMode":"structural_outline","text":"","isExcerpt":True,"needsLocator":True,

@@ -1087,7 +1087,7 @@ class _CheckpointedDiscoveryModel:
         item_key = f"{snapshot.snapshot_id}:{action}"
         operation = f"investigation_{action}"
         item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
-            item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code)
+            item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code and code != "content_policy_refused")
         if self._allow_failed_research_resume and row is not None and row[0] == "failed" and row[1] == "provider_http_400":
             grant = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
             if digest in set(grant.get("failedModelInputSha256", [])):
@@ -1106,7 +1106,7 @@ class _CheckpointedDiscoveryModel:
             if options is not None:
                 item = {**item, "runtimeResearchModelOptions": dict(options)}
                 item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
-                    item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code)
+                    item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code and code != "content_policy_refused")
         return operation, item_key, item, digest, ledger_key, row
 
     def reject_research_result(self, *, snapshot: ResearchSnapshot, action: str,
@@ -1364,7 +1364,7 @@ class _CheckpointedDiscoveryModel:
         def reusable_paid_response():
             previous = item.get("authorizedSemanticRecoveryOf")
             is_title = operation in {"titleBatch", "titleReconcile"}
-            is_research = operation in {"investigation_assess_evidence", "investigation_compare_companies", "investigation_plan_queries"}
+            is_research = operation in {"investigation_plan_gaps", "investigation_assess_evidence", "investigation_compare_companies", "investigation_plan_queries"}
             is_body = operation == "understand"
             if not (is_title or is_research or is_body) or not previous or not self._allow_failed_research_resume:
                 return None

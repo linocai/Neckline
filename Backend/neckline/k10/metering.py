@@ -49,7 +49,7 @@ _SAFE_PROVIDER_FAILURES = frozenset({
     "provider_request_outcome_unknown",
     "response_json_invalid", "response_structure_invalid", "response_truncated", "response_empty",
     "response_filtered", "provider_tool_limit",
-    "insufficient_balance", "rate_limited",
+    "insufficient_balance", "rate_limited", "content_policy_refused",
 })
 
 # DeepSeek's 2026-09-14 public capability table maps the frozen official
