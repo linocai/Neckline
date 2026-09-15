@@ -764,12 +764,18 @@ class _Investigation:
             if stage["action"] == "assess_evidence" and not (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
             and not stage["result"].get("safeErrorCode") and not stage["result"].get("contextRequests")), default=0)
         unassessed = [stage for stage in self.state["stageResults"] if stage["revision"] > last_assessed
-                     and (stage["result"].get("conclusion") or {}).get("runtimeEvidence")]
+                     and (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
+                     and not self._blocked_query(stage)]
         full_refs, already_read, announced = set(), set(), set()
         for stage in self.state["stageResults"]:
             tool = (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
             already_read.update(_refs((stage["result"].get("conclusion") or {}).get("runtimeReadFulltextRefs", [])))
             announced.update(_refs((stage["result"].get("conclusion") or {}).get("runtimePresentedFulltextRefs", [])))
+            if self._blocked_query(stage):
+                # A local scope refusal never executed a search and has no
+                # coverage/documents. Keep its audit and closure dependency,
+                # but do not treat it as an evidence batch (including replay).
+                continue
             if tool and stage["revision"] <= last_assessed and tool["coverage"].get("operation") == "extract":
                 # Prior builds only passed the time-eligible bodies to the
                 # assessor. Do not falsely count their undated bodies as read.
@@ -795,6 +801,12 @@ class _Investigation:
                 **({"materialOrigin": "original_article", "independentVerification": False}
                    if doc.evidence_ref in self.event.source_refs else {})} for doc in full]})
         return True
+
+    @staticmethod
+    def _blocked_query(stage: Mapping[str, Any]) -> bool:
+        tool = (stage["result"].get("conclusion") or {}).get("runtimeEvidence")
+        return bool(tool and tool.get("pathScopeBlocked")
+                    and tool.get("operation") == "search" and tool.get("requestState") == "blocked")
 
     @staticmethod
     def _denied_fulltext(stage: Mapping[str, Any]) -> bool:

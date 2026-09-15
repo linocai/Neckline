@@ -134,3 +134,40 @@ def test_real_cli_worker_keeps_scoped_searches_and_reuses_paid_failed_plan(tmp_p
         retry_policy=NotificationRetryPolicy(timedelta(seconds=30),timedelta(minutes=15)))
     assert dispatch_task_notifications(**args)==1 and dispatch_task_notifications(**args)==0
     assert sorted(delivered)==['ios-fixture','mac-fixture']
+
+
+def test_real_cli_local_scope_refusal_is_not_a_search_result(tmp_path, monkeypatch):
+    from neckline.k10.research_runtime import _Investigation
+    original_call = _Investigation._call
+    original_scope = _Investigation._query_path_scope_error
+    blocked = set()
+    def call(self, action, extra=None):
+        value = original_call(self, action, extra)
+        if action == 'plan_queries':
+            blocked.update(p.path_id for p in value.query_paths)
+        return value
+    def scope(self, path, question, packet):
+        if path.path_id in blocked:
+            return 'query_path_scope_stale'
+        return original_scope(self, path, question, packet)
+    monkeypatch.setattr(_Investigation, '_call', call)
+    monkeypatch.setattr(_Investigation, '_query_path_scope_error', scope)
+    db, tid, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
+    assert task.status == 'completed'
+    assert gateway.search_paths == []
+    report = api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
+    assert report['status'] == 'completed' and report['availableAt']
+    with sqlite3.connect(db) as c:
+        rows = [json.loads(r[0]) for r in c.execute('select result_json from k10_research_stage_results')]
+    refused = [r for r in rows if _Investigation._blocked_query({'result': r})]
+    assert refused and all(p['state'] == 'blocked' for r in refused for p in r['queryPaths'])
+    # Read old immutable refusal records after an interruption, on both sides
+    # of an assessment revision. No provider call or invented empty search.
+    for assessed_revision in (0, len(refused) + 1):
+        runtime = object.__new__(_Investigation)
+        runtime.state = {'stageResults': [{'revision': i + 1, 'action': 'assess_evidence', 'result': r}
+                                         for i, r in enumerate(refused)]}
+        if assessed_revision:
+            runtime.state['stageResults'].append({'revision': assessed_revision, 'action': 'assess_evidence', 'result': {}})
+        runtime._call = lambda *a, **kw: pytest.fail('local refusal must not request assessment')
+        assert runtime._assess_due() is False
