@@ -20,7 +20,7 @@ def body():
     return {"events": [_understand_event(canonical_key="event", claim_id="claim")], "needsFullText": False}
 
 
-@pytest.mark.parametrize("mode", ["needs_material", "missing_source", "missing_claims"])
+@pytest.mark.parametrize("mode", ["needs_material", "missing_source", "missing_claim_source", "missing_claims"])
 def test_cli_worker_normalizes_or_repairs_only_affected_body_and_publishes(tmp_path, monkeypatch, mode):
     seen = []
     def edit(value):
@@ -32,6 +32,10 @@ def test_cli_worker_normalizes_or_repairs_only_affected_body_and_publishes(tmp_p
         elif mode == "missing_source":
             for event in value["events"]:
                 event.pop("sourceRefs")
+        elif mode == "missing_claim_source":
+            for event in value["events"]:
+                for claim in event["claims"]:
+                    claim.pop("sourceRef")
         elif len(seen) == 1:
             for event in value["events"]:
                 event.pop("claims")
@@ -65,7 +69,7 @@ def test_cli_worker_normalizes_or_repairs_only_affected_body_and_publishes(tmp_p
         assert any('events[].claims' in message and '上次输出未通过校验' in message for message in messages)
 
 
-@pytest.mark.parametrize("mode", ["needs_material", "missing_source", "missing_claims"])
+@pytest.mark.parametrize("mode", ["needs_material", "missing_source", "missing_claim_source", "missing_claims"])
 def test_paid_legacy_body_recovery_uses_original_task_and_no_repeat_for_derivable_results(tmp_path, monkeypatch, mode):
     decoder = pipeline.DeepSeekDiscoveryModel._decode_understand
     active = [True]
@@ -74,6 +78,10 @@ def test_paid_legacy_body_recovery_uses_original_task_and_no_repeat_for_derivabl
             return
         if mode == "needs_material":
             value["needsFullText"] = True
+        elif mode == "missing_claim_source":
+            for event in value["events"]:
+                for claim in event["claims"]:
+                    claim.pop("sourceRef")
         else:
             for event in value["events"]:
                 event.pop("sourceRefs" if mode == "missing_source" else "claims")
@@ -85,11 +93,13 @@ def test_paid_legacy_body_recovery_uses_original_task_and_no_repeat_for_derivabl
             raise pipeline.PipelineError("模型输出缺少 sourceRefs")
         if mode == "missing_claims" and "claims" not in raw["events"][0]:
             raise pipeline.PipelineError("理解输出缺少 claims", code="investigation_claims_missing")
+        if mode == "missing_claim_source" and "sourceRef" not in raw["events"][0]["claims"][0]:
+            raise pipeline.PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid")
         return decoder(raw, **kwargs)
     with monkeypatch.context() as old:
         old.setattr(pipeline.DeepSeekDiscoveryModel, "_decode_understand", staticmethod(legacy))
         db, task_id, first, calls, _ = e2e._run(tmp_path, old, v2=True)
-        assert first.status == "failed" and calls.count("understand") == 1
+        assert first.status == "failed" and calls.count("understand") == (2 if mode == "missing_claim_source" else 1)
         scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
         before_hash = frozen_scan_input_sha256(scan_id=scan_id, db_path=db)
         with sqlite3.connect(db) as conn:
@@ -114,6 +124,34 @@ def test_source_derivation_never_overwrites_explicit_conflicting_evidence():
     raw = body()
     raw["events"][0]["sourceRefs"] = [{"documentId":"unknown", "revision":1}]
     with pytest.raises(pipeline.PipelineError, match="引用"):
+        pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
+
+
+def test_missing_claim_reference_derives_only_duplicate_source_without_mutating_paid_reply():
+    raw = body()
+    expected = copy.deepcopy(raw["events"][0]["claims"])
+    for claim in raw["events"][0]["claims"]:
+        claim.pop("sourceRef")
+    before = copy.deepcopy(raw)
+    events, _ = pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
+    assert events[0].facts["researchClaims"] == expected
+    assert raw == before
+
+
+@pytest.mark.parametrize("reference", [None, {}, {"documentId": "unknown", "revision": 1}])
+def test_explicit_invalid_claim_reference_is_never_replaced(reference):
+    raw = body()
+    raw["events"][0]["claims"][0]["sourceRef"] = reference
+    with pytest.raises(pipeline.PipelineError):
+        pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
+
+
+@pytest.mark.parametrize("references", [None, [], [{"documentId":"a","revision":1},{"documentId":"b","revision":1}]])
+def test_missing_claim_reference_requires_unique_explicit_event_source(references):
+    raw = body()
+    raw["events"][0]["sourceRefs"] = references
+    raw["events"][0]["claims"][0].pop("sourceRef")
+    with pytest.raises(pipeline.PipelineError):
         pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
 
 

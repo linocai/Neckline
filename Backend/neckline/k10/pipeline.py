@@ -616,6 +616,22 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             raw_claims = row.get("claims", [])
             if not isinstance(raw_claims, list):
                 raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid")
+            # A body has one source. Restore only an omitted duplicate claim
+            # reference from the event's explicit, unambiguous reference; the
+            # material validator still checks it against the frozen document.
+            # Explicit null, malformed or conflicting claim references remain
+            # invalid, and neither the paid reply nor its receipt is mutated.
+            if any(isinstance(claim, Mapping) and "sourceRef" not in claim for claim in raw_claims):
+                try:
+                    event_refs = _refs(row.get("sourceRefs"))
+                except PipelineError as exc:
+                    raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from exc
+                if len(event_refs) == 1:
+                    raw_claims = [
+                        {**claim, "sourceRef": _ref_payload(event_refs[0])}
+                        if isinstance(claim, Mapping) and "sourceRef" not in claim else claim
+                        for claim in raw_claims
+                    ]
             try:
                 claims = tuple(Claim.from_dict(item) for item in raw_claims)
             except Exception as exc:
