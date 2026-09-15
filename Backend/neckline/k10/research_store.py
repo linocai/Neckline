@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .research_contracts import (
     Claim, EvidenceDisclosure, FullTextRequest, QueryPath, Question,
     ResearchContractError, ResearchSnapshot, ResearchStageResult,
-    validate_company_assessment, validate_evidence_update,
+    validate_company_assessment, validate_evidence_update, group_evidence_updates,
 )
 from .schema import read_connection, require_schema, write_connection
 from .store import K10Conflict, _json
@@ -147,7 +147,9 @@ def advance_research_snapshot(
         _distinct(stage_result.fulltext_requests, lambda item: item.request_id, "fulltext request")
         clean_assessments = [validate_company_assessment(item) for item in stage_result.company_assessments]
         _distinct(clean_assessments, lambda item: item["companyCode"], "company assessment")
-        updates = [_evidence_update(item) for item in stage_result.evidence_updates]
+        # The index has one row per claim/source relation. The immutable stage
+        # result retains every validated location; readers expand that group.
+        updates = [_evidence_update(group[0]) for group in group_evidence_updates(stage_result.evidence_updates)]
     except ResearchContractError:
         raise
     with write_connection(db_path) as conn:
@@ -321,17 +323,27 @@ def list_research_fulltext_requests(*, snapshot_id: str, db_path: Path, revision
 
 def _latest_evidence_updates(conn, snapshot_id: str, revision: int) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT claim_id,document_id,document_revision,relation,location,applicability_json "
-        "FROM k10_research_evidence_links WHERE snapshot_id=? AND snapshot_revision<=? ORDER BY snapshot_revision ASC",
+        "SELECT e.claim_id,e.document_id,e.document_revision,e.relation,e.location,e.applicability_json,e.snapshot_revision,s.result_json "
+        "FROM k10_research_evidence_links e LEFT JOIN k10_research_stage_results s "
+        "ON s.snapshot_id=e.snapshot_id AND s.revision=e.snapshot_revision "
+        "WHERE e.snapshot_id=? AND e.snapshot_revision<=? ORDER BY e.snapshot_revision ASC",
         (snapshot_id, revision),
     ).fetchall()
-    latest: dict[tuple[str, str, int], dict[str, Any]] = {}
-    for claim_id, document_id, document_revision, relation, location, applicability in rows:
-        latest[(str(claim_id), str(document_id), int(document_revision))] = {
+    stages: dict[int, Mapping[str, Any]] = {}
+    latest: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for claim_id, document_id, document_revision, relation, location, applicability, source_revision, raw in rows:
+        key = str(claim_id), str(document_id), int(document_revision)
+        indexed = {
             "claimId": str(claim_id), "sourceRef": {"documentId": str(document_id), "revision": int(document_revision)},
             "relation": str(relation), "location": str(location), "applicability": json.loads(applicability),
         }
-    return [latest[key] for key in sorted(latest)]
+        if source_revision not in stages:
+            stages[source_revision] = json.loads(raw) if raw else {}
+        matches = [item for item in stages[source_revision].get("evidenceUpdates", ())
+                   if (item["claimId"], item["sourceRef"]["documentId"], item["sourceRef"]["revision"]) == key]
+        groups = group_evidence_updates(matches)
+        latest[key] = groups[0] if groups else [indexed]
+    return [item for key in sorted(latest) for item in latest[key]]
 
 
 def read_research_state(*, snapshot_id: str, db_path: Path) -> dict[str, Any] | None:

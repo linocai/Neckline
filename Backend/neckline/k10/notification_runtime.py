@@ -125,6 +125,7 @@ def reconcile_terminal_notifications(*, db_path: Path, now: datetime, limit: int
         rows = conn.execute(
             "SELECT t.task_id FROM k10_tasks t WHERE t.kind IN ('analysis','evening_scan','morning_scan') "
             "AND t.status IN ('completed','failed','not_configured','cancelled') AND t.attempt_count>0 "
+            "AND NOT (t.status='failed' AND t.stage='paused') "
             "AND NOT EXISTS (SELECT 1 FROM k10_task_notifications n WHERE n.task_id=t.task_id "
             "AND n.task_attempt_count=t.attempt_count AND n.terminal_status=t.status) "
             "ORDER BY t.updated_at LIMIT ?", (limit,),

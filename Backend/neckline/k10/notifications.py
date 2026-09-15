@@ -363,6 +363,8 @@ def enqueue_task_notification(
         task_kind, terminal_status, stage, task_attempt_count = str(row[0]), str(row[1]), str(row[2]), int(row[3])
         if terminal_status not in TERMINAL_TASK_STATUSES:
             raise NotificationConflict("通知只能由已经终态的 K10 任务触发")
+        if terminal_status == "failed" and stage == "paused":
+            raise NotificationConflict("受控暂停不是任务故障，不生成失败通知")
         if task_attempt_count < 1:
             raise NotificationConflict("未领取过的 K10 任务不能生成终态通知")
         payload = json.loads(row[4])

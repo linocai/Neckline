@@ -389,6 +389,22 @@ def validate_evidence_update(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def group_evidence_updates(values: Sequence[Mapping[str, Any]]) -> list[list[dict[str, Any]]]:
+    """One claim/source relation can cite several independently checked locations."""
+    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for value in values:
+        row = validate_evidence_update(value)
+        ref = row["sourceRef"]
+        key = row["claimId"], ref["documentId"], ref["revision"]
+        group = groups.setdefault(key, [])
+        if group and any(row[field] != group[0][field] for field in ("relation", "applicability")):
+            raise ResearchContractError("同一命题与来源的关系或适用范围冲突", field_name="evidenceUpdates[]",
+                                        expected="consistent_relation_and_applicability_per_claim_source")
+        if row not in group:
+            group.append(row)
+    return list(groups.values())
+
+
 def canonical_company_code(value: Any) -> str:
     """Normalize mainland equity code spelling, never infer security eligibility.
 
@@ -442,8 +458,7 @@ class ResearchStageResult:
             if not isinstance(request, Mapping) or request.get('kind') not in {'company_search', 'company_fields', 'claim', 'question', 'source'}:
                 raise ResearchContractError('contextRequests 无效')
             _text(request.get('purpose'), 'contextRequests.purpose')
-        for update in self.evidence_updates:
-            validate_evidence_update(update)
+        group_evidence_updates(self.evidence_updates)
         for assessment in self.company_assessments:
             validate_company_assessment(assessment)
         if isinstance(self.conclusion, Mapping) and "companyMappings" in self.conclusion:

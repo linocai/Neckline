@@ -278,6 +278,11 @@ def run_once(
             if recovered is not None:
                 result = recovered
         context.require_lease()
+        if result.status == "failed" and store.run_control_status(db_path=db_path).get("state") != "open":
+            # A closed switch can stop any phase, including a terminal title
+            # failure with no retry_at. Keep its checkpoints and paid receipts,
+            # but identify the operator pause consistently for notification.
+            result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
         if result.retry_at is not None:
             if store.run_control_status(db_path=db_path).get("state") != "open":
                 # A pause never discards already-settled handler output, but
