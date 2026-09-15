@@ -282,6 +282,45 @@ def _prune_assessment_references(value: Mapping[str, Any], packet: Mapping[str, 
     return result
 
 
+def _prune_cross_question_paths(paths: tuple[QueryPath, ...], packet: Mapping[str, Any]) -> tuple[tuple[QueryPath, ...], int]:
+    """Drop an optional mixed-company route, never narrow or execute it.
+
+    Require another fully scoped route for the same open question. Unknown
+    claims/companies, missing targets and an entirely invalid plan stay errors.
+    """
+    if not packet.get("contextProtocol"):
+        return paths, 0
+    local = packet.get("_localState", packet)
+    questions = {q["questionId"]: q for q in local.get("questions", ())
+                 if isinstance(q, Mapping) and q.get("state") == "open"}
+    companies = {code for q in questions.values() for code in q.get("companyCodes", ())}
+
+    def scope(path: QueryPath) -> str:
+        question = questions.get(path.question_id)
+        if question is None or path.question_scope is not None or not path.target_refs or path.state != "planned":
+            return "invalid"
+        if path.purpose_kind not in QUERY_PURPOSE_KINDS:
+            return "invalid"
+        outside = False
+        has_company = False
+        for target in path.target_refs:
+            if target.get("kind") == "claim" and target.get("claimId") in question.get("claimIds", ()):
+                continue
+            if target.get("kind") == "company" and target.get("companyCode") in companies:
+                has_company = True
+                outside |= target["companyCode"] not in question.get("companyCodes", ())
+                continue
+            return "invalid"
+        if path.purpose_kind == "company_event_link" and not has_company:
+            return "invalid"
+        return "mixed" if outside else "valid"
+
+    kinds = [scope(path) for path in paths]
+    covered = {path.question_id for path, kind in zip(paths, kinds) if kind == "valid"}
+    kept = tuple(path for path, kind in zip(paths, kinds) if kind != "mixed" or path.question_id not in covered)
+    return kept, len(paths) - len(kept)
+
+
 def decode_stage_result(value: Mapping[str, Any], *, action: str,
                         evidence_packet: Mapping[str, Any] | None = None) -> ResearchStageResult:
     """Decode a provider JSON derivative without retaining its original response."""
@@ -397,6 +436,11 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))
+        if action == "plan_queries" and evidence_packet is not None:
+            paths, discarded = _prune_cross_question_paths(paths, evidence_packet)
+            if discarded:
+                value = {**value, "conclusion": {**(value.get("conclusion") or {}),
+                    "runtimeOutputSanitization": {"discardedCrossQuestionPaths": discarded}}}
         updates = value.get("evidenceUpdates", ())
         requests = value.get("fulltextRequests", ())
         assessments = value.get("companyAssessments", ())

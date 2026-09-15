@@ -1350,10 +1350,33 @@ class _CheckpointedDiscoveryModel:
         def reusable_paid_response():
             previous = item.get("authorizedSemanticRecoveryOf")
             is_title = operation in {"titleBatch", "titleReconcile"}
-            is_research = operation in {"investigation_assess_evidence", "investigation_compare_companies"}
+            is_research = operation in {"investigation_assess_evidence", "investigation_compare_companies", "investigation_plan_queries"}
             is_body = operation == "understand"
             if not (is_title or is_research or is_body) or not previous or not self._allow_failed_research_resume:
                 return None
+            if operation == "investigation_plan_queries":
+                # Older runtimes rejected scope after a successful checkpoint
+                # write. Revalidate that exact paid derivative, preserving the
+                # failed row and its original ledger, before any recovery call.
+                with read_connection(self._db_path) as conn:
+                    prior = conn.execute(
+                        "SELECT c.result_json FROM k10_execution_item_checkpoints c "
+                        "WHERE c.task_id=? AND c.stage=? AND c.input_sha256=? AND c.status='failed' "
+                        "AND c.safe_error_code='investigation_path_scope_invalid' AND c.result_json IS NOT NULL "
+                        "AND EXISTS (SELECT 1 FROM k10_external_attempts a WHERE a.task_id=c.task_id "
+                        "AND a.item_key=? AND a.state='succeeded')",
+                        (self._task_id, f"model:{operation}", previous, f"{operation}:{item_key}:{previous}"),
+                    ).fetchone()
+                if prior is not None:
+                    try:
+                        candidate = decode(json.loads(prior[0]))
+                        validator = getattr(self._research_validators, "current", None)
+                        if validator is not None:
+                            validator(candidate)
+                            encode(candidate)
+                            return candidate
+                    except (ValueError, KeyError, TypeError, InvestigationError, PipelineError):
+                        pass
             folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
             for path in sorted(folder.glob("*.json")):
                 try:

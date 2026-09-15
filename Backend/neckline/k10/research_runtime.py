@@ -577,7 +577,9 @@ class _Investigation:
         self.pending_model_action = {"action": action, "extra": dict(extra or {})}
         try:
             scope = getattr(self.model, "research_validation", None)
-            with (scope(lambda result: self._validate_result(action, result, packet)) if callable(scope) else nullcontext()):
+            def validate_live(result):
+                self._validate_result(action, self._bind_query_paths(action, result, packet), packet)
+            with (scope(validate_live) if callable(scope) else nullcontext()):
                 step = advance_research(model=self.model, snapshot=self.snapshot, action=action, evidence_packet=packet)
             bound = self._bind_query_paths(action, step.result, packet)
             self._validate_result(action, bound, packet)
