@@ -287,7 +287,7 @@ class DeterministicTransport:
         if "items" in payload:
             self._record("titleBatch")
             return self._ok({"items": [
-                {"i": index, "status": "candidate", "matterKey": f"matter-{self._title_number(row)}", 
+                {"i": index, "status": "candidate", "matterKey": f"matter-{self._title_number(row)}",
                  "stageKey": "new", "reason": "标题含新事件"}
                 for index, row in enumerate(payload["items"])
             ]})
