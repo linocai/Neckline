@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from neckline.api.k10 import create_router
-from neckline.k10 import store
+from neckline.k10 import pipeline, store
 from neckline.k10.cli import frozen_scan_input_sha256, recover_scan
 from neckline.k10.config import validate_execution_config
 from neckline.k10.model_execution import SemanticValidationError, execute_model_operation
@@ -19,6 +20,7 @@ from neckline.k10.schema import SCHEMA_VERSION, K10SchemaError, initialize_schem
 from neckline.k10.worker import TaskResult, run_once
 from neckline.llm.base import LLMResult
 from tests.k10_v306_fixture import append_approved_execution_profile, execution_payload
+from tests import test_v310_pipeline_e2e as e2e
 
 
 NOW = datetime(2026, 9, 8, 1, tzinfo=timezone.utc)
@@ -534,18 +536,61 @@ def test_model_attempt_rechecks_lease_in_its_write_transaction(tmp_path):
     assert guard_calls == 2 and provider_calls == 0
 
 
-def test_recovery_binds_new_execution_profile_to_the_exact_failed_snapshot(tmp_path):
-    path = tmp_path / "recovery.sqlite"
-    profile_id, revision = _seed(path)
-    store.create_scan(scan_id="failed-scan", window_kind="evening", cutoff_at=NOW.isoformat(), config_id="strategy", config_revision=1,
-                      status="failed", coverage={"inputSnapshotFrozen": True, "inputDocumentRefs": [{"documentId": "d", "revision": 1}]},
-                      created_at=NOW.isoformat(), completed_at=NOW.isoformat(), db_path=path)
+def test_recovery_rejects_legacy_failed_scan_without_a_b76_original_task_binding(tmp_path):
+    path = tmp_path / "legacy-recovery.sqlite"
+    initialize_schema(path)
+    store.set_run_control(state="open", reason_code="fixture_execution", changed_at=NOW.isoformat(),
+                          changed_by="test", db_path=path)
+    profile_id, revision = append_approved_execution_profile(
+        db_path=path, created_at=NOW.isoformat(), config_id="execution",
+    )
+    strategy_revision = store.append_run_config(
+        config_id="strategy", payload=_strategy(), created_at=NOW.isoformat(), db_path=path,
+    )
+    store.create_scan(
+        scan_id="failed-scan", window_kind="evening", cutoff_at=NOW.isoformat(),
+        config_id="strategy", config_revision=strategy_revision, status="failed",
+        coverage={"inputSnapshotFrozen": True, "inputDocumentRefs": [{"documentId": "d", "revision": 1}]},
+        created_at=NOW.isoformat(), completed_at=NOW.isoformat(), db_path=path,
+    )
     digest = frozen_scan_input_sha256(scan_id="failed-scan", db_path=path)
-    task_id = recover_scan(db_path=path, scan_id="failed-scan", execution_config_id=profile_id,
-                           execution_config_revision=revision, confirmed_input_sha256=digest, now=NOW)
+    with pytest.raises(RuntimeError, match="缺少 B76 原任务绑定"):
+        recover_scan(db_path=path, scan_id="failed-scan", execution_config_id=profile_id,
+                     execution_config_revision=revision, confirmed_input_sha256=digest, now=NOW)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT count(*) FROM k10_tasks").fetchone()[0] == 0
+
+
+def test_recovery_reuses_exact_execution_profile_on_the_failed_b76_task(tmp_path, monkeypatch):
+    # Recovery must reuse the task/binding created by the actual B78 producer.
+    # The former fixture used a 401 to force failure.  B78 correctly treats
+    # authorization failure as terminal, so use an injected pre-publication
+    # failure after the producer has frozen the source input instead.
+    def fail_after_frozen_discovery(*_args, **_kwargs):
+        raise RuntimeError("deterministic pre-publication interruption")
+
+    monkeypatch.setattr(pipeline, "freeze_discovery_run", fail_after_frozen_discovery)
+    path, task_id, failed, _, _ = e2e._run(
+        tmp_path, monkeypatch, v2=True, cli_entry=True,
+    )
+    assert failed is not None and failed.status == "failed"
+    checkpoint = store.task_execution_input(task_id=task_id, db_path=path)["checkpoint"]
+    scan_id = checkpoint["scanId"]
+    scan = store.get_scan(scan_id=scan_id, db_path=path)
+    assert scan is not None and scan["coverage"]["inputSnapshotFrozen"] is True
+    profile = store.task_execution_profile(task_id=task_id, db_path=path)
+    assert profile is not None
+    digest = frozen_scan_input_sha256(scan_id=scan_id, db_path=path)
+    assert recover_scan(db_path=path, scan_id=scan_id, execution_config_id=profile["configId"],
+                        execution_config_revision=profile["revision"], confirmed_input_sha256=digest,
+                        now=e2e.RUN_AT) == task_id
     task = store.get_task(task_id=task_id, db_path=path)
-    assert task is not None and task.payload["resumeScanId"] == "failed-scan" and task.payload["sourceCollection"] == "forbidden"
-    assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
-    with pytest.raises(K10SchemaError, match="schema 9"):
+    assert task is not None and task.status == "queued" and task.payload.get("runtimeContract")
+    # B78 never creates a replacement task or changes the immutable execution
+    # snapshot.  The explicit recovery grant is stored on that exact task.
+    assert store.task_execution_profile(task_id=task_id, db_path=path) == profile
+    authorization = store.task_execution_input(task_id=task_id, db_path=path)["checkpoint"]["recoveryAuthorized"]
+    assert authorization["scanId"] == scan_id and authorization["frozenInputSha256"] == digest
+    with pytest.raises(K10SchemaError, match="schema 10"):
         rollback_schema(path, target_version=3)
     assert schema_version(path) == SCHEMA_VERSION

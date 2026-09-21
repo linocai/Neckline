@@ -11,6 +11,7 @@ from .worker import TaskContext, TaskResult
 def failure_message(code: str | None) -> str:
     return {
         "insufficient_balance": "模型账户余额不足，任务已停止",
+        "provider_authorization_failed": "模型服务鉴权或权限校验失败，任务已停止",
         "rate_limited": "模型服务限流",
     }.get(code, "模型调用失败")
 
@@ -34,7 +35,7 @@ def provider_failure_result(*, context: TaskContext, stage: str, code: str | Non
     if code in {"provider_request_outcome_unknown", "model_request_outcome_unknown"}:
         return TaskResult("failed", stage, {**(checkpoint or context.checkpoint), "safeErrorCode": code},
                           "上次模型调用结果无法安全恢复，已停止重复付费请求")
-    code = code if code in {"insufficient_balance", "rate_limited"} else "provider_call_failed"
+    code = code if code in {"insufficient_balance", "provider_authorization_failed", "rate_limited"} else "provider_call_failed"
     checkpoint = {**(checkpoint if checkpoint is not None else context.checkpoint), "safeErrorCode": code}
     error = failure_message(code)
     if code != "rate_limited":

@@ -50,24 +50,15 @@ def _setup(path, *, task="titles", count=95, duplicate=True):
     return tuple(documents), binding, model
 
 
-def _mock_http(monkeypatch, *, invalid_batch=False, sole_output=False, remove_last=False, invalid_review=False,
+def _mock_http(monkeypatch, *, invalid_batch=False, sole_output=False,
                invalid_body_once=False):
     calls = []
     def respond(request):
         request_json = json.loads(request.content)
         content = request_json["messages"][-1]["content"]
         payload = json.loads(content.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
-        if payload.get("operation") == "titleSelectionReview":
-            stage = "review"
-            assert "BODY_SENTINEL" not in content and "METADATA_MUST_NOT_LEAK" not in content
-            assert all(set(row) == {"i", "sourceKey", "publishedAt", "title", "status", "proposedReason"}
-                       for row in payload["items"])
-            kept = payload["items"][:-1] if remove_last else payload["items"]
-            result = {"complete": True, "kept": [{"i": row["i"], "reason": "标题有独立实质事实，保留深读"} for row in kept],
-                      "removed": [{"i": payload["items"][-1]["i"], "reason": "不足以支持新增实质事实", "duplicateOf": None}] if remove_last else []}
-            if invalid_review:
-                result["kept"].pop()
-        elif "inputCount" in payload:
+        assert payload.get("operation") != "titleSelectionReview", "retired third model pass"
+        if "inputCount" in payload:
             stage = "global"
             indexes = [row["i"] for row in payload["items"]]
             limit = payload["inputCount"]
@@ -205,36 +196,25 @@ def test_title_calls_normalize_the_known_sole_output_envelope(tmp_path, monkeypa
     selected = select_title_documents(documents=documents, window_kind="morning", task_id="titles",
         execution_profile=binding, model=model, db_path=path)
     assert len(selected) == 3
-    assert [stage for stage, _ in calls] == ["titles", "global", "review"]
-    assert store.external_attempt_summary(task_id="titles", db_path=path)["succeeded"] == 3
+    assert [stage for stage, _ in calls] == ["titles", "global"]
+    assert store.external_attempt_summary(task_id="titles", db_path=path)["succeeded"] == 2
     assert model.understand(document=prepare_document_for_analysis(selected[0])) == ()
-    assert [stage for stage, _ in calls] == ["titles", "global", "review", "body"]
+    assert [stage for stage, _ in calls] == ["titles", "global", "body"]
 
 
-def test_title_final_review_only_removes_without_refill_and_is_reused_on_resume(tmp_path, monkeypatch):
+def test_two_pass_title_selection_is_reused_on_resume_without_third_model_gate(tmp_path, monkeypatch):
     path = tmp_path / "review.sqlite"
     documents, binding, model = _setup(path, count=44, duplicate=False)
-    calls = _mock_http(monkeypatch, remove_last=True)
+    calls = _mock_http(monkeypatch)
     selected = select_title_documents(documents=documents, window_kind="morning", task_id="titles",
         execution_profile=binding, model=model, db_path=path)
-    assert len(selected) == 43
-    assert sum(stage == "review" for stage, _ in calls) == 1
+    assert len(selected) == 44
+    assert sum(stage == "review" for stage, _ in calls) == 0
     assert all(stage != "body" for stage, _ in calls)
     before = len(calls)
     assert select_title_documents(documents=documents, window_kind="morning", task_id="titles",
         execution_profile=binding, model=model, db_path=path) == selected
     assert len(calls) == before
-
-
-def test_incomplete_final_title_review_keeps_every_body_closed(tmp_path, monkeypatch):
-    path = tmp_path / "review-invalid.sqlite"
-    documents, binding, model = _setup(path, count=4, duplicate=False)
-    calls = _mock_http(monkeypatch, invalid_review=True)
-    with pytest.raises(PipelineError):
-        select_title_documents(documents=documents, window_kind="morning", task_id="titles",
-            execution_profile=binding, model=model, db_path=path)
-    assert store.read_title_selection_manifest(task_id="titles", db_path=path) is None
-    assert all(stage != "body" for stage, _ in calls)
 
 
 def test_body_shape_repair_reuses_one_article_admission_and_records_both_requests(tmp_path, monkeypatch):

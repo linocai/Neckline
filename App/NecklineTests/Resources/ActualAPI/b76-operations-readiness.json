@@ -1,0 +1,18 @@
+{
+  "notificationReadiness": {
+    "checkedAt": "2026-09-16T03:34:09+00:00",
+    "nextRetryAt": null,
+    "reasonCode": "notification_schema_unavailable",
+    "state": "notConfigured"
+  },
+  "runControl": {
+    "activeTasks": [],
+    "changedAt": "2026-09-08T12:00:00+08:00",
+    "executionState": "accepting",
+    "inFlightCount": 0,
+    "reasonCode": "fixture_approved",
+    "state": "ready",
+    "unknownCount": 0
+  },
+  "schemaVersion": "k10-api-v2"
+}

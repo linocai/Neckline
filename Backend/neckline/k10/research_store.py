@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .research_contracts import (
     Claim, EvidenceDisclosure, FullTextRequest, QueryPath, Question,
-    ResearchContractError, ResearchSnapshot, ResearchStageResult,
+    ResearchContractError, ResearchRoundResult, ResearchSnapshot, ResearchStageResult,
+    EXECUTION_STATUSES, RESEARCH_ROUND_ACTION, RESEARCH_STATUSES,
     validate_company_assessment, validate_evidence_update, group_evidence_updates,
 )
 from .schema import read_connection, require_schema, write_connection
@@ -16,6 +18,26 @@ from .store import K10Conflict, _json
 
 
 LeaseGuard = Callable[[], None]
+
+_ROUND_UNSAFE_KEYS = frozenset({"originalText", "original_text", "rawResponse", "raw_response", "prompt"})
+
+
+def _safe_json(value: Any, *, field: str) -> Mapping[str, Any] | list[Any]:
+    """Keep direct-round state useful for replay but free of bodies/raw replies."""
+    def clean(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            if _ROUND_UNSAFE_KEYS.intersection(item):
+                raise K10Conflict(f"{field} 不得保存正文或原始供应商回复")
+            return {str(key): clean(value) for key, value in item.items()}
+        if isinstance(item, list):
+            return [clean(value) for value in item]
+        if item is None or isinstance(item, (str, int, float, bool)):
+            return item
+        raise K10Conflict(f"{field} 不是 JSON")
+    result = clean(value)
+    if not isinstance(result, (Mapping, list)):
+        raise K10Conflict(f"{field} 必须是 JSON 对象或数组")
+    return result
 
 
 def _guard(value: LeaseGuard | None) -> None:
@@ -105,6 +127,183 @@ def create_research_snapshot(*, snapshot: ResearchSnapshot, db_path: Path,
     return snapshot
 
 
+def append_research_round(
+    *, snapshot_id: str, expected_revision: int, input_packet: Mapping[str, Any],
+    result: ResearchRoundResult, local_context_results: Sequence[Mapping[str, Any]] = (),
+    local_tool_evidence: Sequence[Mapping[str, Any]] = (), research_status: str,
+    updated_at: str, db_path: Path, lease_guard: LeaseGuard | None = None,
+) -> ResearchSnapshot:
+    """CAS append one B78 result without using the retired stage-result table."""
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
+        raise K10Conflict("expected_revision 无效")
+    if not isinstance(result, ResearchRoundResult) or result.action != RESEARCH_ROUND_ACTION:
+        raise K10Conflict("B78 研究轮次结果无效")
+    if research_status not in RESEARCH_STATUSES:
+        raise K10Conflict("B78 研究状态无效")
+    if result.context_requests and research_status != "continue_research":
+        raise K10Conflict("局部回读轮次必须保持研究中状态")
+    if not result.context_requests:
+        conclusion = result.conclusion
+        if not isinstance(conclusion, Mapping) or conclusion.get("researchStatus") != research_status:
+            raise K10Conflict("B78 研究状态与轮次结论不一致")
+    _aware_instant(updated_at, "updated_at")
+    packet = _safe_json(input_packet, field="研究资料包")
+    clean_result = _safe_json(result.to_dict(), field="研究轮次结果")
+    contexts = _safe_json(list(local_context_results), field="本地回读结果")
+    tools = _safe_json(list(local_tool_evidence), field="本地补查证据")
+    input_sha256 = sha256(_json(packet).encode("utf-8")).hexdigest()
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        _guard(lease_guard)
+        latest = _latest_snapshot_row(conn, snapshot_id)
+        if latest is None:
+            raise K10Conflict("研究快照不存在")
+        current = _snapshot(latest[1])
+        if current.revision != expected_revision:
+            replay = conn.execute(
+                "SELECT input_sha256,input_packet_json,result_json,context_results_json,tool_evidence_json "
+                "FROM k10_research_round_results WHERE snapshot_id=? AND revision=?",
+                (snapshot_id, current.revision),
+            ).fetchone()
+            expected = (input_sha256, _json(packet), _json(clean_result), _json(contexts), _json(tools))
+            if (replay is not None and tuple(replay) == expected
+                    and current.research_status == research_status and current.execution_status == "ok"):
+                return current
+            raise K10Conflict("研究快照已被其他执行者推进")
+        next_snapshot = ResearchSnapshot(
+            snapshot_id=current.snapshot_id, task_id=current.task_id, event_id=current.event_id,
+            event_revision=current.event_revision, news_cutoff_at=current.news_cutoff_at,
+            verification_cutoff_at=current.verification_cutoff_at, context_sha256=current.context_sha256,
+            prompt_contract_revision=current.prompt_contract_revision,
+            model_parameters_sha256=current.model_parameters_sha256, research_status=research_status,
+            execution_status="ok", revision=current.revision + 1,
+            created_at=current.created_at, updated_at=updated_at,
+        )
+        conn.execute(
+            "INSERT INTO k10_research_snapshot_revisions("
+            "snapshot_id,revision,task_id,event_id,event_revision,news_cutoff_at,verification_cutoff_at,"
+            "context_sha256,prompt_contract_revision,model_parameters_sha256,research_status,execution_status,"
+            "snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, next_snapshot.task_id, next_snapshot.event_id,
+             next_snapshot.event_revision, next_snapshot.news_cutoff_at, next_snapshot.verification_cutoff_at,
+             next_snapshot.context_sha256, next_snapshot.prompt_contract_revision,
+             next_snapshot.model_parameters_sha256, next_snapshot.research_status, next_snapshot.execution_status,
+             _json(next_snapshot.to_dict()), next_snapshot.created_at, updated_at),
+        )
+        conn.execute(
+            "INSERT INTO k10_research_round_results("
+            "snapshot_id,revision,input_sha256,input_packet_json,result_json,context_results_json,tool_evidence_json,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (snapshot_id, next_snapshot.revision, input_sha256, _json(packet), _json(clean_result),
+             _json(contexts), _json(tools), updated_at),
+        )
+    return next_snapshot
+
+
+def mark_research_round_failed(
+    *, snapshot_id: str, expected_revision: int, input_packet: Mapping[str, Any],
+    safe_error_code: str, updated_at: str, db_path: Path,
+    lease_guard: LeaseGuard | None = None,
+) -> ResearchSnapshot:
+    """Durably terminalize one malformed B78 receipt without a legacy stage row.
+
+    The provider's paid raw reply remains in the model-operation checkpoint.  This
+    appends only the program's safe disposition and marks the immutable snapshot
+    failed, so a reclaim cannot reinterpret an already rejected reply as a new
+    research admission or issue another request.
+    """
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
+        raise K10Conflict("expected_revision 无效")
+    terminal = ResearchRoundResult(safe_error_code=safe_error_code)
+    _aware_instant(updated_at, "updated_at")
+    packet = _safe_json(input_packet, field="研究资料包")
+    clean_result = _safe_json(terminal.to_dict(), field="研究轮次失败结果")
+    input_sha256 = sha256(_json(packet).encode("utf-8")).hexdigest()
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        _guard(lease_guard)
+        latest = _latest_snapshot_row(conn, snapshot_id)
+        if latest is None:
+            raise K10Conflict("研究快照不存在")
+        current = _snapshot(latest[1])
+        if current.revision != expected_revision:
+            replay = conn.execute(
+                "SELECT input_sha256,result_json,context_results_json,tool_evidence_json "
+                "FROM k10_research_round_results WHERE snapshot_id=? AND revision=?",
+                (snapshot_id, current.revision),
+            ).fetchone()
+            if (replay is not None and replay[0] == input_sha256 and replay[1] == _json(clean_result)
+                    and replay[2] == "[]" and replay[3] == "[]"
+                    and current.execution_status == "failed"):
+                return current
+            raise K10Conflict("研究快照已被其他执行者推进")
+        next_snapshot = ResearchSnapshot(
+            snapshot_id=current.snapshot_id, task_id=current.task_id, event_id=current.event_id,
+            event_revision=current.event_revision, news_cutoff_at=current.news_cutoff_at,
+            verification_cutoff_at=current.verification_cutoff_at, context_sha256=current.context_sha256,
+            prompt_contract_revision=current.prompt_contract_revision,
+            model_parameters_sha256=current.model_parameters_sha256, research_status=current.research_status,
+            execution_status="failed", revision=current.revision + 1,
+            created_at=current.created_at, updated_at=updated_at,
+        )
+        conn.execute(
+            "INSERT INTO k10_research_snapshot_revisions("
+            "snapshot_id,revision,task_id,event_id,event_revision,news_cutoff_at,verification_cutoff_at,"
+            "context_sha256,prompt_contract_revision,model_parameters_sha256,research_status,execution_status,"
+            "snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, next_snapshot.task_id, next_snapshot.event_id,
+             next_snapshot.event_revision, next_snapshot.news_cutoff_at, next_snapshot.verification_cutoff_at,
+             next_snapshot.context_sha256, next_snapshot.prompt_contract_revision,
+             next_snapshot.model_parameters_sha256, next_snapshot.research_status, next_snapshot.execution_status,
+             _json(next_snapshot.to_dict()), next_snapshot.created_at, updated_at),
+        )
+        conn.execute(
+            "INSERT INTO k10_research_round_results("
+            "snapshot_id,revision,input_sha256,input_packet_json,result_json,context_results_json,tool_evidence_json,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (snapshot_id, next_snapshot.revision, input_sha256, _json(packet), _json(clean_result),
+             "[]", "[]", updated_at),
+        )
+    return next_snapshot
+
+
+def load_research_round_state(*, snapshot_id: str, db_path: Path) -> dict[str, Any] | None:
+    """Read B78 direct-round state only; historical stage rows stay read-only."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        latest = _latest_snapshot_row(conn, snapshot_id)
+        if latest is None:
+            return None
+        snapshot = _snapshot(latest[1])
+        rows = conn.execute(
+            "SELECT revision,input_sha256,input_packet_json,result_json,context_results_json,tool_evidence_json,created_at "
+            "FROM k10_research_round_results WHERE snapshot_id=? ORDER BY revision",
+            (snapshot_id,),
+        ).fetchall()
+    rounds: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            input_packet, result = json.loads(row[2]), json.loads(row[3])
+            contexts, tools = json.loads(row[4]), json.loads(row[5])
+            if (not isinstance(input_packet, Mapping)
+                    or sha256(_json(input_packet).encode("utf-8")).hexdigest() != row[1]
+                    or not isinstance(contexts, list) or not isinstance(tools, list)):
+                raise ValueError("round integrity")
+            typed = ResearchRoundResult.from_dict(result)
+            clean_packet = _safe_json(input_packet, field="B78 研究资料包")
+            clean_contexts = _safe_json(contexts, field="B78 本地回读结果")
+            clean_tools = _safe_json(tools, field="B78 本地补查证据")
+            if (_json(clean_packet) != row[2] or _json(typed.to_dict()) != row[3]
+                    or _json(clean_contexts) != row[4] or _json(clean_tools) != row[5]):
+                raise ValueError("round canonical JSON")
+            rounds.append({"revision": int(row[0]), "inputSha256": row[1], "inputPacket": dict(clean_packet),
+                           "result": typed.to_dict(), "contextResults": list(clean_contexts),
+                           "toolEvidence": list(clean_tools), "createdAt": row[6]})
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("B78 研究轮次状态不可读取") from exc
+    return {"snapshot": snapshot, "rounds": rounds}
+
+
 def _evidence_update(value: Mapping[str, Any]) -> tuple[str, str, int, str, str, Mapping[str, Any]]:
     value = validate_evidence_update(value)
     claim_id = value["claimId"]
@@ -121,6 +320,106 @@ def _distinct(values: Sequence[Any], key: Callable[[Any], str], name: str) -> No
         if value in seen:
             raise ResearchContractError(f"{name} ID 重复")
         seen.add(value)
+
+
+def _prepared_stage(stage_result: ResearchStageResult) -> tuple[list[dict[str, Any]], list[tuple[str, str, int, str, str, Mapping[str, Any]]]]:
+    """Validate a stage before a transaction can append any part of a receipt."""
+    _distinct(stage_result.claims, lambda item: item.claim_id, "claim")
+    _distinct(stage_result.questions, lambda item: item.question_id, "question")
+    _distinct(stage_result.query_paths, lambda item: item.path_id, "query path")
+    _distinct(stage_result.fulltext_requests, lambda item: item.request_id, "fulltext request")
+    clean_assessments = [validate_company_assessment(item) for item in stage_result.company_assessments]
+    _distinct(clean_assessments, lambda item: item["companyCode"], "company assessment")
+    updates = [_evidence_update(group[0]) for group in group_evidence_updates(stage_result.evidence_updates)]
+    return clean_assessments, updates
+
+
+def _append_research_stage(conn, *, current: ResearchSnapshot, research_status: str,
+                           execution_status: str, stage_result: ResearchStageResult,
+                           input_sha256: str, updated_at: str,
+                           verification_cutoff_at: str | None,
+                           prepared: tuple[list[dict[str, Any]], list[tuple[str, str, int, str, str, Mapping[str, Any]]]]) -> ResearchSnapshot:
+    """Append one old-schema stage inside the caller's open transaction."""
+    updated_instant = _aware_instant(updated_at, "updated_at")
+    next_verification_cutoff = current.verification_cutoff_at
+    if verification_cutoff_at is not None:
+        old_cutoff = _aware_instant(current.verification_cutoff_at, "既有 verification_cutoff_at")
+        proposed_cutoff = _aware_instant(verification_cutoff_at, "verification_cutoff_at")
+        if proposed_cutoff < old_cutoff:
+            raise K10Conflict("verification_cutoff_at 不得倒退")
+        if proposed_cutoff > updated_instant:
+            raise K10Conflict("verification_cutoff_at 不得晚于 updated_at")
+        next_verification_cutoff = verification_cutoff_at
+    next_snapshot = ResearchSnapshot(
+        snapshot_id=current.snapshot_id, task_id=current.task_id, event_id=current.event_id,
+        event_revision=current.event_revision, news_cutoff_at=current.news_cutoff_at,
+        verification_cutoff_at=next_verification_cutoff, context_sha256=current.context_sha256,
+        prompt_contract_revision=current.prompt_contract_revision,
+        model_parameters_sha256=current.model_parameters_sha256, research_status=research_status,
+        execution_status=execution_status, revision=current.revision + 1,
+        created_at=current.created_at, updated_at=updated_at,
+    )
+    conn.execute(
+        "INSERT INTO k10_research_snapshot_revisions("
+        "snapshot_id,revision,task_id,event_id,event_revision,news_cutoff_at,verification_cutoff_at,"
+        "context_sha256,prompt_contract_revision,model_parameters_sha256,research_status,execution_status,"
+        "snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (next_snapshot.snapshot_id, next_snapshot.revision, next_snapshot.task_id, next_snapshot.event_id,
+         next_snapshot.event_revision, next_snapshot.news_cutoff_at, next_snapshot.verification_cutoff_at,
+         next_snapshot.context_sha256, next_snapshot.prompt_contract_revision,
+         next_snapshot.model_parameters_sha256, next_snapshot.research_status, next_snapshot.execution_status,
+         _json(next_snapshot.to_dict()), next_snapshot.created_at, next_snapshot.updated_at),
+    )
+    conn.execute(
+        "INSERT INTO k10_research_stage_results(snapshot_id,revision,action,input_sha256,result_json,safe_error_code,created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (next_snapshot.snapshot_id, next_snapshot.revision, stage_result.action, input_sha256, _json(stage_result.to_dict()),
+         stage_result.safe_error_code, updated_at),
+    )
+    clean_assessments, updates = prepared
+    for claim in stage_result.claims:
+        doc, doc_revision = _ref(claim.source_ref, "claim.sourceRef")
+        conn.execute(
+            "INSERT INTO k10_research_claims(snapshot_id,snapshot_revision,claim_id,document_id,document_revision,"
+            "claim_kind,novelty,verification_status,claim_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, claim.claim_id, doc, doc_revision, claim.kind, claim.novelty,
+             claim.verification_status, _json(claim.to_dict()), updated_at),
+        )
+    for claim_id, doc, doc_revision, relation, location, applicability in updates:
+        conn.execute(
+            "INSERT INTO k10_research_evidence_links(snapshot_id,snapshot_revision,claim_id,document_id,document_revision,"
+            "relation,location,applicability_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, claim_id, doc, doc_revision, relation, location,
+             _json(dict(applicability)), updated_at),
+        )
+    for question in stage_result.questions:
+        conn.execute(
+            "INSERT INTO k10_research_questions(snapshot_id,snapshot_revision,question_id,state,question_json,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, question.question_id, question.state, _json(question.to_dict()), updated_at),
+        )
+    for path in stage_result.query_paths:
+        conn.execute(
+            "INSERT INTO k10_research_query_paths(snapshot_id,snapshot_revision,path_id,question_id,state,path_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, path.path_id, path.question_id, path.state, _json(path.to_dict()), updated_at),
+        )
+    for request in stage_result.fulltext_requests:
+        doc, doc_revision = _ref(request.source_ref, "fulltextRequest.sourceRef")
+        conn.execute(
+            "INSERT INTO k10_research_fulltext_requests(snapshot_id,snapshot_revision,request_id,question_id,document_id,"
+            "document_revision,state,request_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, request.request_id, request.question_id, doc, doc_revision,
+             request.state, _json(request.to_dict()), updated_at),
+        )
+    for assessment in clean_assessments:
+        conn.execute(
+            "INSERT INTO k10_research_company_assessments(snapshot_id,snapshot_revision,company_code,role,rank,"
+            "disclosure_json,assessment_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (next_snapshot.snapshot_id, next_snapshot.revision, assessment["companyCode"], assessment["role"], assessment["rank"],
+             _json(assessment["evidenceDisclosure"]), _json(assessment), updated_at),
+        )
+    return next_snapshot
 
 
 def advance_research_snapshot(
@@ -245,6 +544,55 @@ def advance_research_snapshot(
                  _json(assessment["evidenceDisclosure"]), _json(assessment), updated_at),
             )
     return next_snapshot
+
+
+def advance_research_snapshot_batch(
+    *, snapshot_id: str, expected_revision: int, research_status: str, execution_status: str,
+    stage_results: Sequence[tuple[ResearchStageResult, str]], updated_at: str, db_path: Path,
+    lease_guard: LeaseGuard | None = None, verification_cutoff_at: str | None = None,
+) -> ResearchSnapshot:
+    """Atomically derive old actions from one already-durable B76 model receipt.
+
+    Each pair is an existing ``ResearchStageResult`` plus its deterministic
+    sub-operation input identity.  Validation happens before the write
+    transaction; a crash cannot leave only half a receipt-derived plan/closure
+    for recovery to reinterpret or re-POST.
+    """
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
+        raise K10Conflict("expected_revision 无效")
+    if len(stage_results) != 2:
+        raise K10Conflict("合并研究必须派生两个旧阶段")
+    prepared: list[tuple[ResearchStageResult, str, Any]] = []
+    for stage, input_sha256 in stage_results:
+        if not isinstance(stage, ResearchStageResult) or not isinstance(input_sha256, str) or len(input_sha256) != 64:
+            raise K10Conflict("合并研究派生阶段无效")
+        prepared.append((stage, input_sha256, _prepared_stage(stage)))
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        _guard(lease_guard)
+        latest = _latest_snapshot_row(conn, snapshot_id)
+        if latest is None:
+            raise K10Conflict("研究快照不存在")
+        current = _snapshot(latest[1])
+        if current.revision != expected_revision:
+            rows = conn.execute(
+                "SELECT action,input_sha256 FROM k10_research_stage_results "
+                "WHERE snapshot_id=? AND revision>? AND revision<=? ORDER BY revision",
+                (snapshot_id, expected_revision, expected_revision + len(prepared)),
+            ).fetchall()
+            expected = [(stage.action, digest) for stage, digest, _ in prepared]
+            if current.revision == expected_revision + len(prepared) and [(row[0], row[1]) for row in rows] == expected:
+                return current
+            raise K10Conflict("研究快照已被其他执行者推进")
+        for index, (stage, input_sha256, stage_prepared) in enumerate(prepared):
+            current = _append_research_stage(
+                conn, current=current,
+                research_status=research_status if index == len(prepared) - 1 else current.research_status,
+                execution_status=execution_status, stage_result=stage, input_sha256=input_sha256,
+                updated_at=updated_at, verification_cutoff_at=verification_cutoff_at if index == 0 else None,
+                prepared=stage_prepared,
+            )
+    return current
 
 
 def read_research_snapshot(*, snapshot_id: str, db_path: Path,
@@ -627,6 +975,56 @@ def _safe_error_code(conn, snapshot_id: str, revision: int) -> str | None:
     return None if row is None or row[0] is None else str(row[0])
 
 
+def _current_direct_round(conn, snapshot: ResearchSnapshot) -> tuple[ResearchRoundResult, Mapping[str, Any]] | None:
+    """Decode the current B78 result and its frozen visible packet.
+
+    Direct B78 state is read as-is instead of being re-projected into retired
+    stage tables.  The packet is returned only to reconstruct persisted
+    question coverage; it has already passed the safe JSON boundary.
+    """
+    row = conn.execute(
+        "SELECT input_sha256,input_packet_json,result_json,context_results_json,tool_evidence_json "
+        "FROM k10_research_round_results WHERE snapshot_id=? AND revision=?",
+        (snapshot.snapshot_id, snapshot.revision),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        packet, result, contexts, tools = json.loads(row[1]), json.loads(row[2]), json.loads(row[3]), json.loads(row[4])
+        if (not isinstance(packet, Mapping)
+                or sha256(_json(packet).encode("utf-8")).hexdigest() != row[0]
+                or not isinstance(contexts, list) or not isinstance(tools, list)):
+            raise ValueError("round integrity")
+        typed = ResearchRoundResult.from_dict(result)
+        clean_packet = _safe_json(packet, field="B78 研究资料包")
+        clean_contexts = _safe_json(contexts, field="B78 本地回读结果")
+        clean_tools = _safe_json(tools, field="B78 本地补查证据")
+        if (not isinstance(clean_packet, Mapping) or _json(clean_packet) != row[1]
+                or _json(typed.to_dict()) != row[2]
+                or _json(clean_contexts) != row[3] or _json(clean_tools) != row[4]):
+            raise ValueError("round canonical JSON")
+        return typed, clean_packet
+    except (TypeError, ValueError, json.JSONDecodeError, ResearchContractError) as exc:
+        raise K10Conflict("B78 研究轮次状态不可读取") from exc
+
+
+def _direct_questions(packet: Mapping[str, Any], result: ResearchRoundResult) -> tuple[Question, ...]:
+    """Merge a round's answer updates into the frozen visible question packet."""
+    raw = packet.get("questions", ())
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise K10Conflict("B78 研究资料包问题不可读取")
+    merged: dict[str, Question] = {}
+    try:
+        for item in raw:
+            question = Question.from_dict(item)
+            merged[question.question_id] = question
+        for question in result.questions:
+            merged[question.question_id] = question
+    except ResearchContractError as exc:
+        raise K10Conflict("B78 研究资料包问题不可读取") from exc
+    return tuple(merged[key] for key in sorted(merged))
+
+
 def _one_selector(*, scan_id: str | None, task_id: str | None, snapshot_id: str | None) -> None:
     if sum(value is not None for value in (scan_id, task_id, snapshot_id)) != 1:
         raise ValueError("必须且只能指定 scan_id、task_id 或 snapshot_id 之一")
@@ -646,13 +1044,18 @@ def list_research_assessments(*, db_path: Path, scan_id: str | None = None, task
                      ([(_snapshot(row[1]))] if (row := _latest_snapshot_row(conn, snapshot_id)) is not None else []))
         values: list[dict[str, Any]] = []
         for snapshot in snapshots:
-            for assessment in _latest_payloads(conn, "k10_research_company_assessments", "company_code", "assessment_json",
-                                               snapshot.snapshot_id, snapshot.revision):
+            direct_state = _current_direct_round(conn, snapshot)
+            direct = None if direct_state is None else direct_state[0]
+            assessments = (direct.company_assessments if direct is not None else
+                           _latest_payloads(conn, "k10_research_company_assessments", "company_code", "assessment_json",
+                                            snapshot.snapshot_id, snapshot.revision))
+            safe_error_code = (direct.safe_error_code if direct is not None else
+                               _safe_error_code(conn, snapshot.snapshot_id, snapshot.revision))
+            for assessment in assessments:
                 values.append({"snapshotId": snapshot.snapshot_id, "snapshotRevision": snapshot.revision,
                                "eventId": snapshot.event_id, "eventRevision": snapshot.event_revision,
                                "researchStatus": snapshot.research_status, "executionStatus": snapshot.execution_status,
-                               "safeErrorCode": _safe_error_code(conn, snapshot.snapshot_id, snapshot.revision),
-                               **assessment})
+                               "safeErrorCode": safe_error_code, **dict(assessment)})
     return values
 
 
@@ -677,32 +1080,44 @@ def research_summary_for_scan(*, scan_id: str, db_path: Path) -> dict[str, Any] 
         safe_failure_counts: dict[str, int] = {}
         question_counts = {state: 0 for state in ("open", "answered", "blocked", "abandoned")}
         company_counts = {role: 0 for role in ("primary", "alternative", "tied", "pending", "excluded")}
+        direct_comparisons: set[str] = set()
         for snapshot in snapshots:
             research_counts[snapshot.research_status] = research_counts.get(snapshot.research_status, 0) + 1
             execution_counts[snapshot.execution_status] = execution_counts.get(snapshot.execution_status, 0) + 1
-            safe_error_code = _safe_error_code(conn, snapshot.snapshot_id, snapshot.revision)
+            direct_state = _current_direct_round(conn, snapshot)
+            direct = None if direct_state is None else direct_state[0]
+            safe_error_code = (direct.safe_error_code if direct is not None else
+                               _safe_error_code(conn, snapshot.snapshot_id, snapshot.revision))
             if safe_error_code is not None:
                 safe_failure_counts[safe_error_code] = safe_failure_counts.get(safe_error_code, 0) + 1
-            for question in _latest_payloads(conn, "k10_research_questions", "question_id", "question_json",
-                                             snapshot.snapshot_id, snapshot.revision):
-                state = question["state"]
+            questions = (_direct_questions(direct_state[1], direct) if direct_state is not None else
+                         _latest_payloads(conn, "k10_research_questions", "question_id", "question_json",
+                                          snapshot.snapshot_id, snapshot.revision))
+            assessments = (direct.company_assessments if direct is not None else
+                           _latest_payloads(conn, "k10_research_company_assessments", "company_code", "assessment_json",
+                                            snapshot.snapshot_id, snapshot.revision))
+            for question in questions:
+                state = question.state if isinstance(question, Question) else question["state"]
                 question_counts[state] += 1
-            for assessment in _latest_payloads(conn, "k10_research_company_assessments", "company_code", "assessment_json",
-                                               snapshot.snapshot_id, snapshot.revision):
+            for assessment in assessments:
                 company_counts[assessment["role"]] += 1
+            if direct is not None and direct.comparison is not None and direct.company_assessments:
+                direct_comparisons.add(snapshot.snapshot_id)
     return {
         "scanId": scan_id, "taskId": task_id, "eventCount": len(snapshots),
         "questionCounts": question_counts, "companyCounts": {**company_counts,
             "comparable": company_counts["primary"] + company_counts["alternative"] + company_counts["tied"]},
         "researchStatusCounts": research_counts, "executionStatusCounts": execution_counts,
         "safeFailureCounts": safe_failure_counts,
-        "comparisonComplete": bool(snapshots) and all(item.research_status == "comparison_complete" for item in snapshots),
+        "comparisonComplete": bool(snapshots) and all(
+            item.research_status == "comparison_complete" or item.snapshot_id in direct_comparisons
+            for item in snapshots),
         "executionFailed": task_execution_failed or any(item.execution_status == "failed" for item in snapshots),
     }
 
 
 __all__ = [
-    "advance_research_snapshot", "create_research_snapshot", "find_research_snapshot", "list_research_assessments", "list_research_claims",
-    "list_research_fulltext_requests", "list_research_query_paths", "list_research_questions", "load_prior_research_evidence", "read_research_snapshot", "read_research_state",
+    "append_research_round", "advance_research_snapshot", "advance_research_snapshot_batch", "create_research_snapshot", "find_research_snapshot", "list_research_assessments", "list_research_claims", "mark_research_round_failed",
+    "list_research_fulltext_requests", "list_research_query_paths", "list_research_questions", "load_prior_research_evidence", "load_research_round_state", "read_research_snapshot", "read_research_state",
     "research_summary_for_scan",
 ]

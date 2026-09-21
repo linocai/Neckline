@@ -1,21 +1,13 @@
-"""Typed, evidence-bounded K10 investigation stages.
-
-The investigation is deliberately action based.  A completed model call is not a
-research conclusion: the caller advances only the stage which the persisted
-snapshot still needs, and persists the returned derivative before considering a
-later stage.  This keeps retries/checkpoints outside the semantic contract while
-making it impossible to turn a failed lookup into a completed comparison.
-"""
+"""Historical research decoding and evidence validation; new execution uses direct rounds."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from hashlib import sha256
 import json
 from typing import Any, Mapping, Protocol, Sequence
 
 from .research_contracts import (
-    RESEARCH_ACTIONS, RESEARCH_STATUSES, QUERY_PURPOSE_KINDS, Claim, FullTextRequest, QueryPath, Question,
-    ResearchContractError, ResearchSnapshot, ResearchStageResult,
+    MERGED_RESEARCH_ACTIONS, RESEARCH_ACTIONS, RESEARCH_STATUSES, QUERY_PURPOSE_KINDS, Claim, FullTextRequest, QueryPath, Question,
+    MergedResearchResult, ResearchContractError, ResearchStageResult,
     validate_company_assessment, validate_company_mapping,
 )
 
@@ -26,12 +18,6 @@ class InvestigationError(RuntimeError):
     def __init__(self, message: str, *, code: str = "investigation_contract_invalid") -> None:
         super().__init__(message)
         self.code = code
-
-
-class InvestigationModel(Protocol):
-    def advance_research(self, *, snapshot: ResearchSnapshot, action: str,
-                         evidence_packet: Mapping[str, Any]) -> ResearchStageResult:
-        ...
 
 
 class InvestigationGateway(Protocol):
@@ -53,20 +39,6 @@ class InvestigationGateway(Protocol):
         ...
 
 
-@dataclass(frozen=True)
-class InvestigationStep:
-    """A validated, persistable result of exactly one investigation action."""
-
-    snapshot_id: str
-    input_sha256: str
-    result: ResearchStageResult
-
-
-def _digest(action: str, packet: Mapping[str, Any]) -> str:
-    return sha256(json.dumps({"action": action, "packet": packet}, ensure_ascii=False,
-                             sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-
-
 def _ref_keys(value: Any, *, field: str) -> set[tuple[str, int]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise InvestigationError(f"{field} 必须是来源引用列表")
@@ -84,28 +56,6 @@ def _ref_keys(value: Any, *, field: str) -> set[tuple[str, int]]:
 def _packet_refs(packet: Mapping[str, Any]) -> set[tuple[str, int]]:
     refs = packet.get("allowedEvidenceRefs", ())
     return _ref_keys(refs, field="allowedEvidenceRefs")
-
-
-def _assert_packet_boundary(*, action: str, packet: Mapping[str, Any]) -> None:
-    if not isinstance(packet, Mapping):
-        raise InvestigationError("研究证据包必须是对象")
-    _packet_refs(packet)
-    # Original frozen bodies are only needed to identify claims.  Every later
-    # prompt works from real references, excerpts and structured derivatives.
-    forbidden_body_keys = {"originalText", "original_text", "analysisText", "analysis_text"}
-    if action != "extract_claims" and forbidden_body_keys & set(packet):
-        raise InvestigationError("后续研究阶段不得重复传入冻结正文", code="investigation_body_reuse_forbidden")
-    if action == "assess_evidence" and "fullTextDocuments" in packet:
-        admitted = _ref_keys(packet.get("admittedFulltextRefs", ()), field="admittedFulltextRefs")
-        fulltext = packet["fullTextDocuments"]
-        if not isinstance(fulltext, Sequence) or isinstance(fulltext, (str, bytes)):
-            raise InvestigationError("受控全文必须是文档列表")
-        for item in fulltext:
-            if not isinstance(item, Mapping):
-                raise InvestigationError("受控全文文档无效")
-            ref = (item.get("documentId"), item.get("revision"))
-            if not isinstance(ref[0], str) or isinstance(ref[1], bool) or not isinstance(ref[1], int) or ref not in admitted:
-                raise InvestigationError("全文未获准入", code="investigation_fulltext_unadmitted")
 
 
 def _require_result(action: str, result: ResearchStageResult, packet: Mapping[str, Any]) -> None:
@@ -174,6 +124,186 @@ def validate_stage_result(*, action: str, result: ResearchStageResult, evidence_
     _require_result(action, result, evidence_packet)
 
 
+def _merged_context_requests(value: Mapping[str, Any], *, action: str,
+                             evidence_packet: Mapping[str, Any] | None = None) -> MergedResearchResult | None:
+    requests = value.get("contextRequests")
+    if requests is None:
+        return None
+    if not isinstance(requests, list) or any(not isinstance(item, Mapping) for item in requests):
+        raise InvestigationError("局部读取请求必须为对象列表", code="investigation_result_invalid")
+    if requests:
+        # Context-only responses intentionally have no derived semantic stage.
+        # They are still retained by the existing receipt/checkpoint path before
+        # the local read and same-action retry.
+        local = (evidence_packet or {}).get("_localState", evidence_packet or {})
+        known = {row.get("questionId") for row in local.get("questions", ())
+                 if isinstance(row, Mapping) and isinstance(row.get("questionId"), str)}
+        drafts = value.get("questions", ())
+        draft_ids = {row.get("questionId") for row in drafts
+                     if isinstance(row, Mapping) and isinstance(row.get("questionId"), str)} if isinstance(drafts, list) else set()
+        normalized = []
+        for request in requests:
+            clean = dict(request)
+            # A draft question in a context-only answer has no durable scope.
+            # It must not prevent a valid company-local field read or become a
+            # new hidden question merely because a provider bundled it beside
+            # the read request.
+            if clean.get("questionId") in draft_ids - known:
+                clean.pop("questionId", None)
+            normalized.append(clean)
+        try:
+            return MergedResearchResult(action=action, context_requests=tuple(normalized))
+        except ResearchContractError as exc:
+            raise InvestigationError("局部读取请求不符合 typed contract",
+                                     code="investigation_result_invalid") from exc
+    return None
+
+
+def _merged_cached_stage(value: Mapping[str, Any], *, field: str, action: str,
+                         evidence_packet: Mapping[str, Any]) -> ResearchStageResult:
+    raw = value.get(field)
+    if not isinstance(raw, Mapping):
+        raise InvestigationError("合并研究缓存缺少派生阶段", code="investigation_result_invalid")
+    return decode_stage_result(raw, action=action, evidence_packet=evidence_packet)
+
+
+def decode_merged_stage_result(value: Mapping[str, Any], *, action: str,
+                               evidence_packet: Mapping[str, Any] | None = None) -> MergedResearchResult:
+    """Normalize one B76 reply into two old, persistable research actions.
+
+    Provider responses keep a compact root shape; cached checkpoint derivatives
+    carry named stage objects.  In both forms no new action reaches Schema 9.
+    """
+    if action not in MERGED_RESEARCH_ACTIONS:
+        raise InvestigationError("未知合并研究阶段", code="investigation_action_invalid")
+    if isinstance(value, Mapping) and set(value) == {"outputContract"} and isinstance(value["outputContract"], Mapping):
+        value = value["outputContract"]
+    root_required = ({"questions", "queryPaths"} if action == "plan_research" else
+                     {"claims", "questions", "evidenceUpdates", "fulltextRequests", "queryPaths", "conclusion"})
+    root_permitted = root_required | {"contextRequests"}
+    if (isinstance(value, Mapping) and "action" not in value
+            and set(value) <= root_permitted and root_required <= set(value)):
+        # Match the legacy single-stage decoder's narrow repair for a provider
+        # that omitted only routing metadata.  The caller has already fixed
+        # the compound action, every root field uniquely identifies it, and
+        # later typed validation still checks every submitted fact and source.
+        value = {"action": action, **value}
+    if not isinstance(value, Mapping) or value.get("action") != action:
+        raise InvestigationError("研究输出 action 无效", code="investigation_action_mismatch") from ResearchContractError(
+            "根 action 必须匹配请求", field_name="action", expected="enum", allowed=(action,))
+    cached = (("planGaps", "planQueries") if action == "plan_research"
+              else ("assessEvidence", "closeResearch"))
+    if any(field in value for field in cached):
+        if set(key for key in value if key not in {"action", "contextRequests", *cached}):
+            raise InvestigationError("合并研究缓存字段无效", code="investigation_result_invalid")
+        context = _merged_context_requests(value, action=action, evidence_packet=evidence_packet)
+        if context is not None:
+            return context
+        first = _merged_cached_stage(value, field=cached[0],
+                                     action=("plan_gaps" if action == "plan_research" else "assess_evidence"),
+                                     evidence_packet=evidence_packet or {})
+        second = _merged_cached_stage(value, field=cached[1],
+                                      action=("plan_queries" if action == "plan_research" else "close_research"),
+                                      evidence_packet=evidence_packet or {})
+        return (MergedResearchResult(action=action, plan_gaps=first, plan_queries=second)
+                if action == "plan_research" else
+                MergedResearchResult(action=action, assess_evidence=first, close_research=second))
+    context = _merged_context_requests(value, action=action, evidence_packet=evidence_packet)
+    if context is not None:
+        return context
+    required = {"action", *root_required}
+    permitted = {"action", *root_permitted}
+    if set(value) - permitted or not required <= set(value):
+        raise InvestigationError("合并研究根字段不符合契约", code="investigation_result_invalid")
+    packet = evidence_packet or {}
+    try:
+        if action == "plan_research":
+            plan = decode_stage_result({"action": "plan_gaps", "questions": value.get("questions", [])},
+                                       action="plan_gaps", evidence_packet=packet)
+            # A pool-outside optional question is locally removed by the
+            # existing plan_gaps normalizer.  Its paired route is an optional
+            # hint too; retaining it would turn that recoverable hint into a
+            # whole-receipt path/question mismatch.
+            planned_ids = {question.question_id for question in plan.questions}
+            raw_paths = value.get("queryPaths", [])
+            if isinstance(raw_paths, list):
+                raw_paths = [row for row in raw_paths if not isinstance(row, Mapping)
+                             or row.get("questionId") in planned_ids]
+            # The route normalizer needs the same-receipt questions to decide
+            # whether an optional mixed-company path has a valid, narrower
+            # companion.  They are only a transient local view for this
+            # normalization: persistence and runtime scope binding still use
+            # the two derived legacy stages below.
+            local = packet.get("_localState") if isinstance(packet.get("_localState"), Mapping) else packet
+            current_questions = local.get("questions", ()) if isinstance(local.get("questions", ()), (list, tuple)) else ()
+            query_packet = {**packet,
+                "_localState": {**local, "questions": [*current_questions,
+                                                            *(item.to_dict() for item in plan.questions)]},
+                "openQuestionIds": [*packet.get("openQuestionIds", ()), *planned_ids]}
+            paths = decode_stage_result({"action": "plan_queries", "queryPaths": raw_paths},
+                                        action="plan_queries", evidence_packet=query_packet)
+            return MergedResearchResult(action=action, plan_gaps=plan, plan_queries=paths)
+        assess = decode_stage_result({
+            "action": "assess_evidence", "claims": value.get("claims", []),
+            "questions": value.get("questions", []), "queryPaths": value.get("queryPaths", []),
+            "evidenceUpdates": value.get("evidenceUpdates", []),
+            "fulltextRequests": value.get("fulltextRequests", []),
+        }, action="assess_evidence", evidence_packet=packet)
+        raw_close_questions = value.get("questions", [])
+        if not isinstance(raw_close_questions, list):
+            raw_close_questions = value.get("questions", [])
+        close = decode_stage_result({
+            "action": "close_research", "questions": raw_close_questions,
+            # New routes are the assessment/decision derivative.  Recording
+            # them again in close_research would conceal which old semantic
+            # action owns the planned work on recovery.
+            "queryPaths": [],
+            # The same applies to admitted body requests.  Duplicating one
+            # root request in both old actions would make _fulltexts fetch it
+            # twice after recovery.  The assessment derivative owns every
+            # concrete incremental request; the close derivative owns only
+            # the resulting decision.
+            "fulltextRequests": [], "conclusion": value.get("conclusion"),
+        }, action="close_research", evidence_packet=packet)
+        return MergedResearchResult(action=action, assess_evidence=assess, close_research=close)
+    except InvestigationError:
+        raise
+
+
+def validate_merged_stage_result(*, action: str, result: MergedResearchResult,
+                                 evidence_packet: Mapping[str, Any]) -> None:
+    if not isinstance(result, MergedResearchResult) or result.action != action:
+        raise InvestigationError("合并研究模型返回无效", code="investigation_result_invalid")
+    if result.context_requests:
+        return
+    if action == "plan_research":
+        assert result.plan_gaps is not None and result.plan_queries is not None
+        _require_result("plan_gaps", result.plan_gaps, evidence_packet)
+        # Initial paths may target questions created by this same receipt.  The
+        # packet extends only those declared questions; no hidden company or
+        # source facts are added.
+        open_ids = [*evidence_packet.get("openQuestionIds", ()),
+                    *(item.question_id for item in result.plan_gaps.questions)]
+        query_packet = {**evidence_packet, "openQuestionIds": list(dict.fromkeys(open_ids))}
+        _require_result("plan_queries", result.plan_queries, query_packet)
+        return
+    assert result.assess_evidence is not None and result.close_research is not None
+    _require_result("assess_evidence", result.assess_evidence, evidence_packet)
+    _require_result("close_research", result.close_research, evidence_packet)
+    if result.assess_evidence.query_paths:
+        open_ids = [item.get("questionId") for item in evidence_packet.get("questions", ())
+                    if isinstance(item, Mapping) and item.get("state") == "open"]
+        open_ids.extend(item.question_id for item in result.assess_evidence.questions if item.state == "open")
+        _require_result("plan_queries", ResearchStageResult("plan_queries",
+            query_paths=result.assess_evidence.query_paths),
+            {**evidence_packet, "openQuestionIds": list(dict.fromkeys(item for item in open_ids if isinstance(item, str)))})
+    conclusion = result.close_research.conclusion or {}
+    if conclusion.get("researchStatus") == "continue_research":
+        if evidence_packet.get("pathsExhausted") or not (
+                result.assess_evidence.query_paths or result.assess_evidence.fulltext_requests):
+            raise InvestigationError("继续研究必须带来可执行的新路径或全文定位", code="investigation_closure_required")
+
+
 def query_path_signature(path: QueryPath) -> str:
     """Stable semantic identity used to reject a synonym/repost retry loop."""
     value = {"questionId": path.question_id, "query": path.query.strip().casefold(),
@@ -183,6 +313,8 @@ def query_path_signature(path: QueryPath) -> str:
              "expectedJudgmentChange": path.expected_judgment_change.strip().casefold(),
              "purposeKind": path.purpose_kind,
              "targetRefs": [dict(item) for item in path.target_refs]}
+    if path.source_locator is not None:
+        value["sourceLocator"] = dict(path.source_locator)
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -433,8 +565,25 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
                 if discarded and isinstance(value.get("conclusion"), Mapping):
                     value["conclusion"] = {**value["conclusion"], "runtimeOutputSanitization": {
                         "discardedCompanyAssessments": discarded}}
+        # Reject malformed model collections at the normalizer boundary.  The
+        # typed constructors intentionally assume one object each; letting a
+        # string or scalar reach them leaks AttributeError/TypeError instead
+        # of producing the durable safe contract error that the receipt and
+        # recovery paths understand.
+        for field in ("claims", "questions", "queryPaths"):
+            rows = value.get(field, ())
+            if (not isinstance(rows, Sequence) or isinstance(rows, (str, bytes))
+                    or any(not isinstance(item, Mapping) for item in rows)):
+                raise ResearchContractError(f"{field} 必须是对象列表")
         from .research_context import collapse_repeated_work
-        value = collapse_repeated_work(value, evidence_packet or {})
+        local = (evidence_packet or {}).get("_localState", evidence_packet or {})
+        # Only the first accepted planning receipt may retain distinct declared
+        # source routes. Later labels are unverified wording and cannot widen
+        # the frozen route set.
+        initial_plan = (action == "plan_queries" and isinstance(local, Mapping)
+                        and not local.get("queryPaths"))
+        value = collapse_repeated_work(value, evidence_packet or {},
+                                       admit_initial_source_labels=initial_plan)
         claims = tuple(Claim.from_dict(item) for item in value.get("claims", ()))
         questions = tuple(Question.from_dict(item) for item in value.get("questions", ()))
         paths = tuple(QueryPath.from_dict(item) for item in value.get("queryPaths", ()))
@@ -468,27 +617,8 @@ def decode_stage_result(value: Mapping[str, Any], *, action: str,
         raise InvestigationError("研究输出不符合 typed contract", code="investigation_result_invalid") from exc
 
 
-def advance_research(*, model: InvestigationModel, snapshot: ResearchSnapshot, action: str,
-                     evidence_packet: Mapping[str, Any]) -> InvestigationStep:
-    """Run one required research action and return its safe typed derivative.
-
-    The caller owns durable snapshot advancement.  It must not call the next
-    action after an exception, a paused attempt, or a failed persistence write.
-    """
-    if action not in RESEARCH_ACTIONS:
-        raise InvestigationError("未知研究阶段", code="investigation_action_invalid")
-    if snapshot.execution_status != "ok":
-        raise InvestigationError("非正常执行状态不得推进研究", code="investigation_execution_not_ready")
-    try:
-        _assert_packet_boundary(action=action, packet=evidence_packet)
-        result = model.advance_research(snapshot=snapshot, action=action, evidence_packet=evidence_packet)
-        _require_result(action, result, evidence_packet)
-    except ResearchContractError as exc:
-        raise InvestigationError("研究结构不符合契约", code="investigation_contract_invalid") from exc
-    return InvestigationStep(snapshot.snapshot_id, _digest(action, evidence_packet), result)
-
-
 __all__ = [
-    "InvestigationError", "InvestigationGateway", "InvestigationModel", "InvestigationStep",
-    "advance_research", "decode_stage_result", "query_path_signature",
+    "InvestigationError", "InvestigationGateway",
+    "decode_merged_stage_result", "decode_stage_result", "query_path_signature",
+    "validate_merged_stage_result", "validate_stage_result",
 ]

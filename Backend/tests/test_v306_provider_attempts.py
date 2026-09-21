@@ -15,6 +15,7 @@ NOW = "2026-09-08T06:00:00+00:00"
 
 
 def _bound_provider(path: Path) -> MeteredProvider:
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW, changed_by="test", db_path=path)
     config_id, revision = append_approved_execution_profile(
         db_path=path, created_at=NOW, config_id="attempt-execution",
     )
@@ -57,6 +58,7 @@ def test_v3_paused_attempt_never_opens_a_socket(tmp_path: Path, monkeypatch) -> 
     path = tmp_path / "paused.sqlite"
     initialize_schema(path)
     provider = _bound_provider(path)
+    store.set_run_control(state="closed", reason_code="fixture_paused", changed_at=NOW, changed_by="test", db_path=path)
     monkeypatch.setattr(OpenAICompatProvider, "chat", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("socket")))
     with provider_spend_context(provider=provider, task_id="attempt-task", stage="titleBatch", item_key="batch-1", attempt=1):
         result = provider.chat([ChatMessage(role="user", content="标题")], enable_search=False,

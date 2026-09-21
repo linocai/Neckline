@@ -7,10 +7,11 @@ import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 import pytest
+from neckline.k10.research_contracts import ResearchRoundResult
 
 from neckline.k10 import metering, store
 from neckline.k10.investigation import (
-    InvestigationError, advance_research, decode_stage_result, query_path_signature,
+    InvestigationError, decode_stage_result, query_path_signature, validate_stage_result,
 )
 from neckline.k10.discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventComparison,
                                     EventDraft, InvestigationOutcome, Verification, _merge_same_event_sources, run_discovery)
@@ -43,43 +44,30 @@ class _Model:
         self.result = result
         self.calls = 0
 
-    def advance_research(self, **_kwargs) -> ResearchStageResult:
+    def advance_research_round(self, **_kwargs) -> ResearchRoundResult:
         self.calls += 1
         return self.result
 
 
-def test_extract_claims_is_the_only_stage_given_frozen_body_and_keeps_rumor_unverified():
-    model = _Model(ResearchStageResult("extract_claims", claims=(_claim(),)))
-    step = advance_research(model=model, snapshot=_snapshot(), action="extract_claims", evidence_packet={
+def test_historical_claim_validation_keeps_rumor_unverified():
+    result = ResearchStageResult("extract_claims", claims=(_claim(),))
+    validate_stage_result(action="extract_claims", result=result, evidence_packet={
         "allowedEvidenceRefs": [{"documentId": "source-1", "revision": 1}],
-        "originalText": "untrusted frozen body",
     })
-    assert step.result.claims[0].kind == "rumor"
-    assert step.result.claims[0].verification_status == "unverified"
-    with pytest.raises(InvestigationError, match="不得重复传入冻结正文"):
-        advance_research(model=_Model(ResearchStageResult("plan_gaps")), snapshot=_snapshot(), action="plan_gaps",
-                         evidence_packet={"allowedEvidenceRefs": [], "originalText": "must not recur"})
+    assert result.claims[0].kind == "rumor"
+    assert result.claims[0].verification_status == "unverified"
+    with pytest.raises(InvestigationError):
+        validate_stage_result(action="extract_claims", result=result, evidence_packet={"allowedEvidenceRefs": []})
 
 
-def test_query_paths_need_open_question_and_a_new_evidence_path():
+def test_historical_query_paths_need_a_new_evidence_path():
     path = QueryPath("path-1", "question-1", "项目 送样 公告", "确认项目是否送样", "项目主体",
                      "检查项目主体而不是转载", "确认阶段信息", "确认阶段会改变比较", "planned")
     packet = {"allowedEvidenceRefs": [], "openQuestionIds": ["question-1"],
               "attemptedPathSignatures": [query_path_signature(path)]}
     with pytest.raises(InvestigationError, match="没有新增证据路径"):
-        advance_research(model=_Model(ResearchStageResult("plan_queries", query_paths=(path,))), snapshot=_snapshot(),
-                         action="plan_queries", evidence_packet=packet)
-
-
-def test_fulltext_requires_existing_admission_and_is_not_an_implicit_retry():
-    model = _Model(ResearchStageResult("assess_evidence"))
-    with pytest.raises(InvestigationError, match="全文未获准入"):
-        advance_research(model=model, snapshot=_snapshot(), action="assess_evidence", evidence_packet={
-            "allowedEvidenceRefs": [{"documentId": "search-1", "revision": 1}],
-            "admittedFulltextRefs": [],
-            "fullTextDocuments": [{"documentId": "search-1", "revision": 1, "text": "body"}],
-        })
-    assert model.calls == 0
+        validate_stage_result(action="plan_queries", result=ResearchStageResult("plan_queries", query_paths=(path,)),
+                              evidence_packet=packet)
 
 
 def test_unverified_rumor_assessment_is_valid_when_disclosure_is_complete():
@@ -89,24 +77,30 @@ def test_unverified_rumor_assessment_is_valid_when_disclosure_is_complete():
         "priorityReason": "业务关系待核", "gap": "原始来源未知", "rankChangeConditions": "主体否认则撤回",
         "twoDayReason": "新传闻可能引发关注", "evidenceDisclosure": disclosure.to_dict(),
     }
-    step = advance_research(model=_Model(ResearchStageResult("compare_companies", company_assessments=(assessment,))),
-                            snapshot=_snapshot(), action="compare_companies", evidence_packet={
-                                "allowedEvidenceRefs": [], "companyCodes": ["300001.SZ"],
-                            })
-    assert step.result.company_assessments[0]["evidenceDisclosure"]["verificationStatus"] == "unverified"
+    result = ResearchStageResult("compare_companies", company_assessments=(assessment,))
+    validate_stage_result(action="compare_companies", result=result, evidence_packet={
+        "allowedEvidenceRefs": [], "companyCodes": ["300001.SZ"],
+    })
+    assert result.company_assessments[0]["evidenceDisclosure"]["verificationStatus"] == "unverified"
 
 
-def test_failed_execution_cannot_be_represented_as_completed_research():
-    with pytest.raises(InvestigationError, match="非正常执行状态"):
-        advance_research(model=_Model(ResearchStageResult("close_research", conclusion={"researchStatus": "ready_for_comparison"})),
-                         snapshot=_snapshot(execution_status="failed"), action="close_research",
-                         evidence_packet={"allowedEvidenceRefs": []})
+@pytest.mark.parametrize("status,code", [("failed", "investigation_previously_failed"),
+                                        ("paused", "investigation_execution_paused")])
+def test_direct_execution_cannot_complete_from_a_blocked_snapshot(status, code):
+    from neckline.k10.research_runtime import _Investigation
+    runtime = object.__new__(_Investigation)
+    runtime.state = {"snapshot": _snapshot(execution_status=status)}
+    runtime.allow_failed_resume = False
+    with pytest.raises(InvestigationError) as caught:
+        runtime._run_b78()
+    assert caught.value.code == code
 
 
-def test_safe_stage_error_stops_research_before_any_completion_can_be_recorded():
+def test_historical_safe_stage_error_cannot_be_validated_as_completion():
     with pytest.raises(InvestigationError, match="执行失败"):
-        advance_research(model=_Model(ResearchStageResult("plan_gaps", safe_error_code="investigation_provider_failed")),
-                         snapshot=_snapshot(), action="plan_gaps", evidence_packet={"allowedEvidenceRefs": []})
+        validate_stage_result(action="plan_gaps",
+            result=ResearchStageResult("plan_gaps", safe_error_code="investigation_provider_failed"),
+            evidence_packet={"allowedEvidenceRefs": []})
 
 
 def test_decoder_rejects_model_output_that_cannot_support_rumor_disclosure():
@@ -123,9 +117,10 @@ def test_checkpointed_investigation_reuses_same_typed_input_without_second_model
     path = tmp_path / "investigation.sqlite"
     initialize_schema(path)
     now = "2026-09-08T13:05:00+00:00"
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=now, changed_by="test", db_path=path)
     store.enqueue_task(task_id="task-1", kind="evening_scan", idempotency_key="research", input_version="fixture",
                        input_cutoff_at=now, payload={}, budget={}, created_at=now, db_path=path)
-    result = ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"})
+    result = ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []})
     base = _Model(result)
     binding = {"configId": "fixture", "revision": 1, "contentSha256": "c" * 64, "payload": {"discovery": {
         "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0,
@@ -143,10 +138,11 @@ def test_checkpointed_investigation_reuses_same_typed_input_without_second_model
                                           cutoff_at=__import__("datetime").datetime.fromisoformat(now), db_path=path,
                                           leaseguard=None)
     packet = {"allowedEvidenceRefs": []}
-    first = wrapped.advance_research(snapshot=_snapshot(), action="close_research", evidence_packet=packet)
-    second = wrapped.advance_research(snapshot=_snapshot(), action="close_research", evidence_packet=packet)
-    assert first.conclusion == second.conclusion == {"researchStatus": "pending_verification"}
+    first = wrapped.advance_research_round(snapshot=_snapshot(), evidence_packet=packet)
+    second = wrapped.advance_research_round(snapshot=_snapshot(), evidence_packet=packet)
+    assert first.conclusion == second.conclusion == {"researchStatus": "pending_verification", "companyMappings": []}
     assert base.calls == 1
+
 
 
 @pytest.mark.parametrize(("action", "key"), [
@@ -331,9 +327,10 @@ class _FailingResearchModel:
     def __init__(self, code: str) -> None:
         self.code, self.calls = code, 0
 
-    def advance_research(self, **_kwargs) -> ResearchStageResult:
+    def advance_research_round(self, **_kwargs) -> ResearchRoundResult:
         self.calls += 1
         raise PipelineError("fixture failure", code=self.code)
+
 
 
 def _checkpointed_research_wrapper(tmp_path, base, *, allow_failed_research_resume=False, network_max_attempts=1):
@@ -341,6 +338,7 @@ def _checkpointed_research_wrapper(tmp_path, base, *, allow_failed_research_resu
     if not path.exists():
         initialize_schema(path)
         now = "2026-09-08T13:05:00+00:00"
+        store.set_run_control(state="open", reason_code="offline_fixture", changed_at=now, changed_by="test", db_path=path)
         store.enqueue_task(task_id="task-1", kind="evening_scan", idempotency_key="research", input_version="fixture",
                            input_cutoff_at=now, payload={}, budget={}, created_at=now, db_path=path)
         with sqlite3.connect(path) as conn:
@@ -364,7 +362,7 @@ def test_authorized_recovery_retries_known_semantic_rejection_without_losing_sta
     path, first = _checkpointed_research_wrapper(tmp_path, failing)
     packet = {"allowedEvidenceRefs": []}
     with pytest.raises(PipelineError, match="模型阶段未完成") as rejected:
-        first.advance_research(snapshot=_snapshot(), action="close_research", evidence_packet=packet)
+        first.advance_research_round(snapshot=_snapshot(), evidence_packet=packet)
     assert rejected.value.code == "investigation_result_invalid"
     # A CAS revision change by itself is not semantic input. The explicit
     # recovery grants exactly one distinct group for the known semantic error.
@@ -374,15 +372,16 @@ def test_authorized_recovery_retries_known_semantic_rejection_without_losing_sta
         original.context_sha256, original.prompt_contract_revision,
         original.model_parameters_sha256, original.research_status, "ok", 9,
         original.created_at, "2026-09-08T14:00:00+00:00")
-    success = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
+    success = _Model(ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []}))
     _, second = _checkpointed_research_wrapper(tmp_path, success, allow_failed_research_resume=True)
-    assert second.advance_research(snapshot=resumed, action="close_research", evidence_packet=packet).conclusion == {
-        "researchStatus": "pending_verification"}
+    assert second.advance_research_round(snapshot=resumed, evidence_packet=packet).conclusion == {
+        "researchStatus": "pending_verification", "companyMappings": []}
     assert failing.calls == success.calls == 1
     with sqlite3.connect(path) as conn:
         rows = conn.execute("SELECT status,safe_error_code FROM k10_execution_item_checkpoints "
-                            "WHERE task_id='task-1' AND stage='model:investigation_close_research'").fetchall()
+                            "WHERE task_id='task-1' AND stage='model:investigation_research_round'").fetchall()
     assert {row[0] for row in rows} == {"failed", "completed"}
+
 
 
 def test_unknown_research_provider_attempt_never_enters_model_again_on_recovery(tmp_path):
@@ -390,17 +389,18 @@ def test_unknown_research_provider_attempt_never_enters_model_again_on_recovery(
     _, first = _checkpointed_research_wrapper(tmp_path, failing)
     packet = {"allowedEvidenceRefs": []}
     with pytest.raises(PipelineError, match="模型阶段未完成") as rejected:
-        first.advance_research(snapshot=_snapshot(), action="close_research", evidence_packet=packet)
+        first.advance_research_round(snapshot=_snapshot(), evidence_packet=packet)
     assert rejected.value.code == "provider_request_outcome_unknown"
-    valid = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
+    valid = _Model(ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []}))
     _, resumed = _checkpointed_research_wrapper(tmp_path, valid, allow_failed_research_resume=True)
     changed = ResearchSnapshot("snapshot-1", "task-1", "event-1", 1, "2026-09-08T13:00:00+00:00",
         "2026-09-08T14:00:00+00:00", "a" * 64, "k10-investigation-v1", "b" * 64,
         "continue_research", "ok", 10, "2026-09-08T13:05:00+00:00", "2026-09-08T14:00:00+00:00")
     with pytest.raises(PipelineError, match="结果未知") as raised:
-        resumed.advance_research(snapshot=changed, action="close_research", evidence_packet=packet)
+        resumed.advance_research_round(snapshot=changed, evidence_packet=packet)
     assert raised.value.code == "provider_request_outcome_unknown"
     assert valid.calls == 0
+
 
 
 def test_unknown_actual_provider_attempt_blocks_repeat_http_request(tmp_path, monkeypatch):
@@ -448,7 +448,7 @@ def test_unknown_actual_provider_attempt_blocks_repeat_http_request(tmp_path, mo
 
 def _investigation_checkpoint_identity(wrapper, snapshot, action, packet, *, recovery_of=None):
     _, request = request_spec(snapshot=snapshot, action=action, evidence_packet=packet)
-    item = {"snapshot": request["snapshot"], "action": action, "evidencePacket": dict(packet)}
+    item = {"snapshot": request["snapshot"], "action": action, "evidencePacket": request["evidencePacket"]}
     operation = f"investigation_{action}"
     digest = wrapper._digest(operation=operation, stage="investigation", item=item)
     if recovery_of is not None:
@@ -472,16 +472,17 @@ def _write_investigation_checkpoint(path, *, operation, item_key, digest, ledger
 
 
 def test_running_research_checkpoint_blocks_recovery_even_with_remaining_network_attempts(tmp_path):
-    valid = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
+    valid = _Model(ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []}))
     path, wrapper = _checkpointed_research_wrapper(tmp_path, valid, network_max_attempts=2)
     packet, snapshot = {"allowedEvidenceRefs": []}, _snapshot()
-    operation, item_key, digest, ledger = _investigation_checkpoint_identity(wrapper, snapshot, "close_research", packet)
+    operation, item_key, digest, ledger = _investigation_checkpoint_identity(wrapper, snapshot, "research_round", packet)
     _write_investigation_checkpoint(path, operation=operation, item_key=item_key, digest=digest, ledger=ledger,
                                     status="running", code=None, network_attempts=1)
     with pytest.raises(PipelineError, match="结果未知") as raised:
-        wrapper.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet)
+        wrapper.advance_research_round(snapshot=snapshot, evidence_packet=packet)
     assert raised.value.code == "model_request_outcome_unknown"
     assert valid.calls == 0
+
 
 
 def test_authorized_semantic_recovery_does_not_bypass_unknown_derived_checkpoint(tmp_path):
@@ -489,47 +490,48 @@ def test_authorized_semantic_recovery_does_not_bypass_unknown_derived_checkpoint
     path, first = _checkpointed_research_wrapper(tmp_path, failing)
     packet, snapshot = {"allowedEvidenceRefs": []}, _snapshot()
     with pytest.raises(PipelineError):
-        first.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet)
+        first.advance_research_round(snapshot=snapshot, evidence_packet=packet)
     # Let the real recovery producer create its derived input, including the
     # correction feedback. A manually reconstructed old digest would miss the
     # actual checkpoint and could hide an unknown-result retry regression.
     unknown = _FailingResearchModel("provider_request_outcome_unknown")
     _, recovery = _checkpointed_research_wrapper(tmp_path, unknown, allow_failed_research_resume=True)
     with pytest.raises(PipelineError) as dispatched:
-        recovery.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet)
+        recovery.advance_research_round(snapshot=snapshot, evidence_packet=packet)
     assert dispatched.value.code == "provider_request_outcome_unknown"
     assert unknown.calls == 1
     with sqlite3.connect(path) as conn:
         rows = conn.execute("SELECT input_sha256,safe_error_code FROM k10_execution_item_checkpoints "
-                            "WHERE stage='model:investigation_close_research'").fetchall()
+                            "WHERE stage='model:investigation_research_round'").fetchall()
     assert len(rows) == 2 and len({row[0] for row in rows}) == 2
     assert {row[1] for row in rows} == {"investigation_result_invalid", "provider_request_outcome_unknown"}
-    valid = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
+    valid = _Model(ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []}))
     _, resumed = _checkpointed_research_wrapper(tmp_path, valid, allow_failed_research_resume=True)
     with pytest.raises(PipelineError, match="结果未知") as raised:
-        resumed.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet)
+        resumed.advance_research_round(snapshot=snapshot, evidence_packet=packet)
     assert raised.value.code == "provider_request_outcome_unknown"
     assert valid.calls == 0
 
 
+
 def test_semantically_rejected_typed_checkpoint_is_not_reused_and_authorized_recovery_retries_once(tmp_path):
     packet, snapshot = {"allowedEvidenceRefs": []}, _snapshot()
-    cached = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
+    cached = _Model(ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []}))
     path, first = _checkpointed_research_wrapper(tmp_path, cached)
-    assert first.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet).conclusion == {
-        "researchStatus": "pending_verification"}
+    assert first.advance_research_round(snapshot=snapshot, evidence_packet=packet).conclusion == {
+        "researchStatus": "pending_verification", "companyMappings": []}
     # This mirrors the later investigation relation/company validation: the
     # model output is typed JSON but its claimed source/company relation is not
     # valid for the current evidence packet.
-    assert first.reject_research_result(snapshot=snapshot, action="close_research", evidence_packet=packet,
+    assert first.reject_research_result(snapshot=snapshot, action="research_round", evidence_packet=packet,
                                         safe_error_code="investigation_reference_invalid")
-    operation, _item_key, _digest, ledger = _investigation_checkpoint_identity(first, snapshot, "close_research", packet)
+    operation, _item_key, _digest, ledger = _investigation_checkpoint_identity(first, snapshot, "research_round", packet)
     with sqlite3.connect(path) as conn:
         row = conn.execute("SELECT status,result_json,safe_error_code FROM k10_execution_item_checkpoints "
                            "WHERE task_id='task-1' AND item_key=? AND stage=?", (ledger, f"model:{operation}")).fetchone()
     assert row is not None and row[0] == "failed" and row[1] is not None and row[2] == "investigation_reference_invalid"
-    retried = _Model(ResearchStageResult("close_research", conclusion={"researchStatus": "pending_verification"}))
+    retried = _Model(ResearchRoundResult("research_round", conclusion={"researchStatus": "pending_verification", "companyMappings": []}))
     _, recovery = _checkpointed_research_wrapper(tmp_path, retried, allow_failed_research_resume=True)
-    assert recovery.advance_research(snapshot=snapshot, action="close_research", evidence_packet=packet).conclusion == {
-        "researchStatus": "pending_verification"}
+    assert recovery.advance_research_round(snapshot=snapshot, evidence_packet=packet).conclusion == {
+        "researchStatus": "pending_verification", "companyMappings": []}
     assert cached.calls == retried.calls == 1

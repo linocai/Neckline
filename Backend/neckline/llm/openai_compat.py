@@ -10,11 +10,58 @@ import json
 from hashlib import sha256
 import logging
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+import signal
+import threading
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
 
 logger = logging.getLogger(__name__)
+
+_RESPONSE_DEADLINE: ContextVar[float | None] = ContextVar("provider_response_deadline", default=None)
+
+
+def can_bound_response_wait() -> bool:
+    # CLI tasks run on the main thread; lease heartbeats remain separate.
+    # Never replace another component's process timer.
+    return (threading.current_thread() is threading.main_thread()
+            and hasattr(signal, "setitimer") and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0))
+
+
+@contextmanager
+def bounded_response_wait(seconds: float):
+    """Bind a total response deadline, without interrupting durable DB writes."""
+    token = _RESPONSE_DEADLINE.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _RESPONSE_DEADLINE.reset(token)
+
+
+@contextmanager
+def _response_wait_guard():
+    deadline = _RESPONSE_DEADLINE.get()
+    if deadline is None:
+        yield
+        return
+    import httpx
+    if not can_bound_response_wait():
+        raise httpx.ReadTimeout("bounded provider wait unavailable")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise httpx.ReadTimeout("provider response deadline")
+    previous = signal.getsignal(signal.SIGALRM)
+    def expire(_signum, _frame):
+        raise httpx.ReadTimeout("provider response deadline")
+    signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, remaining)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 class _RetryableUpstreamStatus(RuntimeError):
@@ -140,6 +187,8 @@ def _model_options(options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
 def _failure_code(reason: str) -> str:
     if reason == "上游内容风控拒绝":
         return "content_policy_refused"
+    if reason.startswith("上游 401") or reason.startswith("上游 403"):
+        return "provider_authorization_failed"
     if reason.startswith("上游 402") or reason.startswith("上游 429/1113"):
         return "insufficient_balance"
     if reason.startswith("上游 429"):
@@ -666,7 +715,10 @@ class OpenAICompatProvider(LLMProvider):
         import httpx
 
         try:
-            resp = client.post(self.api_url, json=payload, headers=self._headers())
+            # Interrupt HTTP waiting only. Receipt/usage persistence happens
+            # after this guard restores the original process signal state.
+            with _response_wait_guard():
+                resp = client.post(self.api_url, json=payload, headers=self._headers())
         except httpx.HTTPError as exc:
             # These are the narrow pre-dispatch failures that httpx can prove
             # did not establish a provider connection.  Preserve their legacy

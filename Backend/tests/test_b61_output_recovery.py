@@ -17,7 +17,9 @@ def api_for(db):
     return TestClient(create_app(db, config_id='b39', execution_config_id='b39-execution'))
 
 
-@pytest.mark.parametrize('stage', ['titleGlobal', 'titleReview', 'understand'])
+# B78 merges the former third title review into the direct research round. Keep
+# compact-repair coverage at the remaining output boundaries.
+@pytest.mark.parametrize('stage', ['titleGlobal', 'understand'])
 def test_output_truncation_uses_compact_repair_within_bound_policy(tmp_path, monkeypatch, stage):
     seen=[]
     def observe(request):

@@ -26,6 +26,7 @@ LATER = "2026-09-08T13:06:00+00:00"
 
 def _seed(path):
     schema.initialize_schema(path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW, changed_by="test", db_path=path)
     store.enqueue_task(task_id="task-1", kind="evening_scan", idempotency_key="research-task",
                        input_version="fixture", input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)
     store.append_document_version(document_id="source-1", source_key="fixture", external_id="source-1",
@@ -329,6 +330,7 @@ _V6_TABLES = (
 
 def _seed_pre_b39_database(path: Path, *, schema_version: int) -> dict[str, object]:
     schema.initialize_schema(path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW, changed_by="test", db_path=path)
     store.enqueue_task(task_id="legacy-task", kind="evening_scan", idempotency_key="legacy-task",
                        input_version="legacy", input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)
     store.append_document_version(document_id="legacy-source", source_key="fixture", external_id="legacy-source",
@@ -386,6 +388,8 @@ def _seed_pre_b39_database(path: Path, *, schema_version: int) -> dict[str, obje
         conn.execute("DROP TABLE k10_morning_review_results")
         # The fixture deliberately reconstructs the declared pre-Schema-9 database.
         conn.execute("DROP TABLE k10_model_response_receipts")
+        for table in ("k10_tavily_response_receipts", "k10_morning_review_work_items", "k10_research_round_results"):
+            conn.execute(f"DROP TABLE {table}")
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'k10_v2_%'").fetchall():
             conn.execute(f"DROP TABLE {row[0]}")
         for table in _V7_TABLES:

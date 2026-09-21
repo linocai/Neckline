@@ -1,16 +1,18 @@
-"""Per-candidate K10 09:00 review handler; scan orchestration remains outside this module."""
+"""K10 morning work-item review with an 08:30 input cutoff; the parent run owns orchestration."""
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from hashlib import sha256
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from neckline.llm.base import ChatMessage
+from neckline.llm.openai_compat import bounded_response_wait, can_bound_response_wait
 
 from . import store
-from .morning import MorningReportError, MorningUpdateError, build_morning_report_item, build_morning_update, record_morning_update
+from .morning import MorningReportError, MorningUpdateError, build_morning_report_item, build_morning_update, record_morning_update, morning_update_record
 from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
 from .opportunity_discovery import ComparisonValidationError, validate_evidence_disclosure
 from .providers import resolve_deepseek_v4_pro
@@ -103,7 +105,9 @@ def _frozen_evidence_disclosure(*, payload: Mapping[str, Any], base: Mapping[str
     return dict(selected)
 
 
-def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
+def morning_review_handler(context: TaskContext, *, clock=_now,
+                           closeout_reserve: timedelta | None = None,
+                           response_deadline_at: datetime | None = None) -> TaskResult:
     """Review only frozen evidence; it may withdraw a formal opportunity, never its D1/D2 window."""
     context.require_lease(); payload=context.task.payload
     candidate_id, original_cutoff = payload.get("candidateId"), payload.get("originalCutoffAt")
@@ -117,7 +121,11 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
         return TaskResult('not_configured','configuration',error='晨间模型未配置')
     from .v2_store import read_morning_result,save_morning_result
     input_hash=sha256(json.dumps({'payload':payload,'cutoff':context.input_cutoff_at,'configuration':configuration},ensure_ascii=False,sort_keys=True).encode()).hexdigest()
-    cached=read_morning_result(task_id=context.task.task_id,input_sha256=input_hash,db_path=context.db_path)
+    work_item_id = payload.get("workItemId")
+    if work_item_id is not None and (not isinstance(work_item_id, str) or not work_item_id):
+        return TaskResult("not_configured", "configuration", error="晨间父任务工作项无效")
+    cached=read_morning_result(task_id=context.task.task_id,input_sha256=input_hash,db_path=context.db_path,
+                               work_item_id=work_item_id)
     def invalid_model(message: str) -> TaskResult:
         if cached is None:
             context.require_lease()
@@ -167,16 +175,40 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
     if cached is not None:
         raw=cached['raw']
     else:
-        expired = provider_deadline_result(context=context)
-        if expired is not None:
-            return expired
-        try:
+        result = None
+        if isinstance(resolution.provider, MeteredProvider):
+            # Paid receipt recovery is local and must precede new-spend gates.
             with provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
                                         stage="morning", item_key=str(candidate_id), attempt=context.task.attempt_count,
-                                        clock=context.clock):
-                result=resolution.provider.chat(messages, enable_search=False, response_format={"type":"json_object"},
-                                                model_options=model_options)
-        except Exception as exc: return TaskResult("failed","model",error=f"晨间模型调用异常：{type(exc).__name__}")
+                                        clock=context.clock, receipt_only=True):
+                result = resolution.provider.chat(messages, enable_search=False,
+                    response_format={"type": "json_object"}, model_options=model_options)
+            if result.error_code == "provider_response_receipt_missing":
+                result = None
+        if result is None:
+            expired = provider_deadline_result(context=context)
+            if expired is not None:
+                return expired
+            if (closeout_reserve is not None and context.execution_deadline_at is not None
+                    and context.execution_deadline_at - context.clock() <= closeout_reserve):
+                return TaskResult("failed", "morning_closeout", {
+                    "safeErrorCode": "morning_closeout_reserve",
+                }, "为晨报提交保留时间，本项复核未启动，已完成内容保留")
+            if response_deadline_at is not None and (
+                    not can_bound_response_wait() or getattr(resolution.provider, "use_streaming", False)):
+                return TaskResult("failed", "morning_closeout", {"safeErrorCode": "morning_closeout_reserve"},
+                                  "当前执行环境不能保证请求按时结束，本项复核未启动")
+            wait_seconds = (response_deadline_at - context.clock()).total_seconds() if response_deadline_at is not None else None
+            if wait_seconds is not None and wait_seconds <= 0:
+                return TaskResult("failed", "morning_closeout", {"safeErrorCode": "morning_closeout_reserve"},
+                                  "为晨报提交保留时间，本项复核未启动")
+            try:
+                with (bounded_response_wait(wait_seconds) if wait_seconds is not None else nullcontext()), provider_spend_context(provider=resolution.provider, task_id=context.task.task_id,
+                                            stage="morning", item_key=str(candidate_id), attempt=context.task.attempt_count,
+                                            clock=context.clock):
+                    result=resolution.provider.chat(messages, enable_search=False, response_format={"type":"json_object"},
+                                                    model_options=model_options)
+            except Exception as exc: return TaskResult("failed","model",error=f"晨间模型调用异常：{type(exc).__name__}")
         if not result.ok:
             return provider_failure_result(context=context, stage="model", code=result.error_code,
                                            retry_after_seconds=result.retry_after_seconds)
@@ -205,18 +237,32 @@ def morning_review_handler(context: TaskContext, *, clock=_now) -> TaskResult:
     except (MorningUpdateError,KeyError,StopIteration): return invalid_model("晨间状态或资料引用无效")
     if cached is None:
         context.require_lease()
-        cached=save_morning_result(task_id=context.task.task_id,input_sha256=input_hash,raw=raw,captured_at=clock(),db_path=context.db_path)
-    update_id="morning_"+sha256((context.task.task_id+"\x1f"+candidate_id+"\x1f"+context.input_cutoff_at).encode()).hexdigest()[:32]
+        cached=save_morning_result(task_id=context.task.task_id,input_sha256=input_hash,raw=raw,captured_at=clock(),db_path=context.db_path,
+                                   work_item_id=work_item_id)
+    update_owner = work_item_id or context.task.task_id
+    update_id="morning_"+sha256((update_owner+"\x1f"+candidate_id+"\x1f"+context.input_cutoff_at).encode()).hexdigest()[:32]
     lifecycle_event_id: str | None = None
+    lifecycle_update = None
     if raw["material"] or update.requires_review:
-        context.require_lease(); actual_time = cached["capturedAt"]; lifecycle_event_id = record_morning_update(repository=store,db_path=context.db_path,update=update,
-            opportunity_id=opportunity["opportunityId"], update_id=update_id,created_at=actual_time,occurred_at=actual_time,scan_id=context.task.payload.get("parentScanId"),material=raw["material"])
+        context.require_lease()
+        actual_time = cached["capturedAt"]
+        if work_item_id is not None:
+            lifecycle_update = morning_update_record(update=update,
+                opportunity_id=opportunity["opportunityId"], update_id=update_id,
+                created_at=actual_time, occurred_at=actual_time,
+                scan_id=payload.get("parentScanId"), material=raw["material"])
+            lifecycle_event_id = update_id
+        else:
+            lifecycle_event_id = record_morning_update(repository=store, db_path=context.db_path, update=update,
+                opportunity_id=opportunity["opportunityId"], update_id=update_id, created_at=actual_time,
+                occurred_at=actual_time, scan_id=payload.get("parentScanId"), material=raw["material"])
     try:
         report = _report_checkpoint(
             context=context, opportunity=opportunity, descriptor=descriptor, source_status=source_status,
             reason_status=update.reason_status, material=raw["material"], summary=update.summary,
             source_refs=refs, independent_refs=independent_refs, lifecycle_event_id=lifecycle_event_id,
             extra={"update": update.to_dict(), "updated": lifecycle_event_id is not None,
+                   **({"lifecycleUpdate": lifecycle_update} if lifecycle_update is not None else {}),
                    **({"evidenceDisclosure": disclosure} if disclosure is not None else {})},
         )
     except MorningReportError:

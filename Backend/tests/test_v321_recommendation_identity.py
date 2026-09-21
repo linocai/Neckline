@@ -30,37 +30,29 @@ def _assert_projection_contains(actual, persisted):
         assert actual == persisted
 
 
-def build_identity_case(tmp_path, monkeypatch, *, code, role, rejected_kind, reason):
-    """Also used by native QA: the producer, rather than a fixture writer, publishes."""
+def build_identity_case(tmp_path, monkeypatch, *, code, role):
+    """The direct round, rather than a fixture writer, publishes the card."""
     def edit(value):
         if 'items' in value:
             for row in value['items']:
                 row['companyCodes'] = [code]
-        if value.get('action') == 'close_research' and value['conclusion'].get('companyMappings'):
+        if value.get('action') == 'research_round' and value['conclusion'].get('companyMappings'):
             row = copy.deepcopy(value['conclusion']['companyMappings'][0])
             value['conclusion']['companyMappings'] = [{**row, 'companyCode': code}]
-        if value.get('action') == 'compare_companies':
             row = copy.deepcopy(value['companyAssessments'][0])
             value['companyAssessments'] = [{**row, 'companyCode': code, 'role': role, 'rank': 1}]
-        if 'kind' in value:
-            value.update(kind=rejected_kind, relatedOpportunityId=None, reason=reason)
     edit_responses(monkeypatch, edit)
     return e2e._run(
         tmp_path, monkeypatch, v2=True, pending_ranking='legacy_wrong', require_title_hint=False,
     )
 
 
-@pytest.mark.parametrize('code,role,rejected_kind,reason', [
-    ('300961.SZ', 'primary', 'needs_review',
-     '无已有正式推荐机会；证据来源单一且未核实，官方公告和权益变动报告缺失，待官方披露确认。'),
-    ('300842.SZ', 'alternative', 'background',
-     '该标的仅为关联对照底稿中的alternative，未形成正式推荐，不能追认为备选。'),
+@pytest.mark.parametrize('code,role', [
+    ('300961.SZ', 'primary'),
+    ('300842.SZ', 'alternative'),
 ])
-def test_first_recommendation_survives_retired_veto_through_real_worker(
-    tmp_path, monkeypatch, code, role, rejected_kind, reason,
-):
-    db, task_id, task, calls, _ = build_identity_case(tmp_path, monkeypatch, code=code, role=role,
-        rejected_kind=rejected_kind, reason=reason)
+def test_direct_assessment_publishes_without_retired_identity_classifier(tmp_path, monkeypatch, code, role):
+    db, task_id, task, calls, _ = build_identity_case(tmp_path, monkeypatch, code=code, role=role)
     assert task.status == 'completed'
     assert {row['companyCode']: row['role'] for row in list_research_assessments(db_path=db, task_id=task_id)} == {code: role}
     report = read_report(db_path=db)

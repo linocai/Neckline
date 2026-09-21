@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import re
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from .research_material import (INDEX_VERSION, MAX_FRAGMENT_CHARACTERS, bounded_excerpt, document_outline,
     read_locator, requires_current_event_locator, scoped_find, direct_location, resize_catalogue, catalogue_restart_location)
@@ -14,6 +16,26 @@ PROTOCOL = 'k10-v2-context-3.3.0-b70'
 
 def digest(value: Any) -> str:
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def canonical_body_identity(source: Mapping[str, Any] | Any) -> str | None:
+    """Hash the source body only, never URL, fetch metadata, or row version.
+
+    ``k10_source_document_versions.content_sha256`` identifies a stored source
+    revision and can legitimately change when a URL or provider metadata
+    changes.  Research route identity instead needs to know whether the
+    evidence text it would show is new.  The original body is authoritative;
+    a source without one uses its stored excerpt.  Normalising line endings
+    removes transport-only variation without collapsing meaningful content.
+    """
+    def value(*names: str) -> str | None:
+        for name in names:
+            candidate = source.get(name) if isinstance(source, Mapping) else getattr(source, name, None)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.replace("\r\n", "\n").replace("\r", "\n").strip()
+        return None
+    body = value("original_text", "originalText") or value("excerpt")
+    return digest({"body": body}) if body is not None else None
 
 
 def public_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,6 +217,13 @@ def _project_fulltext_document(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(packet)
+    # B78 asks for one direct event judgment.  It receives the already
+    # prepared claims, relevant evidence and bounded company data together;
+    # it is not a disguised plan/assess/close projection.
+    direct_round = action == 'research_round'
+    planning = action in {'plan_queries', 'plan_research'}
+    deciding = action in {'assess_evidence', 'assess_and_decide'}
+    closing = action in {'close_research', 'assess_and_decide'}
     scope = dict(packet['companyScope']) if isinstance(packet.get('companyScope'), Mapping) else {}
     for key in ('companyProfiles', 'candidateCompanyCodes', 'profileSnapshotId', 'profileStatus', 'scopeRule', 'localProfileQuery'):
         if key in result:
@@ -208,7 +237,7 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     scope.pop('localProfileQuery', None)
     # Identity and provenance remain local; a candidate summary is sufficient
     # for planning a source query or reading a new source paragraph.
-    if action in {'plan_queries', 'assess_evidence'}:
+    if planning or deciding or direct_round:
         scope['companyProfiles'] = [_profile_projection(row) for row in scope.get('companyProfiles', [])]
     elif action in {'plan_gaps', 'close_research', 'compare_companies'}:
         scope['companyProfiles'] = [_profile_projection(row) for row in scope.get('companyProfiles', [])]
@@ -218,35 +247,37 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     result['_localState'] = packet.get('_localState') or {'claims': packet.get('claims', []), 'questions': packet.get('questions', []),
         'fulltextRequests': packet.get('fulltextRequests', []), 'fixedPool': pool,
         'evidenceUpdates': packet.get('evidenceUpdates', []), 'queryPaths': packet.get('queryPaths', []),
-        'pathDependencies': packet.get('_localPathDependencies', {})}
+        'pathDependencies': packet.get('_localPathDependencies', {}),
+        'routeSourceKeys': packet.get('_localRouteSourceKeys', {}),
+        'questionDependencies': packet.get('_localQuestionDependencies', {})}
     questions = list(packet.get('questions', []))
-    if action == 'plan_queries':
+    if planning:
         questions = [q for q in questions if q['state'] == 'open']
-    elif action == 'assess_evidence':
+    elif deciding:
         affected = set(packet.get('affectedQuestionIds', []))
         questions = [q for q in questions if q['questionId'] in affected] if affected else [q for q in questions if q['state'] == 'open']
-    if action in {'close_research', 'compare_companies'}:
+    if closing or action == 'compare_companies':
         questions = [q if q['state'] == 'open' else {key: q[key] for key in
             ('questionId', 'claimIds', 'state', 'missingEvidence', 'resumeCondition', 'knownEvidence') if key in q} for q in questions]
     result['questions'] = questions
-    if action in {'plan_queries', 'assess_evidence'} and questions:
+    if (planning or deciding or direct_round) and questions:
         codes = {code for q in questions for code in q.get('companyCodes', [])}
         scope['companyProfiles'] = [row for row in scope.get('companyProfiles', []) if row['identity']['ts_code'] in codes]
         scope['candidateCompanyCodes'] = [code for code in scope.get('candidateCompanyCodes', []) if code in codes]
     if 'contextResults' in result:
         result['contextResults'] = _safe_context_results(result)
-    if action in {'plan_queries', 'assess_evidence'}:
+    if action == 'plan_queries' or deciding:
         ids = {claim for q in questions for claim in q['claimIds']}
         result['claims'] = [claim for claim in packet.get('claims', []) if claim['claimId'] in ids]
     ids = {claim['claimId'] for claim in result.get('claims', [])}
     result['evidenceUpdates'] = [row for row in packet.get('evidenceUpdates', []) if row['claimId'] in ids]
     result['queryPaths'] = [{key: row[key] for key in ('pathId', 'questionId', 'state', 'resultSummary', 'targetSource', 'intent') if key in row}
         for row in packet.get('queryPaths', []) if row['questionId'] in {q['questionId'] for q in questions}]
-    if action in {'close_research', 'compare_companies', 'plan_gaps'}:
+    if closing or action in {'compare_companies', 'plan_gaps'}:
         # Only material remaining paths affect closure; completed route history
         # stays available through its question, not in every comparison.
         result['queryPaths'] = [row for row in result['queryPaths'] if row['state'] == 'planned']
-    if action == 'close_research':
+    if closing:
         result['pathAvailability'] = []
         for question in questions:
             paths = [row for row in packet.get('queryPaths', []) if row['questionId'] == question['questionId'] and row['state'] != 'planned']
@@ -274,14 +305,14 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     shared = [{**claim, 'claimId': 'shared_' + digest({key: claim.get(key)
                     for key in ('claimId', 'text', 'kind', 'novelty', 'sourceRef', 'location')})[:24]}
               if claim['claimId'] in local_ids or len(identities[claim['claimId']]) > 1 else claim for claim in shared]
-    result['reusableSourceEvidence'] = {'claims': shared, 'companyRelations': reusable.get('companyRelations', []), 'isolated': reusable.get('isolated', [])} if action in {'plan_gaps', 'close_research', 'compare_companies'} else {'claims': []}
+    result['reusableSourceEvidence'] = {'claims': shared, 'companyRelations': reusable.get('companyRelations', []), 'isolated': reusable.get('isolated', [])} if action in {'plan_gaps', 'plan_research', 'close_research', 'assess_and_decide', 'compare_companies', 'research_round'} else {'claims': []}
     relevant_refs = {ref_key(c['sourceRef']) for c in result.get('claims', [])}
     relevant_refs.update(ref_key(row['sourceRef']) for row in result['evidenceUpdates'])
     relevant_refs.update(ref_key(ref) for q in questions for ref in q.get('knownEvidence', []))
     relevant_refs.update(ref_key(ref) for ref in packet.get('newEvidenceRefs', []))
     cards=[]
     for card in packet.get('evidenceCards', []):
-        if action in {'plan_queries', 'assess_evidence'} and ref_key(card) not in relevant_refs:
+        if (planning or deciding) and ref_key(card) not in relevant_refs:
             continue
         # A claim is represented exactly once, in claims. A naked source ID is
         # insufficient: cards with neither visible claim nor excerpt stay hidden.
@@ -316,6 +347,30 @@ def project_packet(action: str, packet: Mapping[str, Any]) -> dict[str, Any]:
     result['visibleContext'] = {'claimIds': sorted(ids), 'sourceRefs': result['allowedEvidenceRefs'],
         'companyFields': [{'companyCode': row['identity']['ts_code'], 'fields': sorted(row),
                            'contentSha256': digest(row)} for row in scope.get('companyProfiles', [])]}
+    return result
+
+
+def canonical_context_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Identity is the addressed business material, not model JSON spelling."""
+    fields = {
+        'source': {'sourceRef', 'location'},
+        'company_fields': {'companyCode', 'fields'},
+        'company_search': {'query'},
+        'claim': {'id'}, 'question': {'id'},
+    }
+    kind = request.get('kind')
+    if kind not in fields:
+        raise ValueError('unknown context kind')
+    result = {key: value for key, value in request.items()
+              if key in fields[kind] | {'kind', 'questionId'}}
+    if result.get('questionId') is None:
+        result.pop('questionId', None)
+    if kind == 'company_fields' and isinstance(result.get('fields'), list):
+        if not all(isinstance(field, str) for field in result['fields']):
+            raise ValueError('invalid company fields')
+        result['fields'] = sorted(set(result['fields']))
+    if kind == 'source' and isinstance(result.get('location'), str):
+        result['location'] = result['location'].strip()
     return result
 
 
@@ -441,7 +496,7 @@ def question_identity(question):
         normalized_text(question.get('refuteCondition', ''))])
 
 
-def collapse_repeated_work(value, packet):
+def collapse_repeated_work(value, packet, *, admit_initial_source_labels: bool = False):
     """Collapse only program-provable identity changes, preserving new facts."""
     if not packet.get('contextProtocol'):
         return value
@@ -462,16 +517,42 @@ def collapse_repeated_work(value, packet):
         if q not in questions:
             questions.append(q)
     known = {q['questionId']: q for q in [*local.get('questions', []), *questions]}
-    def route(row):
+    source_keys = local.get('routeSourceKeys', {}) if isinstance(local.get('routeSourceKeys'), Mapping) else {}
+    question_dependencies = (local.get('questionDependencies', {})
+                             if isinstance(local.get('questionDependencies'), Mapping) else {})
+    def route(row, *, source_key=None):
         q = known.get(row.get('questionId'), {})
-        dependency = local.get('pathDependencies', {}).get(row.get('pathId')) if row.get('state') != 'planned' else None
-        return route_identity(row, q, dependency)
-    used = {route(row) for row in local.get('queryPaths', []) if row['state'] != 'planned'}
+        if row.get('state') != 'planned':
+            dependency = local.get('pathDependencies', {}).get(row.get('pathId'))
+            # No durable dependency means an old route's relation to current
+            # evidence is unknown. Do not manufacture one from a newer
+            # question and thereby suppress a legitimate increment.
+            if not isinstance(dependency, Mapping):
+                return None
+        else:
+            dependency = question_dependencies.get(row.get('questionId'))
+            if not isinstance(dependency, Mapping):
+                dependency = None
+        return route_identity(row, q, dependency, initial_source_key=source_key)
+    used = set()
+    for row in local.get('queryPaths', []):
+        if row['state'] == 'planned':
+            continue
+        source_key = source_keys.get(row.get('pathId'))
+        identity = route(row, source_key=source_key)
+        if identity is not None:
+            used.add(identity)
+        # A later planning receipt cannot add a fresh label to a completed
+        # route.  Its base identity must therefore collide as well.
+        identity = route(row)
+        if identity is not None:
+            used.add(identity)
     paths=[]
     for path in value.get('queryPaths', []):
         path = {**path, 'questionId': aliases.get(path.get('questionId'), path.get('questionId'))}
-        key = route(path)
-        if key not in used:
+        source_key = declared_source_key(path) if admit_initial_source_labels else None
+        key = route(path, source_key=source_key)
+        if key is not None and key not in used:
             paths.append(path)
             used.add(key)
     handled = {(row['questionId'], ref_key(row['sourceRef'])) for row in local.get('fulltextRequests', [])
@@ -483,14 +564,199 @@ def collapse_repeated_work(value, packet):
         **({'fulltextRequests': requests} if 'fulltextRequests' in value else {})}
 
 
-def question_dependency(question):
-    return {'questionIdentity': question_identity(question),
-            'knownEvidence': sorted((ref_key(ref) for ref in question.get('knownEvidence', [])))}
+def _dependency_evidence_refs(dependency: Mapping[str, Any]) -> list[tuple[str, int]]:
+    """Return the dependency's own durable source references, if any."""
+    raw = dependency.get('knownEvidenceRefs', dependency.get('knownEvidence', ()))
+    refs: set[tuple[str, int]] = set()
+    for ref in raw if isinstance(raw, (list, tuple)) else ():
+        if isinstance(ref, Mapping):
+            document_id, revision = ref.get('documentId'), ref.get('revision')
+        elif isinstance(ref, (list, tuple)) and len(ref) == 2:
+            document_id, revision = ref
+        else:
+            continue
+        if (isinstance(document_id, str) and document_id
+                and isinstance(revision, int) and not isinstance(revision, bool) and revision > 0):
+            refs.add((document_id, revision))
+    return sorted(refs)
 
 
-def route_identity(path, question, dependency=None):
-    return digest([dependency or question_dependency(question),
-        normalized_query(path.get('query')), normalized_text(path.get('intent')), normalized_text(path.get('targetSource'))])
+def normalize_question_dependency(dependency: Mapping[str, Any], *,
+                                  content_sha256_by_ref: Mapping[tuple[str, int], str]) -> dict[str, Any]:
+    """Canonicalize a durable dependency from its own immutable source refs.
+
+    This is deliberately separate from :func:`question_dependency`: old stage
+    receipts have no complete Question object to rebuild, and borrowing the
+    current question would turn a later evidence revision into historical
+    input.  Callers supply hashes only for the frozen refs returned above.
+    """
+    refs = _dependency_evidence_refs(dependency)
+    if not refs:
+        return dict(dependency)
+    normalized, visible_refs = [], []
+    has_reliable_hash = False
+    for document_id, revision in refs:
+        content_sha256 = content_sha256_by_ref.get((document_id, revision))
+        reliable = (isinstance(content_sha256, str)
+                    and re.fullmatch(r'[0-9a-f]{64}', content_sha256.casefold()) is not None)
+        visible_refs.append({'documentId': document_id, 'revision': revision,
+                             **({'contentSha256': content_sha256.casefold()} if reliable else {})})
+        if reliable:
+            normalized.append({'contentSha256': content_sha256.casefold()})
+            has_reliable_hash = True
+        else:
+            normalized.append({'documentId': document_id, 'revision': revision})
+    if not has_reliable_hash:
+        # Missing historical content remains unknown.  Do not rewrite an old
+        # receipt just because this repair cannot prove an equivalent body.
+        return dict(dependency)
+    return {**dependency,
+            'knownEvidence': [json.loads(value) for value in sorted({
+                json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(',', ':')) for item in normalized
+            })],
+            'knownEvidenceRefs': visible_refs}
+
+
+def question_dependency(question, *, content_sha256_by_ref: Mapping[tuple[str, int], str] | None = None):
+    """Freeze only evidence already visible to this question.
+
+    A source document ID is an ingestion identity, not a research fact
+    identity. When the runtime has exact stored content hashes for this
+    question's visible references, equal syndicated copies collapse to one
+    dependency. Unknown hashes deliberately retain the old document/revision
+    form instead of consulting unrelated database content.
+    """
+    refs = sorted({ref_key(ref) for ref in question.get('knownEvidence', [])
+                   if isinstance(ref, Mapping) and isinstance(ref.get('documentId'), str)
+                   and isinstance(ref.get('revision'), int) and not isinstance(ref.get('revision'), bool)})
+    hashes = content_sha256_by_ref or {}
+    normalized = []
+    visible_refs = []
+    has_reliable_hash = False
+    for document_id, revision in refs:
+        content_sha256 = hashes.get((document_id, revision))
+        reliable = (isinstance(content_sha256, str)
+                    and re.fullmatch(r'[0-9a-f]{64}', content_sha256.casefold()) is not None)
+        visible_refs.append({"documentId": document_id, "revision": revision,
+                             **({"contentSha256": content_sha256.casefold()} if reliable else {})})
+        if reliable:
+            normalized.append({"contentSha256": content_sha256.casefold()})
+            has_reliable_hash = True
+        else:
+            normalized.append({"documentId": document_id, "revision": revision})
+    dependency = {'questionIdentity': question_identity(question),
+                  # Preserve the exact legacy tuple form when no content hash
+                  # is available. A historical receipt with unknown identity
+                  # must not start differing merely because this repair ran.
+                  'knownEvidence': (refs if not has_reliable_hash else [json.loads(value) for value in sorted({
+                      json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(',', ':')) for item in normalized
+                  })])}
+    # This raw list validates typed source locators. It is excluded from route
+    # identity below, otherwise duplicate document IDs undo content matching.
+    if has_reliable_hash:
+        dependency['knownEvidenceRefs'] = visible_refs
+    return dependency
+
+
+def _semantic_target_refs(path):
+    """Return the model-declared question targets as an order-independent identity."""
+    raw = path.get("targetRefs") if isinstance(path, Mapping) else None
+    if not isinstance(raw, list):
+        return []
+    values = {
+        json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(',', ':')) for item in raw
+        if isinstance(item, Mapping) and item.get("kind") in {"claim", "company"}
+    }
+    return [json.loads(value) for value in sorted(values)]
+
+
+def declared_source_key(path: Mapping[str, Any]) -> str | None:
+    """Freeze an initial route declaration without treating it as evidence.
+
+    A provider's source label has no evidentiary value.  It can, however,
+    distinguish two first-plan searches before either search has run.  Later
+    replies never receive this admission and cannot expand the frozen set.
+    """
+    values = []
+    for field in ('targetSource', 'query'):
+        value = path.get(field)
+        if isinstance(value, str):
+            values.append(value)
+    hosts: set[str] = set()
+    for value in values:
+        for raw in re.findall(r'https?://[^\s<>"\']+', value, flags=re.IGNORECASE):
+            parsed = urlsplit(raw.rstrip('.,;:!?)，。；：！）'))
+            if parsed.hostname:
+                try:
+                    port = f':{parsed.port}' if parsed.port is not None else ''
+                except ValueError:
+                    continue
+                hosts.add((parsed.hostname.casefold() + port).rstrip('.'))
+        for host in re.findall(r'(?i)\bsite:([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)', value):
+            hosts.add(host.casefold().rstrip('.'))
+    if hosts:
+        return 'host:' + '|'.join(sorted(hosts))
+    target = path.get('targetSource')
+    if not isinstance(target, str):
+        return None
+    normalized = ' '.join(target.casefold().split())
+    return None if not normalized else 'label:' + normalized
+
+
+def _verified_path_locators(path, dependency):
+    """Keep only locators anchored to evidence already visible to this request.
+
+    A free-text ``targetSource`` or rewritten query cannot manufacture a new
+    paid route.  Optional structured locators are useful only when their
+    document/version is already part of the frozen question dependency.
+    """
+    known: set[tuple[str, int]] = set()
+    raw_refs = (dependency or {}).get("knownEvidenceRefs", (dependency or {}).get("knownEvidence", []))
+    content_by_ref: dict[tuple[str, int], str] = {}
+    for ref in raw_refs:
+        if isinstance(ref, Mapping):
+            document_id, revision = ref.get("documentId"), ref.get("revision")
+        elif isinstance(ref, (list, tuple)) and len(ref) == 2:
+            document_id, revision = ref
+        else:
+            continue
+        if (isinstance(document_id, str) and isinstance(revision, int)
+                and not isinstance(revision, bool)):
+            known.add((document_id, revision))
+            content_sha256 = ref.get("contentSha256") if isinstance(ref, Mapping) else None
+            if isinstance(content_sha256, str) and re.fullmatch(r'[0-9a-f]{64}', content_sha256.casefold()):
+                content_by_ref[(document_id, revision)] = content_sha256.casefold()
+    values: set[str] = set()
+    # ``targetSource`` is a model-authored label, sometimes a URL, and is not
+    # proof of a versioned document or an exact location.  Only the persisted
+    # typed locator can distinguish two otherwise equivalent routes.
+    candidates = [path["sourceLocator"]] if isinstance(path, Mapping) and isinstance(path.get("sourceLocator"), Mapping) else []
+    for item in candidates:
+        document_id, revision = item.get("documentId"), item.get("revision")
+        if (document_id, revision) not in known:
+            continue
+        locator = item.get("locator", item.get("location", item.get("url")))
+        if not isinstance(locator, str) or not locator.strip():
+            continue
+        identity = ({"contentSha256": content_by_ref[(document_id, revision)]}
+                    if (document_id, revision) in content_by_ref
+                    else {"documentId": document_id, "revision": revision})
+        values.add(json.dumps({"source": identity, "locator": locator.strip()}, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
+    return [json.loads(value) for value in sorted(values)]
+
+
+def route_identity(path, question, dependency=None, *, initial_source_key: str | None = None):
+    frozen = dependency or question_dependency(question)
+    # A route is qualified by the question's frozen identity, semantic purpose
+    # and targets, plus real evidence versions or an explicitly anchored
+    # source locator.  Wording and generated path IDs remain audit fields only.
+    dependency_identity = ({key: value for key, value in frozen.items() if key != "knownEvidenceRefs"}
+                           if isinstance(frozen, Mapping) else frozen)
+    value = [dependency_identity, path.get("purposeKind") if isinstance(path, Mapping) else None,
+             _semantic_target_refs(path), _verified_path_locators(path, frozen)]
+    if initial_source_key is not None:
+        value.append(initial_source_key)
+    return digest(value)
 
 
 def normalized_query(value):

@@ -155,7 +155,6 @@ def test_cross_paragraph_excerpt_returns_refinement_instead_of_bare_text():
 def test_resume_reinterprets_legacy_local_receipts_without_reissuing_paid_request(monkeypatch, legacy):
     from neckline.k10 import research_runtime as runtime_module
     from neckline.k10.research_context import PROTOCOL
-    from neckline.k10.research_contracts import ResearchStageResult
     snippet = '目标产能预计达到一百台。假设这批全部售出。'
     doc = document('背景说明。' * 2500 + snippet + '但目前没有收到订单。普通背景。', snippet)
     request = {'kind': 'source', 'purpose': '核对订单',
@@ -172,29 +171,27 @@ def test_resume_reinterprets_legacy_local_receipts_without_reissuing_paid_reques
     runtime.allowed = {doc.evidence_ref}
     runtime.state = {'snapshot': SimpleNamespace(research_status='continue_research'), 'questions': [], 'claims': [],
         'stageResults': [{'result': {'conclusion': {'runtimeContextReadInputSha256': 'exact-paid-request',
-            'runtimeContextReadProtocol': PROTOCOL if legacy else runtime_module._READ_PROTOCOL,
+            'runtimeContextReadProtocol': PROTOCOL if legacy else 'current-local-reader',
             'runtimeContextObjectSha256': None, 'runtimeContextRead': value}}}]}
-    runtime._packet = lambda: {'questions': [], 'claims': [], 'allowedEvidenceRefs': [request['sourceRef']]}
-    runtime._background_read_plan = lambda _: (None, None)
-    recorded, reads, calls = [], [], []
-    runtime._record = lambda result, **_: recorded.append(result)
-    runtime._call = lambda action, extra: calls.append((action, extra)) or extra
+    packet = {'questions': [], 'claims': [], 'allowedEvidenceRefs': [request['sourceRef']]}
+    reads = []
     original = runtime_module.read_context
     def read(*args, **kwargs):
         reads.append(True)
         return original(*args, **kwargs)
     monkeypatch.setattr(runtime_module, 'read_context', read)
-    # Interruption may also leave the same old read in pending action extras.
-    extra = {'contextResults': [value]} if legacy else None
-    result = runtime._continue_context('plan_gaps', ResearchStageResult('plan_gaps', context_requests=(request,)),
-        extra, request_input='exact-paid-request')
-    assert len(reads) == int(legacy)
-    assert len(recorded) == int(legacy)
-    assert len(calls) == 1
-    assert '但目前没有收到订单。' in evidence(result['contextResults'][0]['value'])
-    if legacy:
-        assert recorded[0].conclusion['runtimeContextReadInputSha256'] == 'exact-paid-request'
-        assert recorded[0].conclusion['runtimeContextReadProtocol'] == runtime_module._READ_PROTOCOL
+    # Local reads are cheap and are reconstructed with the current reader. A
+    # stale cached value never substitutes for the current source qualifiers.
+    results = runtime._b78_read_context((request,), packet=packet, claims=(), questions=(),
+        prior=(value,), seen=set())
+    assert len(reads) == 1
+    assert len(results) == int(legacy)
+    # A repaired historical excerpt adds visible qualifiers; an identical
+    # current read does not justify another model round.
+    visible = results[0] if legacy else value
+    assert '但目前没有收到订单。' in evidence(visible['value'])
+    # This model exposes no provider method: repairing local evidence makes no paid request.
+    assert not hasattr(runtime.model, 'advance_research_round')
 
 
 @pytest.mark.parametrize('mode,caveat', [
@@ -207,11 +204,8 @@ def test_resume_reinterprets_legacy_local_receipts_without_reissuing_paid_reques
 ])
 def test_real_cli_worker_sends_complete_qualifications_and_persists_readable_report(tmp_path, monkeypatch, mode, caveat):
     from neckline.k10 import store
-    from neckline.k10.research_runtime import _Investigation
-    from neckline.k10.research_store import read_research_state
     from neckline.k10.verification import VerificationEvidenceBundle
     from tests import test_v310_pipeline_e2e as fixture
-    from tests.test_b70_context_repair import install_context_request
     snippet = '目标产能预计达到一百台。假设这批全部售出。'
     if caveat is not None:
         doc = document('目标订单金额十亿元。' + '普通背景说明。' * 2200 + caveat)
@@ -224,28 +218,62 @@ def test_real_cli_worker_sends_complete_qualifications_and_persists_readable_rep
     else:
         doc = document('背景说明。' * 2500 + snippet + '但目前没有收到订单。普通背景。', snippet)
         location, caveat = 'excerpt', '但目前没有收到订单。'
+    from dataclasses import replace
+    doc = replace(doc, published_at="2026-09-08T12:00:00Z", fetched_at="2026-09-08T12:30:00Z",
+                  excerpt=doc.excerpt or "目标订单预计新增一亿元，具体条件待核对。")
     original_fetch = fixture._Gateway.fetch
     def fetch(self, **kwargs):
+        assert kwargs['query_path'].query == '订单公告及生效条件'
         original_fetch(self, **kwargs)
         return VerificationEvidenceBundle('available', (doc,), (doc,), {'state': 'available', 'requestState': 'completed'})
     monkeypatch.setattr(fixture._Gateway, 'fetch', fetch)
-    seen = install_context_request(monkeypatch, lambda packet: {'kind': 'source', 'questionId': 'q-1',
-        'sourceRef': {'documentId': 'd', 'revision': 1}, 'location': location, 'purpose': '核对订单'}, action='assess_evidence')
-    original_record = _Investigation._record
-    recorded = []
-    def record(self, result, **kwargs):
-        outcome = original_record(self, result, **kwargs)
-        if (result.conclusion or {}).get('runtimeContextRead'):
-            durable = read_research_state(snapshot_id=self.identity, db_path=self.db_path)
-            recorded.append(durable['stageResults'][-1]['result']['conclusion']['runtimeContextRead'])
-        return outcome
-    monkeypatch.setattr(_Investigation, '_record', record)
+    import httpx
+    import sqlite3
+    real_client = fixture._HTTPX_CLIENT
+    seen = []
+    def client(**kwargs):
+        transport = kwargs['transport']
+        def respond(request):
+            wire = json.loads(request.content)
+            payload = json.loads(wire['messages'][-1]['content'].split('<untrusted-k10-evidence>\n',1)[1].split('\n</untrusted-k10-evidence>',1)[0])
+            if payload.get('action') != 'research_round':
+                return transport.handle_request(request)
+            packet = payload['evidencePacket']; seen.append(packet)
+            if len(seen) == 1:
+                ref = packet['claims'][0]['sourceRef']; claim = packet['claims'][0]['claimId']
+                question = {'questionId':'q-1','claimIds':[claim],'companyCodes':['300002.SZ'],
+                    'question':'订单是否已签署并可确认收入','knownEvidence':[ref],
+                    'missingEvidence':['订单附带条件'],'supportCondition':'已签署','refuteCondition':'仅意向',
+                    'decisionImpact':'改变关系判断','state':'open','resumeCondition':'公司新披露'}
+                route = {'pathId':'qualification-search','questionId':'q-1','purposeKind':'event_fact',
+                    'targetRefs':[{'kind':'claim','claimId':claim}],'query':'订单公告及生效条件',
+                    'intent':'核对原条件','targetSource':'公司公告','newPathReason':'正文没有生效条件',
+                    'expectedInformationGain':'原合同条件','expectedJudgmentChange':'是否可确认收入',
+                    'state':'planned','resultSummary':None}
+                reply = {'action':'research_round','questions':[question],'queryPaths':[route],
+                    'conclusion':{'researchStatus':'continue_research','companyMappings':[],
+                        'stopReason':'缺少合同条件','resumeCondition':'已读原披露'}}
+            elif len(seen) == 2:
+                reply = {'action':'research_round','contextRequests':[{'kind':'source','questionId':'q-1',
+                    'sourceRef':{'documentId':'d','revision':1},'location':location,'purpose':'核对完整订单限定条件'}]}
+            else:
+                return transport.handle_request(request)
+            return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps(reply,ensure_ascii=False)},
+                'finish_reason':'stop'}],'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
+        return real_client(**{**kwargs,'transport':httpx.MockTransport(respond)})
+    monkeypatch.setattr(fixture,'_HTTPX_CLIENT',client)
     db, task_id, task, _, gateway = fixture._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert task.status == 'completed'
-    assert caveat in evidence(seen[1]['contextResults'][-1]['value'])
-    assert caveat in evidence(recorded[0]['value'])
-    assert len(evidence(seen[1]['contextResults'][-1]['value'])) < 12000
-    assert gateway.search_paths == ['path-1', 'path-2']
+    assert task.status == 'completed' and len(seen) == 3
+    visible = next(row for row in seen[-1]['contextResults']
+                   if row['request'].get('sourceRef') == {'documentId':'d','revision':1}
+                   and row['request'].get('location') == location)
+    assert caveat in evidence(visible['value'])
+    assert len(evidence(visible['value'])) < 12000
+    with sqlite3.connect(db) as conn:
+        packets = [json.loads(row[0]) for row in conn.execute('SELECT input_packet_json FROM k10_research_round_results')]
+    assert any(caveat in evidence(row['value']) for packet in packets for row in packet.get('contextResults', []))
+    assert len(gateway.search_paths) == 1
+    assert seen[1]['queryPaths'][0]['pathId'] == gateway.search_paths[0]
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)['checkpoint']['scanId']
     with fixture._api(db) as api:
         response = api.get(f'/api/v1/k10/scans/{scan_id}/assessments')

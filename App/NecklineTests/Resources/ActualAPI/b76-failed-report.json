@@ -1,0 +1,63 @@
+{
+  "reason": {
+    "message": "今天没跑成 · 处理未完成",
+    "missing": [],
+    "reason": "incomplete"
+  },
+  "report": {
+    "addedCards": [],
+    "availableAt": null,
+    "coverageGaps": [
+      "本次报告在公开前终止，未生成新的排序或机会卡。"
+    ],
+    "cutoffAt": "2026-09-08T13:00:00+00:00",
+    "delivery": {
+      "contractVersion": "k10-report-delivery-3.4.0-b76",
+      "counts": {
+        "comparableCompanies": 0,
+        "eventFailed": 0,
+        "eventInput": 84,
+        "eventProcessed": 84,
+        "eventUnprocessed": 0,
+        "publishedCompanies": 0,
+        "titleFailed": 0,
+        "titleInput": 1602,
+        "titleProcessed": 1602,
+        "titleUnprocessed": 0
+      },
+      "eligibleSetSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "gaps": [
+        {
+          "companyCodes": [],
+          "companyScopeKnown": false,
+          "eventIds": [],
+          "gapId": "gap_5050c63b1df5c8e13accdc162947abb7",
+          "message": "本次报告在公开前终止，未生成新的排序或机会卡。",
+          "reasonCode": "content_policy_refused",
+          "sourceRefs": [],
+          "stage": "model:prioritize",
+          "unitId": "scan_9e38338815dd92c04e54df634caa0333",
+          "unitKind": "report"
+        }
+      ],
+      "inputManifestSha256": "8a33abe81a9032ba71d849be8133103a4dea9e2f914868176a9501a62de573b7",
+      "outcome": "failed",
+      "rankingInputSha256": null,
+      "rankingScope": "none"
+    },
+    "eveningCards": [],
+    "incompleteReviews": [],
+    "lifecycleUpdates": [],
+    "nextCursor": null,
+    "parentReportId": null,
+    "reportId": "report_scan_9e38338815dd92c04e54df634caa0333",
+    "status": "failed",
+    "strategySnapshotId": "k10-v2-20260909",
+    "strategyVersion": "K10-v2",
+    "updatedCards": [],
+    "verificationCutoffAt": null,
+    "windowKind": "evening"
+  },
+  "schemaVersion": 8,
+  "state": "available"
+}

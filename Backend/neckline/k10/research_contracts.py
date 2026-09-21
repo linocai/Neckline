@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+import json
+from hashlib import sha256
 from typing import Any, Mapping, Sequence
 
 
@@ -23,6 +25,16 @@ FULLTEXT_STATES = frozenset({"requested", "admitted", "rejected", "fulfilled"})
 RESEARCH_ACTIONS = frozenset({
     "extract_claims", "plan_gaps", "plan_queries", "assess_evidence", "close_research", "compare_companies",
 })
+# These names exist only at the provider/receipt boundary.  The append-only
+# research tables keep their historical action CHECK and receive the two
+# derived legacy stage results instead.
+MERGED_RESEARCH_ACTIONS = frozenset({"plan_research", "assess_and_decide"})
+# B78 deliberately has one semantic research result.  This name must not be
+# added to ``RESEARCH_ACTIONS``: that set is the historical append-only stage
+# vocabulary and doing so would tempt a caller to project a round back into
+# the retired plan/assess/close state machine.
+RESEARCH_ROUND_ACTION = "research_round"
+RESEARCH_ROUND_CONTRACT = "k10-research-3.5.0-b78"
 
 
 class ResearchContractError(ValueError):
@@ -100,6 +112,17 @@ def _optional_text(value: Any, field_name: str) -> str | None:
     if value is None:
         return None
     return _text(value, field_name)
+
+
+def _source_locator(value: Any, field_name: str) -> dict[str, Any] | None:
+    """A concrete, versioned source location; labels and free text are not one."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {"documentId", "revision", "locator"}:
+        raise ResearchContractError(f"{field_name} 必须为精确来源定位", field_name=field_name,
+                                    expected="source_reference_with_locator")
+    ref = _refs([value], field_name)[0]
+    return {**ref, "locator": _text(value.get("locator"), f"{field_name}.locator")}
 
 
 @dataclass(frozen=True)
@@ -259,6 +282,7 @@ class QueryPath:
     purpose_kind: str | None = None
     target_refs: tuple[Mapping[str, Any], ...] = ()
     question_scope: Mapping[str, Any] | None = None
+    source_locator: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _text(self.path_id, "pathId"); _text(self.question_id, "questionId"); _text(self.query, "query")
@@ -277,6 +301,8 @@ class QueryPath:
                 raise ResearchContractError("questionScope 必须属于同一问题", field_name="questionScope.questionId",
                                             expected="queryPath.questionId")
             _text(self.question_scope.get("scopeSha256"), "questionScope.scopeSha256")
+        if self.source_locator is not None:
+            object.__setattr__(self, "source_locator", _source_locator(self.source_locator, "sourceLocator"))
 
     def to_dict(self) -> dict[str, Any]:
         result = {"pathId": self.path_id, "questionId": self.question_id, "query": self.query, "intent": self.intent,
@@ -289,6 +315,8 @@ class QueryPath:
             result["targetRefs"] = [dict(item) for item in self.target_refs]
         if self.question_scope is not None:
             result["questionScope"] = dict(self.question_scope)
+        if self.source_locator is not None:
+            result["sourceLocator"] = dict(self.source_locator)
         return result
 
     @classmethod
@@ -296,7 +324,8 @@ class QueryPath:
         return cls(value.get("pathId"), value.get("questionId"), value.get("query"), value.get("intent"),
                    value.get("targetSource"), value.get("newPathReason"), value.get("expectedInformationGain"),
                    value.get("expectedJudgmentChange"), value.get("state"), value.get("resultSummary"),
-                   value.get("purposeKind"), tuple(value.get("targetRefs", ())), value.get("questionScope"))
+                   value.get("purposeKind"), tuple(value.get("targetRefs", ())), value.get("questionScope"),
+                   value.get("sourceLocator"))
 
 
 @dataclass(frozen=True)
@@ -480,6 +509,188 @@ class ResearchStageResult:
                 **({"contextRequests": [dict(item) for item in self.context_requests]} if self.context_requests else {})}
 
 
+@dataclass(frozen=True)
+class MergedResearchResult:
+    """One B76 paid response projected into existing durable research stages."""
+
+    action: str
+    plan_gaps: ResearchStageResult | None = None
+    plan_queries: ResearchStageResult | None = None
+    assess_evidence: ResearchStageResult | None = None
+    close_research: ResearchStageResult | None = None
+    context_requests: tuple[Mapping[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        _enum(self.action, MERGED_RESEARCH_ACTIONS, "mergedAction")
+        names = ("plan_gaps", "plan_queries", "assess_evidence", "close_research")
+        stages = (self.plan_gaps, self.plan_queries, self.assess_evidence, self.close_research)
+        if self.context_requests:
+            if any(stage is not None for stage in stages):
+                raise ResearchContractError("局部回读不得同时推进合并研究结果", field_name="contextRequests",
+                                            expected="context_requests_without_business_results")
+            for request in self.context_requests:
+                if not isinstance(request, Mapping) or request.get("kind") not in {
+                        "company_search", "company_fields", "claim", "question", "source"}:
+                    raise ResearchContractError("contextRequests 无效")
+                _text(request.get("purpose"), "contextRequests.purpose")
+            return
+        expected = (("plan_gaps", "plan_queries") if self.action == "plan_research"
+                    else ("assess_evidence", "close_research"))
+        supplied = tuple(name for name, stage in zip(names, stages) if stage is not None)
+        if supplied != expected:
+            raise ResearchContractError("合并研究阶段不完整", field_name="mergedStages",
+                                        expected="/".join(expected), allowed=expected)
+        for name, stage in zip(names, stages):
+            if stage is not None and stage.action != name:
+                raise ResearchContractError("合并研究阶段 action 无效", field_name="mergedStages",
+                                            expected=name, allowed=(name,))
+
+    def stage_results(self) -> tuple[ResearchStageResult, ...]:
+        return tuple(stage for stage in (self.plan_gaps, self.plan_queries,
+                                         self.assess_evidence, self.close_research) if stage is not None)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"action": self.action}
+        if self.context_requests:
+            result["contextRequests"] = [dict(item) for item in self.context_requests]
+            return result
+        for field, stage in (("planGaps", self.plan_gaps), ("planQueries", self.plan_queries),
+                             ("assessEvidence", self.assess_evidence), ("closeResearch", self.close_research)):
+            if stage is not None:
+                result[field] = stage.to_dict()
+        return result
+
+
+@dataclass(frozen=True)
+class ResearchRoundResult:
+    """One B78 event-research result, with no legacy stage projection.
+
+    A round either returns a complete, directly usable judgment or asks the
+    program for a bounded local read.  In the latter case it must not smuggle
+    a partial business decision beside the request: the next visible evidence
+    manifest is a new round and therefore has its own receipt identity.
+    """
+
+    action: str = RESEARCH_ROUND_ACTION
+    safe_error_code: str | None = None
+    claims: tuple[Claim, ...] = ()
+    questions: tuple[Question, ...] = ()
+    query_paths: tuple[QueryPath, ...] = ()
+    evidence_updates: tuple[Mapping[str, Any], ...] = ()
+    fulltext_requests: tuple[FullTextRequest, ...] = ()
+    conclusion: Mapping[str, Any] | None = None
+    company_assessments: tuple[Mapping[str, Any], ...] = ()
+    comparison: Mapping[str, Any] | None = None
+    context_requests: tuple[Mapping[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.action != RESEARCH_ROUND_ACTION:
+            raise ResearchContractError("研究轮次 action 无效", field_name="action",
+                                        expected=RESEARCH_ROUND_ACTION,
+                                        allowed=(RESEARCH_ROUND_ACTION,))
+        _optional_text(self.safe_error_code, "safeErrorCode")
+        has_business_result = any((self.claims, self.questions, self.query_paths,
+                                   self.evidence_updates, self.fulltext_requests,
+                                   self.company_assessments, self.conclusion,
+                                   self.comparison))
+        if self.context_requests:
+            if has_business_result:
+                raise ResearchContractError("局部回读不得同时推进研究轮次结果",
+                                            field_name="contextRequests",
+                                            expected="context_requests_without_business_results")
+            for request in self.context_requests:
+                if not isinstance(request, Mapping) or request.get("kind") not in {
+                        "company_search", "company_fields", "claim", "question", "source"}:
+                    raise ResearchContractError("contextRequests 无效", field_name="contextRequests[]")
+                _text(request.get("purpose"), "contextRequests.purpose")
+            return
+        if self.safe_error_code is None and not isinstance(self.conclusion, Mapping):
+            raise ResearchContractError("研究轮次缺少结论", field_name="conclusion", expected="object")
+        if isinstance(self.conclusion, Mapping):
+            _enum(self.conclusion.get("researchStatus"), RESEARCH_STATUSES,
+                  "conclusion.researchStatus")
+            if "companyMappings" in self.conclusion:
+                rows = self.conclusion["companyMappings"]
+                if not isinstance(rows, list):
+                    raise ResearchContractError("公司映射必须为列表", field_name="conclusion.companyMappings",
+                                                expected="array")
+                codes = [validate_company_mapping(item)["companyCode"] for item in rows]
+                if len(codes) != len(set(codes)):
+                    raise ResearchContractError("公司映射重复", field_name="conclusion.companyMappings[].companyCode",
+                                                expected="unique_company_codes")
+        group_evidence_updates(self.evidence_updates)
+        for assessment in self.company_assessments:
+            validate_company_assessment(assessment)
+        if self.comparison is not None and not isinstance(self.comparison, Mapping):
+            raise ResearchContractError("comparison 必须为对象", field_name="comparison", expected="object")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "safeErrorCode": self.safe_error_code,
+            "claims": [item.to_dict() for item in self.claims],
+            "questions": [item.to_dict() for item in self.questions],
+            "queryPaths": [item.to_dict() for item in self.query_paths],
+            "evidenceUpdates": [dict(item) for item in self.evidence_updates],
+            "fulltextRequests": [item.to_dict() for item in self.fulltext_requests],
+            "conclusion": None if self.conclusion is None else dict(self.conclusion),
+            "companyAssessments": [dict(item) for item in self.company_assessments],
+            "comparison": None if self.comparison is None else dict(self.comparison),
+            **({"contextRequests": [dict(item) for item in self.context_requests]}
+               if self.context_requests else {}),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any], *, model_reply: bool = False) -> "ResearchRoundResult":
+        if not isinstance(value, Mapping):
+            raise ResearchContractError("研究轮次必须为对象", field_name="researchRound", expected="object")
+        if set(value) == {"outputContract"} and isinstance(value["outputContract"], Mapping):
+            value = value["outputContract"]
+        permitted = {"action", "safeErrorCode", "claims", "questions", "queryPaths",
+                     "evidenceUpdates", "fulltextRequests", "conclusion", "companyAssessments",
+                     "comparison", "contextRequests"}
+        if set(value) - permitted:
+            raise ResearchContractError("研究轮次含有未声明字段", field_name="researchRound",
+                                        expected="declared_round_fields")
+        if value.get("action") != RESEARCH_ROUND_ACTION:
+            raise ResearchContractError("研究轮次 action 无效", field_name="action",
+                                        expected=RESEARCH_ROUND_ACTION,
+                                        allowed=(RESEARCH_ROUND_ACTION,))
+        def rows(name: str) -> Sequence[Any]:
+            raw = value.get(name, ())
+            if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+                raise ResearchContractError(f"{name} 必须为列表", field_name=name, expected="array")
+            return raw
+        def request_row(row, *, id_key, initial_state):
+            if not isinstance(row, Mapping):
+                raise ResearchContractError("补查请求必须为对象", field_name=id_key)
+            clean = dict(row)
+            # Only durable receipts retain execution bookkeeping. Live model
+            # replies cannot assert that the program already executed a request.
+            if model_reply or not clean.get(id_key):
+                semantic = {key: item for key, item in clean.items()
+                            if key not in {id_key, "state", "resultSummary", "admissionRef"}}
+                clean[id_key] = id_key + "_" + sha256(json.dumps(semantic, ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:32]
+                clean["state"] = initial_state
+                clean.pop("resultSummary", None)
+                clean.pop("admissionRef", None)
+            clean.setdefault("state", initial_state)
+            return clean
+        return cls(
+            safe_error_code=value.get("safeErrorCode"),
+            claims=tuple(Claim.from_dict(item) for item in rows("claims")),
+            questions=tuple(Question.from_dict(item) for item in rows("questions")),
+            query_paths=tuple(QueryPath.from_dict(request_row(item, id_key="pathId", initial_state="planned")) for item in rows("queryPaths")),
+            evidence_updates=tuple(validate_evidence_update(item) for item in rows("evidenceUpdates")),
+            fulltext_requests=tuple(FullTextRequest.from_dict(request_row(item, id_key="requestId", initial_state="requested")) for item in rows("fulltextRequests")),
+            conclusion=value.get("conclusion"),
+            company_assessments=tuple(validate_company_assessment(item) for item in rows("companyAssessments")),
+            comparison=value.get("comparison"),
+            context_requests=tuple(dict(item) for item in rows("contextRequests")),
+        )
+
+
 def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ResearchContractError("company assessment 必须为对象", field_name="companyAssessments[]", expected="object")
@@ -503,7 +714,7 @@ def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "CLAIM_KINDS", "CLAIM_NOVELTIES", "COMPANY_ROLES", "EVIDENCE_RELATIONS", "EXECUTION_STATUSES", "FULLTEXT_STATES",
-    "QUESTION_STATES", "QUERY_STATES", "RESEARCH_ACTIONS", "RESEARCH_STATUSES", "VERIFICATION_STATUSES",
+    "QUESTION_STATES", "QUERY_STATES", "RESEARCH_ACTIONS", "MERGED_RESEARCH_ACTIONS", "RESEARCH_ROUND_ACTION", "RESEARCH_ROUND_CONTRACT", "RESEARCH_STATUSES", "VERIFICATION_STATUSES",
     "Claim", "EvidenceDisclosure", "FullTextRequest", "QueryPath", "Question", "ResearchContractError", "ResearchSnapshot",
-    "ResearchStageResult", "validate_company_assessment",
+    "ResearchStageResult", "MergedResearchResult", "ResearchRoundResult", "validate_company_assessment",
 ]

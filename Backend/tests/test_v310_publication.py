@@ -24,6 +24,7 @@ from neckline.k10.worker import TaskResult, run_once
 from neckline.k10.worker import TaskContext
 from neckline.k10.types import Task
 from tests.k10_v306_fixture import append_approved_execution_profile
+from tests import test_v310_pipeline_e2e as e2e
 
 
 def _row(role: str, rank: int | None, *, disclosure=None, summary: str | None = None):
@@ -221,22 +222,21 @@ def test_morning_handler_carries_frozen_disclosure_into_model_and_report(tmp_pat
     assert "evidenceDisclosure" in messages[-1].content and "unverified" in messages[-1].content
 
 
-def test_notification_outbox_persists_and_dispatches_the_frozen_rumor_disclosure(tmp_path):
-    now = datetime(2026, 9, 8, 13, 0, tzinfo=timezone.utc)
-    db_path = tmp_path / "rumor-notification.sqlite"
-    initialize_schema(db_path)
-    initialize_notifications_schema(db_path, applied_at=now)
-    disclosure = {
-        "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown",
-        "originEvidenceRef": None, "unverifiedReasons": ["独立来源缺失"], "conditionalAnalysis": "等待公司确认。",
-    }
-    store.enqueue_task(task_id="task-notification", kind="evening_scan", idempotency_key="task-notification", input_version="cfg",
-                       input_cutoff_at=now.isoformat(), payload={"scanId": "scan-rumor"}, budget={"maxAttempts": 1},
-                       created_at=now.isoformat(), db_path=db_path)
-    claimed = store.claim_tasks(worker_id="fixture", now=now, lease_for=timedelta(seconds=30), limit=1, db_path=db_path)[0]
-    store.finish_task(task_id=claimed.task_id, worker_id="fixture", status="completed", stage="published",
-                      checkpoint={"evidenceDisclosure": disclosure}, error_text=None, finished_at=now, db_path=db_path)
-    notification = enqueue_task_notification(task_id=claimed.task_id, db_path=db_path, created_at=now)
+def _published_b76_rumor_report(tmp_path, monkeypatch):
+    """Return an actual B76 publication whose frozen disclosure is readable."""
+    db_path, task_id, task, _, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+    assert task is not None and task.status == "completed"
+    initialize_notifications_schema(db_path, applied_at=e2e.RUN_AT)
+    checkpoint = store.task_execution_input(task_id=task_id, db_path=db_path)["checkpoint"]
+    disclosure = checkpoint["evidenceDisclosure"]
+    candidate = store.list_candidates(scan_id=checkpoint["scanId"], state="offered", db_path=db_path)[0]
+    assert candidate["comparison"]["differences"]["evidenceDisclosure"] == disclosure
+    return db_path, task_id, e2e.RUN_AT, disclosure
+
+
+def test_notification_outbox_persists_and_dispatches_the_frozen_rumor_disclosure(tmp_path, monkeypatch):
+    db_path, task_id, now, disclosure = _published_b76_rumor_report(tmp_path, monkeypatch)
+    notification = enqueue_task_notification(task_id=task_id, db_path=db_path, created_at=now)
     assert notification.evidence_disclosure == disclosure
     sent: list[dict] = []
     dispatched = dispatch_task_notifications(
@@ -253,21 +253,8 @@ def test_notification_runtime_forwards_the_frozen_disclosure_to_apns_custom_payl
     from neckline.api.stores import upsert_device
     from neckline.k10 import notification_runtime
 
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    db_path = tmp_path / "rumor-apns.sqlite"
-    initialize_schema(db_path)
-    initialize_notifications_schema(db_path, applied_at=now)
-    disclosure = {
-        "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown",
-        "originEvidenceRef": None, "unverifiedReasons": ["独立来源缺失"], "conditionalAnalysis": "等待公司确认。",
-    }
-    store.enqueue_task(task_id="task-apns", kind="evening_scan", idempotency_key="task-apns", input_version="cfg",
-                       input_cutoff_at=now.isoformat(), payload={"scanId": "scan-rumor"}, budget={"maxAttempts": 1},
-                       created_at=now.isoformat(), db_path=db_path)
-    claimed = store.claim_tasks(worker_id="fixture", now=now, lease_for=timedelta(seconds=30), limit=1, db_path=db_path)[0]
-    store.finish_task(task_id=claimed.task_id, worker_id="fixture", status="completed", stage="published",
-                      checkpoint={"evidenceDisclosure": disclosure}, error_text=None, finished_at=now, db_path=db_path)
-    enqueue_task_notification(task_id=claimed.task_id, db_path=db_path, created_at=now)
+    db_path, task_id, now, disclosure = _published_b76_rumor_report(tmp_path, monkeypatch)
+    enqueue_task_notification(task_id=task_id, db_path=db_path, created_at=now)
     upsert_device("fixture-device", db_path=db_path)
     sent: list[dict] = []
     monkeypatch.setattr(notification_runtime, "apns_readiness", lambda: SimpleNamespace(ready=True, code="ready"))

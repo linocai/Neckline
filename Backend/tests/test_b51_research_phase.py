@@ -1,28 +1,22 @@
-from datetime import datetime,timedelta
-from types import SimpleNamespace
-import sqlite3
-from neckline.k10 import pipeline,store,research_runtime
-from neckline.k10.worker import run_once
+"""B78 finalizes direct comparison in the same durable research receipt."""
+from __future__ import annotations
+
+from neckline.k10 import store
+from neckline.k10.research_store import load_research_round_state
 from tests.test_v310_pipeline_e2e import _run
 
 
-def test_resume_after_assessment_persistence_closes_before_another_search(tmp_path,monkeypatch):
-    tick=[0.0];triggered=[False]
-    monkeypatch.setattr(pipeline,'time',SimpleNamespace(monotonic=lambda:tick[0]))
-    original=research_runtime._Investigation._record
-    def persist_then_expire(self,result,**kwargs):
-        original(self,result,**kwargs)
-        if result.action=='assess_evidence' and not (result.conclusion or {}).get('runtimeEvidence') and not triggered[0]:
-            triggered[0]=True;tick[0]=10_000.0
-    monkeypatch.setattr(research_runtime._Investigation,'_record',persist_then_expire)
-    db,task_id,first,calls,gateway=_run(tmp_path,monkeypatch)
-    assert first.status=='queued' and calls.count('research:assess_evidence')==1
-    boundary=len(calls);before=store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['executionStartedAt']
-    tick[0]=0
-    with sqlite3.connect(db) as conn:next_run=datetime.fromisoformat(conn.execute('select not_before_at from k10_task_retry_schedules where task_id=?',(task_id,)).fetchone()[0])
-    done=run_once(db_path=db,worker_id='phase-resume',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:next_run+timedelta(seconds=1))
-    assert done.status=='completed'
-    assert calls[boundary]=='research:close_research'
-    assert len(gateway.search_paths)==2 and calls.count('research:assess_evidence')==2
-    assert calls.count('understand')==1
-    assert store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['executionStartedAt']==before
+def test_direct_round_persists_comparison_without_a_second_research_phase(tmp_path, monkeypatch):
+    db, task_id, task, calls, gateway = _run(tmp_path, monkeypatch)
+
+    assert task.status == "completed"
+    assert calls.count("research:research_round") == 1
+    assert gateway.search_paths == []
+    assert not {"research:plan_gaps", "research:plan_queries", "research:assess_evidence",
+                "research:close_research", "research:compare_companies"} & set(calls)
+    scan = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
+    snapshot_id = store.get_scan(scan_id=scan, db_path=db)["coverage"]["researchSnapshotIds"][0]
+    state = load_research_round_state(snapshot_id=snapshot_id, db_path=db)
+    result = state["rounds"][0]["result"]
+    assert {row["role"] for row in result["companyAssessments"]} == {"primary", "pending", "excluded"}
+    assert result["comparison"]["summary"]

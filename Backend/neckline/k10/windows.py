@@ -1,7 +1,7 @@
 """K10 固定资料窗口。
 
 执行自然日由任务调用方明确传入；是否开市由调用方查交易所日历。所有边界统一使用北京时间，
-避免任务实际启动时间把 21:00 / 09:00 的资料截止向后漂移。
+避免任务实际启动时间把 21:00 / 08:30 的资料截止向后漂移。
 """
 
 from __future__ import annotations
@@ -35,8 +35,13 @@ def scan_calendar_day(*, kind: str, run_day: date) -> date:
 
 
 def morning_cutoff(observation_day: date) -> datetime:
-    """D1 晨间扫描的固定且包含的截止；任务晚启动也不能改变它。"""
-    return _cutoff(observation_day, time(9, 0))
+    """晨报输入08:30冻结；09:20是交付诊断而非取数边界。"""
+    return _cutoff(observation_day, time(8, 30))
+
+
+def morning_delivery_deadline(observation_day: date) -> datetime:
+    """Return the immutable B78 morning readability deadline for this trading day."""
+    return _cutoff(observation_day, time(9, 20))
 
 
 @dataclass(frozen=True)
@@ -44,7 +49,7 @@ class ScanWindow:
     """资料公开时间窗口，而非任务运行时间。
 
     ``start_inclusive`` / ``end_inclusive`` 必须由调用方按扫描类型给定。晚间
-    从上次来源成功水位开区间开始；晨间固定接住 21:00，并包含 09:00。
+    从上次来源成功水位开区间开始；晨间固定接住 21:00，并包含 08:30。
     """
 
     kind: str
@@ -95,7 +100,7 @@ def evening_window(*, trading_day: date, source_success_watermark: datetime | No
 
 
 def morning_window(*, observation_day: date) -> ScanWindow:
-    """增量窗口为前一自然日 21:00 至交易日 09:00，包含两个端点。"""
+    """增量窗口为前一自然日21:00至交易日08:30，包含两个端点。"""
     cutoff = morning_cutoff(observation_day)
     return ScanWindow(
         kind="morning",

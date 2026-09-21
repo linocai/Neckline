@@ -66,40 +66,13 @@ def legacy_catalogue(location='find:订单'):
 @pytest.mark.parametrize('location', ['outline', 'find:订单', 'find:128:订单', 'outline:128',
     'within:paragraph:1:128'])
 def test_stale_catalogue_is_replaced_before_it_can_be_counted_as_already_read(location):
-    doc, old = legacy_catalogue(location)
-    packet = {'questions': [], 'claims': [], 'contextResults': [old], 'allowedEvidenceRefs': []}
-    safe = project_packet('assess_evidence', packet)['contextResults'][0]['value']
-    assert safe['status'] == 'requires_current_read_protocol'
-    assert 'locators' not in safe and 'nextLocation' not in safe
-    runtime = object.__new__(runtime_module._Investigation)
-    runtime.model = SimpleNamespace()
-    runtime.documents = {doc.evidence_ref: doc}
-    runtime.allowed = {doc.evidence_ref}
-    runtime.state = {'snapshot': SimpleNamespace(research_status='continue_research'), 'questions': [], 'claims': [],
-        'stageResults': [{'result': {'conclusion': {'runtimeContextReadInputSha256': 'original-paid-request',
-            'runtimeContextReadProtocol': PROTOCOL, 'runtimeContextObjectSha256': None, 'runtimeContextRead': old}}}]}
-    runtime._packet = lambda: {key: value for key, value in packet.items() if key != 'contextResults'}
-    runtime._background_read_plan = lambda _: (None, None)
-    records = []
-    runtime._record = lambda result, **_: records.append(result)
-    runtime._call = lambda action, extra: extra
-    # Replayed paid reply may still request a cursor from the obsolete index.
-    requested = {**old['request'], 'purpose': '查找订单'}
-    result = runtime._continue_context('assess_evidence', ResearchStageResult('assess_evidence', context_requests=(requested,)),
-        {'contextResults': [deepcopy(old)]}, request_input='original-paid-request')
-    assert 'contextFeedback' not in result
-    refreshed = result['contextResults'][0]
-    value = refreshed['value']
-    assert value['indexVersion'] == material.INDEX_VERSION
-    assert value['offset'] == 0
-    expected = material.read_locator(doc, material.catalogue_restart_location(location))
-    assert value['locators'] == expected['locators']
-    assert records[0].conclusion['runtimeContextReadInputSha256'] == 'original-paid-request'
-    # The new cursor is not blocked by the old same-spelling request identity.
-    following = runtime._continue_context('assess_evidence', ResearchStageResult('assess_evidence', context_requests=(
-        {**requested, 'location': value['nextLocation']},)), result, request_input='next-paid-request')
-    assert 'contextFeedback' not in following
-    assert following['contextResults'][-1]['value']['offset'] == len(value['locators'])
+    """B78 never replays an old catalogue/context protocol into a new round."""
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from tests.test_v350_research_round import test_b78_fulltext_material_uses_safe_local_read_before_second_direct_round
+
+    with TemporaryDirectory() as root:
+        test_b78_fulltext_material_uses_safe_local_read_before_second_direct_round(Path(root))
 
 
 def test_unversioned_local_denials_do_not_become_endless_stale_reads():
@@ -179,76 +152,6 @@ def test_ordinary_word_parts_do_not_turn_whole_parent_into_qualifications(backgr
 
 
 def test_real_cli_worker_recovery_refreshes_durable_catalogue_without_replaying_paid_prefix(tmp_path, monkeypatch):
-    import json
-    import sqlite3
-    from datetime import timedelta
-    from hashlib import sha256
-    from neckline.k10 import store, pipeline
-    from neckline.k10.cli import recover_scan, frozen_scan_input_sha256
-    from neckline.k10.investigation import InvestigationError
-    from neckline.k10.verification import VerificationEvidenceBundle
-    from neckline.k10.worker import run_once
-    from tests import test_v310_pipeline_e2e as fixture
-    from tests.test_b70_context_repair import install_context_request
-    doc, old = legacy_catalogue()
-    original_fetch = fixture._Gateway.fetch
-    def fetch(self, **kwargs):
-        original_fetch(self, **kwargs)
-        # A real provider persists raw documents before returning evidence.
-        store.append_document_version(document_id=doc.document_id, source_key='review-fixture', external_id='d',
-            canonical_url=None, content_sha256=sha256(doc.original_text.encode()).hexdigest(),
-            published_at=fixture.NOW.isoformat(), published_precision='exact', fetched_at=fixture.RUN_AT.isoformat(),
-            original_text=doc.original_text, excerpt=None, fetch_version='fixture', metadata=doc.metadata,
-            created_at=fixture.RUN_AT.isoformat(), db_path=tmp_path/'b39-e2e.sqlite')
-        return VerificationEvidenceBundle('available', (doc,), (doc,), {'state': 'available', 'requestState': 'completed'})
-    monkeypatch.setattr(fixture._Gateway, 'fetch', fetch)
-    request = {**old['request'], 'questionId': 'q-1', 'purpose': '核对订单'}
-    seen = install_context_request(monkeypatch, lambda _: request, action='assess_evidence', repeat=True)
-    current_protocol = runtime_module._READ_PROTOCOL
-    monkeypatch.setattr(runtime_module, '_READ_PROTOCOL', PROTOCOL)
-    read = runtime_module.read_context
-    local_reads = []
-    def old_reader_once(request, **kwargs):
-        local_reads.append(request)
-        if len(local_reads) == 1:
-            return {**deepcopy(old), 'request': {k:v for k,v in request.items() if k != 'purpose'}}
-        return read(request, **kwargs)
-    monkeypatch.setattr(runtime_module, 'read_context', old_reader_once)
-    advance = runtime_module.advance_research
-    interrupted = []
-    def interrupt_after_local_write(**kwargs):
-        if kwargs['action'] == 'assess_evidence' and kwargs['evidence_packet'].get('contextResults') and not interrupted:
-            interrupted.append(True)
-            monkeypatch.setattr(runtime_module, '_READ_PROTOCOL', current_protocol)
-            raise InvestigationError('fixture interruption after durable local read', code='fixture_local_read_interrupted')
-        return advance(**kwargs)
-    monkeypatch.setattr(runtime_module, 'advance_research', interrupt_after_local_write)
-    db, task_id, task, calls, gateway = fixture._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert task.status == 'failed' and interrupted
-    scan_id = store.task_execution_input(task_id=task_id, db_path=db)['checkpoint']['scanId']
-    frozen = frozen_scan_input_sha256(scan_id=scan_id, db_path=db)
-    with sqlite3.connect(db) as conn:
-        paid = conn.execute("SELECT * FROM k10_external_attempts WHERE state='succeeded'").fetchall()
-        stages = [json.loads(row[0]) for row in conn.execute('SELECT result_json FROM k10_research_stage_results')]
-    failures = [row['conclusion']['runtimeFailedAction'] for row in stages
-                if (row.get('conclusion') or {}).get('runtimeFailedAction')]
-    assert failures[-1]['extra']['contextResults'][0]['value']['indexVersion'] == old['value']['indexVersion']
-    assert recover_scan(db_path=db, scan_id=scan_id, execution_config_id='b39-execution', execution_config_revision=1,
-        confirmed_input_sha256=frozen, now=fixture.RUN_AT) == task_id
-    task = run_once(db_path=db, task_id=task_id, worker_id='b70-catalogue-recovery', lease_for=timedelta(minutes=5),
-        handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
-        clock=lambda: fixture.RUN_AT)
-    assert task.status == 'completed'
-    refreshed = seen[2]['contextResults'][-1]['value']
-    assert refreshed['indexVersion'] == material.INDEX_VERSION and refreshed['offset'] == 0
-    assert refreshed['locators'] == material.read_locator(doc, 'find:订单')['locators']
-    assert gateway.search_paths == ['path-1', 'path-2']
-    assert calls.count('titleBatch') == 1 and calls.count('research:plan_gaps') == 1
-    assert frozen_scan_input_sha256(scan_id=scan_id, db_path=db) == frozen
-    with sqlite3.connect(db) as conn:
-        current = conn.execute("SELECT * FROM k10_external_attempts WHERE state='succeeded'").fetchall()
-        assert all(row in current for row in paid)
-        assert conn.execute('SELECT COUNT(*) FROM k10_tasks').fetchone()[0] == 1
-    with fixture._api(db) as api:
-        response = api.get(f'/api/v1/k10/scans/{scan_id}/assessments')
-    assert response.status_code == 200 and response.json()['items']
+    from tests.test_v350_research_round import test_b78_resume_rebuilds_next_packet_after_durable_round_without_reposting_prior_round
+
+    test_b78_resume_rebuilds_next_packet_after_durable_round_without_reposting_prior_round(tmp_path)

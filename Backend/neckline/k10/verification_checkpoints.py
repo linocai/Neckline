@@ -22,7 +22,7 @@ class VerificationCheckpointError(RuntimeError):
 
 @dataclass(frozen=True)
 class VerificationRequestClaim:
-    state: str  # reserved | reused | pending
+    state: str  # reserved | replay | reused | pending
     reason: str | None
     requests: int
     result: Mapping[str, Any] | None = None
@@ -157,6 +157,21 @@ class VerificationCheckpointStore:
                     if not isinstance(result, Mapping):
                         raise VerificationCheckpointError("verification_checkpoint_corrupt")
                     return VerificationRequestClaim("reused", None, used, result)
+                # A paid response can survive without its derived documents.
+                # Reclaim only local derivation, with the same network count;
+                # never turn a saved response into another paid request.
+                receipt = store.load_tavily_response_receipt(
+                    task_id=self.task_id, item_key=item_key, input_sha256=input_sha256,
+                    db_path=self.db_path, conn=conn,
+                )
+                if receipt is not None:
+                    conn.execute(
+                        "UPDATE k10_execution_item_checkpoints SET status='running',"
+                        "safe_error_code=NULL,safe_error_ref=NULL,updated_at=? "
+                        "WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
+                        (updated_at or _now(), self.task_id, _ITEM_KIND, item_key, _STAGE),
+                    )
+                    return VerificationRequestClaim("replay", None, used, receipt)
                 prior_attempts = int(existing[4])
                 task_checkpoint = json.loads(conn.execute(
                     "SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (self.task_id,)).fetchone()[0])

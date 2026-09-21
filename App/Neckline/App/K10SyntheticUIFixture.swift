@@ -126,7 +126,7 @@ actor K10SyntheticUIService: K10Servicing {
 
     init(presentsB39State: Bool = false) { self.presentsB39State = presentsB39State }
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.2.0 Build 54") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.5.0 Build 78") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"
@@ -220,12 +220,30 @@ actor K10SyntheticUIService: K10Servicing {
                         classification: "continuation", verificationStatus: "unverified")
                 }, priceReaction: "合成行情：D1 收盘 12.00；仅为价格观察，不是假定成交收益。")
         }
-        let report = K10DailyReport(reportId: "daily-\(window)", strategyVersion: "K10-v2", strategySnapshotId: "synthetic-v2",
-            windowKind: window, parentReportId: evening ? nil : "daily-evening", cutoffAt: evening ? "2026-09-06T21:00:00+08:00" : "2026-09-07T09:00:00+08:00",
+        var report = K10DailyReport(reportId: "daily-\(window)", strategyVersion: "K10-v2", strategySnapshotId: "synthetic-v2",
+            windowKind: window, parentReportId: evening ? nil : "daily-evening", cutoffAt: evening ? "2026-09-06T21:00:00+08:00" : "2026-09-07T08:30:00+08:00",
             verificationCutoffAt: "2026-09-07T09:10:00+08:00", availableAt: evening ? "2026-09-06T21:10:00+08:00" : "2026-09-07T09:40:00+08:00",
             status: "completed", eveningCards: evening ? cards : [], updatedCards: cards.filter { $0.section == "updated" },
             addedCards: cards.filter { $0.section == "added" }, nextCursor: nil)
-        return K10DailyReportResponse(schemaVersion: 8, state: "available", reason: nil, report: report)
+        report.materials = K10ReportMaterials(state: "available", count: 1, reason: nil)
+        report.resultAvailableAt = evening ? "2026-09-06T21:10:00+08:00" : "2026-09-07T09:12:00+08:00"
+        report.deliveryDeadlineAt = evening ? nil : "2026-09-07T09:20:00+08:00"
+        return K10DailyReportResponse(schemaVersion: 9, state: "available", reason: nil, report: report)
+    }
+
+    func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage {
+        guard id == "daily-evening" || id == "daily-morning" else {
+            throw K10APIError.notFound("合成报告不存在")
+        }
+        let material = K10ReportMaterial(
+            materialId: "synthetic-material-\(id)", eventId: "synthetic-event-a",
+            eventTitle: "合成资料：验证环节出现新的阶段进展",
+            facts: [K10ReportMaterialFact(text: "公开资料显示验证环节有阶段性进展。", sourceRefs: [Self.source])],
+            companyRelations: [K10ReportMaterialCompanyRelation(companyCode: "300001.SZ", companyName: "合成科技", relation: "资料列为直接业务关联，尚待正式披露确认。", sourceRefs: [Self.source])],
+            uncertainties: ["该材料只供阅读，不构成正式推荐或观察窗口。"],
+            sourceRefs: [Self.source, Self.tavilyExcerpt], asOf: "2026-09-07T09:12:00+08:00"
+        )
+        return K10ReportMaterialsPage(schemaVersion: 9, reportId: id, items: [material], page: K10Page(nextCursor: nil))
     }
 
     func opportunity(id: String) async throws -> K10OpportunityDetail {

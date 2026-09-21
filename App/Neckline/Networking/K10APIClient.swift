@@ -34,7 +34,8 @@ protocol K10Servicing: Sendable {
     func publications() async throws -> [K10Publication]
     func companyWindows() async throws -> [K10CompanyWindow]
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse
-    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse
+    func dailyReport(id: String, cursor: String?) async throws -> K10DailyReportResponse
+    func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage
     func latestMorningReport() async throws -> K10MorningReport?
     func morningReports() async throws -> [K10MorningReport]
     func opportunity(id: String) async throws -> K10OpportunityDetail
@@ -61,8 +62,11 @@ extension K10Servicing {
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
         throw K10APIError.notFound("尚未取得 K10-v2 日报告")
     }
-    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
+    func dailyReport(id: String, cursor: String?) async throws -> K10DailyReportResponse {
         throw K10APIError.notFound("尚未取得 K10-v2 日报告下一页")
+    }
+    func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage {
+        throw K10APIError.notFound("该报告没有可读取的完成材料")
     }
     func researchSummary(scanID: String) async throws -> K10ResearchSummary {
         throw K10APIError.notFound("该扫描没有 B39 研究摘要")
@@ -98,8 +102,15 @@ actor K10APIClient: K10Servicing {
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
         try await get("/api/v1/k10/v2/reports/latest", query: [URLQueryItem(name: "window", value: window), URLQueryItem(name: "limit", value: "30")])
     }
-    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
-        try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)", query: [URLQueryItem(name: "cursor", value: cursor), URLQueryItem(name: "limit", value: "30")])
+    func dailyReport(id: String, cursor: String?) async throws -> K10DailyReportResponse {
+        var query = [URLQueryItem(name: "limit", value: "30")]
+        if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)", query: query)
+    }
+    func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage {
+        var query = [URLQueryItem(name: "limit", value: "30")]
+        if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/materials", query: query)
     }
     func latestMorningReport() async throws -> K10MorningReport? {
         do { return try await get("/api/v1/k10/morning-reports/latest") }

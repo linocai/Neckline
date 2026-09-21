@@ -17,7 +17,8 @@ import tests.test_v310_pipeline_e2e as e2e
 
 
 @pytest.mark.parametrize('status', [402, 429])
-def test_parent_recovery_preserves_child_terminal_and_retry_budget(tmp_path, monkeypatch, status):
+def test_parent_recovery_preserves_terminal_work_item_without_repeating_paid_call(tmp_path, monkeypatch, status):
+    """A parent reclaim may finish publication, never recreate a review task."""
     calls = []
     def resolve(**kwargs):
         def respond(request):
@@ -30,50 +31,50 @@ def test_parent_recovery_preserves_child_terminal_and_retry_budget(tmp_path, mon
             read_timeout=1, use_streaming=False)
         return ProviderResolution('configured', provider, 'fixture', None)
     monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)
-    actual_finish = store.finish_task
-    def interrupt(**kwargs):
-        task = store.get_task(task_id=kwargs['task_id'], db_path=kwargs['db_path'])
-        if task.kind == 'morning_scan':
-            raise SystemExit('before parent terminal commit')
-        actual_finish(**kwargs)
-        if task.kind == 'morning_review' and kwargs['status'] == 'failed':
-            raise SystemExit('after child terminal commit')
-    monkeypatch.setattr(store, 'finish_task', interrupt)
+    actual_publication_finish = store.finish_task_with_publication
+    def interrupt_publication(conn, **kwargs):
+        # The work item reaches its terminal row before the parent report
+        # transaction.  A crash here must not turn it into a child or re-post.
+        kind = conn.execute('SELECT kind FROM k10_tasks WHERE task_id=?', (kwargs['task_id'],)).fetchone()[0]
+        if kind == 'morning_scan':
+            raise SystemExit('before parent publication transaction commits')
+        return actual_publication_finish(conn, **kwargs)
+    monkeypatch.setattr(store, 'finish_task_with_publication', interrupt_publication)
     with pytest.raises(SystemExit):
         later_scan(tmp_path, monkeypatch, lambda payload, value: None)
     db = tmp_path / 'b39-e2e.sqlite'
     with sqlite3.connect(db) as conn:
         parent_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
-        child_id = conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+        work_item = conn.execute(
+            'SELECT work_item_id,status,report_item_json FROM k10_morning_review_work_items'
+        ).fetchone()
         frozen_windows = conn.execute('SELECT * FROM k10_company_windows').fetchall()
+        child_count = conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+    assert work_item is not None and work_item[1] == 'failed' and work_item[2] is not None
+    assert child_count == 0 and len(calls) == 1
     def reclaim():
         with sqlite3.connect(db) as conn:
             lease = conn.execute('SELECT lease_until FROM k10_tasks WHERE task_id=?', (parent_id,)).fetchone()[0]
         at = datetime.fromisoformat(lease) + timedelta(seconds=1)
         monkeypatch.setattr(pipeline, '_now', lambda: at)
         return run_once(db_path=db, worker_id='b57-parent', lease_for=timedelta(minutes=5),
-            handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
+            handlers={'morning_scan': lambda ctx: pipeline.production_scan_handler(ctx,
+                tushare_token='fixture-token', parquet_dir=tmp_path/'parquet', now=lambda: at)},
             clock=lambda: at, task_id=parent_id)
-    for _ in range(3):
-        with pytest.raises(SystemExit):
-            reclaim()
-    monkeypatch.setattr(store, 'finish_task', actual_finish)
+    monkeypatch.setattr(store, 'finish_task_with_publication', actual_publication_finish)
     parent = reclaim()
-    child = store.get_task(task_id=child_id, db_path=db)
-    expected = 1 if status == 402 else 2
-    assert child.status == 'failed' and child.attempt_count == expected
-    assert len(calls) == expected, 'parent recovery must not authorize additional failed-child calls'
     assert parent.status == 'completed'
+    assert len(calls) == 1, 'parent recovery must not authorize another failed-work-item call'
     with sqlite3.connect(db) as conn:
         assert conn.execute('SELECT * FROM k10_company_windows').fetchall() == frozen_windows
-        assert conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0] == 1
-        assert conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?', (child_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM k10_task_retry_schedules').fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','unknown')").fetchone()[0] == 0
     with client_for(db) as client:
         report = client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
     assert report['report']['status'] == 'partial'
-    assert report['report']['incompleteReviews'][0]['status'] == 'failed'
-    assert ('余额不足' if status == 402 else '重试上限') in report['report']['incompleteReviews'][0]['reason']
-    (tmp_path / f'b57_parent_{status}.json').write_text(json.dumps(report, ensure_ascii=False))
+    assert any(item['taskId'] == work_item[0] and item['status'] == 'failed'
+               for item in report['report']['incompleteReviews'])
 
 
 @pytest.mark.parametrize('kind', ['morning', 'evening'])
@@ -118,7 +119,10 @@ def test_early_scan_failure_is_current_daily_report(tmp_path, monkeypatch, kind,
         with pytest.raises(SystemExit): work()
         assert store.get_task(task_id=tid, db_path=db).status == 'running'
         with sqlite3.connect(db) as conn:
-            assert conn.execute('SELECT count(*) FROM k10_v2_report_runs').fetchone()[0] == 1
+            # The baseline evening report remains readable and the failed
+            # current daily report is projected once before the terminal
+            # task transaction.  Reclaiming must not append a third row.
+            assert conn.execute('SELECT count(*) FROM k10_v2_report_runs').fetchone()[0] == 2
             lease = conn.execute('SELECT lease_until FROM k10_tasks WHERE task_id=?', (tid,)).fetchone()[0]
         at = datetime.fromisoformat(lease) + timedelta(seconds=1)
         monkeypatch.setattr(v2_store, 'record_scan_task_failure', original)

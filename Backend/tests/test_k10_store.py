@@ -34,6 +34,7 @@ from neckline.k10.store import (
     read_run_config,
     observe_candidate,
     renew_task_lease,
+    set_run_control,
 )
 
 
@@ -42,6 +43,8 @@ NOW = "2026-09-06T13:00:00+00:00"
 
 def _seed_candidate(path, *, independent_evidence=False):
     initialize_schema(path)
+    set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW,
+                          changed_by="test", db_path=path)
     first = append_document_version(
         document_id="doc-1", source_key="source-a", external_id="external-1", canonical_url="https://e/1",
         content_sha256="a" * 64, published_at="2026-09-06T12:00:00+00:00", published_precision="exact",
@@ -297,6 +300,14 @@ def test_task_leases_recover_after_expiry_and_prevent_stale_finish(tmp_path):
         task_input_cutoff_at=NOW, task_payload={}, task_budget={}, created_at=NOW, db_path=path,
     )
     base = datetime(2026, 9, 6, 13, 0, tzinfo=timezone.utc)
+    # Claiming is intentionally gated by durable run control.  This lease
+    # regression exercises lease ownership, so it must explicitly establish
+    # the isolated producer/worker precondition rather than relying on the
+    # new safe default (closed).
+    set_run_control(
+        state="open", reason_code="fixture_task_lease", changed_at=base.isoformat(),
+        changed_by="test", db_path=path,
+    )
     first = claim_tasks(worker_id="worker-a", now=base, lease_for=timedelta(minutes=1), limit=1, db_path=path)
     assert [task.task_id for task in first] == ["task-1"]
     assert claim_tasks(worker_id="worker-b", now=base, lease_for=timedelta(minutes=1), limit=1, db_path=path) == []

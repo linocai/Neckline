@@ -22,12 +22,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from neckline.k10 import SchemaUnavailable, validate_execution_config, validate_run_config
 from neckline.k10 import research_store, store
+from neckline.k10.delivery import runtime_contract
 from neckline.k10.market_context import MarketContextError, collect_market_context
 from neckline.k10.evaluation import EvaluationInputError, evaluate_company_window, evaluation_state
 from neckline.k10.schema import read_connection, require_schema
 
 from .k10_schemas import (
     V2ReportEnvelope,
+    V2ReportMaterialsEnvelope,
+    V2ReportMaterialOut,
     V2ReportOut,
     AnalysisArtifactOut,
     AnalysisChainOut,
@@ -120,7 +123,17 @@ def _run_control_out(value: Mapping[str, Any]) -> ExecutionRunControlOut:
     changed_at = value.get("changedAt")
     if not isinstance(reason, str) or not reason or not isinstance(changed_at, str) or not changed_at:
         raise RuntimeError("K10 运行控制记录不完整")
-    return ExecutionRunControlOut(state=state, reasonCode=reason, changedAt=changed_at)
+    execution_state = value.get("executionState")
+    if execution_state not in {"accepting", "draining", "paused", "blocked"}:
+        raise RuntimeError("K10 运行控制执行状态不完整")
+    active = value.get("activeTasks")
+    return ExecutionRunControlOut(
+        state=state, reasonCode=reason, changedAt=changed_at,
+        executionState=execution_state,
+        inFlightCount=int(value.get("inFlightCount", 0)),
+        unknownCount=int(value.get("unknownCount", 0)),
+        activeTasks=[] if not isinstance(active, list) else active,
+    )
 
 
 def _unavailable(exc: SchemaUnavailable) -> HTTPException:
@@ -1241,6 +1254,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                     "marketContext": market_context,
                     "configId": config["configId"] if config else None,
                     "configRevision": config["revision"] if config else None,
+                    "runtimeContract": runtime_contract(),
                 }
                 execution_binding = required_runtime_execution_binding()
                 result = store.observe_company_window(
@@ -1304,7 +1318,8 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 market_context = collect_market_context(company_code=str(window["companyCode"]), cutoff_at=cutoff, parquet_dir=parquet_dir())
             except MarketContextError:
                 market_context = {"status": "unavailable", "reason": "market_context_input_invalid", "asOf": cutoff, "sourceRefs": [], "recentDays": []}
-            payload = {**payload, "marketContext": market_context}
+            payload = {**payload, "marketContext": market_context,
+                       "runtimeContract": runtime_contract()}
         request_id = _stable_id("analysis-request", company_window_id, command.idempotencyKey)
         try:
             result = store.create_analysis_request(request_id=request_id,
@@ -1347,11 +1362,11 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.post("/jobs/{job_id}/retry", response_model=JobOut)
     def retry_job(job_id: str, command: JobRetryIn) -> JobOut:
         try:
-            task = store.get_task(task_id=job_id,db_path=db_path())
-            execution_binding = None
-            if task is not None and task.kind in {'analysis','morning_review','evening_scan','morning_scan'} and store.task_execution_profile(task_id=job_id,db_path=db_path()) is None:
-                execution_binding = required_runtime_execution_binding()
-            store.retry_task(task_id=job_id, expected_attempt_count=command.expectedAttemptCount, retried_at=_now(), db_path=db_path(),execution_binding=execution_binding,user_requested=True)
+            # The retry store gate validates the frozen B76 contract before it
+            # changes status or attempts to attach anything.  A route retry
+            # must never repair an old task by binding the current runtime.
+            store.retry_task(task_id=job_id, expected_attempt_count=command.expectedAttemptCount,
+                             retried_at=_now(), db_path=db_path(), user_requested=True)
         except store.K10Conflict as exc:
             raise _conflict(str(exc)) from exc
         with _reader(db_path()) as conn:
@@ -1396,21 +1411,26 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
 
     def v2_report_result(window, report_id, cursor, limit):
         from neckline.k10.v2_store import read_report
-        configured = configuration()
-        if report_id is None and not all(scope.state == "configured" for scope in configured.scopes):
-            return V2ReportEnvelope(state="not_configured",reason=ApiFailure(reason="not_configured",message="今天没跑成 · 参数未配置"))
         try:
             report = read_report(db_path=db_path(), report_id=report_id, window=window, cursor=cursor, limit=limit)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if report is None:
+            if report_id is not None:
+                raise _not_found("日报不存在")
             configured = configuration()
             ready = all(scope.state == "configured" for scope in configured.scopes)
-            return V2ReportEnvelope(state="empty" if ready else "not_configured",
+            return V2ReportEnvelope(schemaVersion=9, state="empty" if ready else "not_configured",
                 reason=ApiFailure(reason="no_report" if ready else "not_configured", message="尚无日报" if ready else "今天没跑成 · 参数未配置"))
+        delivery = report.get("delivery")
+        schema_version = 9 if (isinstance(delivery, Mapping)
+                                and delivery.get("contractVersion") == "k10-report-delivery-3.5.0-b78") or report.get("materials") is not None else 8
         # Expand actual persisted source versions through the shared source DTO.
         refs = [ref for section in ("eveningCards", "updatedCards", "addedCards") for card in report[section] for ref in card["sourceRefs"]]
         refs.extend(ref for change in report['lifecycleUpdates'] for ref in change['sourceRefs'])
+        if isinstance(delivery, Mapping):
+            refs.extend(ref for gap in delivery.get("gaps", []) if isinstance(gap, Mapping)
+                        for ref in gap.get("sourceRefs", []) if isinstance(ref, Mapping))
         with _reader(db_path()) as conn:
             docs = _document_reference_map(conn, refs)
             failure_row = conn.execute('SELECT error_json FROM k10_v2_report_runs WHERE report_id=?', (report['reportId'],)).fetchone()
@@ -1420,11 +1440,37 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 card["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump() for ref in card["sourceRefs"]]
         for change in report['lifecycleUpdates']:
             change['sourceRefs'] = [_source_ref({**dict(ref), **dict(docs.get((ref.get('documentId'), ref.get('revision')), {}))}).model_dump() for ref in change['sourceRefs']]
+        if isinstance(delivery, Mapping):
+            for gap in delivery.get("gaps", []):
+                if not isinstance(gap, Mapping) or not isinstance(gap.get("sourceRefs"), list):
+                    continue
+                gap["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump()
+                                     for ref in gap["sourceRefs"] if isinstance(ref, Mapping)]
         if report['status'] in {'queued', 'running'}:
-            return V2ReportEnvelope(state='available', report=V2ReportOut(**report),
-                reason=ApiFailure(reason='report_processing', message='任务已恢复，正在继续处理已保存的内容。'))
-        return V2ReportEnvelope(state="available", report=V2ReportOut(**report),
-            reason=ApiFailure(reason=failure.get("reason", "incomplete"), message=failure.get("message", "今天没跑成 · 处理未完成")) if failure or report["status"] not in {"completed","partial"} else None)
+            deadline = report.get("deliveryDeadlineAt")
+            try:
+                deadline_at = datetime.fromisoformat(deadline.replace("Z", "+00:00")) if isinstance(deadline, str) else None
+            except ValueError:
+                deadline_at = None
+            if deadline_at is not None and deadline_at.tzinfo is not None and datetime.now(timezone.utc) >= deadline_at:
+                return V2ReportEnvelope(
+                    schemaVersion=schema_version, state='available', report=V2ReportOut(**report),
+                    reason=ApiFailure(reason='delivery_deadline_reached',
+                                      message=('晨报已到 09:20 交付时限，本轮仍在排队，尚未开始处理。' if report['status'] == 'queued' else '晨报已到 09:20 交付时限；正在结算的调用不会被重发。')),
+                )
+            return V2ReportEnvelope(schemaVersion=schema_version, state='available', report=V2ReportOut(**report),
+                reason=ApiFailure(reason='report_queued' if report['status'] == 'queued' else 'report_processing', message='本轮报告正在排队。' if report['status'] == 'queued' else '正在处理本轮报告，已完成内容会保留。'))
+        if (report["status"] == "partial" and isinstance(delivery, Mapping)
+                and delivery.get("outcome") == "partial"):
+            messages = [gap.get("message") for gap in delivery.get("gaps", []) if isinstance(gap, Mapping)
+                        and isinstance(gap.get("message"), str) and gap["message"]]
+            summary = "；".join(dict.fromkeys(messages)) or "本轮存在执行缺口，相关范围未完成。"
+            return V2ReportEnvelope(
+                schemaVersion=schema_version, state="available", report=V2ReportOut(**report),
+                reason=ApiFailure(reason="partial_delivery", message=summary),
+            )
+        return V2ReportEnvelope(schemaVersion=schema_version, state="available", report=V2ReportOut(**report),
+            reason=ApiFailure(reason=failure.get("reason", "incomplete"), message=failure.get("message", "今天没跑成 · 处理未完成")) if failure or report["status"] not in {"completed","complete","partial"} else None)
 
     @router.get("/v2/reports/latest", response_model=V2ReportEnvelope)
     def v2_latest(window: str = Query("evening", pattern="^(evening|morning)$"), cursor: str | None = None, limit: int = Query(30, ge=1, le=100)):
@@ -1435,7 +1481,11 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.get("/v2/reports", response_model=V2ReportListOut)
     def v2_reports(cursor: str | None = None, limit: int = Query(30, ge=1, le=100)):
         with _reader(db_path()) as conn:
-            rows = list(conn.execute('SELECT report_id,window_kind,cutoff_at,available_at,status FROM k10_v2_report_runs ORDER BY julianday(cutoff_at) DESC,report_id DESC'))
+            rows = list(conn.execute(
+                'SELECT r.report_id,r.window_kind,r.cutoff_at,r.available_at,r.status,c.content_json '
+                'FROM k10_v2_report_runs r LEFT JOIN k10_v2_report_coverage c ON c.report_id=r.report_id '
+                'ORDER BY julianday(r.cutoff_at) DESC,r.report_id DESC'
+            ))
         start = 0
         if cursor is not None:
             found = next((index for index,row in enumerate(rows) if row[0] == cursor), None)
@@ -1443,8 +1493,57 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 raise HTTPException(status_code=422, detail='分页游标不属于日报历史')
             start = found + 1
         visible = rows[start:start+limit]
-        return V2ReportListOut(items=[V2ReportSummaryOut(reportId=row[0], strategyVersion='K10-v2', windowKind=row[1], cutoffAt=row[2], availableAt=row[3], status=row[4]) for row in visible],
+        def summary(row):
+            coverage = _json(row[5], {}) if row[5] else {}
+            return V2ReportSummaryOut(reportId=row[0], strategyVersion='K10-v2', windowKind=row[1], cutoffAt=row[2],
+                                      availableAt=row[3], status=row[4], delivery=coverage.get('delivery'))
+        return V2ReportListOut(items=[summary(row) for row in visible],
                                page=PageMeta(nextCursor=visible[-1][0] if start+limit < len(rows) else None))
+
+    @router.get("/v2/reports/{report_id}/materials", response_model=V2ReportMaterialsEnvelope)
+    def v2_report_materials(report_id: str, cursor: str | None = None,
+                            limit: int = Query(30, ge=1, le=100)) -> V2ReportMaterialsEnvelope:
+        """Expose only the report's safe, event-level material projection.
+
+        This explicit-ID reader deliberately does not consult configuration or
+        resolve ``latest``.  A notification can therefore never open a newer
+        report after its target was deleted or made unavailable.
+        """
+        from neckline.k10.v2_store import read_report_materials
+        try:
+            payload = read_report_materials(db_path=db_path(), report_id=report_id,
+                                            cursor=cursor, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if payload is None:
+            raise _not_found("日报材料不存在")
+        refs: list[Mapping[str, Any]] = []
+        for item in payload["items"]:
+            refs.extend(ref for ref in item.get("sourceRefs", []) if isinstance(ref, Mapping))
+            for fact in item.get("facts", []):
+                if isinstance(fact, Mapping):
+                    refs.extend(ref for ref in fact.get("sourceRefs", []) if isinstance(ref, Mapping))
+            for relation in item.get("companyRelations", []):
+                if isinstance(relation, Mapping):
+                    refs.extend(ref for ref in relation.get("sourceRefs", []) if isinstance(ref, Mapping))
+        with _reader(db_path()) as conn:
+            documents = _document_reference_map(conn, refs)
+        for item in payload["items"]:
+            item["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
+                                  for ref in item.get("sourceRefs", []) if isinstance(ref, Mapping)]
+            for fact in item.get("facts", []):
+                if isinstance(fact, Mapping):
+                    fact["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
+                                          for ref in fact.get("sourceRefs", []) if isinstance(ref, Mapping)]
+            for relation in item.get("companyRelations", []):
+                if isinstance(relation, Mapping):
+                    relation["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
+                                              for ref in relation.get("sourceRefs", []) if isinstance(ref, Mapping)]
+        return V2ReportMaterialsEnvelope(
+            reportId=payload["reportId"],
+            items=[V2ReportMaterialOut(**item) for item in payload["items"]],
+            page=PageMeta(nextCursor=payload["nextCursor"]),
+        )
 
     @router.get("/v2/reports/{report_id}", response_model=V2ReportEnvelope)
     def v2_detail(report_id: str, cursor: str | None = None, limit: int = Query(30, ge=1, le=100)):
@@ -1492,7 +1591,8 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                     errors.extend(execution_result.errors)
             scopes.append(ConfigurationScopeOut(scope=scope, state="configured" if not missing and not errors else "not_configured", missing=missing, errors=errors))
         return ConfigurationOut(configId=config["configId"] if config else None, configRevision=config["revision"] if config else None, scopes=scopes,
-            executionConfigId=execution_id, executionConfigRevision=execution_revision, runControl=_run_control_out(store.run_control_status(db_path=path)),
+            executionConfigId=execution_id, executionConfigRevision=execution_revision,
+            runControl=_run_control_out(store.run_control_execution_status(db_path=path)),
             **{key: value for key,value in snapshot_status.items() if key not in {"state", "errors"}})
 
     @router.get("/operations/readiness", response_model=OperationsReadinessOut)
@@ -1502,7 +1602,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         from neckline.k10.notification_runtime import notification_readiness
 
         readiness = notification_readiness(db_path=db_path())
-        control = store.run_control_status(db_path=db_path())
+        control = store.run_control_execution_status(db_path=db_path())
         return OperationsReadinessOut(notificationReadiness={
             "state": readiness.state,
             "reasonCode": readiness.reason_code,
@@ -1513,11 +1613,11 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.post("/operations/pause", response_model=DiscoveryPauseOut)
     def pause_discovery() -> DiscoveryPauseOut:
         """Explicitly close discovery.  There is intentionally no client resume route."""
-        control = store.set_run_control(
+        store.set_run_control(
             state="closed", reason_code="user_paused", changed_at=_now(), changed_by="authenticated_api",
             db_path=db_path(),
         )
-        return DiscoveryPauseOut(runControl=_run_control_out(control))
+        return DiscoveryPauseOut(runControl=_run_control_out(store.run_control_execution_status(db_path=db_path())))
 
     return router
 

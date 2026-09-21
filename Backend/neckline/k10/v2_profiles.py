@@ -152,6 +152,21 @@ def matches_term(term: str, text: str) -> bool:
     return re.search(left + re.escape(term) + right, text) is not None
 
 
+def company_index_matches(index, query):
+    """Conservative local dependencies, never evidence or title dispositions."""
+    text = semantic_text(query).casefold()
+    matches = {}
+    for row in index:
+        terms = [row['ts_code'], row['ts_code'].split('.')[0], row['name'],
+                 *row.get('aliases', []), *row.get('match_terms', []),
+                 *row.get('dependency_terms', []),
+                 *(item.get('entity', '') for item in row.get('relationships', []))]
+        found = [term for term in terms if isinstance(term, str) and term and matches_term(term, text)]
+        if found:
+            matches[row['ts_code']] = found
+    return matches
+
+
 def retrieve_company_context(*, db_path: Path, profiles_id: str, query: Any,
                              hinted_codes: list[str] | None = None) -> dict[str, Any]:
     """Local field retrieval; company names are not the only lookup key.
@@ -166,14 +181,9 @@ def retrieve_company_context(*, db_path: Path, profiles_id: str, query: Any,
     if not hints <= allowed:
         raise ValueError('公司不属于固定资料快照')
     text = semantic_text(query).casefold()
-    matches = {}
-    for row in index:
-        terms = [row['name'], *row.get('aliases', []), *row.get('match_terms', []),
-                 *row.get('dependency_terms', []),
-                 *(item.get('entity', '') for item in row.get('relationships', []))]
-        found = [term for term in terms if isinstance(term, str) and term and matches_term(term, text)]
-        if found or row['ts_code'] in hints:
-            matches[row['ts_code']] = found
+    matches = company_index_matches(index, text)
+    for code in hints:
+        matches.setdefault(code, [])
     profiles = read_profiles(db_path=db_path, profiles_id=profiles_id, codes=sorted(matches))
     projected = []
     query_terms = set(re.findall(r'[a-z0-9_-]+|[\u4e00-\u9fff]{2,}', text))

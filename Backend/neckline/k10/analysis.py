@@ -441,7 +441,7 @@ def _call(provider: LLMProvider, messages: list[ChatMessage], *, model_options: 
         return "", None, None, f"模型调用异常：{type(exc).__name__}", {}, None, None
     usage = _usage(result)
     if not result.ok:
-        code = result.error_code if result.error_code in {"insufficient_balance", "rate_limited", "provider_request_outcome_unknown", "model_request_outcome_unknown"} else "provider_call_failed"
+        code = result.error_code if result.error_code in {"insufficient_balance", "provider_authorization_failed", "rate_limited", "provider_request_outcome_unknown", "model_request_outcome_unknown"} else "provider_call_failed"
         return "", result.provider or None, result.model or None, failure_message(code), usage, code, result.retry_after_seconds
     if not isinstance(result.content, str) or not result.content.strip():
         return "", result.provider or None, result.model or None, "模型未返回正文", usage, None, None

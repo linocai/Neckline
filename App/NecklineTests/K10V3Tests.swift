@@ -8,7 +8,159 @@ import UIKit
 #endif
 @testable import Neckline
 
+/// A locally maintained decoder matching the public B69 report shape.
+/// It only checks that B76's delivery field is additive for this decoder; it
+/// does not re-verify an immutable B69 application source tree.
+private struct B69DailyReportResponse: Decodable {
+    let schemaVersion: Int
+    let state: String
+    let reason: K10Failure?
+    let report: B69DailyReport?
+}
+
+private struct B69DailyReport: Decodable {
+    let reportId: String
+    let strategyVersion: String
+    let strategySnapshotId: String
+    let windowKind: String
+    let parentReportId: String?
+    let cutoffAt: String
+    let verificationCutoffAt: String?
+    let availableAt: String?
+    let status: String
+    let eveningCards: [K10DailyCard]
+    let updatedCards: [K10DailyCard]
+    let addedCards: [K10DailyCard]
+    let nextCursor: String?
+    let lifecycleUpdates: [K10DailyLifecycleUpdate]?
+    let coverageGaps: [String]?
+    let incompleteReviews: [K10IncompleteReview]?
+}
+
 final class K10V3Tests: XCTestCase {
+    private static func actualAPIResourceURL(_ name: String) throws -> URL {
+        let bundle = Bundle(for: K10V3Tests.self)
+        // Xcode preserves source groups in some test products and flattens
+        // copied file resources in others.  Both paths remain inside the
+        // same test bundle; neither consults a user release directory.
+        guard let url = bundle.url(forResource: name, withExtension: "json", subdirectory: "ActualAPI")
+            ?? bundle.url(forResource: name, withExtension: "json") else {
+            throw K10APIError.decoding("Missing pinned FastAPI DTO test resource: \(name).json")
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 > 0 else {
+            throw K10APIError.decoding("Pinned FastAPI DTO test resource is empty: \(name).json")
+        }
+        return url
+    }
+
+    private static func actualAPIResourceData(_ name: String) throws -> Data {
+        try Data(contentsOf: actualAPIResourceURL(name))
+    }
+
+    func testReviewOnlyPartialPresentationDoesNotClaimWholeReportIsComplete() {
+        let display = k10DeliveryPresentation(
+            outcome: "complete",
+            reportStatus: "partial",
+            incompleteReviewCount: 1
+        )
+
+        XCTAssertEqual(display.title, "部分完成")
+        XCTAssertEqual(display.message, "本轮消息已全部处理；部分晨间复核未完成，以下展示已完成的发现结果。")
+        XCTAssertEqual(display.tone, .caution)
+    }
+
+    func testReviewCoverageSummaryDoesNotRepeatEnvelopeReason() {
+        XCTAssertEqual(
+            k10VisibleCoverageGapTexts(
+                ["morning_review_child_failed"],
+                responseReason: "部分晨间复核未完成，已完成内容保留"
+            ),
+            []
+        )
+        XCTAssertEqual(
+            k10VisibleCoverageGapTexts(
+                ["morning_source_missing"],
+                responseReason: "部分晨间复核未完成，已完成内容保留"
+            ),
+            ["晨间资料覆盖不完整，复核结论仍有资料缺口"]
+        )
+    }
+
+    func testIncompleteReviewsAreGroupedByCompanyWithoutDroppingOpportunityIdentity() {
+        let reviews = [
+            K10IncompleteReview(taskId: "task-a", opportunityId: "opportunity-a", companyWindowId: "window-a", companyCode: "300001.SZ", status: "failed", reason: "模型调用失败"),
+            K10IncompleteReview(taskId: "task-b", opportunityId: "opportunity-b", companyWindowId: "window-a", companyCode: "300001.SZ", status: "failed", reason: "模型调用失败"),
+            K10IncompleteReview(taskId: "task-c", opportunityId: "opportunity-c", companyWindowId: "window-c", companyCode: "600000.SH", status: "failed", reason: "模型调用失败"),
+        ]
+
+        let groups = k10IncompleteReviewGroups(reviews)
+        XCTAssertEqual(groups.map(\.companyCode), ["300001.SZ", "600000.SH"])
+        XCTAssertEqual(groups[0].reviews.map(\.opportunityId), ["opportunity-a", "opportunity-b"])
+        XCTAssertEqual(groups[1].reviews.map(\.opportunityId), ["opportunity-c"])
+    }
+
+    func testDeliveryGapMessageUsesUserFacingDescription() {
+        XCTAssertEqual(
+            k10DeliveryGapMessageText("该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。"),
+            "这条消息未能完成资料处理，关联公司未纳入本轮结果。"
+        )
+    }
+
+    func testPinnedLegacyFailedFastAPIReportKeepsTerminalReasonInEmptyPresentation() throws {
+        let response = try JSONDecoder().decode(
+            K10DailyReportResponse.self,
+            from: Self.actualAPIResourceData("b69-legacy-failed-report")
+        )
+        let report = try XCTUnwrap(response.report)
+        XCTAssertEqual(response.state, "available")
+        XCTAssertEqual(report.status, "failed")
+        XCTAssertNil(report.delivery, "The pinned B69 response predates B76 delivery metadata.")
+        XCTAssertEqual(response.reason?.reason, "insufficient_balance")
+        XCTAssertEqual(response.reason?.message, "余额不足，已停止本次任务")
+
+        let presentation = k10OpportunityEmptyPresentation(
+            responseState: response.state,
+            hasReportLoadError: false,
+            reportStatus: report.status,
+            deliveryOutcome: report.delivery?.outcome,
+            segment: "evening",
+            currentMorningUpdateCount: 0,
+            hasEndedRecommendations: false,
+            responseReason: response.reason?.message
+        )
+        XCTAssertEqual(presentation.title, "今天没跑成")
+        XCTAssertEqual(presentation.message, "余额不足，已停止本次任务")
+    }
+
+    func testPinnedActualContentPolicyRefusalMapsToChineseGapReason() throws {
+        let response = try JSONDecoder().decode(
+            K10DailyReportResponse.self,
+            from: Self.actualAPIResourceData("b76-partial-report")
+        )
+        let gap = try XCTUnwrap(response.report?.delivery?.gaps.first)
+        XCTAssertEqual(gap.reasonCode, "content_policy_refused")
+        XCTAssertEqual(k10DeliveryGapReasonText(gap.reasonCode), "内容被供应商拒绝")
+        XCTAssertEqual(k10DeliveryGapReasonText("provider_content_policy_refused"), "内容被供应商拒绝")
+    }
+
+    func testPartialDeliveryGapReasonsRemainClearChineseWithoutImplyingWholeReportStopped() {
+        let expected = [
+            "insufficient_balance": "模型服务余额不足",
+            "provider_authorization_failed": "供应商授权未通过",
+            "rate_limited": "模型服务限流",
+            "morning_review_failed": "部分晨间复核未完成",
+            "morning_review_not_configured": "晨间复核参数未配置",
+            "not_configured": "参数未配置"
+        ]
+
+        for (reasonCode, text) in expected {
+            XCTAssertEqual(k10DeliveryGapReasonText(reasonCode), text)
+            XCTAssertFalse(text.contains(reasonCode))
+        }
+        XCTAssertFalse(k10DeliveryGapReasonText("insufficient_balance").contains("停止"))
+    }
+
     func testB69ActualCLIWorkerReportsPreserveCompletionAndFailure() throws {
         guard let root = ProcessInfo.processInfo.environment["NK_B69_DTO_DIR"] else {
             throw XCTSkip("Set NK_B69_DTO_DIR to the actual B69 CLI/worker FastAPI exports")
@@ -61,6 +213,233 @@ final class K10V3Tests: XCTestCase {
         let failedResearch = try XCTUnwrap(failedScan.researchSummary)
         XCTAssertEqual(failedResearch.taskId, expected.failedTaskId)
         XCTAssertTrue(failedResearch.executionFailed)
+    }
+
+    func testPinnedActualFastAPIReportsDecodeDeliveryAndPreserveAdditiveCompatibilityShape() throws {
+        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> (Data, T) {
+            let data = try Self.actualAPIResourceData(name)
+            return (data, try JSONDecoder().decode(T.self, from: data))
+        }
+        func cards(_ report: K10DailyReport) -> [K10DailyCard] {
+            report.eveningCards + report.updatedCards + report.addedCards
+        }
+        func assertReconciled(_ delivery: K10ReportDelivery, file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertEqual(delivery.counts.titleProcessed + delivery.counts.titleFailed + delivery.counts.titleUnprocessed, delivery.counts.titleInput, file: file, line: line)
+            XCTAssertEqual(delivery.counts.eventProcessed + delivery.counts.eventFailed + delivery.counts.eventUnprocessed, delivery.counts.eventInput, file: file, line: line)
+            let counts = [
+                delivery.counts.titleInput, delivery.counts.titleProcessed, delivery.counts.titleFailed, delivery.counts.titleUnprocessed,
+                delivery.counts.eventInput, delivery.counts.eventProcessed, delivery.counts.eventFailed, delivery.counts.eventUnprocessed,
+                delivery.counts.comparableCompanies, delivery.counts.publishedCompanies,
+            ]
+            XCTAssertTrue(counts.allSatisfy { $0 >= 0 }, file: file, line: line)
+            let hashPattern = try! NSRegularExpression(pattern: "^[a-f0-9]{64}$")
+            func isSHA256(_ value: String?) -> Bool {
+                guard let value else { return false }
+                let range = NSRange(value.startIndex..., in: value)
+                return hashPattern.firstMatch(in: value, range: range) != nil
+            }
+            XCTAssertTrue(isSHA256(delivery.inputManifestSha256), file: file, line: line)
+            XCTAssertTrue(isSHA256(delivery.eligibleSetSha256), file: file, line: line)
+            XCTAssertTrue(delivery.rankingInputSha256 == nil || isSHA256(delivery.rankingInputSha256), file: file, line: line)
+            XCTAssertTrue(delivery.gaps.allSatisfy { !$0.gapId.isEmpty && !$0.message.isEmpty && !$0.reasonCode.isEmpty }, file: file, line: line)
+        }
+
+        let (completeData, complete): (Data, K10DailyReportResponse) = try read("b76-complete-report", as: K10DailyReportResponse.self)
+        let completeReport = try XCTUnwrap(complete.report)
+        let completeDelivery = try XCTUnwrap(completeReport.delivery)
+        XCTAssertEqual(complete.schemaVersion, 8)
+        XCTAssertEqual(complete.state, "available")
+        XCTAssertEqual(completeReport.status, "completed")
+        XCTAssertEqual(completeDelivery.contractVersion, "k10-report-delivery-3.4.0-b76")
+        XCTAssertEqual(completeDelivery.outcome, "complete")
+        XCTAssertEqual(completeDelivery.rankingScope, "all_processed")
+        XCTAssertNotNil(completeReport.availableAt)
+        XCTAssertFalse(cards(completeReport).isEmpty)
+        assertReconciled(completeDelivery)
+
+        let (partialData, partial): (Data, K10DailyReportResponse) = try read("b76-partial-report", as: K10DailyReportResponse.self)
+        let partialReport = try XCTUnwrap(partial.report)
+        let partialDelivery = try XCTUnwrap(partialReport.delivery)
+        XCTAssertEqual(partial.state, "available")
+        XCTAssertEqual(partialReport.status, "partial")
+        XCTAssertEqual(partialDelivery.contractVersion, completeDelivery.contractVersion)
+        XCTAssertEqual(partialDelivery.outcome, "partial")
+        XCTAssertTrue(["completed_subset", "none"].contains(partialDelivery.rankingScope))
+        XCTAssertNotNil(partialReport.availableAt)
+        XCTAssertFalse(partialDelivery.gaps.isEmpty)
+        XCTAssertEqual(partial.reason?.reason, "partial_delivery")
+        XCTAssertFalse(partial.reason?.message.isEmpty ?? true)
+        XCTAssertFalse(partialReport.coverageGaps?.isEmpty ?? true)
+        assertReconciled(partialDelivery)
+
+        let (_, failed): (Data, K10DailyReportResponse) = try read("b76-failed-report", as: K10DailyReportResponse.self)
+        let failedReport = try XCTUnwrap(failed.report)
+        let failedDelivery = try XCTUnwrap(failedReport.delivery)
+        XCTAssertEqual(failedReport.status, "failed")
+        XCTAssertEqual(failedDelivery.outcome, "failed")
+        XCTAssertEqual(failedDelivery.rankingScope, "none")
+        XCTAssertNil(failedReport.availableAt)
+        XCTAssertTrue(cards(failedReport).isEmpty)
+        XCTAssertFalse(failedDelivery.gaps.isEmpty)
+        assertReconciled(failedDelivery)
+
+        let (_, empty): (Data, K10DailyReportResponse) = try read("b76-empty-report", as: K10DailyReportResponse.self)
+        XCTAssertEqual(empty.state, "empty")
+        XCTAssertNil(empty.report)
+        if let reason = empty.reason {
+            XCTAssertEqual(reason.reason, "no_report")
+            XCTAssertFalse(reason.message.isEmpty)
+        }
+
+        let (_, completeZero): (Data, K10DailyReportResponse) = try read("b76-complete-zero-cards-report", as: K10DailyReportResponse.self)
+        let completeZeroReport = try XCTUnwrap(completeZero.report)
+        XCTAssertEqual(completeZeroReport.delivery?.outcome, "complete")
+        XCTAssertEqual(completeZeroReport.delivery?.rankingScope, "all_processed")
+        XCTAssertTrue(cards(completeZeroReport).isEmpty)
+        XCTAssertNotNil(completeZeroReport.availableAt)
+
+        let (_, partialZero): (Data, K10DailyReportResponse) = try read("b76-partial-zero-cards-report", as: K10DailyReportResponse.self)
+        let partialZeroReport = try XCTUnwrap(partialZero.report)
+        XCTAssertEqual(partialZeroReport.delivery?.outcome, "partial")
+        XCTAssertEqual(partialZeroReport.delivery?.rankingScope, "none")
+        XCTAssertTrue(cards(partialZeroReport).isEmpty)
+        XCTAssertFalse(partialZeroReport.delivery?.gaps.isEmpty ?? true)
+        XCTAssertNotNil(partialZeroReport.availableAt)
+
+        let (_, operations): (Data, K10OperationsReadiness) = try read("b76-operations-readiness", as: K10OperationsReadiness.self)
+        let control = operations.runControl
+        XCTAssertNotNil(control.executionState)
+        XCTAssertTrue(["accepting", "draining", "paused", "blocked"].contains(control.executionState ?? ""))
+        XCTAssertNotNil(control.inFlightCount)
+        XCTAssertNotNil(control.unknownCount)
+        XCTAssertNotNil(control.activeTasks)
+        XCTAssertGreaterThanOrEqual(control.inFlightCount ?? -1, 0)
+        XCTAssertGreaterThanOrEqual(control.unknownCount ?? -1, 0)
+        XCTAssertTrue((control.activeTasks ?? []).allSatisfy { ["queued", "running", "retry_pending", "paused"].contains($0.status) })
+
+        let legacy = try JSONDecoder().decode(B69DailyReportResponse.self, from: completeData)
+        XCTAssertEqual(legacy.schemaVersion, 8)
+        XCTAssertEqual(legacy.state, "available")
+        XCTAssertEqual(legacy.report?.reportId, completeReport.reportId)
+        XCTAssertEqual(legacy.report?.status, "completed")
+        XCTAssertEqual(legacy.report?.eveningCards.map(\.cardId), completeReport.eveningCards.map(\.cardId))
+        let legacyPartial = try JSONDecoder().decode(B69DailyReportResponse.self, from: partialData)
+        XCTAssertEqual(legacyPartial.schemaVersion, 8)
+        XCTAssertEqual(legacyPartial.state, "available")
+        XCTAssertEqual(legacyPartial.report?.status, "partial")
+        XCTAssertFalse(legacyPartial.report?.coverageGaps?.isEmpty ?? true)
+
+        let snapshot = K10CacheSnapshot(
+            availableAt: try XCTUnwrap(partialReport.availableAt), savedAt: Date(), publications: [], companyWindows: [], selections: [], results: nil,
+            dailyEvening: partial, dailyMorning: partialZero
+        )
+        let restored = try JSONDecoder().decode(K10CacheSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertEqual(restored.dailyEvening?.report?.delivery, partialDelivery)
+        XCTAssertEqual(restored.dailyMorning?.report?.delivery?.outcome, "partial")
+    }
+
+    func testB76ActualMorningPartialKeepsDiscoveryAndReviewGapsVisible() throws {
+        let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Self.actualAPIResourceData("b76-morning-partial-report"))
+        let report = try XCTUnwrap(response.report)
+        let delivery = try XCTUnwrap(report.delivery)
+        XCTAssertEqual(response.schemaVersion, 8)
+        XCTAssertEqual(response.state, "available")
+        XCTAssertEqual(report.windowKind, "morning")
+        XCTAssertEqual(report.status, "partial")
+        XCTAssertEqual(delivery.outcome, "partial")
+        XCTAssertFalse(delivery.gaps.isEmpty, "发现阶段的执行缺口必须保留")
+        XCTAssertFalse(report.coverageGaps?.isEmpty ?? true, "发现资料缺口的兼容范围摘要必须可读")
+        XCTAssertFalse(report.incompleteReviews?.isEmpty ?? true, "晨报复核缺口不能被发现资料缺口遮住")
+    }
+
+    func testB76ActualMorningReviewPartialPreservesCompleteDiscovery() throws {
+        let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Self.actualAPIResourceData("b76-morning-review-partial-report"))
+        let report = try XCTUnwrap(response.report)
+        let delivery = try XCTUnwrap(report.delivery)
+        XCTAssertEqual(response.schemaVersion, 8)
+        XCTAssertEqual(response.state, "available")
+        XCTAssertEqual(report.windowKind, "morning")
+        XCTAssertEqual(report.status, "partial")
+        XCTAssertEqual(delivery.outcome, "complete", "发现消息已完整处理，不能被复核失败改写")
+        XCTAssertEqual(delivery.rankingScope, "all_processed")
+        XCTAssertTrue(report.addedCards.isEmpty, "此场景只验证已有公司的晨间复核，不产生新增卡片")
+        XCTAssertFalse(report.updatedCards.isEmpty, "已有公司的晨间更新不能被新增卡片为空掩盖")
+        XCTAssertFalse(report.incompleteReviews?.isEmpty ?? true, "整份报告的复核缺口必须可读")
+    }
+
+    @MainActor
+    func testB76ActualMorningExpiredCardsUseHistoryPresentation() throws {
+        func expiredProjection(_ name: String) throws -> (K10DailyReportResponse, K10DailyReport) {
+            var response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Self.actualAPIResourceData(name))
+            var report = try XCTUnwrap(response.report)
+            // Reuse the actual API body and apply only the server-owned Sep 20
+            // lifecycle projection: D2 has closed, so no card remains selectable.
+            report.addedCards = report.addedCards.map { card in
+                var expired = card; expired.canSelect = false; return expired
+            }
+            report.updatedCards = report.updatedCards.map { card in
+                var expired = card; expired.canSelect = false; return expired
+            }
+            response.report = report
+            return (response, report)
+        }
+        func assertHistoryPresentation(_ name: String) throws {
+            let (response, report) = try expiredProjection(name)
+            let model = AppModel()
+            model.dailyWindow = "morning"
+            model.dailyMorning = response
+            XCTAssertTrue(model.currentMorningCards.isEmpty, "D2-projected added cards must not remain on the current home screen")
+            XCTAssertTrue(model.currentMorningUpdates.isEmpty, "D2-projected updated cards must not remain on the current home screen")
+            XCTAssertTrue(k10ShowsOpportunityEmptyState(segment: "morning", currentMorningUpdateCount: model.currentMorningUpdates.count))
+            let published = report.addedCards + report.updatedCards
+            XCTAssertFalse(published.isEmpty)
+            let presentation = k10OpportunityEmptyPresentation(
+                responseState: response.state,
+                hasReportLoadError: false,
+                reportStatus: report.status,
+                deliveryOutcome: report.delivery?.outcome,
+                segment: "morning",
+                currentMorningUpdateCount: model.currentMorningUpdates.count,
+                hasEndedRecommendations: model.currentMorningCards.isEmpty && !published.isEmpty,
+                responseReason: response.reason?.message
+            )
+            XCTAssertEqual(presentation.title, "暂无进行中的机会")
+            XCTAssertEqual(presentation.message, "本轮已发布的公司已撤回或结束观察，可在下方历史记录中查看原报告与两日窗口。")
+        }
+
+        try assertHistoryPresentation("b76-morning-partial-report")
+        try assertHistoryPresentation("b76-morning-review-partial-report")
+
+        let activeReview = try JSONDecoder().decode(
+            K10DailyReportResponse.self,
+            from: Self.actualAPIResourceData("b76-morning-review-partial-report")
+        )
+        XCTAssertFalse(activeReview.report?.updatedCards.isEmpty ?? true)
+        XCTAssertFalse(
+            k10ShowsOpportunityEmptyState(
+                segment: "morning",
+                currentMorningUpdateCount: activeReview.report?.updatedCards.filter(\.allowsSelection).count ?? 0
+            ),
+            "A current morning update replaces the large no-card empty state."
+        )
+
+        let zero = try JSONDecoder().decode(
+            K10DailyReportResponse.self,
+            from: Self.actualAPIResourceData("b76-partial-zero-cards-report")
+        )
+        let zeroReport = try XCTUnwrap(zero.report)
+        XCTAssertTrue(zeroReport.addedCards.isEmpty && zeroReport.updatedCards.isEmpty)
+        let zeroPresentation = k10OpportunityEmptyPresentation(
+            responseState: zero.state,
+            hasReportLoadError: false,
+            reportStatus: zeroReport.status,
+            deliveryOutcome: zeroReport.delivery?.outcome,
+            segment: "morning",
+            currentMorningUpdateCount: 0,
+            hasEndedRecommendations: false,
+            responseReason: zero.reason?.message
+        )
+        XCTAssertEqual(zeroPresentation.title, "本轮未完成，不能判断是否没有机会")
     }
 
     func testSyntheticWindowActionsAreIndependentAndWithdrawalKeepsAnalysisHistory() async throws {
@@ -464,6 +843,259 @@ final class K10V3Tests: XCTestCase {
         XCTAssertNil(K10PushRoute(userInfo: ["companyCandidateId": "retired-k9-id"]))
     }
 
+    func testPushRoutePrefersExactSchema2ReportIdentity() {
+        let route = K10PushRoute(userInfo: [
+            "schemaVersion": 2,
+            "reportId": "report-morning-42",
+            "windowKind": "morning",
+            "companyWindowId": "old-window"
+        ])
+        XCTAssertEqual(route?.tab, .opportunities)
+        XCTAssertEqual(route?.reportID, "report-morning-42")
+        XCTAssertEqual(route?.reportWindowKind, "morning")
+    }
+
+    @MainActor func testReportRemainsReadableWhenOptionalHistoryLoadFails() async {
+        let service = ControlledK10Service(batchID: "report-first", firstPublicationFailure: .networkUnavailable("历史接口暂不可达"))
+        let model = AppModel(serviceFactory: { service })
+
+        await model.refresh()
+        let reportBeforeContext = model.dailyEvening?.report
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertNotNil(reportBeforeContext)
+
+        await model.loadOpportunityContext()
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.dailyEvening?.report, reportBeforeContext)
+        XCTAssertEqual(model.auxiliaryLoadErrors["publications"], "网络不可用：历史接口暂不可达")
+    }
+
+    @MainActor func testSchema9MaterialsStayOutsideCardsAndObservationWindows() async throws {
+        let service = K10SyntheticUIService()
+        let model = AppModel(serviceFactory: { service })
+        await model.refresh()
+        let report = try XCTUnwrap(model.dailyMorning?.report)
+        XCTAssertEqual(model.dailyMorning?.schemaVersion, 9)
+        XCTAssertEqual(report.materials?.state, "available")
+        XCTAssertEqual(report.deliveryDeadlineAt, "2026-09-07T09:20:00+08:00")
+        XCTAssertNotNil(report.resultAvailableAt)
+        XCTAssertEqual(model.currentMorningCards.map(\.cardId).sorted(), (report.updatedCards + report.addedCards).filter(\.allowsSelection).map(\.cardId).sorted())
+
+        await model.openMaterials(for: report)
+        let materials = try XCTUnwrap(model.reportMaterials)
+        XCTAssertEqual(materials.schemaVersion, 9)
+        XCTAssertEqual(materials.reportId, report.reportId)
+        XCTAssertFalse(materials.items.isEmpty)
+        XCTAssertTrue(materials.items.allSatisfy { !$0.materialId.isEmpty && !$0.eventId.isEmpty })
+        XCTAssertNil(model.reportMaterialsError)
+    }
+
+    @MainActor func testB79SelectedReportDoesNotWaitForOtherWindowOrHealth() async {
+        for primary in ["evening", "morning"] {
+            let other = primary == "evening" ? "morning" : "evening"
+            let gate = RefreshGate()
+            let service = ControlledK10Service(batchID: "independent", dailyGates: [other: gate],
+                healthFailure: .networkUnavailable("health is unavailable"))
+            let model = AppModel(serviceFactory: { service })
+            model.dailyWindow = primary
+            let refresh = Task { await model.refresh() }
+            await gate.waitUntilEntered()
+            XCTAssertEqual(model.state, .ready)
+            XCTAssertNotNil((primary == "evening" ? model.dailyEvening : model.dailyMorning)?.report)
+            XCTAssertNil((other == "evening" ? model.dailyEvening : model.dailyMorning)?.report)
+            await gate.open()
+            await refresh.value
+            XCTAssertEqual(model.state, .ready)
+        }
+    }
+
+    @MainActor func testB79ExactNotificationInvalidatesDelayedLatestRead() async throws {
+        let gate = RefreshGate()
+        let service = ControlledK10Service(batchID: "notification-race", dailyGates: ["morning": gate])
+        let fixture = try await K10SyntheticUIService().latestDailyReport(window: "morning")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture)) as! [String: Any]
+        var report = json["report"] as! [String: Any]
+        report["reportId"] = "newer-morning"
+        json["report"] = report
+        let latest = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: json))
+        await service.setDailyPages(first: latest, next: latest)
+        let model = AppModel(serviceFactory: { service })
+        model.dailyWindow = "morning"
+        let refresh = Task { await model.refresh() }
+        await gate.waitUntilEntered()
+        await model.openNotification(try XCTUnwrap(K10PushRoute(userInfo: [
+            "schemaVersion": 2, "reportId": "daily-morning", "windowKind": "morning"
+        ])))
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "daily-morning")
+        await gate.open()
+        await refresh.value
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "daily-morning")
+        XCTAssertEqual(model.state, .ready)
+    }
+
+    @MainActor func testB79OfflineRefreshKeepsSelectionBlockedUntilReportSucceeds() async throws {
+        let gate = RefreshGate()
+        let service = ControlledK10Service(batchID: "offline-refresh", dailyGates: ["evening": gate])
+        let model = AppModel(serviceFactory: { service })
+        model.dailyEvening = try await K10SyntheticUIService().latestDailyReport(window: "evening")
+        model.offline = true
+        model.state = .offline("cached")
+        let refresh = Task { await model.refresh() }
+        await gate.waitUntilEntered()
+        XCTAssertTrue(model.offline)
+        guard case .offline = model.state else { await gate.open(); await refresh.value; return XCTFail("cached report must remain read-only") }
+        let card = try XCTUnwrap(model.dailyEvening?.report?.eveningCards.first)
+        await model.act("keep", card: card)
+        XCTAssertEqual(model.toast, "连接恢复并刷新后才能提交选择")
+        let actionCount = await service.dailyActionCallCount()
+        XCTAssertEqual(actionCount, 0)
+        await gate.open()
+        await refresh.value
+        XCTAssertFalse(model.offline)
+        XCTAssertEqual(model.state, .ready)
+    }
+
+    @MainActor func testB79NotificationLoadsOtherWindowWithoutReplacingTarget() async throws {
+        let gate = RefreshGate()
+        let service = ControlledK10Service(batchID: "cold-notification", dailyGates: ["evening": gate])
+        let model = AppModel(serviceFactory: { service })
+        let route = try XCTUnwrap(K10PushRoute(userInfo: ["schemaVersion": 2,
+            "reportId": "daily-morning", "windowKind": "morning"]))
+        let opening = Task { await model.openNotification(route) }
+        await gate.waitUntilEntered()
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "daily-morning")
+        XCTAssertEqual(model.state, .ready)
+        await gate.open()
+        await opening.value
+        XCTAssertNotNil(model.dailyEvening?.report)
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "daily-morning")
+        XCTAssertEqual(model.dailyWindow, "morning")
+    }
+
+    @MainActor func testB80OfflineNotificationUsesOnlyExactCachedReport() async throws {
+        for alreadyOffline in [false, true] {
+            for requestedID in ["daily-evening", "different-report"] {
+                let service = ControlledK10Service(batchID: "offline-notification")
+                await service.setDailyPageFailure(.networkUnavailable("offline"))
+                let context = K10CacheContext(baseURL: URL(string: "https://fixture.invalid")!, scope: "b80")
+                let response = try await K10SyntheticUIService().latestDailyReport(window: "evening")
+                let cache = K10CacheSnapshot(availableAt: "2026-09-07T21:00:00+08:00", savedAt: Date(),
+                    publications: [], companyWindows: [], selections: [], results: nil, dailyEvening: response)
+                let model = AppModel(serviceFactory: { service }, cacheContextFactory: { context },
+                                     cacheLoader: { _ in cache })
+                model.offline = alreadyOffline
+                await model.openNotification(try XCTUnwrap(K10PushRoute(userInfo: ["schemaVersion": 2,
+                    "reportId": requestedID, "windowKind": "evening"])))
+                if requestedID == "daily-evening" {
+                    XCTAssertEqual(model.dailyEvening?.report?.reportId, requestedID)
+                    XCTAssertTrue(model.offline)
+                    guard case .offline(let message) = model.state else { return XCTFail("cache must stay read-only") }
+                    XCTAssertTrue(message.contains(cache.availableAt))
+                    await model.act("keep", card: try XCTUnwrap(response.report?.eveningCards.first))
+                    let calls = await service.dailyActionCallCount()
+                    XCTAssertEqual(calls, 0)
+                } else {
+                    XCTAssertNil(model.dailyEvening, "never substitute latest cached report for notification")
+                }
+            }
+        }
+    }
+
+    @MainActor func testB80NotificationCacheDoesNotBypassAuthenticationOrWindowIdentity() async throws {
+        let context = K10CacheContext(baseURL: URL(string: "https://fixture.invalid")!, scope: "b80")
+        let response = try await K10SyntheticUIService().latestDailyReport(window: "evening")
+        let cache = K10CacheSnapshot(availableAt: "2026-09-07T21:00:00+08:00", savedAt: Date(),
+            publications: [], companyWindows: [], selections: [], results: nil, dailyEvening: response)
+        for failure in [K10APIError.unauthorized, .networkUnavailable("offline")] {
+            let service = ControlledK10Service(batchID: "cache-identity")
+            await service.setDailyPageFailure(failure)
+            let model = AppModel(serviceFactory: { service }, cacheContextFactory: { context }, cacheLoader: { _ in cache })
+            await model.openNotification(try XCTUnwrap(K10PushRoute(userInfo: ["schemaVersion": 2,
+                "reportId": "daily-evening", "windowKind": failure == .unauthorized ? "evening" : "morning"])))
+            XCTAssertNil(model.dailyEvening)
+            XCTAssertNil(model.dailyMorning)
+        }
+    }
+
+    @MainActor func testSchema2NotificationReadsOnlyItsReportAndOldPayloadDoesNotFallback() async throws {
+        let service = ControlledK10Service(batchID: "push")
+        let model = AppModel(serviceFactory: { service })
+        await model.openNotification(try XCTUnwrap(K10PushRoute(userInfo: ["schemaVersion": 2, "reportId": "daily-morning", "windowKind": "morning"])))
+        XCTAssertEqual(model.dailyWindow, "morning")
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "daily-morning")
+        XCTAssertEqual(model.state, .ready)
+
+        await model.openNotification(try XCTUnwrap(K10PushRoute(userInfo: ["companyWindowId": "legacy-window"])))
+        XCTAssertEqual(model.tab, .focus)
+        XCTAssertEqual(model.toast, "这条旧通知没有报告编号，无法准确定位；请在机会页手动查看报告。")
+        XCTAssertEqual(model.dailyMorning?.report?.reportId, "daily-morning")
+    }
+
+    /// The backend builder starts this only against an isolated loopback FastAPI process.
+    /// It proves the Swift types consume a real Schema 9 response rather than a hand-written
+    /// client fixture, including the separate report-scoped materials route.
+    func testB78IsolatedFastAPIReportAndMaterialsDecode() async throws {
+        guard let rawPort = ProcessInfo.processInfo.environment["NK_B78_API_PORT"],
+              let port = Int(rawPort), (1...65535).contains(port) else {
+            throw XCTSkip("set NK_B78_API_PORT for isolated Schema 9 FastAPI-to-Swift verification")
+        }
+        var components = URLComponents(); components.scheme = "http"; components.host = "127.0.0.1"; components.port = port
+        let baseURL = try XCTUnwrap(components.url)
+        let token = ProcessInfo.processInfo.environment["NK_B78_API_TOKEN"] ?? "temporary-test-token"
+        let client = K10APIClient(baseURL: baseURL, token: token)
+        async let eveningResponse = client.latestDailyReport(window: "evening")
+        async let morningResponse = client.latestDailyReport(window: "morning")
+        let responses = try await [eveningResponse, morningResponse]
+        XCTAssertTrue(responses.allSatisfy { $0.schemaVersion == 9 })
+        let reports = responses.compactMap(\.report)
+        XCTAssertFalse(reports.isEmpty, "the isolated producer must expose at least one readable report")
+        XCTAssertTrue(reports.allSatisfy { $0.delivery?.isReadableByCurrentApp == true }, "the current B78 delivery contract must not be downgraded to unknown")
+        XCTAssertTrue(reports.allSatisfy { $0.materials != nil })
+        if let morning = reports.first(where: { $0.windowKind == "morning" }) {
+            XCTAssertNotNil(morning.deliveryDeadlineAt)
+            XCTAssertNotNil(morning.resultAvailableAt)
+        }
+        let reportWithMaterials = try XCTUnwrap(reports.first(where: { $0.materials?.state == "available" && ($0.materials?.count ?? 0) > 0 }))
+        let materials = try await client.reportMaterials(id: reportWithMaterials.reportId, cursor: nil)
+        XCTAssertEqual(materials.schemaVersion, 9)
+        XCTAssertEqual(materials.reportId, reportWithMaterials.reportId)
+        XCTAssertFalse(materials.items.isEmpty)
+        XCTAssertTrue(materials.items.allSatisfy { !$0.eventTitle.isEmpty && !$0.materialId.isEmpty })
+    }
+
+    /// The empty state is a real FastAPI envelope too: it must be readable without turning a
+    /// missing delivery into a guessed older report, and exact IDs must retain a true 404.
+    @MainActor
+    func testB78IsolatedFastAPIEmptyReportRemainsReadable() async throws {
+        guard let rawPort = ProcessInfo.processInfo.environment["NK_B78_API_PORT"],
+              let port = Int(rawPort), (1...65535).contains(port) else {
+            throw XCTSkip("set NK_B78_API_PORT for isolated Schema 9 FastAPI empty-state verification")
+        }
+        var components = URLComponents(); components.scheme = "http"; components.host = "127.0.0.1"; components.port = port
+        let baseURL = try XCTUnwrap(components.url)
+        XCTAssertEqual(baseURL.host, "127.0.0.1")
+        try K10NetworkIsolation.validate(baseURL)
+        var healthURL = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        healthURL.path = "/api/v1/health"
+        XCTAssertEqual(healthURL.url?.host, "127.0.0.1")
+        try K10NetworkIsolation.validate(try XCTUnwrap(healthURL.url))
+        let token = ProcessInfo.processInfo.environment["NK_B78_API_TOKEN"] ?? "temporary-test-token"
+        let client = K10APIClient(baseURL: baseURL, token: token)
+        let model = AppModel(serviceFactory: { client })
+        await model.refresh()
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.dailyEvening?.schemaVersion, 9)
+        XCTAssertEqual(model.dailyMorning?.schemaVersion, 9)
+        XCTAssertNil(model.dailyEvening?.report)
+        XCTAssertNil(model.dailyMorning?.report)
+        do {
+            _ = try await client.dailyReport(id: "does-not-exist", cursor: nil)
+            XCTFail("an absent report ID must be a true 404")
+        } catch let error as K10APIError {
+            guard case .notFound = error else { return XCTFail("unexpected error: \(error)") }
+        }
+    }
+
     func testFastAPIErrorEnvelopePreservesActionableDetails() async {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [FailureEnvelopeProtocol.self]
@@ -502,9 +1134,9 @@ final class K10V3Tests: XCTestCase {
         }
     }
 
-    func testReasonTextKeepsRecordedNaturalLanguageAndMakesUnknownCodeAuditable() {
+    func testReasonTextKeepsNaturalLanguageWithoutExposingUnknownCodes() {
         XCTAssertEqual(k10ReasonText("公开资料缺少可追溯平淡与失败分类"), "公开资料缺少可追溯平淡与失败分类")
-        XCTAssertEqual(k10ReasonText("unmapped_worker_reason"), "已记录原因：unmapped_worker_reason（请结合来源核对）")
+        XCTAssertEqual(k10ReasonText("unmapped_worker_reason"), "原因尚待说明，请结合来源核对")
         XCTAssertEqual(k10ReasonText(nil), "未记录具体原因，查看来源核对")
     }
 
@@ -519,7 +1151,7 @@ final class K10V3Tests: XCTestCase {
 
     @MainActor func testConnectionGenerationIgnoresStaleSuccessAndItsCacheWrite() async {
         let gate = RefreshGate()
-        let old = ControlledK10Service(batchID: "batch-old", publicationGate: gate)
+        let old = ControlledK10Service(batchID: "batch-old", dailyGates: ["evening": gate])
         let current = ControlledK10Service(batchID: "batch-current")
         let services = ServiceBox(old)
         let caches = CacheRecorder()
@@ -542,14 +1174,15 @@ final class K10V3Tests: XCTestCase {
         await oldRefresh.value
 
         XCTAssertEqual(model.state, .ready)
-        XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
-        XCTAssertEqual(caches.savedContexts, [K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")])
-        XCTAssertEqual(caches.snapshots[K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")]?.publications.map(\.batchId), ["batch-current"])
+        XCTAssertEqual(model.dailyEvening?.report?.reportId, "daily-evening")
+        XCTAssertEqual(Set(caches.savedContexts), [K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")])
+        XCTAssertEqual(caches.snapshots[K10CacheContext(baseURL: URL(string: "https://b.example")!, scope: "test-b")]?.dailyEvening?.report?.reportId, "daily-evening")
     }
 
     @MainActor func testConnectionGenerationIgnoresStaleFailure() async {
         let gate = RefreshGate()
-        let old = ControlledK10Service(batchID: "batch-old", healthGate: gate, healthFailure: .networkUnavailable("旧连接超时"))
+        let old = ControlledK10Service(batchID: "batch-old", dailyGates: ["evening": gate])
+        await old.setDailyFailure(.networkUnavailable("旧连接超时"))
         let current = ControlledK10Service(batchID: "batch-current")
         let services = ServiceBox(old)
         let model = AppModel(serviceFactory: { services.service }, cacheClearer: {})
@@ -563,24 +1196,20 @@ final class K10V3Tests: XCTestCase {
         await oldRefresh.value
 
         XCTAssertEqual(model.state, .ready)
-        XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
+        XCTAssertEqual(model.dailyEvening?.report?.reportId, "daily-evening")
         XCTAssertFalse(model.offline)
     }
 
-    @MainActor func testSameConnectionNewRefreshWinsOverEarlierFailure() async {
-        let gate = RefreshGate()
-        let service = ControlledK10Service(batchID: "same-connection", publicationGate: gate, firstPublicationFailure: .networkUnavailable("旧刷新超时"))
+    @MainActor func testSameConnectionRepeatedRefreshKeepsReportReadable() async {
+        let service = ControlledK10Service(batchID: "same-connection")
         let model = AppModel(serviceFactory: { service }, cacheClearer: {})
 
-        let firstRefresh = Task { await model.refresh() }
-        await gate.waitUntilEntered()
         await model.refresh()
-        await gate.open()
-        await firstRefresh.value
+        await model.refresh()
 
         XCTAssertEqual(model.state, .ready)
         XCTAssertFalse(model.offline)
-        XCTAssertEqual(model.publications.map(\.batchId), ["same-connection"])
+        XCTAssertEqual(model.dailyEvening?.report?.reportId, "daily-evening")
     }
 
     @MainActor func testAdminSettingsCannotCrossConnectionGenerations() async {
@@ -600,6 +1229,7 @@ final class K10V3Tests: XCTestCase {
 
         let oldRefresh = Task { await model.refreshAdminSettings() }
         await gate.waitUntilEntered()
+        XCTAssertEqual(model.settingsReadState, .loading)
         model.resetForConnectionChange()
         config.baseURLOverride = "https://b.example"
         admins.service = current
@@ -645,28 +1275,24 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(currentReads, 0)
     }
 
-    @MainActor func testNotificationRoutingOpensExactV14ObjectAndNeverFallsBack() async {
+    @MainActor func testLegacyNotificationNeverFallsBackToAnUnrelatedObject() async {
         let service = ControlledK10Service(batchID: "batch-current")
         let model = AppModel(serviceFactory: { service })
 
         await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["companyWindowId": "synthetic-morning-late-window"])))
         XCTAssertEqual(model.tab, .focus)
-        XCTAssertEqual(model.selectedWindow?.companyWindowId, "synthetic-morning-late-window")
+        XCTAssertNil(model.selectedWindow)
         XCTAssertNil(model.selectedOpportunity)
+        XCTAssertEqual(model.toast, "这条旧通知没有报告编号，无法准确定位；请在机会页手动查看报告。")
 
         await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["opportunityId": "synthetic-opportunity-1"])))
         XCTAssertEqual(model.tab, .opportunities)
-        XCTAssertEqual(model.selectedOpportunity?.opportunityId, "synthetic-opportunity-1")
-        XCTAssertNil(model.selectedWindow)
-
-        await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["companyWindowId": "withdrawn-window"])))
-        XCTAssertEqual(model.tab, .focus)
-        XCTAssertNil(model.selectedWindow)
         XCTAssertNil(model.selectedOpportunity)
-        XCTAssertEqual(model.toast, "通知关联的公司窗口已不可用")
+        XCTAssertNil(model.selectedWindow)
+        XCTAssertEqual(model.toast, "这条旧通知没有报告编号，无法准确定位；请在机会页手动查看报告。")
     }
 
-    @MainActor func testNotificationRefreshFailureDoesNotOpenOldReadingContext() async {
+    @MainActor func testLegacyNotificationClearsOldReadingContextWithoutNetworkFallback() async {
         let model = AppModel(serviceFactory: { ControlledK10Service(batchID: "failed", healthFailure: .networkUnavailable("暂时不可达")) })
         let previousWindows = try! await K10SyntheticUIService().companyWindows()
         model.selectedWindow = previousWindows.first
@@ -674,29 +1300,16 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(model.tab, .focus)
         XCTAssertNil(model.selectedWindow)
         XCTAssertNil(model.selectedOpportunity)
-        XCTAssertEqual(model.state, .failed("网络不可用：暂时不可达"))
+        XCTAssertEqual(model.toast, "这条旧通知没有报告编号，无法准确定位；请在机会页手动查看报告。")
     }
 
-    @MainActor func testNotificationDoesNotOpenOldDetailAfterConnectionChanges() async {
-        let gate = RefreshGate()
-        let old = ControlledK10Service(batchID: "batch-old", opportunityGate: gate)
-        let current = ControlledK10Service(batchID: "batch-current")
-        let services = ServiceBox(old)
-        let model = AppModel(serviceFactory: { services.service }, cacheClearer: {})
-        let route = try! XCTUnwrap(K10PushRoute(userInfo: ["opportunityId": "synthetic-opportunity-1"]))
-
-        let opening = Task { await model.openNotification(route) }
-        await gate.waitUntilEntered()
-        model.resetForConnectionChange()
-        services.service = current
-        await model.refresh()
-        await gate.open()
-        await opening.value
-
-        XCTAssertEqual(model.state, .ready)
-        XCTAssertEqual(model.publications.map(\.batchId), ["batch-current"])
+    @MainActor func testLegacyNotificationDoesNotOpenOldDetailAfterConnectionChanges() async {
+        let service = ControlledK10Service(batchID: "batch-current")
+        let model = AppModel(serviceFactory: { service }, cacheClearer: {})
+        await model.openNotification(try! XCTUnwrap(K10PushRoute(userInfo: ["opportunityId": "synthetic-opportunity-1"])))
         XCTAssertNil(model.selectedOpportunity)
         XCTAssertNil(model.selectedWindow)
+        XCTAssertEqual(model.toast, "这条旧通知没有报告编号，无法准确定位；请在机会页手动查看报告。")
     }
 
     func testResultsSeparatePrimaryAndOverlap() async throws {
@@ -998,6 +1611,7 @@ private actor ControlledK10Service: K10Servicing {
     private let batchID: String
     private let empty: Bool
     private let healthGate: RefreshGate?
+    private let dailyGates: [String: RefreshGate]
     private let publicationGate: RefreshGate?
     private let opportunityGate: RefreshGate?
     private let analysisChainGate: RefreshGate?
@@ -1026,10 +1640,11 @@ private actor ControlledK10Service: K10Servicing {
     private var dailyPageFailure: K10APIError?
     private var dailyActionResponse: K10SelectionAction?
 
-    init(batchID: String, empty: Bool = false, healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
+    init(batchID: String, empty: Bool = false, dailyGates: [String: RefreshGate] = [:], healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
         self.batchID = batchID
         self.empty = empty
         self.healthGate = healthGate
+        self.dailyGates = dailyGates
         self.publicationGate = publicationGate
         self.opportunityGate = opportunityGate
         self.analysisChainGate = analysisChainGate
@@ -1065,13 +1680,23 @@ private actor ControlledK10Service: K10Servicing {
         return try await fixture.companyWindows()
     }
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
+        if let gate = dailyGates[window] { await gate.wait() }
         if let dailyFailure { throw dailyFailure }
         if empty || dailyEmpty { return .init(schemaVersion: 8, state: "empty", reason: nil, report: nil) }
         if window == "morning", let dailyMorningOverride { return try applyingDailySelections(dailyMorningOverride) }
         return try await fixture.latestDailyReport(window: window)
     }
-    func dailyReport(id: String, cursor: String) async throws -> K10DailyReportResponse {
+    func dailyReport(id: String, cursor: String?) async throws -> K10DailyReportResponse {
         if let dailyPageFailure { throw dailyPageFailure }
+        if cursor == nil {
+            if let dailyMorningOverride, dailyMorningOverride.report?.reportId == id {
+                return try applyingDailySelections(dailyMorningOverride)
+            }
+            if id == "daily-evening" || id == "daily-morning" {
+                return try await fixture.latestDailyReport(window: id == "daily-evening" ? "evening" : "morning")
+            }
+            throw K10APIError.notFound("报告不存在")
+        }
         guard let nextDailyPage else { throw K10APIError.notFound("没有下一页") }
         return try applyingDailySelections(nextDailyPage)
     }
@@ -1140,6 +1765,10 @@ private actor ControlledAdminService: K10AdminServicing {
     private let providersGate: RefreshGate?
     private let updateGate: RefreshGate?
     private var providerReads = 0
+    private var readFailure: K10APIError?
+    private var emptyProviders = false
+    func setReadFailure(_ value: K10APIError?) { readFailure = value }
+    func setEmptyProviders(_ value: Bool) { emptyProviders = value }
 
     init(providerName: String, tavilyKeySet: Bool, providersGate: RefreshGate? = nil, updateGate: RefreshGate? = nil) {
         self.provider = K10Provider(name: providerName, baseUrl: "https://api.deepseek.com/v1/chat/completions", model: "deepseek-v4-pro", hasWebSearch: false, searchEngine: nil, notes: "test", enabled: true, keySet: true)
@@ -1151,7 +1780,8 @@ private actor ControlledAdminService: K10AdminServicing {
     func providers() async throws -> [K10Provider] {
         if let providersGate { await providersGate.wait() }
         providerReads += 1
-        return [provider]
+        if let readFailure { throw readFailure }
+        return emptyProviders ? [] : [provider]
     }
     func createProvider(_ provider: K10ProviderCreate) async throws -> K10Provider {
         if let updateGate { await updateGate.wait() }
@@ -1381,8 +2011,8 @@ extension K10V3Tests {
         let model = AppModel(serviceFactory: { service })
         await model.refresh()
         let card = try XCTUnwrap(model.eveningCards.first)
-        XCTAssertEqual(card.section, "updated")
-        XCTAssertEqual(model.eveningCards.count, 1, "晨间更新并入原公司卡")
+        XCTAssertEqual(card.section, "evening")
+        XCTAssertEqual(model.eveningCards.count, 1, "晚报保持自己的发布内容")
         XCTAssertTrue(card.isUnverified)
         await model.act("keep", card: card)
         let after = try XCTUnwrap(model.eveningCards.first)
@@ -1393,6 +2023,8 @@ extension K10V3Tests {
         XCTAssertEqual(after.d2TradeDate, card.d2TradeDate)
         let newCard = try XCTUnwrap(model.dailyMorning?.report?.addedCards.first)
         XCTAssertEqual(newCard.currentSelectionState, "unhandled", "留下旧机会不能替另一机会作选择")
+        XCTAssertTrue(model.currentMorningCards.contains { $0.cardId == card.cardId }, "晨报更新在其自身交付中呈现")
+        await model.loadOpportunityContext()
         let selected = try XCTUnwrap(model.companyWindows.first { $0.id == card.companyWindowId })
         XCTAssertEqual(selected.selection?.state, "selected", "持久化 selected 映射到卡片 kept")
     }
@@ -1412,7 +2044,6 @@ extension K10V3Tests {
         await model.refresh()
         XCTAssertNil(model.dailyMorning?.report)
         XCTAssertTrue(model.eveningCards.isEmpty, "历史窗口不能作为今日卡片的回退来源")
-        XCTAssertFalse(model.companyWindows.isEmpty)
         XCTAssertTrue(model.dailyReportErrors.isEmpty)
     }
 
@@ -1426,12 +2057,14 @@ extension K10V3Tests {
         await service.setDailyPages(first: first, next: next)
         let model = AppModel(serviceFactory: { service })
         await model.refresh()
+        model.dailyWindow = "morning"
         let count = model.dailyMorning?.report?.addedCards.count
         await model.loadMoreDailyCards()
         XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, count)
         XCTAssertNil(model.dailyMorning?.report?.nextCursor)
         await service.setDailyPages(first: first, next: first)
         await model.refresh()
+        model.dailyWindow = "morning"
         await model.loadMoreDailyCards()
         XCTAssertNotNil(model.dailyReportErrors["morning"])
         XCTAssertEqual(model.dailyMorning?.report?.nextCursor, "cursor-one")
@@ -1656,6 +2289,7 @@ extension K10V3Tests {
         let (service, _, _, tail) = try await b57MorningPages()
         let model = AppModel(serviceFactory: { service })
         await model.refresh()
+        model.dailyWindow = "morning"
         await model.loadMoreDailyCards()
         let ids = try XCTUnwrap(model.dailyMorning?.report).addedCards.map(\.cardId)
         XCTAssertEqual(ids.count, 31)
@@ -1674,6 +2308,7 @@ extension K10V3Tests {
         let (service, first, next, _) = try await b57MorningPages()
         let model = AppModel(serviceFactory: { service })
         await model.refresh()
+        model.dailyWindow = "morning"
         await model.loadMoreDailyCards()
         let previous = model.dailyMorning
         await service.setDailyPageFailure(.networkUnavailable("后续页暂时不可读"))
@@ -1727,6 +2362,7 @@ extension K10V3Tests {
         await service.setDailyPages(first: first, next: next)
         let model = AppModel(serviceFactory: { service })
         await model.refresh()
+        model.dailyWindow = "morning"
         await model.loadMoreDailyCards()
         XCTAssertEqual(model.dailyMorning?.report?.addedCards.count, 31)
         await service.setDailyPages(first: first, next: selected)
@@ -1875,4 +2511,128 @@ extension K10V3Tests {
         await loading.value
         XCTAssertEqual(model.providers.map(\.name), ["saved"])
     }
+}
+
+extension K10V3Tests {
+    func testB81DetailPresentationKeepsBusinessFactsAndHidesIdentifiers() {
+        XCTAssertEqual(k10CatalystStageText("initial"), "初始阶段")
+        XCTAssertEqual(k10CatalystStageText("产品进入量产"), "产品进入量产")
+        XCTAssertEqual(k10ReasonText("historical_evidence_requires_investigation_path"), "历史依据仍需定向核验")
+        XCTAssertEqual(k10ReasonText("data_gap"), "行情资料缺失")
+        let content: [String: K10Value] = [
+            "candidateId": .string("candidate-private-id"), "batchId": .string("batch-private-id"),
+            "reasonStatus": .string("invalidated"),
+            "materialContraryEvidence": .array([.object(["text": .string("公告已否认原合作计划"), "newEvidenceField": .string("原合同已终止")])]),
+            "evidenceDisclosure": .object(["unverifiedReasons": .array([.string("historical_evidence_requires_investigation_path")])])
+        ]
+        let lines = k10LifecycleFactLines(content).joined(separator: "\n")
+        XCTAssertTrue(lines.contains("推荐依据：已失效"))
+        XCTAssertTrue(lines.contains("公告已否认原合作计划"))
+        XCTAssertTrue(lines.contains("原合同已终止"))
+        XCTAssertTrue(lines.contains("历史依据仍需定向核验"))
+        XCTAssertFalse(lines.contains("candidate-private-id"))
+        XCTAssertFalse(lines.contains("batch-private-id"))
+        XCTAssertEqual(content["candidateId"], .string("candidate-private-id"), "Presentation must not mutate retained diagnostics")
+    }
+
+    @MainActor func testB81SettingsFailureRetryAndConnectionReset() async {
+        let suite = "b81-settings-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let config = AppConfig(defaults: defaults, tokenStore: RecordingTokenStore())
+        config.apiToken = "synthetic-token"
+        config.baseURLOverride = "https://example.test"
+        let service = ControlledAdminService(providerName: "saved", tavilyKeySet: true)
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, adminServiceFactory: { _, _ in service })
+        model.bind(config: config)
+        XCTAssertEqual(model.settingsReadState, .idle)
+        await service.setReadFailure(.notFound("Not Found"))
+        await model.refreshAdminSettings()
+        XCTAssertEqual(model.settingsReadState, .failed)
+        XCTAssertTrue(k10SettingsReadMessage(model.settingsReadState)!.contains("读取失败"))
+        XCTAssertFalse(k10SettingsReadMessage(model.settingsReadState)!.contains("未配置"))
+        await service.setReadFailure(nil)
+        await model.refreshAdminSettings()
+        XCTAssertEqual(model.settingsReadState, .loaded)
+        XCTAssertNil(k10SettingsReadMessage(model.settingsReadState))
+        XCTAssertEqual(model.providers.map(\.name), ["saved"])
+        XCTAssertTrue(model.tavilyKeySet)
+        await service.setReadFailure(.networkUnavailable("offline"))
+        await model.refreshAdminSettings()
+        XCTAssertEqual(model.settingsReadState, .failed)
+        XCTAssertEqual(model.providers.map(\.name), ["saved"])
+        XCTAssertTrue(model.tavilyKeySet, "Read failure must retain known values")
+        await service.setReadFailure(nil)
+        await service.setEmptyProviders(true)
+        await model.refreshAdminSettings()
+        XCTAssertEqual(model.settingsReadState, .loaded)
+        XCTAssertTrue(model.providers.isEmpty, "A successful empty response is genuinely unconfigured")
+        model.resetForConnectionChange()
+        XCTAssertEqual(model.settingsReadState, .idle)
+        XCTAssertFalse(model.tavilyKeySet)
+        XCTAssertTrue(model.providers.isEmpty)
+    }
+}
+
+extension K10V3Tests {
+    @MainActor func testB81NativePresentationSnapshots() async throws {
+        guard let root = ProcessInfo.processInfo.environment["NK_B81_RENDER_PATH"] else {
+            throw XCTSkip("Targeted native rendering was not requested")
+        }
+        let suite = "b81-render-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let config = AppConfig(defaults: defaults, tokenStore: RecordingTokenStore())
+        config.apiToken = "synthetic-token"
+        config.baseURLOverride = "https://example.test"
+        let admin = ControlledAdminService(providerName: "saved", tavilyKeySet: true)
+        await admin.setReadFailure(.notFound("Not Found"))
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, adminServiceFactory: { _, _ in admin })
+        model.bind(config: config)
+        // NK_OFFLINE_ONLY denies unrelated SettingsView reads to this test domain.
+        await model.refreshAdminSettings()
+        try await renderB81View(SettingsView(model: model, config: config), root: root, name: "settings-failed")
+        let event = K10LifecycleEvent(lifecycleEventId: "synthetic-b81", kind: "withdrawal",
+            reason: "合成验收：原推荐依据已失效。", sourceRefs: [],
+            content: ["candidateId": .string("candidate-private-id"), "batchId": .string("batch-private-id"),
+                      "sourceMarker": .string("evening"), "reasonStatus": .string("invalidated"),
+                      "materialContraryEvidence": .array([.object(["text": .string("合成验收：公告已否认原合作计划")])])],
+            occurredAt: "2026-09-21T08:30:00+08:00", createdAt: "2026-09-21T08:30:00+08:00")
+        try await renderB81View(ScrollView { VStack(alignment: .leading, spacing: 16) {
+            Text(k10CatalystStageText("initial")).font(NKFont.title3)
+            Text(k10ReasonText("historical_evidence_requires_investigation_path"))
+            LifecycleBlock(events: [event], model: model)
+        }.padding(20) }.background(NK.pageBg), root: root, name: "detail-business-facts")
+    }
+}
+
+@MainActor private func renderB81View<V: View>(_ view: V, root: String, name: String) async throws {
+    #if os(macOS)
+    let host = NSHostingView(rootView: view.frame(width: 720, height: 920))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 920), styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = host
+    window.appearance = NSAppearance(named: .aqua)
+    window.orderFront(nil)
+    defer { window.orderOut(nil) }
+    try await Task.sleep(for: .milliseconds(350))
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: root).appendingPathComponent("macos-\(name).png"))
+    #else
+    let controller = UIHostingController(rootView: view)
+    let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+    let window = UIWindow(windowScene: scene)
+    window.frame = scene.coordinateSpace.bounds
+    window.overrideUserInterfaceStyle = .light
+    window.rootViewController = controller
+    window.makeKeyAndVisible()
+    defer { window.isHidden = true }
+    try await Task.sleep(for: .milliseconds(350))
+    controller.view.layoutIfNeeded()
+    let image = UIGraphicsImageRenderer(size: window.bounds.size).image { _ in
+        XCTAssertTrue(window.drawHierarchy(in: window.bounds, afterScreenUpdates: true))
+    }
+    try XCTUnwrap(image.pngData()).write(to: URL(fileURLWithPath: root).appendingPathComponent("ios-\(name).png"))
+    #endif
 }

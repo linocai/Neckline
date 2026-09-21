@@ -15,12 +15,12 @@ from neckline.k10.cli import enqueue_scan
 from neckline.k10.schema import initialize_schema
 from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchResult
 from neckline.k10.types import OpportunityPublicationInput
-from neckline.k10.windows import SHANGHAI
+from neckline.k10.windows import SHANGHAI, morning_cutoff
 from neckline.k10.worker import TaskContext, TaskResult, run_once
 from .k10_v306_fixture import append_approved_execution_profile
 
 
-MORNING = datetime(2026, 9, 8, 9, tzinfo=SHANGHAI)
+MORNING = morning_cutoff(date(2026, 9, 8))
 STARTED = datetime(2026, 9, 8, 9, 5, tzinfo=SHANGHAI)
 
 
@@ -32,14 +32,6 @@ def _execution(path: Path) -> tuple[str, int]:
     """Scheduler regressions use an approved V3 profile and an open test-only control."""
     return append_approved_execution_profile(db_path=path, created_at=STARTED.isoformat(),
                                              config_id="fixture-execution")
-
-
-def _bind_execution(path: Path, task_id: str) -> None:
-    config_id, revision = _execution(path)
-    store.bind_task_execution(
-        task_id=task_id, execution_config_id=config_id, execution_config_revision=revision,
-        binding_kind="scheduled", bound_at=STARTED.isoformat(), db_path=path,
-    )
 
 
 def _seed(path: Path, *, formal_target: bool) -> tuple[str, int]:
@@ -136,11 +128,10 @@ def _run_morning_task(*, path: Path, config_id: str, revision: int, adapter, mon
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
         config_revision=revision, now=now_at, execution_config_id=execution_id,
         execution_config_revision=execution_revision)
-    _bind_execution(path, task_id)
     task = run_once(db_path=path, worker_id="v303-fixture", lease_for=timedelta(minutes=5), clock=lambda: now_at,
         handlers={"morning_scan": lambda context: pipeline.production_scan_handler(
             context, tushare_token="fixture-token", parquet_dir=path.parent / "parquet", now=lambda: now_at,
-        )}, task_id=task_id)
+        )}, require_b76_contract=True, task_id=task_id)
     assert task is not None
     return task_id, task
 
@@ -155,21 +146,21 @@ def test_cli_worker_handler_accepts_equivalent_cutoffs_and_canonicalizes_report(
     scan_id = store.task_execution_input(task_id=task_id, db_path=path)["checkpoint"]["scanId"]
     scan = store.get_scan(scan_id=scan_id, db_path=path)
     assert scan is not None
-    assert report["cutoffAt"] == scan["cutoffAt"] == "2026-09-08T01:00:00+00:00"
+    assert report["cutoffAt"] == scan["cutoffAt"] == "2026-09-08T00:30:00+00:00"
 
 
 def test_morning_report_rejects_a_different_cutoff_instant(tmp_path):
     path = tmp_path / "cutoff.sqlite"
     initialize_schema(path)
-    scan_cutoff = "2026-09-08T01:00:00+00:00"
+    scan_cutoff = "2026-09-08T00:30:00+00:00"
     store.create_scan(scan_id="morning", window_kind="morning", cutoff_at=scan_cutoff, config_id=None, config_revision=None,
         status="completed", coverage={}, created_at=scan_cutoff, completed_at=scan_cutoff, db_path=path)
     groups = {section: [] for section in ("major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review")}
-    equivalent = store.append_morning_report(report_id="equivalent", scan_id="morning", cutoff_at="2026-09-08T01:00:00Z",
+    equivalent = store.append_morning_report(report_id="equivalent", scan_id="morning", cutoff_at="2026-09-08T00:30:00Z",
         generated_at=scan_cutoff, status="partial", coverage={}, groups=groups, created_at=scan_cutoff, db_path=path)
     assert equivalent["cutoffAt"] == scan_cutoff
     with pytest.raises(store.K10Conflict, match="同一截止时间"):
-        store.append_morning_report(report_id="wrong", scan_id="morning", cutoff_at="2026-09-08T01:00:00.000001+00:00",
+        store.append_morning_report(report_id="wrong", scan_id="morning", cutoff_at="2026-09-08T00:30:00.000001+00:00",
             generated_at=scan_cutoff, status="partial", coverage={}, groups=groups, created_at=scan_cutoff, db_path=path)
 
 
@@ -220,13 +211,10 @@ def test_title_protocol_failure_stops_before_body_read_and_appends_partial_morni
 def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, monkeypatch, failure):
     path = tmp_path / f"lost-lease-{failure}.sqlite"
     config_id, revision = _seed(path, formal_target=False)
-    task_id = f"lost-lease-{failure}"
-    store.enqueue_task(task_id=task_id, kind="morning_scan", idempotency_key=task_id,
-        input_version=f"{config_id}@{revision}", input_cutoff_at=MORNING.isoformat(),
-        payload={"windowKind": "morning", "configId": config_id, "configRevision": revision},
-        budget={},
-        created_at=STARTED.isoformat(), db_path=path)
-    _bind_execution(path, task_id)
+    execution_id, execution_revision = _execution(path)
+    task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
+        config_revision=revision, now=STARTED, execution_config_id=execution_id,
+        execution_config_revision=execution_revision)
     state = {"branchHit": False}
 
     def resolve(**_kwargs):
@@ -257,7 +245,7 @@ def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, 
 
     with pytest.raises(store.K10Conflict, match="租约"):
         run_once(db_path=path, worker_id="lost-lease", lease_for=timedelta(minutes=5), clock=lambda: STARTED,
-            handlers={"morning_scan": handler}, task_id=task_id)
+            handlers={"morning_scan": handler}, require_b76_contract=True, task_id=task_id)
     assert state["branchHit"] is True
     assert store.list_scans(window_kind="morning", db_path=path) == []
     assert store.list_morning_reports(db_path=path) == []
@@ -270,7 +258,6 @@ def test_worker_lease_loss_after_scan_returns_writes_no_morning_report(tmp_path,
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
         config_revision=revision, now=STARTED, execution_config_id=execution_id,
         execution_config_revision=execution_revision)
-    _bind_execution(path, task_id)
     scan_id = "scan-lost-after"
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: SimpleNamespace(provider=object(), error=None))
 
@@ -287,7 +274,7 @@ def test_worker_lease_loss_after_scan_returns_writes_no_morning_report(tmp_path,
         run_once(db_path=path, worker_id="lost-after-scan", lease_for=timedelta(minutes=5), clock=lambda: STARTED,
             handlers={"morning_scan": lambda context: pipeline.production_scan_handler(
                 context, tushare_token="fixture-token", parquet_dir=path.parent / "parquet", now=lambda: STARTED,
-            )}, task_id=task_id)
+            )}, require_b76_contract=True, task_id=task_id)
     assert store.get_scan(scan_id=scan_id, db_path=path) is not None
     assert store.list_morning_reports(db_path=path) == []
 
@@ -299,7 +286,6 @@ def test_worker_recovers_running_unavailable_scan_before_appending_report(tmp_pa
     task_id = enqueue_scan(db_path=path, kind="morning", trading_day=date(2026, 9, 8), config_id=config_id,
         config_revision=revision, now=STARTED, execution_config_id=execution_id,
         execution_config_revision=execution_revision)
-    _bind_execution(path, task_id)
     scan_id = pipeline._scan_id(kind="morning", cutoff_at=MORNING, identity=task_id)
     original_create = pipeline.store.create_scan
     first_context = {}
@@ -317,7 +303,7 @@ def test_worker_recovers_running_unavailable_scan_before_appending_report(tmp_pa
 
     with pytest.raises(store.K10Conflict, match="租约"):
         run_once(db_path=path, worker_id="first-owner", lease_for=timedelta(minutes=5), clock=lambda: STARTED,
-            handlers={"morning_scan": first_handler}, task_id=task_id)
+            handlers={"morning_scan": first_handler}, require_b76_contract=True, task_id=task_id)
     stuck = store.get_scan(scan_id=scan_id, db_path=path)
     assert stuck is not None and stuck["status"] == "running"
     assert store.list_morning_reports(db_path=path) == []
@@ -327,7 +313,7 @@ def test_worker_recovers_running_unavailable_scan_before_appending_report(tmp_pa
     recovered = run_once(db_path=path, worker_id="recovery-owner", lease_for=timedelta(minutes=5), clock=lambda: recovered_at,
         handlers={"morning_scan": lambda context: pipeline.production_scan_handler(
             context, tushare_token="fixture-token", parquet_dir=path.parent / "parquet", now=lambda: recovered_at,
-        )}, task_id=task_id)
+        )}, require_b76_contract=True, task_id=task_id)
     assert recovered is not None and recovered.status == "not_configured"
     finalized = store.get_scan(scan_id=scan_id, db_path=path)
     assert finalized is not None and finalized["status"] == "not_configured"
@@ -337,7 +323,7 @@ def test_worker_recovers_running_unavailable_scan_before_appending_report(tmp_pa
 def test_store_rejects_a_morning_report_on_a_running_scan(tmp_path):
     path = tmp_path / "running-scan.sqlite"
     initialize_schema(path)
-    cutoff = "2026-09-08T01:00:00+00:00"
+    cutoff = "2026-09-08T00:30:00+00:00"
     store.create_scan(scan_id="running", window_kind="morning", cutoff_at=cutoff, config_id=None, config_revision=None,
         status="running", coverage={}, created_at=cutoff, completed_at=None, db_path=path)
     groups = {section: [] for section in ("major_contrary", "thesis_changed", "continuing_or_expiring", "new", "needs_review")}

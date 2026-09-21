@@ -62,7 +62,100 @@ struct K10DailyReport: Codable, Identifiable, Equatable {
     var lifecycleUpdates: [K10DailyLifecycleUpdate]? = nil
     var coverageGaps: [String]? = nil
     var incompleteReviews: [K10IncompleteReview]? = nil
+    /// B76 adds delivery truth without changing the public report schema.  Historical
+    /// reports omit this field, which means their completeness remains unknown.
+    var delivery: K10ReportDelivery? = nil
+    /// Schema 9 keeps diagnostic/material availability separate from formal publication.
+    /// `resultAvailableAt` never starts a D1/D2 observation window.
+    var materials: K10ReportMaterials? = nil
+    var resultAvailableAt: String? = nil
+    var deliveryDeadlineAt: String? = nil
     var id: String { reportId }
+}
+
+struct K10ReportMaterials: Codable, Equatable {
+    let state: String
+    let count: Int
+    let reason: K10Failure?
+}
+
+/// Read-only event materials are deliberately not cards. They contain no rank, selection,
+/// company window, observation deadline, provider reply or internal runtime metadata.
+struct K10ReportMaterialFact: Codable, Equatable, Identifiable {
+    let text: String
+    let sourceRefs: [K10SourceReference]
+    var id: String { text }
+}
+
+struct K10ReportMaterialCompanyRelation: Codable, Equatable, Identifiable {
+    let companyCode: String
+    let companyName: String?
+    let relation: String
+    let sourceRefs: [K10SourceReference]
+    var id: String { companyCode + "#" + relation }
+}
+
+struct K10ReportMaterial: Codable, Equatable, Identifiable {
+    let materialId: String
+    let eventId: String
+    let eventTitle: String
+    let facts: [K10ReportMaterialFact]
+    let companyRelations: [K10ReportMaterialCompanyRelation]
+    let uncertainties: [String]
+    let sourceRefs: [K10SourceReference]
+    let asOf: String?
+    var id: String { materialId }
+}
+
+struct K10ReportMaterialsPage: Codable, Equatable {
+    let schemaVersion: Int
+    let reportId: String
+    var items: [K10ReportMaterial]
+    var page: K10Page
+}
+
+struct K10ReportDeliveryCounts: Codable, Equatable {
+    let titleInput: Int
+    let titleProcessed: Int
+    let titleFailed: Int
+    let titleUnprocessed: Int
+    let eventInput: Int
+    let eventProcessed: Int
+    let eventFailed: Int
+    let eventUnprocessed: Int
+    let comparableCompanies: Int
+    let publishedCompanies: Int
+}
+
+struct K10ReportDeliveryGap: Codable, Identifiable, Equatable {
+    let gapId: String
+    let stage: String
+    let unitKind: String
+    let unitId: String
+    let reasonCode: String
+    let message: String
+    let sourceRefs: [K10SourceReference]
+    let eventIds: [String]
+    let companyCodes: [String]
+    let companyScopeKnown: Bool
+    var id: String { gapId }
+}
+
+struct K10ReportDelivery: Codable, Equatable {
+    let contractVersion: String
+    let outcome: String
+    let rankingScope: String
+    let counts: K10ReportDeliveryCounts
+    let gaps: [K10ReportDeliveryGap]
+    let inputManifestSha256: String
+    let eligibleSetSha256: String
+    let rankingInputSha256: String?
+
+    /// The B78 application reads the last public delivery contract and its own new contract.
+    /// A future contract must be presented as unknown until it has an explicit client mapping.
+    var isReadableByCurrentApp: Bool {
+        ["k10-report-delivery-3.4.0-b76", "k10-report-delivery-3.5.0-b78"].contains(contractVersion)
+    }
 }
 
 struct K10IncompleteReview: Codable, Identifiable, Equatable {
@@ -181,6 +274,21 @@ struct K10SafeExecutionFailure: Codable, Identifiable, Equatable {
 }
 struct K10ExecutionRunControl: Codable, Equatable {
     let state: String; let reasonCode: String; let changedAt: String
+    /// Missing on B69 and earlier control DTOs.  Nil is intentionally distinct
+    /// from zero: a client must not claim that in-flight work has stopped when
+    /// the server did not provide this B76 projection.
+    var executionState: String? = nil
+    var inFlightCount: Int? = nil
+    var unknownCount: Int? = nil
+    var activeTasks: [K10ActiveExecutionTask]? = nil
+}
+struct K10ActiveExecutionTask: Codable, Identifiable, Equatable {
+    let taskId: String
+    let status: String
+    let stage: String?
+    let windowKind: String?
+    let executionStartedAt: String?
+    var id: String { taskId }
 }
 struct K10ExecutionTitleCounts: Codable, Equatable {
     let received: Int; let exactDeduplicated: Int; let triaged: Int; let merged: Int

@@ -71,7 +71,7 @@ def test_exchange_calendar_controls_real_enqueue(tmp_path, capsys, kind, day, op
         assert task.status == 'queued' and task.payload['tradingDay'] == day
         assert store.task_execution_profile(task_id=result, db_path=db)['bindingKind'] == 'scheduled'
         cutoff = store.task_execution_input(task_id=result, db_path=db)['inputCutoffAt']
-        assert cutoff == day + ('T21:00:00+08:00' if kind == 'evening' else 'T09:00:00+08:00')
+        assert cutoff == day + ('T21:00:00+08:00' if kind == 'evening' else 'T08:30:00+08:00')
 
 
 def test_evening_requires_next_day_coverage_even_when_today_is_open(tmp_path, capsys):
@@ -90,7 +90,8 @@ def test_morning_increment_starts_previous_natural_evening(day):
     assert window.start_at == datetime.combine(day-timedelta(days=1), datetime.min.time().replace(hour=21), SHANGHAI)
     assert window.contains(window.start_at)
     assert not window.contains(window.start_at-timedelta(seconds=1))
-    assert window.contains(datetime.combine(day, datetime.min.time().replace(hour=9), SHANGHAI))
+    assert window.contains(datetime.combine(day, datetime.min.time().replace(hour=8, minute=30), SHANGHAI))
+    assert not window.contains(datetime.combine(day, datetime.min.time().replace(hour=8, minute=30, second=1), SHANGHAI))
 
 
 def test_sunday_cli_worker_publication_and_monday_increment(tmp_path, monkeypatch, capsys):
@@ -124,7 +125,6 @@ def test_sunday_cli_worker_publication_and_monday_increment(tmp_path, monkeypatc
     assert windows[0]['d1TradeDate']=='2026-09-14' and windows[0]['d2TradeDate']=='2026-09-15'
 
     tick[0] = datetime(2026,9,14,9,2,tzinfo=SHANGHAI)
-    monkeypatch.setattr(pipeline, '_now', lambda: tick[0])
     class NoNewNews(e2e._News):
         def fetch_incremental(self, request):
             return SourceFetchResult(documents=(), next_cursor='monday', success_watermark=request.window.cutoff_at,
@@ -140,8 +140,19 @@ def test_sunday_cli_worker_publication_and_monday_increment(tmp_path, monkeypatc
             raise
     monkeypatch.setattr(pipeline, 'execute_scan', captured_scan)
     morning_id = enqueue(db, 'morning', date(2026,9,14), 1, 1, capsys, 'b39', 'b39-execution')
+    handlers = pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet')
+
+    def morning_handler(context):
+        # The worker keeps its normal lease clock.  Only publication's frozen
+        # business time is injected at the production-handler boundary.
+        return pipeline.production_scan_handler(
+            context, tushare_token='fixture-token', parquet_dir=tmp_path/'parquet', now=lambda: tick[0],
+        )
+
+    morning_handler.requires_b76_contract = True
+    handlers['morning_scan'] = morning_handler
     morning = run_once(db_path=db, task_id=morning_id, worker_id='monday', lease_for=timedelta(minutes=5),
-        handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'), clock=lambda:tick[0])
+        handlers=handlers, clock=lambda:tick[0])
     assert morning.status == 'completed', errors or morning
     with sqlite3.connect(db) as c:
         checkpoint = json.loads(c.execute('SELECT checkpoint_json FROM k10_tasks WHERE task_id=?',(morning_id,)).fetchone()[0])

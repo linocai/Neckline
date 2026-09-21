@@ -1,0 +1,44 @@
+{
+  "reason": null,
+  "report": {
+    "addedCards": [],
+    "availableAt": "2026-09-08T14:00:00+00:00",
+    "coverageGaps": [],
+    "cutoffAt": "2026-09-08T13:00:00+00:00",
+    "delivery": {
+      "contractVersion": "k10-report-delivery-3.4.0-b76",
+      "counts": {
+        "comparableCompanies": 0,
+        "eventFailed": 0,
+        "eventInput": 0,
+        "eventProcessed": 0,
+        "eventUnprocessed": 0,
+        "publishedCompanies": 0,
+        "titleFailed": 0,
+        "titleInput": 1602,
+        "titleProcessed": 1602,
+        "titleUnprocessed": 0
+      },
+      "eligibleSetSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "gaps": [],
+      "inputManifestSha256": "8a33abe81a9032ba71d849be8133103a4dea9e2f914868176a9501a62de573b7",
+      "outcome": "complete",
+      "rankingInputSha256": "3d73d3a8794196b784d12d547c137ed8eda4a6f1b5dff4862ade5e91ca82f48d",
+      "rankingScope": "all_processed"
+    },
+    "eveningCards": [],
+    "incompleteReviews": [],
+    "lifecycleUpdates": [],
+    "nextCursor": null,
+    "parentReportId": null,
+    "reportId": "report_scan_9e38338815dd92c04e54df634caa0333",
+    "status": "completed",
+    "strategySnapshotId": "k10-v2-20260909",
+    "strategyVersion": "K10-v2",
+    "updatedCards": [],
+    "verificationCutoffAt": "2026-09-08T14:00:00+00:00",
+    "windowKind": "evening"
+  },
+  "schemaVersion": 8,
+  "state": "available"
+}

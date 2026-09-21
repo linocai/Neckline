@@ -36,6 +36,8 @@ def _config():
 
 def _seed(path: Path, *, cutoff=NOW):
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW,
+                          changed_by="test", db_path=path)
     config_revision = store.append_run_config(config_id="cfg-1", payload=_config(), created_at=NOW, db_path=path)
     store.append_document_version(document_id="doc-1", source_key="fixture", external_id="external-1",
                                   canonical_url="https://example.invalid/1", content_sha256="a" * 64,

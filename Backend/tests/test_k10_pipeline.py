@@ -169,6 +169,8 @@ def _bound_v306_execution(path: Path, *, task_id: str, binding_kind: str = "sche
     profile_id, revision = append_approved_execution_profile(
         db_path=path, created_at=CREATED.isoformat(), config_id=config_id,
     )
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=CREATED.isoformat(),
+                          changed_by="test", db_path=path)
     store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id, input_version="fixture",
                        input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
                        created_at=CREATED.isoformat(), db_path=path)
@@ -339,6 +341,8 @@ def test_running_frozen_targeted_input_finishes_failed_without_rewriting_evidenc
     store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id=None,
                       config_revision=None, status="running", coverage=original_coverage,
                       created_at=CREATED.isoformat(), completed_at=None, db_path=path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=CREATED.isoformat(),
+                          changed_by="test", db_path=path)
     store.enqueue_task(task_id=identity, kind="evening_scan", idempotency_key="fixture-boundary",
                        input_version="fixture@1", input_cutoff_at=CUTOFF.isoformat(), payload={}, budget={"maxAttempts": 1},
                        created_at=CREATED.isoformat(), db_path=path)
@@ -576,57 +580,15 @@ def test_crash_after_candidate_write_replays_same_event_revision_and_candidate(t
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
 
 
-def test_persisted_morning_match_requires_explicit_retry_for_terminal_child(tmp_path, monkeypatch):
-    path = tmp_path / "morning-child-retry.sqlite"
-    initialize_schema(path)
-    _frozen_config(path)
-    store.create_scan(scan_id="old", window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id="fixture", config_revision=1,
-                      status="completed", coverage={}, created_at=CREATED.isoformat(), completed_at=CREATED.isoformat(), db_path=path)
-    event = store.append_event_revision(event_id="event-child", stable_key="child", headline="公告", event_kind="fixture", facts={},
-                                        source_refs=[], supersedes_revision=None, created_at=CREATED.isoformat(), db_path=path)
-    from tests.test_k10_lifecycle import _input
-    published = _input("candidate-child", "event-child", key="child", source_marker="evening")
-    store.create_candidate(candidate_id="candidate-child", scan_id="old", event_id=event.event_id, event_revision=event.revision,
-                           company_code="300001.SZ", comparison=published.comparison, evidence=[], created_at=CREATED.isoformat(), db_path=path)
-    store.publish_opportunities(batch_id="old-batch", scan_id="old", publication_kind="evening", inputs=[published], clock=lambda: CREATED, db_path=path)
-    parent = TaskContext(Task("parent", "morning_scan", "running", 1, "parent-worker", None, {}),
-                         {"maxAttempts": 3}, {}, "fixture@1", CUTOFF.isoformat(), path, threading.Event())
-    configuration = {"taskPolicies": {"morning": {"maxAttempts": 3, "costLimit": None}}}
-    matches = [{"candidateId": "candidate-child", "eventId": "event-child", "morningEvidenceRefs": []}]
-    import neckline.k10.pipeline as pipeline
-    def finish(status):
-        def runner(*, db_path, worker_id, lease_for, handlers, task_id, clock):
-            now = CREATED.astimezone(timezone.utc)
-            task = store.claim_task_by_id(task_id=task_id, worker_id=worker_id, now=now, lease_for=timedelta(minutes=10), db_path=db_path)
-            if task is None:
-                return None
-            store.finish_task(task_id=task_id, worker_id=worker_id, status=status, stage="fixture", checkpoint={}, error_text=None,
-                              finished_at=now, db_path=db_path)
-            return store.get_task(task_id=task_id, db_path=db_path)
-        return runner
-    monkeypatch.setattr(pipeline, "run_once", finish("failed"))
-    first, ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
-                                      config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
-    assert first == "partial" and store.get_task(task_id=ids[0], db_path=path).status == "failed"
-    monkeypatch.setattr(pipeline, "run_once", finish("completed"))
-    second, replay_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
-                                               config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
-    terminal = store.get_task(task_id=ids[0], db_path=path)
-    assert second == "partial" and replay_ids == ids
-    assert terminal.status == "failed" and terminal.attempt_count == 1
-    store.retry_task(task_id=ids[0], expected_attempt_count=terminal.attempt_count,
-                     retried_at=CREATED.isoformat(), db_path=path)
-    third, explicit_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
-        config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
-    assert third == "completed" and explicit_ids == ids
-    assert store.get_task(task_id=ids[0], db_path=path).status == "completed"
+# Per-card child retries are retired. Parent recovery, terminal result reuse and
+# no second provider call are exercised through the real worker in B57 regressions.
 
 
 def test_morning_data_is_retained_without_auto_candidate_replacement(tmp_path):
     path = tmp_path / "morning.sqlite"
     initialize_schema(path)
     adapter = _Adapter()
-    morning = datetime(2026, 9, 7, 9, tzinfo=SHANGHAI)
+    morning = datetime(2026, 9, 7, 8, 30, tzinfo=SHANGHAI)
     result = execute_scan(kind="morning", cutoff_at=morning, configuration=_configuration(), db_path=path,
                           adapter=adapter, model=_VerifiedModel(), metadata=_Metadata(), created_at=CREATED,
                           verification_gateway=_FixtureVerificationGateway())
@@ -636,7 +598,7 @@ def test_morning_data_is_retained_without_auto_candidate_replacement(tmp_path):
     assert result.checkpoint["deferredCount"] == 0
     # The configured 24-hour late-arrival replay precedes the Sunday 21:00 nominal boundary.
     assert adapter.request.source_success_watermark == datetime(2026, 9, 6, 21, tzinfo=SHANGHAI)
-    assert adapter.request.window.start_at == datetime(2026, 9, 6, 9, tzinfo=SHANGHAI)
+    assert adapter.request.window.start_at == datetime(2026, 9, 6, 8, 30, tzinfo=SHANGHAI)
 
 
 class _Provider(LLMProvider):
@@ -1325,8 +1287,8 @@ def test_task_deadline_finalizes_running_scan_without_publication(tmp_path, monk
 
 
 @pytest.mark.parametrize("copies", [1, 2])
-def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_adapter(tmp_path, monkeypatch, copies):
-    """The actual CLI recovery task reaches production handler without source collection."""
+def test_cli_recovery_rejects_legacy_unbound_scan_without_creating_a_replacement(tmp_path, copies):
+    """B76 never turns an old frozen scan into a new task or provider attempt."""
     path = tmp_path / "cli-recovery.sqlite"
     initialize_schema(path)
     store.set_run_control(state="open", reason_code="offline_fixture", changed_at=CREATED.isoformat(),
@@ -1356,65 +1318,15 @@ def test_cli_recovery_worker_handler_reuses_exact_frozen_refs_without_token_or_a
                       coverage={"inputSnapshotFrozen": True, "inputDocumentRefs": refs, "ingestionState": "completed",
                                 "state": "completed", "window": {"kind": "evening", "startAt": (CUTOFF - timedelta(days=1)).isoformat(),
                                 "cutoffAt": CUTOFF.isoformat(), "startInclusive": False, "cutoffInclusive": True}})
-    task_id = recover_scan(db_path=path, scan_id=scan_id, execution_config_id="execution", execution_config_revision=execution_revision,
-                           confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=path), now=CREATED)
-
-    class Provider:
-        def __init__(self):
-            self.calls = 0
-            self.stages = []
-
-        def chat(self, messages, **_kwargs):
-            self.calls += 1
-            content = messages[-1].content
-            payload = json.loads(content.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
-            if "policyContent" in payload:
-                assert payload["knownSubjects"] == [{"companyCode": "300001.SZ", "headline": "已发布的独立机会"}]
-                assert "PRIVATE_OLD_BODY_MUST_NOT_ENTER_TITLES" not in content
-            if payload.get("operation") == "titleSelectionReview":
-                self.stages.append("titleReview")
-                response = {"complete": True, "kept": [{"i": row["i"], "reason": "标题事实独立，保留"}
-                                                       for row in payload["items"]], "removed": []}
-            elif "inputCount" in payload:
-                self.stages.append("titleReconcile")
-                response = {"selected": [{"i": 0, "selectedRank": 1, "reason": "离线正文回归"}],
-                            "merged": [], "notSelected": []}
-            elif "policyContent" in payload:
-                self.stages.append("titleBatch")
-                response = {"items": [{"documentId": row["documentId"], "revision": row["revision"],
-                                       "status": "candidate", "matterKey": "frozen", "stageKey": "initial",
-                                       "reason": "离线正文回归"} for row in payload["items"]]}
-            else:
-                self.stages.append("understand")
-                response = {"events": [], "needsFullText": False}
-            return LLMResult(ok=True, content=json.dumps(response), provider="fixture", model="deepseek-v4-pro",
-                             prompt_tokens=7, completion_tokens=3, total_tokens=10, usage_unavailable=False)
-    provider = Provider()
-    monkeypatch.setattr(pipeline, "_existing_opportunity_context", lambda **_: [
-        {"eventId": "watched-event", "companyCode": "300001.SZ", "headline": "已发布的独立机会", "state": "active",
-         "facts": {"privatePriorBody": "PRIVATE_OLD_BODY_MUST_NOT_ENTER_TITLES"}}])
-    monkeypatch.setattr(pipeline, "_active_published_candidates", lambda **_: [
-        {"eventId": "watched-event", "companyCode": "300001.SZ"}])
-    monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", lambda **_: type("Resolution", (), {"provider": provider, "error": None})())
-    monkeypatch.setattr(pipeline, "TuShareMajorNewsAdapter", lambda **_: pytest.fail("recovery attempted source collection"))
-    task = run_once(db_path=path, worker_id="recovery-worker", lease_for=timedelta(minutes=5), clock=lambda: CREATED,
-                    handlers={"evening_scan": lambda context: pipeline.production_scan_handler(
-                        context, tushare_token=None, parquet_dir=path.parent / "parquet", now=lambda: CREATED)}, task_id=task_id)
-    assert task is not None and task.status == "completed"
+    with pytest.raises(RuntimeError, match="缺少 B76 原任务绑定"):
+        recover_scan(db_path=path, scan_id=scan_id, execution_config_id="execution", execution_config_revision=execution_revision,
+                     confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=path), now=CREATED)
+    import sqlite3
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM k10_tasks").fetchone()[0] == 0
     recovered = store.get_scan(scan_id=scan_id, db_path=path)
-    assert recovered is not None and recovered["coverage"]["inputDocumentRefs"] == refs
-    assert provider.stages == ["titleBatch", "titleReconcile", "titleReview", "understand"]
-    manifest = store.read_title_selection_manifest(task_id=task_id, db_path=path)
-    assert manifest is not None and manifest["selectedRefs"] == refs[:1]
-    triage = store.read_title_triage_items(task_id=task_id, db_path=path)
-    assert len(triage) == copies
-    if copies == 2:
-        duplicate = next(item for item in triage if item["documentId"] == "frozen-duplicate")
-        assert duplicate["disposition"] == "exact_duplicate"
-        assert duplicate["mergedRef"] == refs[0]
-    bodies = store.completed_execution_items(task_id=task_id, item_kind="document", stage="model:understand", db_path=path)
-    assert len(bodies) == 1
-    assert store.task_execution_profile(task_id=task_id, db_path=path)["bindingKind"] == "recovery"
+    assert recovered is not None and recovered["status"] == "failed"
+    assert recovered["coverage"]["inputDocumentRefs"] == refs
 
 
 def test_cli_morning_worker_preserves_title_slice_and_resumes_before_report(tmp_path, monkeypatch):
@@ -1469,9 +1381,9 @@ def test_cli_morning_worker_preserves_title_slice_and_resumes_before_report(tmp_
     task=run_once(db_path=path,worker_id='morning-worker',lease_for=timedelta(minutes=5),clock=lambda:now,
         handlers={'morning_scan':handler},task_id=task_id)
     assert task is not None and task.status=='queued'
-    assert calls==['titleBatch','titleReconcile','titleReview']
+    assert calls==['titleBatch','titleReconcile']
     now+=timedelta(seconds=2)
     task=run_once(db_path=path,worker_id='morning-worker',lease_for=timedelta(minutes=5),clock=lambda:now,
         handlers={'morning_scan':handler},task_id=task_id)
     assert task is not None and task.status=='completed'
-    assert calls==['titleBatch','titleReconcile','titleReview','understand']
+    assert calls==['titleBatch','titleReconcile','understand']

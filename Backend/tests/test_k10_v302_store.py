@@ -121,6 +121,7 @@ def test_morning_report_versions_preserve_all_five_sections_and_no_overwrite(tmp
 def test_analysis_request_is_intent_idempotent_and_requires_complete_parent(tmp_path):
     path = tmp_path / "analysis.sqlite"
     _seed_observed_window(path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW, changed_by="test", db_path=path)
     # Retired V2 morning rows are retained for audit but cannot become a fictitious parent.
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT INTO k10_analysis_revisions VALUES(?,?,?,?,?,?,?,?,?)",

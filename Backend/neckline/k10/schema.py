@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class K10SchemaError(RuntimeError):
@@ -768,6 +768,79 @@ CREATE INDEX idx_k10_model_response_receipts_reuse
   ON k10_model_response_receipts(task_id,request_sha256,reuse_scope_sha256,received_at,attempt_id);
 """
 
+# B78 keeps the report as the reader's sole delivery authority.  These tables
+# deliberately avoid mutating legacy report/card rows: old reports remain
+# readable and new reports get their deadline and safe, unranked materials in
+# one scoped extension.
+_V10 = """
+CREATE TABLE k10_v2_report_delivery_metadata (
+  report_id TEXT PRIMARY KEY REFERENCES k10_v2_report_runs(report_id) ON DELETE RESTRICT,
+  result_available_at TEXT,
+  delivery_deadline_at TEXT,
+  materials_state TEXT NOT NULL CHECK(materials_state IN ('available','empty','unavailable')),
+  materials_reason_json TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE k10_v2_report_materials (
+  report_id TEXT NOT NULL REFERENCES k10_v2_report_runs(report_id) ON DELETE RESTRICT,
+  material_id TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  event_title TEXT NOT NULL,
+  facts_json TEXT NOT NULL,
+  company_relations_json TEXT NOT NULL,
+  uncertainties_json TEXT NOT NULL,
+  source_refs_json TEXT NOT NULL,
+  as_of TEXT NOT NULL,
+  PRIMARY KEY(report_id, material_id)
+);
+CREATE INDEX idx_k10_v2_report_materials_report ON k10_v2_report_materials(report_id, material_id);
+CREATE TABLE k10_tavily_response_receipts (
+  attempt_id TEXT PRIMARY KEY REFERENCES k10_external_attempts(attempt_id) ON DELETE RESTRICT,
+  task_id TEXT NOT NULL REFERENCES k10_tasks(task_id) ON DELETE RESTRICT,
+  item_key TEXT NOT NULL,
+  input_sha256 TEXT NOT NULL CHECK(length(input_sha256)=64),
+  payload_json TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256)=64),
+  received_at TEXT NOT NULL
+);
+CREATE INDEX idx_k10_tavily_response_receipts_lookup
+  ON k10_tavily_response_receipts(task_id,item_key,input_sha256,received_at,attempt_id);
+CREATE TABLE k10_morning_review_work_items (
+  scan_id TEXT NOT NULL REFERENCES k10_scans(scan_id) ON DELETE RESTRICT,
+  work_item_id TEXT NOT NULL,
+  input_sha256 TEXT NOT NULL CHECK(length(input_sha256)=64),
+  status TEXT NOT NULL CHECK(status IN ('running','completed','failed','not_configured')),
+  result_json TEXT,
+  report_item_json TEXT,
+  safe_error_code TEXT,
+  captured_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(scan_id,work_item_id)
+);
+CREATE INDEX idx_k10_morning_review_work_items_scan
+  ON k10_morning_review_work_items(scan_id,status,work_item_id);
+
+-- B78 direct rounds intentionally do not reuse k10_research_stage_results:
+-- those rows encode the retired plan/assess/close state machine.
+CREATE TABLE k10_research_round_results (
+  snapshot_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 2),
+  input_sha256 TEXT NOT NULL CHECK(length(input_sha256)=64),
+  input_packet_json TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  context_results_json TEXT NOT NULL,
+  tool_evidence_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id,revision),
+  UNIQUE(snapshot_id,input_sha256),
+  FOREIGN KEY(snapshot_id,revision)
+    REFERENCES k10_research_snapshot_revisions(snapshot_id,revision) ON DELETE RESTRICT
+);
+CREATE INDEX idx_k10_research_round_results_snapshot
+  ON k10_research_round_results(snapshot_id,revision);
+"""
+
 
 _DROP_V1 = (
     # Delete dependency children first.  This path is exercised only after a verified backup,
@@ -796,15 +869,19 @@ def write_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     path = _path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
-    conn.execute("PRAGMA foreign_keys=ON")
-    # sqlite3 的 executescript 会隐式提交，不能用它承载迁移。本连接先显式开启
-    # 事务，所有 DDL 都逐条执行，因此任一失败会回滚整套版本而非遗留半套表。
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        # sqlite3 的 executescript 会隐式提交，不能用它承载迁移。本连接先显式开启
+        # 事务，所有 DDL 都逐条执行，因此任一失败会回滚整套版本而非遗留半套表。
+        # Keep this setup inside the lifetime guard as BEGIN itself can fail
+        # under an already-held writer lock.  In that case the connection still
+        # belongs to us and must be closed before the exception escapes.
+        conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     except BaseException:
-        conn.rollback()
+        if conn.in_transaction:
+            conn.rollback()
         raise
     finally:
         conn.close()
@@ -898,7 +975,7 @@ def initialize_schema(db_path: Path) -> int:
         elif version == 5:
             _apply_v6(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version in {6, 7, 8}:
+        elif version in {6, 7, 8, 9}:
             pass
         elif version != SCHEMA_VERSION:
             raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
@@ -912,6 +989,9 @@ def initialize_schema(db_path: Path) -> int:
         if _version(conn) == 8:
             _apply_v9(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (9,?)", (_now(),))
+        if _version(conn) == 9:
+            _apply_v10(conn)
+            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (10,?)", (_now(),))
     return SCHEMA_VERSION
 
 
@@ -971,6 +1051,14 @@ def _apply_v7(conn: sqlite3.Connection) -> None:
 def _apply_v9(conn: sqlite3.Connection) -> None:
     """Add private immutable provider response receipts without rewriting Schema 8 rows."""
     for statement in _V9.split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+
+
+def _apply_v10(conn: sqlite3.Connection) -> None:
+    """Add B78 reader-safe materials and Tavily receipt recovery boundaries."""
+    for statement in _V10.split(";"):
         statement = statement.strip()
         if statement:
             conn.execute(statement)
@@ -1174,13 +1262,14 @@ def _receipt_export_manifest(conn: sqlite3.Connection) -> dict[str, object]:
 
 
 def export_model_response_receipts(db_path: Path, *, export_path: Path) -> dict[str, object]:
-    """Create one private, immutable Schema-9 receipt export for a verified rollback set."""
+    """Create the stable private Schema-9 receipt-format export from the current schema."""
     if not isinstance(export_path, Path) or export_path.exists():
         raise ValueError("回执导出路径必须是不存在的明确文件")
     with read_connection(db_path) as conn:
         require_schema(conn)
-        if _version(conn) != 9:
-            raise K10SchemaError("只有 schema 9 可导出模型回执")
+        # The serialized recovery format remains Schema-9 so an existing
+        # verified archive stays readable.  B78 Schema-10 only adds adjacent
+        # tables and does not alter model-attempt or receipt rows.
         manifest = _receipt_export_manifest(conn)
     export_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _canonical_json(manifest) + "\n"
@@ -1217,14 +1306,12 @@ def _load_receipt_export(export_path: Path) -> dict[str, object]:
 
 
 def restore_model_response_receipts(db_path: Path, *, export_path: Path) -> int:
-    """Restore a verified private export only into matching Schema-9 attempts, idempotently."""
+    """Restore a verified stable Schema-9 export into matching current attempts."""
     exported = _load_receipt_export(export_path)
     receipts = exported["receipts"]
     assert isinstance(receipts, list)
     with write_connection(db_path) as conn:
         require_schema(conn)
-        if _version(conn) != 9:
-            raise K10SchemaError("只有 schema 9 可恢复模型回执")
         for item in receipts:
             if not isinstance(item, dict):
                 raise K10SchemaError("私有回执导出条目无效")

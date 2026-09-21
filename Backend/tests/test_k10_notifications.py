@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from neckline.k10 import store
+from neckline.k10.delivery import runtime_contract
 from neckline.k10.notifications import (
     DeliveryResult,
     NotificationConflict,
@@ -103,27 +104,42 @@ def _db(tmp_path: Path) -> Path:
     db_path = tmp_path / "k10-notifications.sqlite3"
     initialize_schema(db_path)
     initialize_notifications_schema(db_path, applied_at=NOW)
+    # P04 keeps discovery closed by default.  These are isolated task/outbox
+    # tests, so open the same durable control boundary the real producer and
+    # worker require instead of bypassing task claim semantics.
+    store.set_run_control(
+        state="open", reason_code="isolated-notification-test", changed_at=_stamp(),
+        changed_by="test", db_path=db_path,
+    )
     return db_path
 
 
 def _finish_task(
     db_path: Path, *, task_id: str = "task-1", kind: str = "analysis", status: str = "completed",
     stage: str = "done", payload: dict[str, object] | None = None, error_text: str | None = None,
+    execution_binding: dict | None = None,
 ) -> int:
+    task_payload = payload or {
+        "companyWindowId": "window-1",
+        "opportunityId": "opportunity-1",
+        "batchId": "batch-1",
+        "scanId": "scan-1",
+        "untrusted": "not-a-deep-link",
+    }
+    # Only a current, user-visible analysis task may be rediscovered by the
+    # B76 maintenance reconciler.  Report fixtures keep their legacy direct
+    # path unless they construct a committed delivery explicitly.
+    if kind == "analysis" and payload is None:
+        task_payload = {**task_payload, "runtimeContract": runtime_contract()}
     store.enqueue_task(
         task_id=task_id,
         kind=kind,
         idempotency_key=f"enqueue-{task_id}",
         input_version="K10-v1.3",
         input_cutoff_at=_stamp(),
-        payload=payload or {
-            "companyWindowId": "window-1",
-            "opportunityId": "opportunity-1",
-            "batchId": "batch-1",
-            "scanId": "scan-1",
-            "untrusted": "not-a-deep-link",
-        },
+        payload=task_payload,
         budget={"maxAttempts": 2},
+        execution_binding=execution_binding,
         created_at=_stamp(),
         db_path=db_path,
     )
@@ -176,7 +192,7 @@ def _finish_real_window_analysis_task(db_path: Path) -> tuple[str, str]:
         action_id="keep-real", observation_id="observation-real", task_id="task-real", outbox_id="outbox-real",
         company_window_id=window["companyWindowId"], idempotency_key="keep-real", task_input_version="cfg@1",
         task_input_cutoff_at=stamp, task_payload={"opportunityId": opportunity["opportunityId"], "batchId": "batch-real",
-        "scanId": "scan-real"}, task_budget={"maxAttempts": 1}, created_at=stamp, db_path=db_path,
+        "scanId": "scan-real", "runtimeContract": runtime_contract()}, task_budget={"maxAttempts": 1}, created_at=stamp, db_path=db_path,
     )
     task = store.claim_tasks(worker_id="task-worker", now=NOW, lease_for=timedelta(minutes=5), limit=1, db_path=db_path)[0]
     store.finish_task(task_id=task.task_id, worker_id="task-worker", status="completed", stage="done", checkpoint={},
@@ -229,7 +245,7 @@ def test_real_company_window_analysis_task_produces_only_v14_push_ids(tmp_path, 
     notification_runtime.create_notification_maintenance(db_path=db_path, worker_id="fixture-worker")()
 
     assert len(calls) == 1
-    assert calls[0][1]["custom"] == {"kind": "k10_analysis", "companyWindowId": company_window_id,
+    assert calls[0][1]["custom"] == {"schemaVersion": 2, "kind": "k10_analysis", "companyWindowId": company_window_id,
                                       "opportunityId": opportunity_id, "batchId": "batch-real", "scanId": "scan-real"}
     assert "价位" not in calls[0][0][2] and "预案" not in calls[0][0][2]
 
@@ -296,7 +312,10 @@ def test_legacy_notification_idempotency_does_not_hide_non_migration_field_chang
 
 def test_failure_after_retry_creates_a_new_attempt_notification(tmp_path: Path):
     db_path = _db(tmp_path)
-    first_attempt = _finish_task(db_path, status="failed", stage="execution", error_text="Bearer private-value")
+    from tests.k10_v306_fixture import append_approved_execution_profile
+    config_id, revision = append_approved_execution_profile(db_path=db_path, created_at=_stamp())
+    first_attempt = _finish_task(db_path, status="failed", stage="execution", error_text="Bearer private-value",
+        execution_binding={"configId": config_id, "revision": revision})
     first = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
     assert first_attempt == first.task_attempt_count == 1
     assert "private-value" not in first.body
@@ -496,6 +515,10 @@ def test_v1_outbox_migration_preserves_queued_row_and_marks_it_due(tmp_path: Pat
 
     db_path = tmp_path / "v1.sqlite3"
     initialize_schema(db_path)
+    store.set_run_control(
+        state="open", reason_code="isolated-notification-migration-test", changed_at=_stamp(),
+        changed_by="test", db_path=db_path,
+    )
     _finish_task(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(notification_module._V1)

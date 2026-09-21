@@ -132,7 +132,7 @@ def test_v303_bounded_replay_catches_late_arrival_once_without_backdating_or_rep
     assert opportunities[0]["d1TradeDate"] == "2026-09-08"  # actual morning availability, never 9/7 backfill
     morning_coverage = store.get_scan(scan_id=second.checkpoint["scanId"], db_path=path)["coverage"]
     assert morning_coverage["sourceReplay"]["nominalStartAt"] == "2026-09-07T21:00:00+08:00"
-    assert morning_coverage["sourceReplay"]["effectiveStartAt"] == "2026-09-07T09:00:00+08:00"
+    assert morning_coverage["sourceReplay"]["effectiveStartAt"] == "2026-09-07T08:30:00+08:00"
 
     now[0] = _at(8, 21, 1)
     third = execute_scan(

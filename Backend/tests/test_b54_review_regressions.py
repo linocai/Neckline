@@ -97,7 +97,7 @@ def later_scan(tmp_path,mp,change,*,kind='morning'):
 @pytest.mark.parametrize('role',['excluded','pending'])
 def test_r2_continuation_must_pass_todays_recommendation_role(tmp_path,monkeypatch,role):
     def change(payload,value):
-        if payload.get('action')=='compare_companies':
+        if payload.get('action')=='research_round':
             for row in value['companyAssessments']:
                 if row['companyCode']=='300002.SZ':row.update(role=role,rank=None,summary='本轮不推荐旧催化')
     db,old,result,_ = later_scan(tmp_path,monkeypatch,change,kind='evening')
@@ -109,11 +109,17 @@ def test_r2_continuation_must_pass_todays_recommendation_role(tmp_path,monkeypat
 def denial_change(observed,verified=False):
     def change(payload,value):
         action = payload.get('action')
-        if action=='assess_evidence':
+        if action=='research_round':
             ref = payload['evidencePacket']['allowedEvidenceRefs'][0]
-            value['claims']=[{'claimId':'article-claim-1','verificationStatus':'contradicted','decisionImpact':'已核实否认原催化'}]
-            value['evidenceUpdates']=[{'claimId':'article-claim-1','sourceRef':ref,'relation':'contradicts','location':'paragraph:1','applicability':{}}]
-        if action=='compare_companies':
+            # The direct B78 result carries the event verdict and comparison
+            # together.  A contradicted disclosure is sufficient for the
+            # classifier to receive the refutation; inventing a partial legacy
+            # claim stage here would weaken the typed round contract.
+            value['conclusion'].update(researchStatus='ready_for_comparison',
+                companyMappings=[{'companyCode':code,'affectedStage':'送样','relationEvidence':[ref],
+                    'inference':{},'uncertainty':'核对各公司原催化是否被否认'}
+                    for code in ('300002.SZ','300004.SZ','300005.SZ')])
+        if action=='research_round':
             for row in value['companyAssessments']:
                 row.update(role='excluded',rank=None,summary='核心催化被推翻')
                 row['evidenceDisclosure'].update(verificationStatus='verified' if verified else 'contradicted',isRumor=False,unverifiedReasons=[],conditionalAnalysis=None)
@@ -144,16 +150,10 @@ def test_r4_durable_withdrawal_reaches_real_morning_dto_without_new_sample(tmp_p
     assert len(store.list_opportunities(db_path=db))==1
 
 
-def test_r5_first_empty_paths_still_closes_and_compares_existing_evidence(tmp_path,monkeypatch):
-    original=e2e._http_transport
-    def no_paths(mp,**kwargs):
-        calls=original(mp,**kwargs)
-        intercept(mp,lambda payload,value:value.update(queryPaths=[]) if payload.get('action')=='plan_queries' else None)
-        return calls
-    monkeypatch.setattr(e2e,'_http_transport',no_paths)
+def test_r5_existing_evidence_is_compared_without_an_artificial_search_round(tmp_path,monkeypatch):
     db,_,task,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True)
     assert task.status=='completed'
-    assert 'research:close_research' in calls and 'research:compare_companies' in calls
+    assert calls.count('research:research_round') == 1
     assert not gateway.search_paths
     assert read_report(db_path=db)['eveningCards']
 
@@ -174,7 +174,7 @@ def test_r1_analysis_binding_interruption_rolls_back_keep_and_outbox(tmp_path,mo
     with sqlite3.connect(db) as conn: assert {table:conn.execute('SELECT count(*) FROM '+table).fetchone()[0] for table in tables}==before
 
 
-def test_r1_morning_child_inherits_parent_binding_and_projects_late_risk(tmp_path,monkeypatch):
+def test_r1_morning_parent_work_item_keeps_binding_and_projects_late_risk(tmp_path,monkeypatch):
     from neckline.k10 import morning_runtime
     from neckline.k10.providers import ProviderResolution
     from tests.test_k10_end_to_end import FakeProvider,_result
@@ -182,8 +182,12 @@ def test_r1_morning_child_inherits_parent_binding_and_projects_late_risk(tmp_pat
     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
     db,old,result,_=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
     with sqlite3.connect(db) as conn:
-        children=conn.execute("SELECT t.task_id,t.status,b.execution_config_id FROM k10_tasks t LEFT JOIN k10_task_execution_bindings b ON b.task_id=t.task_id WHERE t.kind='morning_review'").fetchall()
-    assert children and all(row[1:] == ('completed','b39-execution') for row in children),children
+        items=conn.execute("SELECT work_item_id,input_sha256,status,report_item_json FROM k10_morning_review_work_items").fetchall()
+        child_count=conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+        parent_id=conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
+    assert items and all(row[2] == 'completed' and len(row[1]) == 64 and row[3] for row in items),items
+    assert child_count == 0
+    assert store.task_execution_profile(task_id=parent_id,db_path=db)['configId']=='b39-execution'
     assert provider.results==[]
     changes=read_report(db_path=db,window='morning')['lifecycleUpdates']
     assert any(row['kind']=='risk' and row['opportunityId']==old['opportunityId'] for row in changes)
@@ -197,7 +201,7 @@ def test_r3_mixed_company_disclosures_only_withdraw_the_refuted_company(tmp_path
         calls=original(mp,**kwargs);rounds+=1
         if rounds==1:
             def include_second(payload,value):
-                if payload.get('action')=='compare_companies':
+                if payload.get('action')=='research_round':
                     for row in value['companyAssessments']:
                         if row['companyCode']=='300004.SZ':
                             row.update(role='alternative',rank=2)
@@ -209,7 +213,7 @@ def test_r3_mixed_company_disclosures_only_withdraw_the_refuted_company(tmp_path
     deny=denial_change(seen)
     def mixed(payload,value):
         deny(payload,value)
-        if payload.get('action')=='compare_companies':
+        if payload.get('action')=='research_round':
             for row in value['companyAssessments']:
                 if row['companyCode']=='300004.SZ':
                     row.update(role='primary',rank=1)
@@ -261,7 +265,10 @@ def test_r1_missing_approved_policy_is_not_reported_configured(tmp_path):
     with TestClient(create_app(db)) as client:
         config=client.get('/api/v1/k10/configuration').json()
         assert any(row['state']=='not_configured' for row in config['scopes'])
-        assert client.get('/api/v1/k10/v2/reports/latest').json()['state']=='not_configured'
+        # Current configuration gates new execution, not an existing delivery.
+        report = client.get('/api/v1/k10/v2/reports/latest').json()
+        assert report['state'] == 'available'
+        assert report['report']['reportId'] == 'v2-report-evening'
 
 
 def test_r4_change_link_interruption_rolls_back_lifecycle_event(tmp_path):
@@ -276,20 +283,21 @@ def test_r4_change_link_interruption_rolls_back_lifecycle_event(tmp_path):
         assert conn.execute("SELECT count(*) FROM k10_opportunity_lifecycle_events WHERE lifecycle_event_id='atomic-risk'").fetchone()[0]==0
 
 
-def test_r5_no_paths_can_close_without_mapping_and_does_not_force_a_recommendation(tmp_path,monkeypatch):
+def test_r5_direct_round_without_mapping_does_not_force_a_recommendation(tmp_path,monkeypatch):
     original=e2e._http_transport
     def no_mapping(mp,**kwargs):
         calls=original(mp,**kwargs)
         def change(payload,value):
-            if payload.get('action')=='plan_queries':value['queryPaths']=[]
-            if payload.get('action')=='close_research':
+            if payload.get('action')=='research_round':
                 value['conclusion'].update(researchStatus='background_only',companyMappings=[],stopReason='已有证据无法合理关联池内公司，作为背景保留')
+                value['companyAssessments']=[]
+                value['comparison']=None
         intercept(mp,change)
         return calls
     monkeypatch.setattr(e2e,'_http_transport',no_mapping)
     db,_,task,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True)
-    assert task.status=='completed' and 'research:close_research' in calls
-    assert 'research:compare_companies' not in calls and not gateway.search_paths
+    assert task.status=='completed' and calls == ['titleBatch', 'titleGlobal', 'understand', 'research:research_round']
+    assert not gateway.search_paths
     assert read_report(db_path=db)['eveningCards']==[]
 
 
@@ -299,7 +307,7 @@ def test_r2_verified_nonrecommended_new_company_also_stays_out(tmp_path,monkeypa
     def nonrecommended(mp,**kwargs):
         calls=original(mp,**kwargs)
         def change(payload,value):
-            if payload.get('action')=='compare_companies':
+            if payload.get('action')=='research_round':
                 for row in value['companyAssessments']:
                     if row['companyCode']=='300002.SZ':
                         row.update(role=role,rank=None)

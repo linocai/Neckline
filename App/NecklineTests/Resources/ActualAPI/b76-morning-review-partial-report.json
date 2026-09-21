@@ -1,0 +1,121 @@
+{
+  "reason": {
+    "message": "部分晨间复核未完成，已完成内容保留",
+    "missing": [],
+    "reason": "morning_review_failed"
+  },
+  "report": {
+    "addedCards": [],
+    "availableAt": "2026-09-16T01:05:00+00:00",
+    "coverageGaps": [
+      "morning_review_failed"
+    ],
+    "cutoffAt": "2026-09-16T01:00:00+00:00",
+    "delivery": {
+      "contractVersion": "k10-report-delivery-3.4.0-b76",
+      "counts": {
+        "comparableCompanies": 1,
+        "eventFailed": 0,
+        "eventInput": 1,
+        "eventProcessed": 1,
+        "eventUnprocessed": 0,
+        "publishedCompanies": 1,
+        "titleFailed": 0,
+        "titleInput": 1602,
+        "titleProcessed": 1602,
+        "titleUnprocessed": 0
+      },
+      "eligibleSetSha256": "e4c87ab9de269ca3a4a676a25cfb9adf383c0cc207cec6a51682ac4e697d4051",
+      "gaps": [],
+      "inputManifestSha256": "92ceec106907f2c352752d6ba9cfb01578f223a519c11f5428b51c96830adb2d",
+      "outcome": "complete",
+      "rankingInputSha256": "e76338b9747b8f6ebdd4d56632211c1f2b0a62ffe195a9ae3313fb26c51690d1",
+      "rankingScope": "all_processed"
+    },
+    "eveningCards": [],
+    "incompleteReviews": [
+      {
+        "companyCode": "300002.SZ",
+        "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+        "opportunityId": "opportunity_47ad1881641acf9f099f57837b69a35e",
+        "reason": "模型调用失败",
+        "status": "failed",
+        "taskId": "morning_review_007c8d9c5920e83eb4714f81d32c0f5d"
+      },
+      {
+        "companyCode": "300002.SZ",
+        "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+        "opportunityId": "opportunity_6fdeed1fe86a1ce327a49c70e9fcfb29",
+        "reason": "模型调用失败",
+        "status": "failed",
+        "taskId": "morning_review_a1492007a408507da58b77a833e68a76"
+      }
+    ],
+    "lifecycleUpdates": [],
+    "nextCursor": null,
+    "parentReportId": "report_scan_a69870d54cf2b508f02536fb2d7c2367",
+    "reportId": "report_scan_efe712d3fe5b473c5e3e2071c4f4a395",
+    "status": "partial",
+    "strategySnapshotId": "k10-v2-20260909",
+    "strategyVersion": "K10-v2",
+    "updatedCards": [
+      {
+        "canSelect": true,
+        "cardId": "card_f8cd466336e94195bb133c1556f2ccf1",
+        "catalysts": [
+          {
+            "classification": "continuation",
+            "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+            "eventId": "event_195ae93872cd5e8483277ca5843f3e87",
+            "eventRevision": 4,
+            "headline": "离线验收事件 000",
+            "lifecycleState": "active",
+            "opportunityId": "opportunity_6fdeed1fe86a1ce327a49c70e9fcfb29",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300002.SZ",
+        "companyName": "神州泰岳",
+        "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-16",
+        "d2TradeDate": "2026-09-17",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 1,
+        "sampleClass": "primary",
+        "section": "updated",
+        "sourceMarker": "morning",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_393399f4dc8876bbbf454efe1904a01f",
+            "excerpt": "离线独立来源确认 event-000 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-16T01:05:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 2,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 000",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/000"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      }
+    ],
+    "verificationCutoffAt": "2026-09-16T01:05:00+00:00",
+    "windowKind": "morning"
+  },
+  "schemaVersion": 8,
+  "state": "available"
+}

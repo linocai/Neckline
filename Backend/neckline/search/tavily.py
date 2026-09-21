@@ -7,7 +7,7 @@ import time
 import math
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -41,6 +41,8 @@ class TavilySearchResponse:
     reason: str = "ok"
     wall_ms: int = 0
     retry_after_seconds: Optional[float] = None
+    # Private receipt input, never part of evidence_payload or public DTOs.
+    raw_response: Optional[dict[str, Any]] = field(default=None, repr=False)
 
     def evidence_payload(self) -> dict:
         return {
@@ -72,6 +74,7 @@ class TavilyExtractResponse:
     reason: str = "ok"
     wall_ms: int = 0
     retry_after_seconds: Optional[float] = None
+    raw_response: Optional[dict[str, Any]] = field(default=None, repr=False)
 
 
 def _published_date(item: dict) -> str:
@@ -176,6 +179,7 @@ class TavilySearchClient:
                         response_time=response_time,
                         request_id=str(body.get("request_id") or "") or None,
                         wall_ms=max(0, int((time.monotonic() - started_all) * 1000)),
+                        raw_response=body,
                     )
                 last_reason = f"tavily_http_{response.status_code}"
                 retry_after_seconds = _retry_after(response.headers.get('Retry-After'))
@@ -236,7 +240,7 @@ class TavilySearchClient:
                 "tavily_usage_unavailable" if credits is None else "tavily_fulltext_unavailable"
             )
             return TavilyExtractResponse(reason == "ok", clean_url, content or None, credits,
-                str(body.get("request_id") or "") or None, reason, elapsed)
+                str(body.get("request_id") or "") or None, reason, elapsed, raw_response=body)
         except Exception:
             # Never leak response bodies, authorization headers or provider URLs.
             return TavilyExtractResponse(False, clean_url, reason="tavily_extract_outcome_unknown",

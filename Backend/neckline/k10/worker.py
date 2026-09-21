@@ -99,6 +99,12 @@ def _truthful_terminal_result(result: TaskResult, *, db_path: Path) -> TaskResul
     """
     if result.status != "completed":
         return result
+    delivery = result.checkpoint.get("delivery")
+    if isinstance(delivery, Mapping) and delivery.get("outcome") == "partial":
+        # The pipeline has already isolated failed dependencies and atomically
+        # published only its independently completed subset. Reclassifying the
+        # task here would recreate the old report/task split state.
+        return result
     required = result.checkpoint.get("researchRequired")
     if required is not None and not isinstance(required, bool):
         return TaskResult("failed", "research_state", result.checkpoint, "研究状态标记无效，比较未完成")
@@ -143,7 +149,32 @@ def _utc_now() -> datetime:
 
 
 def _execution_deadline(*, profile: Mapping[str, Any], started_at: datetime,
-                        runtime_repair: Mapping[str, Any] | None = None) -> datetime:
+                        runtime_repair: Mapping[str, Any] | None = None,
+                        window_kind: str | None = None,
+                        task_payload: Mapping[str, Any] | None = None) -> datetime | None:
+    # B78 has no fabricated whole-report evening deadline.  Morning's user
+    # promise is an absolute 09:20 Asia/Shanghai deadline.
+    from .delivery import is_current_runtime_contract
+    is_b78 = (isinstance(task_payload, Mapping)
+              and is_current_runtime_contract(task_payload.get("runtimeContract")))
+    if is_b78:
+        if window_kind == "evening":
+            if task_payload.get("deliveryDeadlineAt") is not None:
+                raise ValueError("B78 晚报不得冻结整报截止时间")
+            return None
+        if window_kind == "morning":
+            raw = task_payload.get("deliveryDeadlineAt")
+            if not isinstance(raw, str) or not raw:
+                raise ValueError("B78 晨报缺少冻结交付截止时间")
+            try:
+                deadline = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("B78 晨报交付截止时间无效") from exc
+            if deadline.tzinfo is None:
+                raise ValueError("B78 晨报交付截止时间必须带时区")
+            return deadline.astimezone(timezone.utc)
+    # Historical tasks retain the duration behavior frozen in their execution
+    # profile.  Do not retrofit either B78 window rule into their identity.
     payload = profile.get("payload")
     discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
     seconds = discovery.get("completionDeadlineSeconds") if isinstance(discovery, Mapping) else None
@@ -191,6 +222,7 @@ def run_once(
     *, db_path: Path, worker_id: str, lease_for: timedelta,
     handlers: Mapping[str, TaskHandler], clock: Callable[[], datetime] = _utc_now,
     task_id: str | None = None,
+    require_b76_contract: bool = False,
 ) -> Task | None:
     """Claim one job; retries are bounded and never invoke an unknown handler."""
     if lease_for.total_seconds() <= 0:
@@ -200,13 +232,21 @@ def run_once(
     control = store.run_control_status(db_path=db_path)
     if control.get("state") != "open":
         return None
+    # The real production handler map carries this marker as well as the CLI
+    # passing the explicit flag.  Low-level tests can still inject a custom
+    # handler without accidentally changing the public-worker contract.
+    require_b76_contract = require_b76_contract or any(
+        bool(getattr(handler, "requires_b76_contract", False)) for handler in handlers.values()
+    )
     if task_id is None:
         claimed = store.claim_tasks(
             worker_id=worker_id, now=clock(), lease_for=lease_for, limit=1, db_path=db_path,
+            require_b76_contract=require_b76_contract,
         )
     else:
         selected = store.claim_task_by_id(
             task_id=task_id, worker_id=worker_id, now=clock(), lease_for=lease_for, db_path=db_path,
+            require_b76_contract=require_b76_contract,
         )
         claimed = [selected] if selected is not None else []
     if not claimed:
@@ -257,7 +297,9 @@ def run_once(
                     context = replace(context, execution_started_at=started_at,
                                       execution_deadline_at=_execution_deadline(profile=context.execution_profile,
                                                                                runtime_repair=context.checkpoint.get("runtimeRepair"),
-                                                                               started_at=started_at))
+                                                                               started_at=started_at,
+                                                                               window_kind=context.task.payload.get("windowKind"),
+                                                                               task_payload=context.task.payload))
                 from .provider_failures import recover_provider_failure
                 recovered = recover_provider_failure(context=context)
                 result = recovered if recovered is not None else handler(context)
@@ -277,33 +319,63 @@ def run_once(
             recovered = recover_provider_failure(context=context, checkpoint=result.checkpoint)
             if recovered is not None:
                 result = recovered
-        context.require_lease()
-        if result.status == "failed" and store.run_control_status(db_path=db_path).get("state") != "open":
-            # A closed switch can stop any phase, including a terminal title
-            # failure with no retry_at. Keep its checkpoints and paid receipts,
-            # but identify the operator pause consistently for notification.
-            result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
-        if result.retry_at is not None:
-            if store.run_control_status(db_path=db_path).get("state") != "open":
-                # A pause never discards already-settled handler output, but
-                # it must prevent this task from arranging a future attempt.
+        published_task = store.get_task(task_id=task.task_id, db_path=db_path)
+        # A handler flag is only an intent.  Skip the ordinary terminal write
+        # only after the same task is demonstrably terminal in SQLite with the
+        # committed B76 delivery checkpoint.  This prevents an interruption
+        # between a handler's in-memory result and its publication transaction
+        # from leaving a running task mistaken for a completed report.
+        atomic_checkpoint = result.checkpoint.get("deliveryPublicationAtomic") is True
+        stored_checkpoint = None
+        stored_status = stored_stage = None
+        if published_task is not None:
+            with read_connection(db_path) as conn:
+                require_schema(conn)
+                row = conn.execute(
+                    "SELECT status,stage,checkpoint_json FROM k10_tasks WHERE task_id=?", (task.task_id,)
+                ).fetchone()
+            try:
+                stored_status = row[0] if row is not None else None
+                stored_stage = row[1] if row is not None else None
+                stored_checkpoint = json.loads(row[2]) if row is not None else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                stored_checkpoint = None
+        atomically_delivered = (
+            result.status == "completed" and result.retry_at is None and atomic_checkpoint
+            and published_task is not None and stored_status == "completed"
+            and stored_stage in {"report_complete", "report_partial"}
+            and isinstance(stored_checkpoint, Mapping)
+            and stored_checkpoint.get("deliveryPublicationAtomic") is True
+            and stored_checkpoint.get("delivery") == result.checkpoint.get("delivery")
+        )
+        if not atomically_delivered:
+            context.require_lease()
+            if result.status == "failed" and store.run_control_status(db_path=db_path).get("state") != "open":
+                # A closed switch can stop any phase, including a terminal title
+                # failure with no retry_at. Keep its checkpoints and paid receipts,
+                # but identify the operator pause consistently for notification.
                 result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
-            else:
-                scheduled = store.schedule_task_retry(
-                    task_id=task.task_id, worker_id=worker_id, stage=result.stage, checkpoint=result.checkpoint,
-                    safe_error_code=str(result.safe_error_code), not_before_at=result.retry_at, scheduled_at=clock(),
-                    retry_kind=str(result.retry_kind), max_failure_attempts=maximum, db_path=db_path,
+            if result.retry_at is not None:
+                if store.run_control_status(db_path=db_path).get("state") != "open":
+                    # A pause never discards already-settled handler output, but
+                    # it must prevent this task from arranging a future attempt.
+                    result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
+                else:
+                    scheduled = store.schedule_task_retry(
+                        task_id=task.task_id, worker_id=worker_id, stage=result.stage, checkpoint=result.checkpoint,
+                        safe_error_code=str(result.safe_error_code), not_before_at=result.retry_at, scheduled_at=clock(),
+                        retry_kind=str(result.retry_kind), max_failure_attempts=maximum, db_path=db_path,
+                    )
+                    if not scheduled:
+                        if store.run_control_status(db_path=db_path).get("state") != "open":
+                            result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
+                        else:
+                            result = TaskResult("failed", "attempt_limit", result.checkpoint, "任务已达到重试上限")
+            if result.retry_at is None:
+                store.finish_task(
+                    task_id=task.task_id, worker_id=worker_id, status=result.status, stage=result.stage,
+                    checkpoint=result.checkpoint, error_text=result.error, finished_at=clock(), db_path=db_path,
                 )
-                if not scheduled:
-                    if store.run_control_status(db_path=db_path).get("state") != "open":
-                        result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
-                    else:
-                        result = TaskResult("failed", "attempt_limit", result.checkpoint, "任务已达到重试上限")
-        if result.retry_at is None:
-            store.finish_task(
-                task_id=task.task_id, worker_id=worker_id, status=result.status, stage=result.stage,
-                checkpoint=result.checkpoint, error_text=result.error, finished_at=clock(), db_path=db_path,
-            )
     finally:
         stopped.set()
         heartbeat_thread.join()
@@ -314,6 +386,7 @@ def run_worker(
     *, db_path: Path, worker_id: str, lease_for: timedelta, idle_seconds: float,
     handlers: Mapping[str, TaskHandler], stop: threading.Event,
     maintenance: Callable[[], None] | None = None,
+    require_b76_contract: bool = False,
 ) -> None:
     """Serial dispatch keeps the small service bounded; the caller handles signals."""
     if idle_seconds <= 0:
@@ -322,7 +395,8 @@ def run_worker(
         return
     while not stop.is_set():
         try:
-            task = run_once(db_path=db_path, worker_id=worker_id, lease_for=lease_for, handlers=handlers)
+            task = run_once(db_path=db_path, worker_id=worker_id, lease_for=lease_for, handlers=handlers,
+                            require_b76_contract=require_b76_contract)
         except store.K10Conflict:
             logger.warning("K10 worker lost ownership; leaving the task for recovery")
             task = None

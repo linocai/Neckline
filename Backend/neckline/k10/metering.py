@@ -38,6 +38,7 @@ class ProviderSpendContext:
     kind: str = "model"
     full_text: bool = False
     clock: Callable[[], datetime] | None = None
+    receipt_only: bool = False
 
 
 _SPEND_CONTEXT: ContextVar[ProviderSpendContext | None] = ContextVar("k10_provider_spend", default=None)
@@ -49,7 +50,7 @@ _SAFE_PROVIDER_FAILURES = frozenset({
     "provider_request_outcome_unknown",
     "response_json_invalid", "response_structure_invalid", "response_truncated", "response_empty",
     "response_filtered", "provider_tool_limit",
-    "insufficient_balance", "rate_limited", "content_policy_refused",
+    "insufficient_balance", "provider_authorization_failed", "rate_limited", "content_policy_refused",
 })
 
 # DeepSeek's 2026-09-14 public capability table maps the frozen official
@@ -118,11 +119,14 @@ class MeteredProvider(OpenAICompatProvider):
         self, *, task_id: str, stage: str, item_key: str, attempt: int,
         kind: str = "model", full_text: bool = False,
         clock: Callable[[], datetime] | None = None,
+        receipt_only: bool = False,
     ) -> Iterator[None]:
         """Bind a task/stage explicitly around exactly one provider request."""
         if not task_id or not stage or not item_key or isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise ValueError("K10 provider spend context is incomplete")
-        token = _SPEND_CONTEXT.set(ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text, clock))
+        token = _SPEND_CONTEXT.set(
+            ProviderSpendContext(task_id, stage, item_key, attempt, kind, full_text, clock, receipt_only)
+        )
         try:
             yield
         finally:
@@ -333,7 +337,7 @@ class MeteredProvider(OpenAICompatProvider):
         result = store.begin_model_external_attempt(
             task_id=context.task_id, item_key=context.item_key, stage=context.stage,
             attempt_key=attempt_key, input_sha256=input_sha256, reuse_scope_sha256=reuse_scope_sha256,
-            started_at=_safe_now(), db_path=self._ledger_db,
+            started_at=_safe_now(), db_path=self._ledger_db, receipt_only=context.receipt_only,
         )
         if result.get("state") == "receipt_reused":
             receipt = result.get("receipt")
@@ -346,13 +350,19 @@ class MeteredProvider(OpenAICompatProvider):
             return None, "provider_response_receipt_invalid", None
         if result.get("state") != "started":
             state = result.get("state")
+            terminal_reason = result.get("reason")
+            terminal_code = (terminal_reason if terminal_reason in {
+                "insufficient_balance", "provider_authorization_failed",
+            } else "provider_call_failed")
             return None, {
                 "paused": "execution_paused",
                 "not_configured": "execution_not_configured",
                 "pending_outcome": "provider_request_outcome_unknown",
                 "receipt_unreplayable": "provider_response_receipt_unreplayable",
+                "receipt_missing": "provider_response_receipt_missing",
+                "receipt_invalid": "provider_response_receipt_missing",
                 "retired": "execution_retired_by_user",
-                "terminal": "insufficient_balance",
+                "terminal": terminal_code,
                 "reused": "provider_attempt_reused",
             }.get(str(state), "provider_attempt_admission_failed"), None
         attempt_id = result.get("attemptId")
@@ -658,11 +668,12 @@ def provider_spend_context(
     *, provider: object, task_id: str, stage: str, item_key: str, attempt: int,
     kind: str = "model", full_text: bool = False,
     clock: Callable[[], datetime] | None = None,
+    receipt_only: bool = False,
 ):
     """Return an explicit context manager; never leak task context to threads."""
     if isinstance(provider, MeteredProvider):
         return provider.spend_context(task_id=task_id, stage=stage, item_key=item_key, attempt=attempt,
-                                      kind=kind, full_text=full_text, clock=clock)
+                                      kind=kind, full_text=full_text, clock=clock, receipt_only=receipt_only)
     return nullcontext()
 
 

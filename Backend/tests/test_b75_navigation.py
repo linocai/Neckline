@@ -98,17 +98,21 @@ def test_final_packet_and_restored_reads_are_clean_and_projection_is_idempotent(
 
 
 @pytest.mark.parametrize('still_refused', [False, True])
-def test_real_cli_recovery_cleans_only_navigation_and_never_loops_content_refusal(tmp_path,monkeypatch,still_refused):
+def test_direct_round_does_not_resend_navigation_and_refusal_stays_local(tmp_path,monkeypatch,still_refused):
     import sqlite3
     import httpx
+    from dataclasses import replace
     from datetime import timedelta
-    from neckline.k10 import store,pipeline,research_context
-    from neckline.k10.cli import recover_scan,frozen_scan_input_sha256
+    from neckline.k10 import store,pipeline
     from neckline.k10.worker import run_once
-    from neckline.k10.verification import VerificationEvidenceBundle
-    from neckline.llm import openai_compat
     from tests import test_v310_pipeline_e2e as e2e
     from tests.test_b61_output_recovery import api_for
+    original_fetch=e2e._News.fetch_incremental
+    def fetch(self, request):
+        result=original_fetch(self,request)
+        return replace(result, documents=tuple(replace(doc, original_text=article(),
+            metadata={**doc.metadata,'publisher':'finance.sina.com.cn'}) for doc in result.documents))
+    monkeypatch.setattr(e2e._News,'fetch_incremental',fetch)
     real_client=e2e._HTTPX_CLIENT
     wires=[]
     def client(**kw):
@@ -116,60 +120,28 @@ def test_real_cli_recovery_cleans_only_navigation_and_never_loops_content_refusa
         def intercept(request):
             body=json.loads(request.content)
             payload=json.loads(body['messages'][-1]['content'].split('<untrusted-k10-evidence>\n',1)[1].split('\n</untrusted-k10-evidence>',1)[0])
-            if payload.get('action')=='assess_evidence':
+            if payload.get('action')=='research_round':
                 wires.append(request.content)
-                if '操盘必读' in request.content.decode() or still_refused:
+                assert '操盘必读' not in request.content.decode()
+                assert '四大证券报头版' not in request.content.decode()
+                if still_refused:
                     return httpx.Response(400,json={'error':{'code':'invalid_request_error','message':'Content Exists Risk'}})
             return transport.handle_request(request)
         return real_client(**{**kw,'transport':httpx.MockTransport(intercept)})
     monkeypatch.setattr(e2e,'_HTTPX_CLIENT',client)
-    def fetch(gateway,**kw):
-        path=kw['query_path'];gateway.search_paths.append(path.path_id)
-        name='sina-'+path.path_id;text=article();stamp=e2e.RUN_AT.isoformat()
-        published=(kw['cutoff_at']-timedelta(minutes=1)).isoformat();meta={'publisher':'finance.sina.com.cn'}
-        store.append_document_version(document_id=name,source_key='fixture-sina',external_id=name,canonical_url=None,
-            content_sha256=sha256(text.encode()).hexdigest(),published_at=published,published_precision='exact',
-            fetched_at=stamp,original_text=None,excerpt=text,fetch_version='fixture',metadata=meta,created_at=stamp,
-            db_path=tmp_path/'b39-e2e.sqlite')
-        doc=DiscoveryDocument(name,1,published,stamp,None,text,meta)
-        return VerificationEvidenceBundle('available',(doc,),(doc,),{'state':'available','requestState':'completed'})
-    monkeypatch.setattr(e2e._Gateway,'fetch',fetch)
-    with monkeypatch.context() as old:
-        old.setattr(research_context,'navigation_view',lambda text,**kw:(text,None))
-        old.setattr(material,'navigation_view',lambda text,**kw:(text,None))
-        old.setattr(openai_compat,'_content_policy_refused',lambda response:False)
-        db,tid,first,calls,_=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
-    assert first.status=='failed' and len(wires)==2
-    original=store.task_execution_input(task_id=tid,db_path=db);scan=original['checkpoint']['scanId']
-    frozen=frozen_scan_input_sha256(scan_id=scan,db_path=db)
+    db,tid,task,calls,_=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
+    assert task.status=='completed' and len(wires)==1
+    report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
+    assert report['status']==('partial' if still_refused else 'completed') and report['availableAt']
+    if still_refused: assert report['coverageGaps'] and not report['eveningCards']
+    else: assert report['eveningCards']
     with sqlite3.connect(db) as c:
-        completed=c.execute("select * from k10_execution_item_checkpoints where task_id=? and status='completed'",(tid,)).fetchall()
-        paid=c.execute('select * from k10_external_attempts where task_id=?',(tid,)).fetchall()
-        sources=c.execute('select * from k10_source_document_versions').fetchall()
-    def recover():
-        assert recover_scan(db_path=db,scan_id=scan,execution_config_id='b39-execution',execution_config_revision=1,
-            confirmed_input_sha256=frozen,now=e2e.RUN_AT)==tid
-        return run_once(db_path=db,task_id=tid,worker_id='b75',lease_for=timedelta(minutes=5),
-            handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:e2e.RUN_AT)
-    result=recover()
-    assert len(wires)>=3 and wires[0]==wires[1] and wires[2]!=wires[0]
-    fixed=wires[2].decode()
-    assert '操盘必读' not in fixed and '尚无收入确认' in fixed and '各持股45%' in fixed
-    if still_refused:
-        assert result.status=='failed' and len(wires)==3
-        assert recover().status=='failed' and len(wires)==3
-        with sqlite3.connect(db) as c:
-            assert c.execute("select count(*) from k10_external_attempts where task_id=? and error_code='content_policy_refused'",(tid,)).fetchone()==(1,)
-    else:
-        assert result.status=='completed'
-        report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
-        assert report['status']=='completed' and report['availableAt']
-    with sqlite3.connect(db) as c:
-        assert all(r in c.execute('select * from k10_execution_item_checkpoints where task_id=?',(tid,)).fetchall() for r in completed)
-        assert all(r in c.execute('select * from k10_external_attempts where task_id=?',(tid,)).fetchall() for r in paid)
-        assert all(r in c.execute('select * from k10_source_document_versions').fetchall() for r in sources)
-    assert frozen_scan_input_sha256(scan_id=scan,db_path=db)==frozen
-    assert store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['executionStartedAt']==original['checkpoint']['executionStartedAt']
+        assert any('操盘必读' in row[0] for row in c.execute('SELECT original_text FROM k10_source_document_versions') if row[0])
+        before=c.execute('SELECT * FROM k10_external_attempts').fetchall()
+    assert run_once(db_path=db,task_id=tid,worker_id='b75',lease_for=timedelta(minutes=5),
+        handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:e2e.RUN_AT) is None
+    with sqlite3.connect(db) as c: assert c.execute('SELECT * FROM k10_external_attempts').fetchall()==before
+    assert len(wires)==1
 
 
 def test_restored_partial_widget_is_invalidated_when_only_raw_body_has_navigation():
@@ -177,13 +149,18 @@ def test_restored_partial_widget_is_invalidated_when_only_raw_body_has_navigatio
     from types import SimpleNamespace
     from neckline.k10.research_runtime import _Investigation
     from neckline.k10.discovery import EvidenceRef
+    from neckline.k10.research_contracts import Claim
     doc=replace(document(),excerpt='注册资本5000万元，双方各持股45%。')
     ref={'documentId':doc.document_id,'revision':1};key=EvidenceRef(doc.document_id,1)
     obj=object.__new__(_Investigation);obj.allowed={key};obj.documents={key:doc};obj.event=SimpleNamespace(source_refs=(key,))
     obj.state={'stageResults':[],'claims':[{'claimId':'c1','sourceRef':ref,'text':'双方各持股45%',
-        'location':'paragraph:1','kind':'factual_assertion','verificationStatus':'unverified'}]}
-    p=packet();p['claims']=obj.state['claims'];p['evidenceCards']=obj._cards();p.pop('fullTextDocuments')
-    assert p['evidenceCards'][0]['excerpt'] is None
+        'location':'paragraph:1','kind':'factual_assertion','novelty':'new_fact','decisionImpact':'合资关系','verificationStatus':'unverified'}]}
+    obj.context={'canonicalKey':'navigation','stageKey':'stage','eventState':'reported','headline':'合资平台','eventKind':'news'}
+    obj.state['snapshot']=SimpleNamespace(news_cutoff_at='2026-09-15T21:00:00+08:00')
+    obj._company_scope=lambda:{}
+    obj._b78_reusable_source_evidence=lambda:{'claims':[],'companyRelations':[]}
+    p=packet();p['claims']=obj.state['claims'];p['evidenceCards']=obj._b78_packet(claims=tuple(Claim.from_dict(row) for row in obj.state['claims']))['evidenceCards'];p.pop('fullTextDocuments')
+    assert p['evidenceCards'][0].get('excerpt') is None
     stale={'sourceRef':ref,'indexVersion':material.INDEX_VERSION,'text':'操盘必读：旧局部片段'}
     p['contextResults']=[{'request':{'kind':'source','sourceRef':ref,'location':'paragraph:1'},'value':stale,'contentSha256':digest(stale)}]
     result=project_packet('plan_gaps',p)

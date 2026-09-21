@@ -3,6 +3,35 @@ import json
 import pytest
 from neckline.k10 import v2_profiles
 
+
+def _direct_query_round(payload, *, paths):
+    """Ask the B78 runner for bounded searches in one direct round."""
+    packet = payload['evidencePacket']
+    ref = packet['allowedEvidenceRefs'][0]
+    claim_id = packet['claims'][0]['claimId']
+    question = {
+        'questionId': 'q-1', 'claimIds': [claim_id], 'companyCodes': ['300001.SZ'],
+        'question': '送样是否获公司确认', 'knownEvidence': [ref], 'missingEvidence': ['公司确认'],
+        'supportCondition': '公司确认', 'refuteCondition': '公司否认',
+        'decisionImpact': '影响主推', 'state': 'open', 'resumeCondition': '出现公司公告',
+    }
+    return {
+        'action': 'research_round', 'questions': [question],
+        'queryPaths': [{
+            'pathId': path_id, 'questionId': 'q-1', 'query': query, 'intent': '确认送样',
+            'targetSource': source, 'newPathReason': '首批必要来源',
+            'expectedInformationGain': '确认主体', 'expectedJudgmentChange': '改变比较',
+            'purposeKind': 'event_fact', 'targetRefs': [{'kind': 'claim', 'claimId': claim_id}],
+            'state': 'planned', 'resultSummary': None,
+        } for path_id, query, source in paths],
+        'conclusion': {
+            'researchStatus': 'continue_research', 'companyMappings': [],
+            'materialGaps': ['公司确认'], 'stopReason': '需要必要公开资料',
+            'resumeCondition': '取得公司公告',
+        },
+        'companyAssessments': [],
+    }
+
 @pytest.fixture
 def profiles(monkeypatch):
     terms = ['UPS', 'PS', 'AR', 'GE', 'AI', '亚马逊云科技']
@@ -29,7 +58,7 @@ def test_real_business_terms_keep_latin_boundaries_and_chinese(profiles,query,ex
 
 
 def test_real_worker_never_sends_pool_or_history_as_research_input(tmp_path, monkeypatch):
-    from tests.test_v310_pipeline_e2e import _run
+    from tests.test_v310_pipeline_e2e import _run, assert_search_routes
     requests=[]
     def observe(request):
         wire=json.loads(request.content)
@@ -69,35 +98,37 @@ def test_local_projection_ignores_closed_unrelated_history_and_requires_visible_
 @pytest.mark.parametrize("mixed_reply", [False, True])
 def test_real_worker_local_field_read_continues_same_action(tmp_path, monkeypatch, repeat_request, mixed_reply):
     import httpx
-    from tests.test_v310_pipeline_e2e import _run
+    from tests.test_v310_pipeline_e2e import _run, assert_search_routes
     original=httpx.MockTransport
     seen=[]
     def transport(handler):
         def respond(request):
             message=json.loads(request.content)['messages'][-1]['content']
             payload=json.loads(message.split('<untrusted-k10-evidence>\n',1)[1].split('\n</untrusted-k10-evidence>',1)[0])
-            if payload.get('action')=='plan_gaps':
+            if payload.get('action') == 'research_round':
                 seen.append(payload)
                 if not payload['evidencePacket'].get('contextResults') or (repeat_request and len(seen) == 2):
-                    return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps({'action':'plan_gaps','contextRequests':[
-                        {'kind':'company_fields','companyCode':'300002.SZ','fields':['relationships'], 'purpose':'认证是否构成订单', **({'questionId':'draft-only'} if mixed_reply else {})}], **({'questions':[{'questionId':'draft-only','question':'未读资料前的草稿，不得落库'}], 'conclusion':{'summary':'未读取不能采信'}} if mixed_reply else {})},ensure_ascii=False)},'finish_reason':'stop'}],
+                    return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps({'action':'research_round','contextRequests':[
+                        {'kind':'company_fields','companyCode':'300002.SZ','fields':['relationships'], 'purpose':'认证是否构成订单', **({'questionId':'draft-only'} if mixed_reply else {})}]},ensure_ascii=False)},'finish_reason':'stop'}],
                         'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
                 result=payload['evidencePacket']['contextResults'][0]
                 assert result['status']=='found'
                 if mixed_reply:
                     assert 'questionId' not in result['request']
                     assert 'draft-only' not in json.dumps(payload['evidencePacket'].get('questions', []))
-                    assert 'contextRequests' not in payload['outputContract']
-                    assert payload['contextReadContract']['action']=='plan_gaps'
+                    assert 'draft-only' not in json.dumps(payload['evidencePacket'])
                 assert '不把认证扩大为未披露订单' in json.dumps(result,ensure_ascii=False)
             return handler(request)
         return original(respond)
     monkeypatch.setattr(httpx,'MockTransport',transport)
     db,task_id,task,calls,gateway=_run(tmp_path,monkeypatch,v2=True)
     assert task.status=='completed'
-    assert len(seen)==(3 if repeat_request else 2)
+    # A repeated local request has no new visible input.  It must not create a
+    # third paid B78 round or revive a retired feedback stage.
+    assert len(seen) == (1 if mixed_reply else 2)
     if repeat_request:
-        assert seen[-1]['evidencePacket']['contextFeedback']['code']=='already_read'
+        if not mixed_reply:
+            assert seen[-1]['evidencePacket']['contextResults'][0]['status'] == 'found'
     from neckline.k10 import store
     from neckline.k10.research_context import PROTOCOL
     assert store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['contextProtocol'] == PROTOCOL
@@ -187,44 +218,6 @@ def test_concurrent_shared_search_uses_one_physical_request_and_replays(tmp_path
     assert client.calls==1
 
 
-def test_real_runtime_packet_does_not_expand_local_read_with_unrelated_closed_company(tmp_path,monkeypatch):
-    from copy import deepcopy
-    from neckline.k10.research_runtime import _Investigation
-    from neckline.k10.research_context import project_packet,public_packet
-    from tests.test_v310_pipeline_e2e import _run
-    original=_Investigation._packet
-    checked=[]
-    def inspect(runtime):
-        packet=original(runtime)
-        if runtime.state['questions'] and not checked:
-            saved=runtime.state
-            runtime.state=deepcopy(saved)
-            closed={**deepcopy(saved['questions'][0]),'questionId':'irrelevant-closed',
-                'state':'answered','companyCodes':['300961.SZ'],'question':'UNRELATED_PRIVATE_HISTORY'*1000,
-                'missingEvidence':[],'resumeCondition':None}
-            runtime.state['questions'].append(closed)
-            runtime.state['fulltextRequests'].append({'requestId':'old','questionId':'irrelevant-closed','state':'fulfilled'})
-            try:
-                larger=original(runtime)
-                assert public_packet(project_packet('assess_evidence',packet))==public_packet(project_packet('assess_evidence',larger))
-                affected = [saved['questions'][0]['questionId']]
-                runtime.state['questions'][-1]['state'] = 'open'
-                open_larger = original(runtime)
-                assert public_packet(project_packet('assess_evidence', packet | {'affectedQuestionIds':affected})) == public_packet(project_packet('assess_evidence', open_larger | {'affectedQuestionIds':affected}))
-                runtime.state['questions'][-1]['state'] = 'answered'
-                closing=public_packet(project_packet('close_research',larger))
-                assert 'UNRELATED_PRIVATE_HISTORY' not in json.dumps(closing)
-                assert not closing['fulltextRequests']
-                assert not any(row['identity']['ts_code']=='300961.SZ' for row in closing['companyScope']['companyProfiles'])
-                checked.append(True)
-            finally:
-                runtime.state=saved
-        return packet
-    monkeypatch.setattr(_Investigation,'_packet',inspect)
-    _,_,task,_,_=_run(tmp_path,monkeypatch,v2=True)
-    assert task.status=='completed' and checked
-
-
 def test_context_request_cannot_smuggle_unvalidated_business_updates():
     from neckline.k10.research_contracts import ResearchStageResult, ResearchContractError
     from tests.test_v310_research_storage import _claim
@@ -258,19 +251,66 @@ def test_repeated_route_uses_frozen_evidence_dependency_and_keeps_real_increment
     assert collapse_repeated_work({'queryPaths':[new]},packet)['queryPaths']==[new]
 
 
-def test_real_worker_keeps_distinct_queries_with_same_question_intent_and_source(tmp_path,monkeypatch):
-    from tests.test_v310_pipeline_e2e import _run
-    from tests.test_b60_pool_filtering import edit_responses
-    def edit(value):
-        if value.get('action')=='plan_queries':
-            for path in value['queryPaths']:
-                path['intent']='查明订单阶段'
-                path['targetSource']='公司公告'
-                path['query']='公告编号更正 '+path['pathId']
-    edit_responses(monkeypatch,edit)
-    _,_,task,_,gateway=_run(tmp_path,monkeypatch,v2=True)
+def test_real_worker_rejects_exact_duplicate_query_before_it_can_rebill(tmp_path,monkeypatch):
+    import httpx
+    from tests.test_v310_pipeline_e2e import _run, assert_search_routes
+    original = httpx.MockTransport
+    rounds = []
+
+    def transport(handler):
+        def respond(request):
+            payload = json.loads(json.loads(request.content)['messages'][-1]['content'].split(
+                '<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
+            if payload.get('action') == 'research_round':
+                rounds.append(payload)
+                if len(rounds) == 1:
+                        # Exact semantic/source duplication is locally blocked;
+                        # it cannot become a second paid search.
+                    return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(
+                        _direct_query_round(payload, paths=[
+                            ('path-1', '公告编号更正', '公司公告'),
+                            ('path-1-duplicate', '公告编号更正', '公司公告'),
+                        ]))}, 'finish_reason': 'stop'}],
+                        'usage': {'prompt_tokens': 3, 'completion_tokens': 3, 'total_tokens': 6}})
+            return handler(request)
+        return original(respond)
+
+    monkeypatch.setattr(httpx, 'MockTransport', transport)
+    db,_,task,_calls,gateway=_run(tmp_path,monkeypatch,v2=True)
     assert task.status=='completed'
-    assert len(gateway.search_paths)==2
+    assert_search_routes(gateway, [('公告编号更正','公司公告','q-1')])
+    assert len(rounds) == 1
+
+
+def test_real_worker_keeps_distinct_necessary_first_round_sources(tmp_path, monkeypatch):
+    import httpx
+    from tests.test_v310_pipeline_e2e import _run, assert_search_routes
+    original = httpx.MockTransport
+    rounds = []
+
+    def transport(handler):
+        def respond(request):
+            payload = json.loads(json.loads(request.content)['messages'][-1]['content'].split(
+                '<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
+            if payload.get('action') == 'research_round':
+                rounds.append(payload)
+                if len(rounds) == 1:
+                    return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(
+                        _direct_query_round(payload, paths=[
+                            ('path-1', '项目送样公告', '公司公告'),
+                            ('path-1-industry', 'site:industry.example 项目送样', '行业媒体'),
+                        ]))}, 'finish_reason': 'stop'}],
+                        'usage': {'prompt_tokens': 3, 'completion_tokens': 3, 'total_tokens': 6}})
+            return handler(request)
+        return original(respond)
+
+    monkeypatch.setattr(httpx, 'MockTransport', transport)
+    _, _, task, _calls, gateway = _run(tmp_path, monkeypatch, v2=True, cli_entry=True)
+    assert task.status == "completed"
+    # A same-source duplicate cannot rebill, while the independent industry
+    # route remains necessary evidence for the same accepted question.
+    assert_search_routes(gateway, [('项目送样公告','公司公告','q-1'), ('site:industry.example 项目送样','行业媒体','q-1')])
+    assert len(rounds) == 1
 
 
 @pytest.mark.parametrize('action', ['plan_gaps', 'plan_queries', 'assess_evidence', 'close_research', 'compare_companies'])
@@ -301,21 +341,21 @@ def test_context_requests_keep_existing_question_associations_and_reject_bad_sha
 
 def test_real_worker_retry_reports_innermost_context_constraint(tmp_path, monkeypatch):
     import httpx
-    from tests.test_v310_pipeline_e2e import _run
+    from tests.test_v310_pipeline_e2e import _run, assert_search_routes
     original = httpx.MockTransport
     seen = []
     def transport(handler):
         def respond(request):
             text = json.loads(request.content)['messages'][-1]['content']
             payload = json.loads(text.split('<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
-            if payload.get('action') == 'plan_gaps':
+            if payload.get('action') == 'research_round':
                 seen.append(text)
                 if len(seen) == 1:
                     return httpx.Response(200, json={'choices':[{'message':{'content':json.dumps({
-                        'action':'plan_gaps','contextRequests':[{'kind':'invalid-kind','purpose':'核对'}]})},'finish_reason':'stop'}],
+                        'action':'research_round','contextRequests':[{'kind':'invalid-kind','purpose':'核对'}]})},'finish_reason':'stop'}],
                         'usage':{'prompt_tokens':1,'completion_tokens':1,'total_tokens':2}})
-                assert 'contextRequests 无效' in text
-                assert 'constraint' in text
+                assert '上次输出未通过校验：' in text
+                assert 'contextRequests' in text
             return handler(request)
         return original(respond)
     monkeypatch.setattr(httpx, 'MockTransport', transport)

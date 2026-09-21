@@ -1,0 +1,86 @@
+{
+  "kind": "pinned_actual_fastapi_test_resources",
+  "purpose": "B77 App DTO and terminal-presentation regressions; no production API, database, provider reply, credential, or token is included.",
+  "resources": [
+    {
+      "file": "b76-complete-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-complete-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "b241f9409336e573cbbfafe77e63e7c3030c8a80247eb178ce14d9ca740c9680"
+    },
+    {
+      "file": "b76-complete-zero-cards-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-complete-zero-cards-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "6016206070cba4ef0a2b9deb84aad4bf3fe50e6dfc0cb48f2e34bf8f022ce050"
+    },
+    {
+      "file": "b76-empty-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-empty-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "510b6fd62a4db489a38948e3498fae268a9323f89a7b952bea9c1254c6633c57"
+    },
+    {
+      "file": "b76-failed-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-failed-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "fcd91e2f194911bf89cf48d9069eb06a3a94809da095e9fd5a3c3b37faa0c98d"
+    },
+    {
+      "file": "b76-morning-partial-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-morning-partial-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "acfec6938961e11e3a0de6be3f5cda9a021220f817e679ea2e359859c9b7c1cc"
+    },
+    {
+      "file": "b76-morning-review-partial-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-morning-review-partial-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "0f7dc7a46ecd8f50cd59d18e5cd86ccbc04f156a363bff6ab151b990b2d4af03"
+    },
+    {
+      "file": "b76-operations-readiness.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-operations-readiness.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "2c53a768b8edac00d045651f522d1e37ed7724eae4b9bb8c1cc9e1d82e51a50b"
+    },
+    {
+      "file": "b76-partial-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-partial-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "47084320d87eccef88928d4ff2b2745826074b5a2ad4c15751c1b5af7fdde8bb"
+    },
+    {
+      "file": "b76-partial-zero-cards-report.json",
+      "sourceRelease": "3.4.0 Build 76",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.4.0-b76-20260916/evidence/api/b76-partial-zero-cards-report.json",
+      "origin": "unmodified FastAPI response from deterministic isolated acceptance database",
+      "synthetic": true,
+      "sha256": "df26bd60b6e48403bc0e4b2ef7b29ab7dbf5e16bcc97cb222671dae3d6d22609"
+    },
+    {
+      "file": "b69-legacy-failed-report.json",
+      "sourceRelease": "3.3.0 Build 69",
+      "sourcePath": "/Users/linotsai/Lino/releases/Neckline/v3.3.0-b69-20260914/backend-evidence/b69-failed-report.json",
+      "origin": "unmodified FastAPI response from isolated CLI-to-worker B69 DTO export",
+      "synthetic": true,
+      "sha256": "c8719612d0c75c83af054083a4b3199f6b40e57a232e64404730ad4f373d1ad8"
+    }
+  ]
+}

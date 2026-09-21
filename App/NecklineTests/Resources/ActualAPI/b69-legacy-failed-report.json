@@ -1,0 +1,27 @@
+{
+  "reason": {
+    "message": "余额不足，已停止本次任务",
+    "missing": [],
+    "reason": "insufficient_balance"
+  },
+  "report": {
+    "addedCards": [],
+    "availableAt": null,
+    "coverageGaps": [],
+    "cutoffAt": "2026-09-08T13:00:00+00:00",
+    "eveningCards": [],
+    "incompleteReviews": [],
+    "lifecycleUpdates": [],
+    "nextCursor": null,
+    "parentReportId": null,
+    "reportId": "report_scan_ab69dba689f63456ea15315860bafa44",
+    "status": "failed",
+    "strategySnapshotId": "k10-v2-20260909",
+    "strategyVersion": "K10-v2",
+    "updatedCards": [],
+    "verificationCutoffAt": null,
+    "windowKind": "evening"
+  },
+  "schemaVersion": 8,
+  "state": "available"
+}

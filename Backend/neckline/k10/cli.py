@@ -15,8 +15,9 @@ from .notification_runtime import create_notification_maintenance
 from .notifications import require_notifications_schema
 from .schema import require_schema, read_connection
 from .pipeline import production_handlers
-from .windows import evening_cutoff, morning_cutoff, scan_calendar_day
+from .windows import evening_cutoff, morning_cutoff, morning_delivery_deadline, scan_calendar_day
 from .worker import run_once, run_worker
+from .delivery import runtime_contract
 
 
 def _id(prefix: str, *parts: str) -> str: return prefix+"_"+sha256("\x1f".join(parts).encode()).hexdigest()[:32]
@@ -117,11 +118,15 @@ def enqueue_scan(*, db_path: Path, kind: str, trading_day: date, config_id: str,
         store.enqueue_task(task_id=task_id,kind=task_kind,idempotency_key=f"{task_kind}:{cutoff.isoformat()}:{config_id}:{config_revision}:{bootstrap_cutoff or ''}",
                            input_version=str(config["contentSha256"]),input_cutoff_at=cutoff.isoformat(),
                            payload={"windowKind":kind,"tradingDay":trading_day.isoformat(),"configId":config_id,"configRevision":config_revision,
+                                    "runtimeContract": runtime_contract(),
+                                    **({"deliveryDeadlineAt": morning_delivery_deadline(trading_day).isoformat()} if kind == "morning" else {}),
                                     **({"strategySnapshotId":config["payload"]["strategySnapshotId"]} if config["payload"].get("configVersion")=="k10-v2" else {}),
                                     **({"sourceBootstrapCutoff": bootstrap_cutoff} if bootstrap_cutoff is not None else {})},
                            budget={},created_at=now.isoformat(),db_path=db_path,
                            execution_binding={"configId":execution_config_id,"revision":execution_config_revision,"bindingKind":"scheduled"},
-                           require_discovery_control_open=True)
+                           require_discovery_control_open=True,
+                           queued_scan_id=(_id("scan", kind, cutoff.isoformat(), task_id)
+                                             if config["payload"].get("configVersion") == "k10-v2" else None))
     except store.K10Conflict:
         # A close that won the race after the read above is a normal scheduled
         # pause only when the durable control itself says so.  Other conflicts
@@ -154,6 +159,7 @@ def recover_scan(
     finalization_max_tokens: int | None = None,
 ) -> str:
     """Create the one controlled recovery task for a failed frozen scan, without recollection."""
+    from .delivery import is_b76_runtime_contract
     control = store.run_control_status(db_path=db_path)
     if control.get("state") != "open":
         raise RuntimeError("K10 运行已暂停，拒绝恢复")
@@ -181,6 +187,9 @@ def recover_scan(
     # frozen source boundary and could repeat already successful paid work.
     progress = store.execution_progress_for_scan(scan_id=scan_id, db_path=db_path)
     if isinstance(progress, dict) and isinstance(progress.get("taskId"), str):
+        original = store.get_task(task_id=progress["taskId"], db_path=db_path)
+        if original is None or not is_b76_runtime_contract(original.payload.get("runtimeContract")):
+            raise RuntimeError("旧协议冻结扫描不得建立 B76 恢复任务")
         try:
             task = store.authorize_discovery_recovery(
                 research_max_tokens=research_max_tokens, completion_deadline_seconds=completion_deadline_seconds,
@@ -192,23 +201,10 @@ def recover_scan(
         except store.K10Conflict as exc:
             raise RuntimeError(str(exc)) from exc
         return task.task_id
-    task_id = _id("task", "recovery", scan_id, execution_config_id, str(execution_config_revision), actual_input_sha256)
-    task_kind = f"{scan['windowKind']}_scan"
-    policy = store.read_run_config(config_id=scan["configId"], revision=scan["configRevision"], db_path=db_path)["payload"]["taskPolicies"]["discovery"]
-    store.enqueue_task(
-        task_id=task_id, kind=task_kind, idempotency_key=f"recovery:{scan_id}:{execution_config_id}:{execution_config_revision}:{actual_input_sha256}",
-        input_version=str(store.read_run_config(config_id=scan["configId"], revision=scan["configRevision"], db_path=db_path)["contentSha256"]),
-        input_cutoff_at=str(scan["cutoffAt"]),
-        payload={"windowKind": scan["windowKind"], "configId": scan["configId"], "configRevision": scan["configRevision"],
-                 "resumeScanId": scan_id, "frozenInputSha256": actual_input_sha256, "sourceCollection": "forbidden"},
-        budget={},
-        created_at=now.isoformat(), db_path=db_path,
-        execution_binding={"configId":execution_config_id,"revision":execution_config_revision,"bindingKind":"recovery"},
-    )
-    store.bind_scan_execution(scan_id=scan_id, task_id=task_id, execution_config_id=execution_config_id,
-                              execution_config_revision=execution_config_revision, binding_kind="recovery",
-                              bound_at=now.isoformat(), db_path=db_path)
-    return task_id
+    # A B76 task always creates its own scan/task binding through enqueue. A
+    # scan without that binding predates the delivery contract, and creating a
+    # new task would mutate its frozen identity and reopen historical spend.
+    raise RuntimeError("冻结扫描缺少 B76 原任务绑定，拒绝创建替代恢复任务")
 
 
 def main(argv: list[str] | None=None) -> int:
@@ -299,10 +295,12 @@ def main(argv: list[str] | None=None) -> int:
         maintain_evaluations(db_path=args.db, now=datetime.now().astimezone())
         notification_maintenance()
     if args.once:
-        run_once(db_path=args.db,worker_id=args.worker_id,lease_for=timedelta(minutes=5),handlers=handlers)
+        run_once(db_path=args.db,worker_id=args.worker_id,lease_for=timedelta(minutes=5),handlers=handlers,
+                 require_b76_contract=True)
         maintenance()
         return 0
     stopped=threading.Event(); signal.signal(signal.SIGTERM,lambda *_:stopped.set()); signal.signal(signal.SIGINT,lambda *_:stopped.set())
-    run_worker(db_path=args.db,worker_id=args.worker_id,lease_for=timedelta(minutes=5),idle_seconds=2,handlers=handlers,stop=stopped,maintenance=maintenance); return 0
+    run_worker(db_path=args.db,worker_id=args.worker_id,lease_for=timedelta(minutes=5),idle_seconds=2,
+               handlers=handlers,stop=stopped,maintenance=maintenance,require_b76_contract=True); return 0
 
 if __name__=="__main__": raise SystemExit(main())

@@ -61,7 +61,7 @@ def test_diagnostic_disk_failure_cannot_trigger_another_post(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize('status,refuse_recovery', [(400,False), (400,True), (403,True)])
-def test_real_cli_http400_one_same_input_recovery_preserves_paid_work(tmp_path, monkeypatch, status, refuse_recovery):
+def test_real_cli_http_refusal_is_not_auto_bypassed(tmp_path, monkeypatch, status, refuse_recovery):
     real_client = e2e._HTTPX_CLIENT
     phase = ['initial']
     refused_wires = []
@@ -72,7 +72,7 @@ def test_real_cli_http400_one_same_input_recovery_preserves_paid_work(tmp_path, 
             wire = json.loads(request.content)
             text = wire['messages'][-1]['content']
             payload = json.loads(text.split('<untrusted-k10-evidence>\n',1)[1].split('\n</untrusted-k10-evidence>',1)[0])
-            if payload.get('action') == 'plan_gaps':
+            if payload.get('action') == 'research_round':
                 if phase[0] == 'initial' or refuse_recovery:
                     refused_wires.append(request.content)
                     return httpx.Response(status, json={'error':{'message':'synthetic request refusal'}})
@@ -81,7 +81,22 @@ def test_real_cli_http400_one_same_input_recovery_preserves_paid_work(tmp_path, 
         return real_client(**{**kwargs, 'transport':httpx.MockTransport(intercept)})
     monkeypatch.setattr(e2e, '_HTTPX_CLIENT', client)
     db, tid, first, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert first.status == 'failed' and len(refused_wires) == 2
+    if status == 400:
+        # An event-local refusal is published as an honest partial report. It
+        # cannot be reopened into another paid request after publication.
+        assert first.status == 'completed' and len(refused_wires) == 2
+        assert refused_wires[0] == refused_wires[1]
+        report = api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
+        assert report['status'] == 'partial' and report['coverageGaps']
+        handlers = pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet')
+        assert run_once(db_path=db,task_id=tid,worker_id='ordinary',lease_for=timedelta(minutes=5),handlers=handlers,clock=lambda:e2e.RUN_AT) is None
+        with pytest.raises(RuntimeError, match='只有当前 failed 或 not_configured'):
+            recover_scan(db_path=db,scan_id=store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['scanId'],
+                execution_config_id='b39-execution',execution_config_revision=1,
+                confirmed_input_sha256=frozen_scan_input_sha256(scan_id=store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['scanId'],db_path=db),now=e2e.RUN_AT)
+        assert len(refused_wires) == 2
+        return
+    assert first.status == 'failed' and len(refused_wires) == 1
     original = store.task_execution_input(task_id=tid,db_path=db)
     scan = original['checkpoint']['scanId']
     frozen = frozen_scan_input_sha256(scan_id=scan,db_path=db)
@@ -98,7 +113,7 @@ def test_real_cli_http400_one_same_input_recovery_preserves_paid_work(tmp_path, 
         return run_once(db_path=db,task_id=tid,worker_id='b74',lease_for=timedelta(minutes=5),handlers=handlers,clock=lambda:e2e.RUN_AT)
     second = recover()
     if refuse_recovery:
-        expected_calls = 3 if status == 400 else 2
+        expected_calls = 1
         assert second.status == 'failed' and len(refused_wires) == expected_calls
         assert recover().status == 'failed' and len(refused_wires) == expected_calls
     else:

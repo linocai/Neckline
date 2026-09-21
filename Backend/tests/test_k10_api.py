@@ -99,6 +99,8 @@ def _title_manifest_hash(refs: list[dict[str, object]]) -> str:
 
 def _seed(path: Path) -> str:
     initialize_schema(path)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW,
+                          changed_by="test", db_path=path)
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE trade_cal(exchange TEXT, cal_date TEXT, is_open INTEGER)")
         conn.executemany("INSERT INTO trade_cal VALUES('SSE',?,?)", [("20260904", 1), ("20260905", 0), ("20260906", 0), ("20260907", 1), ("20260908", 1), ("20260909", 1)])
@@ -268,6 +270,7 @@ def test_operations_exposes_durable_pause_and_client_pause_stays_closed(tmp_path
     assert initial.status_code == paused.status_code == after.status_code == 200
     assert initial.json()["runControl"] == {
         "state": "paused", "reasonCode": "unconfigured_closed", "changedAt": "1970-01-01T00:00:00+00:00",
+        "executionState": "paused", "inFlightCount": 0, "unknownCount": 0, "activeTasks": [],
     }
     assert paused.json()["runControl"]["state"] == "paused"
     assert paused.json()["runControl"]["reasonCode"] == "user_paused"

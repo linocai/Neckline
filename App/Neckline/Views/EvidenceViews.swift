@@ -101,7 +101,7 @@ struct EvidenceDisclosureBlock: View {
                 SourceReferenceLine(source: origin, model: model)
             }
             if !disclosure.unverifiedReasons.isEmpty {
-                Text("待核原因：\(disclosure.unverifiedReasons.joined(separator: "、"))")
+                Text("待核原因：\(disclosure.unverifiedReasons.map { k10ReasonText($0) }.joined(separator: "、"))")
                     .font(NKFont.caption).foregroundStyle(NK.amber)
             }
             if let analysis = disclosure.conditionalAnalysis, !analysis.isEmpty {
@@ -147,7 +147,11 @@ private struct OpportunitySummary: View {
                         .font(NKFont.caption)
                         .foregroundStyle(NK.textSecondary)
                 }
-                Text(detail.catalystStage).font(NKFont.title3)
+                Text(k10CatalystStageText(detail.catalystStage)).font(NKFont.title3)
+                if k10CatalystStageText(detail.catalystStage) == "催化阶段待说明" {
+                    DisclosureGroup("阶段诊断信息") { Text(detail.catalystStage).font(NKFont.caption).textSelection(.enabled) }
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
                 Text("\(k10PublicationMarkerText(detail.sourceMarker))首发 \(k10DisplayTime(detail.availableAt)) · 固定窗口 D1 \(k10DisplayTime(detail.d1TradeDate))、D2 \(k10DisplayTime(detail.d2TradeDate))")
                     .font(NKFont.callout)
                     .foregroundStyle(NK.textSecondary)
@@ -213,7 +217,7 @@ struct LifecycleBlock: View {
                                 Spacer()
                             }
                             if let reason = item.reason, !reason.isEmpty {
-                                Text(reason).font(NKFont.callout)
+                                Text(k10ReasonText(reason)).font(NKFont.callout)
                             }
                             if !item.content.isEmpty {
                                 LifecycleContentView(content: item.content)
@@ -241,14 +245,29 @@ private struct LifecycleContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("事件资料").font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.textSecondary)
-            ForEach(content.keys.sorted(), id: \.self) { key in
-                HStack(alignment: .top, spacing: 6) {
-                    Text(key).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    Text(text(content[key] ?? .null)).font(NKFont.caption).foregroundStyle(NK.textPrimary)
+            if case .string(let marker) = content["sourceMarker"] {
+                Text("发布来源：\(k10PublicationMarkerText(marker))")
+            }
+            if case .string(let cutoff) = content["cutoffAt"] {
+                Text("资料截至：\(k10DisplayTime(cutoff))")
+            }
+            if case .bool(true) = content["requiresReview"] {
+                Text("存在待复核事项，请结合更新说明和来源阅读。")
+            }
+            ForEach(Array(k10LifecycleFactLines(content).enumerated()), id: \.offset) { _, line in
+                Text(line)
+            }
+            DisclosureGroup("诊断信息") {
+                ForEach(content.keys.sorted(), id: \.self) { key in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(key).foregroundStyle(NK.textSecondary)
+                        Text(text(content[key] ?? .null)).foregroundStyle(NK.textPrimary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
         }
+        .font(NKFont.caption)
         .padding(8)
         .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
     }

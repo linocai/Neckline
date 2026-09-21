@@ -4,19 +4,25 @@ import Foundation
 /// do not redirect the user to an unrelated page.
 struct K10PushRoute: Equatable {
     let tab: AppTab
+    let reportID: String?
+    let reportWindowKind: String?
     let companyWindowID: String?
     let opportunityID: String?
     let batchID: String?
     let scanID: String?
 
     init?(userInfo: [AnyHashable: Any]) {
+        let reportID = (userInfo["reportId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reportWindowKind = (userInfo["windowKind"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let companyWindowID = userInfo["companyWindowId"] as? String
         let opportunityID = userInfo["opportunityId"] as? String
         let batchID = userInfo["batchId"] as? String
         let scanID = userInfo["scanId"] as? String
         // A concrete V1.4 object is stronger than a generic tab hint. This avoids an
         // analysis notification with both fields opening a non-specific opportunity page.
-        if companyWindowID != nil {
+        if let reportID, !reportID.isEmpty {
+            self.tab = .opportunities
+        } else if companyWindowID != nil {
             self.tab = .focus
         } else if opportunityID != nil || batchID != nil || scanID != nil {
             self.tab = .opportunities
@@ -25,6 +31,8 @@ struct K10PushRoute: Equatable {
         } else {
             return nil
         }
+        self.reportID = reportID?.isEmpty == false ? reportID : nil
+        self.reportWindowKind = reportWindowKind?.isEmpty == false ? reportWindowKind : nil
         self.companyWindowID = companyWindowID; self.opportunityID = opportunityID; self.batchID = batchID; self.scanID = scanID
     }
 }
@@ -50,13 +58,12 @@ final class K10AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         return true
     }
 
-    func attach(config: AppConfig, model: AppModel) {
+    func attach(config: AppConfig, model: AppModel) -> K10PushRoute? {
         self.config = config; self.model = model
         UNUserNotificationCenter.current().delegate = self
-        if let route = pendingRoute {
-            pendingRoute = nil
-            Task { [weak model] in await model?.openNotification(route) }
-        }
+        let route = pendingRoute
+        pendingRoute = nil
+        return route
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

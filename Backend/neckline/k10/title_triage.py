@@ -2,10 +2,10 @@
 
 The title gate is intentionally narrower than discovery.  It accepts a sealed
 DTO instead of a source document, so a caller cannot accidentally send article
-text, excerpts, URLs, or an open metadata mapping to the title model.  Each
-batch must account for every title it received.  Only after *all* batches have
-passed that check may the global reconciler choose the real source articles
-whose bodies are eligible for deep understanding.
+text, excerpts, URLs, or an open metadata mapping to the title model. Each
+batch must account for every title it received. A caller may isolate a settled
+local failure; only successful batches enter global reconciliation, while
+failed inputs retain an explicit disposition at the storage boundary.
 
 This module owns no provider, database, or source text.  Its callbacks are
 implemented by the pipeline/checkpoint boundary.
@@ -534,174 +534,6 @@ def validate_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDT
     return _decode_canonical_reconcile_result(canonical, items, batch_results, input_count)
 
 
-def _review_context(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult],
-                    proposed_selection: TitleSelection) -> tuple[tuple[TitleDTO, ...], tuple[TitleTriageResult, ...],
-                                                                   tuple[TitleSelectionItem, ...], tuple[TitleSelectionItem, ...]]:
-    frozen = _validate_items(items)
-    results = _validate_batch(batch=frozen, results=batch_results)
-    if not isinstance(proposed_selection, TitleSelection):
-        raise TitleTriageProtocolError("标题终检缺少冻结拟选名单")
-    if (proposed_selection.input_refs != tuple(item.ref for item in frozen)
-            or proposed_selection.input_count != len(frozen)
-            or proposed_selection.batch_results != results):
-        raise TitleTriageProtocolError("标题终检拟选名单与当前标题审计不一致")
-    all_items = _validate_selection(items=frozen, results=results, selection_items=proposed_selection.items,
-                                    input_count=proposed_selection.input_count)
-    selected = tuple(sorted((item for item in all_items if item.disposition == "selected"),
-                            key=lambda item: int(item.selected_rank or 0)))
-    if tuple(item.ref for item in selected) != proposed_selection.selected_refs:
-        raise TitleTriageProtocolError("标题终检拟选顺序无效")
-    return frozen, results, all_items, selected
-
-
-def review_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult],
-                        proposed_selection: TitleSelection, policy: Mapping[str, object]) -> tuple[str, dict[str, object]]:
-    """Build the title-only final pruning request; it can keep or remove, never add."""
-    frozen, results, _, selected = _review_context(items, batch_results, proposed_selection)
-    if not isinstance(policy, Mapping) or not policy or not isinstance(policy.get("content"), Mapping):
-        raise TitleTriageProtocolError("标题终检缺少已批准 policy")
-    by_ref = {item.ref: item for item in frozen}
-    result_by_ref = {result.ref: result for result in results}
-    operation = (
-        "对拟深读标题做终检，只能保留或删除，绝不能新增候选或补足名额。目标是 K10 创业板未来两日的新增实质事实。"
-        "合并同次发布但只是不同细节的报道；不得因已有涨跌、目标价、无实质新增或泛泛传染说法保留。"
-        "更正、否认和重大反证不得被原消息吞没。标题未明示的事实不能用 proposedReason 当作证据。"
-        "必须 complete=true，并让 kept 与 removed 按 i 恰好覆盖全部拟选；removed.duplicateOf 只能指向 kept。"
-    )
-    return operation, {
-        "operation": "titleSelectionReview",
-        "policy": {key: policy[key] for key in ("policyId", "revision", "contentSha256") if key in policy},
-        "policyContent": dict(policy["content"]),
-        "items": [
-            {"i": index, "sourceKey": by_ref[item.ref].source_key, "publishedAt": by_ref[item.ref].published_at,
-             "title": by_ref[item.ref].title, "status": result_by_ref[item.ref].status,
-             "proposedReason": item.reason}
-            for index, item in enumerate(selected)
-        ],
-        "output": {"complete": True,
-                   "kept": [{"i": 0, "reason": "short string"}],
-                   "removed": [{"i": 1, "reason": "short string", "duplicateOf": None}]},
-    }
-
-
-def normalize_review_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
-                            batch_results: Sequence[TitleTriageResult], proposed_selection: TitleSelection) -> dict[str, object]:
-    """Validate a complete final-pruning response without exposing real refs to it."""
-    _, results, _, selected = _review_context(items, batch_results, proposed_selection)
-    result_by_ref = {result.ref: result for result in results}
-    status_by_index = {index: result_by_ref[item.ref].status for index, item in enumerate(selected)}
-    if (not isinstance(raw, Mapping) or set(raw) != {"complete", "kept", "removed"}
-            or raw.get("complete") is not True or not isinstance(raw.get("kept"), list)
-            or not isinstance(raw.get("removed"), list)):
-        raise TitleTriageProtocolError("标题终检 JSON 必须完整声明 complete/kept/removed")
-    kept_keys, removed_keys = {"i", "reason"}, {"i", "reason", "duplicateOf"}
-    covered: set[int] = set()
-    kept: list[dict[str, object]] = []
-    removed: list[dict[str, object]] = []
-
-    def index(row: object, expected: set[str]) -> int:
-        if not isinstance(row, Mapping) or set(row) != expected:
-            raise TitleTriageProtocolError("标题终检条目字段无效")
-        value = row.get("i")
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value >= len(selected):
-            raise TitleTriageProtocolError("标题终检含陌生 i")
-        if value in covered:
-            raise TitleTriageProtocolError("标题终检 i 重复")
-        reason = row.get("reason")
-        if not isinstance(reason, str) or not reason.strip() or len(reason) > 280:
-            raise TitleTriageProtocolError("标题终检理由无效")
-        covered.add(value)
-        return value
-
-    for row in raw["kept"]:
-        value = index(row, kept_keys)
-        kept.append({"i": value, "reason": row["reason"]})
-    kept_indices = {row["i"] for row in kept}
-    for row in raw["removed"]:
-        value = index(row, removed_keys)
-        duplicate_of = row.get("duplicateOf")
-        if duplicate_of is not None and (isinstance(duplicate_of, bool) or not isinstance(duplicate_of, int)):
-            raise TitleTriageProtocolError("标题终检 duplicateOf 无效")
-        removed.append({"i": value, "reason": row["reason"], "duplicateOf": duplicate_of})
-    if covered != set(range(len(selected))):
-        raise TitleTriageProtocolError("标题终检未完整覆盖拟选")
-    for row in removed:
-        duplicate_of = row["duplicateOf"]
-        if duplicate_of is not None and duplicate_of not in kept_indices:
-            raise TitleTriageProtocolError("标题终检 duplicateOf 必须指向 kept")
-        # A correction/denial is a protected contrary fact. Calling it a duplicate
-        # of an ordinary retained headline would silently let that original message
-        # erase the contrary record. It may be independently removed for a stated
-        # low-value reason, or deduplicated only against another protected kept row.
-        if (duplicate_of is not None and status_by_index[int(row["i"])] == "correction_or_denial"
-                and status_by_index[duplicate_of] != "correction_or_denial"):
-            raise TitleTriageProtocolError("标题终检不得把反证并入普通原消息")
-    return {"complete": True, "kept": sorted(kept, key=lambda row: int(row["i"])),
-            "removed": sorted(removed, key=lambda row: int(row["i"]))}
-
-
-def apply_title_review(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult],
-                       proposed_selection: TitleSelection, review: Mapping[str, object]) -> tuple[TitleSelectionItem, ...]:
-    """Apply a validated final review to the full audit, only reducing selected bodies."""
-    frozen, results, original, selected = _review_context(items, batch_results, proposed_selection)
-    normalized = normalize_review_result(review, frozen, results, proposed_selection)
-    result_by_ref = {result.ref: result for result in results}
-    kept_by_index = {int(row["i"]): str(row["reason"]) for row in normalized["kept"]}
-    removed_by_ref = {selected[int(row["i"])].ref: row for row in normalized["removed"]}
-    kept_ref_by_index = {index: selected[index].ref for index in kept_by_index}
-    kept_rank = {ref: rank for rank, ref in enumerate((selected[index].ref for index in sorted(kept_by_index)), start=1)}
-    kept_reason_by_ref = {selected[index].ref: reason for index, reason in kept_by_index.items()}
-
-    def safe_merge(source_ref: tuple[str, int], target_ref: tuple[str, int]) -> bool:
-        return (result_by_ref[source_ref].status != "correction_or_denial"
-                and result_by_ref[target_ref].status != "correction_or_denial")
-
-    def removed_target(ref: tuple[str, int]) -> tuple[tuple[str, int] | None, str]:
-        row = removed_by_ref.get(ref)
-        if row is None:
-            return None, "终检未保留原拟选"
-        target_index = row["duplicateOf"]
-        target = kept_ref_by_index.get(target_index) if isinstance(target_index, int) and not isinstance(target_index, bool) else None
-        return target, str(row["reason"])
-
-    final: list[TitleSelectionItem] = []
-    for item in original:
-        result = result_by_ref[item.ref]
-        if item.disposition == "no_value":
-            final.append(item)
-            continue
-        if item.disposition == "selected":
-            if item.ref in kept_rank:
-                final.append(TitleSelectionItem(item.document_id, item.revision, "selected", item.matter_key, item.stage_key,
-                                                kept_reason_by_ref[item.ref],
-                                                selected_rank=kept_rank[item.ref]))
-                continue
-            target, reason = removed_target(item.ref)
-            if target is not None and safe_merge(item.ref, target):
-                final.append(TitleSelectionItem(item.document_id, item.revision, "merged", item.matter_key, item.stage_key,
-                                                reason, merged_into=target))
-            else:
-                final.append(TitleSelectionItem(item.document_id, item.revision, "not_selected", item.matter_key,
-                                                item.stage_key, reason))
-            continue
-        if item.disposition == "merged":
-            assert item.merged_into is not None
-            target = item.merged_into
-            reason = item.reason
-            if target not in kept_rank:
-                target, reason = removed_target(target)
-            if target is not None and safe_merge(item.ref, target):
-                final.append(TitleSelectionItem(item.document_id, item.revision, "merged", item.matter_key, item.stage_key,
-                                                reason, merged_into=target))
-            else:
-                final.append(TitleSelectionItem(item.document_id, item.revision, "not_selected", item.matter_key,
-                                                item.stage_key, reason))
-            continue
-        final.append(item)
-    return _validate_selection(items=frozen, results=results, selection_items=tuple(final),
-                               input_count=proposed_selection.input_count)
-
-
 def _validate_items(items: Sequence[TitleDTO]) -> tuple[TitleDTO, ...]:
     frozen = tuple(items)
     if any(not isinstance(item, TitleDTO) for item in frozen):
@@ -772,6 +604,7 @@ def triage_titles(
     batch_call: BatchCall, reconcile_call: ReconcileCall,
     batch_concurrency: int,
     checkpoint: Callable[[Mapping[str, object]], None] | None = None,
+    isolate_batch_failure: Callable[[int, tuple[TitleDTO, ...], BaseException], bool] | None = None,
 ) -> TitleSelection:
     """Understand every title, globally reconcile, and return frozen body admission.
 
@@ -800,21 +633,17 @@ def triage_titles(
     def run_batch(index: int, batch: tuple[TitleDTO, ...]) -> tuple[int, tuple[TitleTriageResult, ...]]:
         return index, _validate_batch(batch=batch, results=batch_call(batch))
 
-    # Every sealed title batch must succeed before any global ranking is allowed.
-    # Results are retained by deterministic batch index, so completion timing
-    # cannot alter the reconciliation input or persisted audit order. Checkpoints
-    # also run on this caller thread after all batches are valid; the provider/cache
-    # boundary owns each request's durable completion independently.
+    # Deterministic batch order survives both completion order and local gaps.
+    # The caller alone decides whether a failure has a safe, durable boundary.
     completed: dict[int, tuple[TitleTriageResult, ...]] = {}
+    isolated: set[int] = set()
     executor = ThreadPoolExecutor(max_workers=min(batch_concurrency, max(1, len(batches))))
     pending: dict[object, int] = {}
     next_batch = 0
     failure: BaseException | None = None
     try:
-        # This is deliberately a sliding window rather than submit-all. A failed
-        # title request must not leave hundreds of already-queued paid requests
-        # behind it. Running requests settle for their own durable receipts; work
-        # which never started is cancelled and no global/body stage can follow.
+        # Keep a bounded submission window. A fatal failure cancels work that
+        # has not begun; settled local gaps permit independent batches to run.
         while next_batch < len(batches) and len(pending) < batch_concurrency:
             future = executor.submit(run_batch, next_batch, batches[next_batch])
             pending[future] = next_batch
@@ -822,7 +651,7 @@ def triage_titles(
         while pending:
             done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
             # Include every completion visible in this scheduling turn before
-            # replenishing the window. Otherwise a sibling failure could already
+            # replenishing the window. Otherwise a fatal sibling failure could already
             # be terminal while a successful sibling quietly starts another batch.
             done.update(future for future in pending if future.done())
             first_error: BaseException | None = None
@@ -832,7 +661,9 @@ def triage_titles(
                     _, parsed = future.result()
                     completed[index] = parsed
                 except BaseException as exc:
-                    if first_error is None:
+                    if isolate_batch_failure is not None and isolate_batch_failure(index, batches[index], exc):
+                        isolated.add(index)
+                    elif first_error is None:
                         first_error = exc
             if first_error is not None:
                 failure = first_error
@@ -850,10 +681,12 @@ def triage_titles(
         executor.shutdown(wait=True, cancel_futures=True)
     if failure is not None:
         raise failure
-    if len(completed) != len(batches):
+    if len(completed) + len(isolated) != len(batches):
         raise TitleTriageProtocolError("标题批次合并未完整覆盖输入")
     results: list[TitleTriageResult] = []
     for index, batch in enumerate(batches):
+        if index in isolated:
+            continue
         parsed = completed[index]
         results.extend(parsed)
         if checkpoint is not None:
@@ -861,14 +694,15 @@ def triage_titles(
                 {"documentId": item.document_id, "revision": item.revision} for item in batch],
                 "resultRefs": [{"documentId": item.document_id, "revision": item.revision} for item in parsed]})
     ordered_results = tuple(sorted(results, key=lambda result: result.ref))
-    if len(ordered_results) != len(frozen):
+    eligible_items = tuple(item for index, batch in enumerate(batches) if index not in isolated for item in batch)
+    if len(ordered_results) != len(eligible_items):
         raise TitleTriageProtocolError("标题批次合并未完整覆盖输入")
     input_count = len(frozen)
     if not callable(reconcile_call):
         raise TitleTriageProtocolError("标题初筛缺少全局协调调用")
-    reconciled = reconcile_call(frozen, ordered_results, input_count)
-    ordered_selection = _validate_selection(items=frozen, results=ordered_results,
-                                            selection_items=reconciled, input_count=input_count)
+    reconciled = reconcile_call(eligible_items, ordered_results, len(eligible_items)) if eligible_items else ()
+    ordered_selection = _validate_selection(items=eligible_items, results=ordered_results,
+                                            selection_items=reconciled, input_count=len(eligible_items))
     selected_refs = tuple(item.ref for item in sorted((item for item in ordered_selection if item.disposition == "selected"),
                                                        key=lambda item: int(item.selected_rank or 0)))
     selection = TitleSelection("frozen", window_kind, input_count, tuple(item.ref for item in frozen),
@@ -894,8 +728,8 @@ def title_from_document_fields(*, document_id: str, revision: int, source_key: s
 
 __all__ = [
     "BatchCall", "ReconcileCall", "TitleDTO", "TitleSelection", "TitleSelectionItem",
-    "TitleTriageProtocolError", "TitleTriageResult", "apply_title_review", "batch_request_spec",
+    "TitleTriageProtocolError", "TitleTriageResult", "batch_request_spec",
     "legacy_batch_request_spec", "normalize_batch_result", "normalize_reconcile_result", "normalize_review_result",
-    "reconcile_request_spec", "review_request_spec", "title_batch_payload", "validate_batch_result", "validate_reconcile_result",
+    "reconcile_request_spec", "title_batch_payload", "validate_batch_result", "validate_reconcile_result",
     "title_from_document_fields", "triage_titles",
 ]

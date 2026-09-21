@@ -1,0 +1,1674 @@
+{
+  "reason": {
+    "message": "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。",
+    "missing": [],
+    "reason": "partial_delivery"
+  },
+  "report": {
+    "addedCards": [],
+    "availableAt": "2026-09-08T14:00:00+00:00",
+    "coverageGaps": [
+      "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。"
+    ],
+    "cutoffAt": "2026-09-08T13:00:00+00:00",
+    "delivery": {
+      "contractVersion": "k10-report-delivery-3.4.0-b76",
+      "counts": {
+        "comparableCompanies": 30,
+        "eventFailed": 1,
+        "eventInput": 84,
+        "eventProcessed": 83,
+        "eventUnprocessed": 0,
+        "publishedCompanies": 30,
+        "titleFailed": 0,
+        "titleInput": 1602,
+        "titleProcessed": 1602,
+        "titleUnprocessed": 0
+      },
+      "eligibleSetSha256": "f2aff2ddc6aa54e235e8b352f278748f6a117ab39c7a13aeaee7021c86489668",
+      "gaps": [
+        {
+          "companyCodes": [
+            "300002.SZ"
+          ],
+          "companyScopeKnown": true,
+          "eventIds": [
+            "event_708ea4def782618c6f50836c045f386f"
+          ],
+          "gapId": "gap_995e25982eed7958e17beb5994b41ea9",
+          "message": "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。",
+          "reasonCode": "content_policy_refused",
+          "sourceRefs": [
+            {
+              "collectedAt": null,
+              "companyCode": null,
+              "documentId": "doc_ec5cb40bde6b6fc21fdd756788de43ec",
+              "excerpt": null,
+              "factId": null,
+              "fetchedAt": "2026-09-07T13:02:00+00:00",
+              "publishedAt": "2026-09-07T13:01:00+00:00",
+              "publishedPrecision": "exact",
+              "revision": 1,
+              "sourceKey": "tushare-major-news",
+              "title": "离线验收标题 0001：新增经营事件",
+              "tradeDate": null,
+              "url": "https://fixture.invalid/acceptance/0001"
+            }
+          ],
+          "stage": "verify_or_map",
+          "unitId": "event_708ea4def782618c6f50836c045f386f",
+          "unitKind": "event"
+        }
+      ],
+      "inputManifestSha256": "8a33abe81a9032ba71d849be8133103a4dea9e2f914868176a9501a62de573b7",
+      "outcome": "partial",
+      "rankingInputSha256": "d26215990a6fa246df69dc6570ce566f4cf4ac55332fe23fa62547bbcdfa344b",
+      "rankingScope": "completed_subset"
+    },
+    "eveningCards": [
+      {
+        "canSelect": false,
+        "cardId": "card_ed285486d09b1e44b9512bd13660169a",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_e710fa2b9bccee52ce362d3f43d15698",
+            "eventId": "event_9082ccc7e9de09e8203200126703abce",
+            "eventRevision": 2,
+            "headline": "离线验收事件 002",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_5070572eda3eb8cf316ae86a574df5b4",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300004.SZ",
+        "companyName": "南风股份",
+        "companyWindowId": "window_e710fa2b9bccee52ce362d3f43d15698",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 1,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_d81264aa31847c764ac477dd860f500c",
+            "excerpt": "离线独立来源确认 event-002 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 002",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/002"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_9bd3fe563a6a340778355d93903df8bf",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_b02ea4f5050cc58d0affd4c122f92ce1",
+            "eventId": "event_c1b95679b9fdde01182f1d3794d2d813",
+            "eventRevision": 2,
+            "headline": "离线验收事件 003",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_83b0e4bef743515edeebf4a5b2e8fffa",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300005.SZ",
+        "companyName": "探路者",
+        "companyWindowId": "window_b02ea4f5050cc58d0affd4c122f92ce1",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 2,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_280a31c4ee22d5729fe06af0d1073f1a",
+            "excerpt": "离线独立来源确认 event-003 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 003",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/003"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_4320ead470b8ef2e3bdccd7acc527d5a",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_e8a1678d60880799dc797b25770a7e34",
+            "eventId": "event_d0d79640e95d85a413df68c753b89187",
+            "eventRevision": 2,
+            "headline": "离线验收事件 004",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_3df723721947ca09dbc471603fc9ac59",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300006.SZ",
+        "companyName": "莱美药业",
+        "companyWindowId": "window_e8a1678d60880799dc797b25770a7e34",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 3,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_a5865e5d5de5e7a8c0186287a607a5f2",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0004：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0004"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_8663175b40f940ded718f6dc6d1099f1",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_978c70d9f90bfc7983b02df3fc2fa877",
+            "eventId": "event_e7f19a46f42cf2ade30e29c81e53cae7",
+            "eventRevision": 2,
+            "headline": "离线验收事件 005",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_9d0857b6b65514ea78d54792db458315",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300007.SZ",
+        "companyName": "汉威科技",
+        "companyWindowId": "window_978c70d9f90bfc7983b02df3fc2fa877",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 4,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_5073e809bd83314f2775331e0ac31674",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0005：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0005"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_3e0a8448b70d36d63174af7863c4e819",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_21fa28a3450adbda7e6d85146d413c48",
+            "eventId": "event_82d724e0933f8864c6a70fb0f2cabae3",
+            "eventRevision": 2,
+            "headline": "离线验收事件 006",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_df5b0d1119477d0ad76ae80398049c62",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300008.SZ",
+        "companyName": "天海防务",
+        "companyWindowId": "window_21fa28a3450adbda7e6d85146d413c48",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 5,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_2b7002152c6bdb5b3e6c008aebc52f4b",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0006：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0006"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_e9b3f24824a21dafa953bbf740d46190",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_ff95f06a91c95160906892871d0fcf12",
+            "eventId": "event_e8c85310800f7cbdb07f9d77977effb3",
+            "eventRevision": 2,
+            "headline": "离线验收事件 007",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_6056705750102c28a1e2fb117fc7ea72",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300009.SZ",
+        "companyName": "安科生物",
+        "companyWindowId": "window_ff95f06a91c95160906892871d0fcf12",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 6,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_66d7e8b93406c12828ff6d8d5c9c3d70",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0007：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0007"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_83dd7721b6c5a03f448ba323437879c9",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_2f736ebcbe23fa7a11d3afd0d0beb22d",
+            "eventId": "event_669b9bad1f1262c9e7ba55156f54dced",
+            "eventRevision": 2,
+            "headline": "离线验收事件 008",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_39ca6ca82e289ff6699b9b6481a75b6f",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300011.SZ",
+        "companyName": "鼎汉技术",
+        "companyWindowId": "window_2f736ebcbe23fa7a11d3afd0d0beb22d",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 7,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_bec81a9c76311e44cc3bbd86776b9167",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0008：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0008"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_8b59238e6ffe18d55eaf76917a3dd970",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_9c18f6bed371b83b431265c42509b9f0",
+            "eventId": "event_f1474bd96d5489960b813aa2460a8483",
+            "eventRevision": 2,
+            "headline": "离线验收事件 009",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_fd5fb87f316a980420f51f3de7f14c28",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300013.SZ",
+        "companyName": "新宁物流",
+        "companyWindowId": "window_9c18f6bed371b83b431265c42509b9f0",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 8,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_3a95630336d65e25e58427ee03e7c0e0",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0009：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0009"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_282d8f53521a256af57c455727aa4534",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_7509b24bcb9f82f5aa8edd26c5d6ca3f",
+            "eventId": "event_b8195c489ac86703486ddd7384d665ae",
+            "eventRevision": 2,
+            "headline": "离线验收事件 010",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_01a5ac75488ef48455514f7a3eb3b97e",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300016.SZ",
+        "companyName": "北陆药业",
+        "companyWindowId": "window_7509b24bcb9f82f5aa8edd26c5d6ca3f",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 9,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_19db455ac49f2e3083055708104abe71",
+            "excerpt": "离线独立来源确认 event-010 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 010",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/010"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_efd14f77602b6a6ebffb10f3865247ac",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_063183bef5516574dd23126dbf022003",
+            "eventId": "event_6483d333b07e73e5923a5c8cb71c83fe",
+            "eventRevision": 2,
+            "headline": "离线验收事件 011",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_32e677caf4c11fee0778b579d6e3fe9e",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300018.SZ",
+        "companyName": "中元股份",
+        "companyWindowId": "window_063183bef5516574dd23126dbf022003",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 10,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_4e1240079c4a5357ca6f2af0d60adca8",
+            "excerpt": "离线独立来源确认 event-011 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 011",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/011"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_d685ada79831ed7e56dd60d3cef1fe70",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_fda4c0b039dae3c1c7ee3da85c0f3c72",
+            "eventId": "event_7ba83c4838313ce2fe7931093c95c25c",
+            "eventRevision": 2,
+            "headline": "离线验收事件 012",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_fb6f9f0bbbd22b05e3effc69485701b8",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300019.SZ",
+        "companyName": "硅宝科技",
+        "companyWindowId": "window_fda4c0b039dae3c1c7ee3da85c0f3c72",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 11,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_2b9aba4b6efd032cdcfe0be77c04f5cc",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0012：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0012"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_0bb7f7044d08e14be2d41f19b5962e00",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_55fd544d926496f0825cdd62fe661257",
+            "eventId": "event_da86cc1507ac75925f3fb61f151732e0",
+            "eventRevision": 2,
+            "headline": "离线验收事件 013",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_4df2848c81174b7ec5bf8efb7fbe5f10",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300021.SZ",
+        "companyName": "大禹节水",
+        "companyWindowId": "window_55fd544d926496f0825cdd62fe661257",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 12,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_6816280bbeafe70431213c4f8d3b02f9",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0013：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0013"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_63fd57d473f0c0a071121418c1e7c2e9",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_c03e22529a76c77bf14977332160fbbd",
+            "eventId": "event_24dd85edd4bd00bd6c7076c5cd2c1a57",
+            "eventRevision": 2,
+            "headline": "离线验收事件 014",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_24bf1afd39659aea288d686756c78a39",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300022.SZ",
+        "companyName": "吉峰科技",
+        "companyWindowId": "window_c03e22529a76c77bf14977332160fbbd",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 13,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_3e467f317dc26740d310227218eae236",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0014：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0014"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_26ac96be8e1704d5a8e446f007e6dc2b",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_93e78e7e625592520327581b12a0f386",
+            "eventId": "event_f8c1780d59ee3db69a9cd988eb10f8d4",
+            "eventRevision": 2,
+            "headline": "离线验收事件 015",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_bacdc5fe0c192d75a20e8d345c9a535e",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300025.SZ",
+        "companyName": "华星创业",
+        "companyWindowId": "window_93e78e7e625592520327581b12a0f386",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 14,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_24d79a3b13849c41f76dff184ff8e93b",
+            "excerpt": "离线独立来源确认 event-015 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 015",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/015"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_c626e606034f09ffc040f7b80ed8d8d9",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_b06e7f4f24989d8ef7ec2ee4fb635e9f",
+            "eventId": "event_48a2ba729e4e1d23d3724de0b1980fb3",
+            "eventRevision": 2,
+            "headline": "离线验收事件 016",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_5f97cb69e058e44b8dbae126b5930e77",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300026.SZ",
+        "companyName": "红日药业",
+        "companyWindowId": "window_b06e7f4f24989d8ef7ec2ee4fb635e9f",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 15,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_0af0b092269410c4049b16ec5d3d6567",
+            "excerpt": "离线独立来源确认 event-016 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 016",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/016"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_c41b77aa06b8181550a18bedd4292791",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_d074fdf31f04e7f0952c29d25191568a",
+            "eventId": "event_b0d5e9a5da981fb4fa61eaa0e1645515",
+            "eventRevision": 2,
+            "headline": "离线验收事件 017",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_55422dc58889fe8e5a4e262de6188547",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300030.SZ",
+        "companyName": "阳普医疗",
+        "companyWindowId": "window_d074fdf31f04e7f0952c29d25191568a",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 16,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_4ed497fb7ffc321da3a98583534f06b7",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0017：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0017"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_f53689176302a8cfff4a8f415dd24212",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_57d919131dfddb90ad1baa7760dbc99c",
+            "eventId": "event_f6cf2cef784eee3826951e3ff1476223",
+            "eventRevision": 2,
+            "headline": "离线验收事件 018",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_06ceb8ec3415f1775e137654c2c9ebe5",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300031.SZ",
+        "companyName": "宝通科技",
+        "companyWindowId": "window_57d919131dfddb90ad1baa7760dbc99c",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 17,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_716855a81727386feac57139a386d074",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0018：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0018"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_a360351ea3301cf01b29e651f427d4cd",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_c783a778a5b9cd77d49bb6a34d58b682",
+            "eventId": "event_f4fa3e29c6966ba5fd7afe6c0d3b71f3",
+            "eventRevision": 2,
+            "headline": "离线验收事件 019",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_1186a64d25399a3aba97c6c6445d04dc",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300032.SZ",
+        "companyName": "金龙机电",
+        "companyWindowId": "window_c783a778a5b9cd77d49bb6a34d58b682",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 18,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_79d169fb1c81713da0065e3b38193894",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0019：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0019"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_f227391660d7693202ee3d20e60d776f",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_a73053fc7eb2b54f24dda286696818f2",
+            "eventId": "event_c56dbe03b66de177cf5c412a1f565716",
+            "eventRevision": 2,
+            "headline": "离线验收事件 020",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_0afb1a0fdc50bcee8f4b49e05dd96048",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300034.SZ",
+        "companyName": "钢研高纳",
+        "companyWindowId": "window_a73053fc7eb2b54f24dda286696818f2",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 19,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_3845c87ef18ce724ff4ae4c5566d508d",
+            "excerpt": "离线独立来源确认 event-020 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 020",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/020"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_2fe271a231095fb10ff156ea1f407fb9",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_189e3e2c3f377e47e55943edce855546",
+            "eventId": "event_775fafd2450af07efd18bd324f71ab67",
+            "eventRevision": 2,
+            "headline": "离线验收事件 021",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_0af8067aec2a5e512bb4b8b65a6d9e48",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300035.SZ",
+        "companyName": "中科电气",
+        "companyWindowId": "window_189e3e2c3f377e47e55943edce855546",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 20,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_20c11b4739e67b5ebb5fa89780273c65",
+            "excerpt": "离线独立来源确认 event-021 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 021",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/021"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_d10269f0ae47e5e4a7a43980030dcdfd",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_79f190a1dcbec6724638a51cb2b87dac",
+            "eventId": "event_eb710ce9c275b3acda50c0214ec88cdc",
+            "eventRevision": 2,
+            "headline": "离线验收事件 022",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_5838ef00e9a22987d08be269eb18237a",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300036.SZ",
+        "companyName": "超图软件",
+        "companyWindowId": "window_79f190a1dcbec6724638a51cb2b87dac",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 21,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_94df0071aaf29029a8387e752f67ef8f",
+            "excerpt": "离线独立来源确认 event-022 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 022",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/022"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_67d3115b3d4b7b0562c7fbde808146eb",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_d57ec15c9280650d378663d4d5c52a29",
+            "eventId": "event_7d957d802b1bb5772fc8b899100bc9c4",
+            "eventRevision": 2,
+            "headline": "离线验收事件 023",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_bf1cee7b92b1d23a260739bd8a9bfeb6",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300039.SZ",
+        "companyName": "上海凯宝",
+        "companyWindowId": "window_d57ec15c9280650d378663d4d5c52a29",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 22,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_3bb18150e745d95eaabba1bb0c980eae",
+            "excerpt": "离线独立来源确认 event-023 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 023",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/023"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_96dee2b3fb67011c14620842bda6e879",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_d6a1d65e66444278eea49ae320fd8bcf",
+            "eventId": "event_faa53a88990fd17034c97ba2b1a9faf5",
+            "eventRevision": 2,
+            "headline": "离线验收事件 024",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_883e24f5228cf718ace4a750265ef23a",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300040.SZ",
+        "companyName": "九洲集团",
+        "companyWindowId": "window_d6a1d65e66444278eea49ae320fd8bcf",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 23,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_457a81b4a2962047ed15ab20d9557cdd",
+            "excerpt": "离线独立来源确认 event-024 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 024",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/024"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_098dc184bf6b2d54460f66bff95994fd",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_64cef61690000f7113f99d233f9cfd17",
+            "eventId": "event_d862f710a634f29356f71d3ec9f4cf84",
+            "eventRevision": 2,
+            "headline": "离线验收事件 025",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_ffa7861054092857a364ff134619d128",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300041.SZ",
+        "companyName": "回天新材",
+        "companyWindowId": "window_64cef61690000f7113f99d233f9cfd17",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 24,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_98eb4a990a0a62e4841f38fcbc1ebc5f",
+            "excerpt": "离线独立来源确认 event-025 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 025",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/025"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_78ecdc22888b232888b6a6992eee65b8",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_199c11da2bf5b4398fe7a82839dff201",
+            "eventId": "event_e0a5a3eee6e9b4772e7837517c09bb86",
+            "eventRevision": 2,
+            "headline": "离线验收事件 026",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_30fefa7c34123b59cbde00c9b7d2c741",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300042.SZ",
+        "companyName": "朗科科技",
+        "companyWindowId": "window_199c11da2bf5b4398fe7a82839dff201",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 25,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_8877b74399586323143e939cf557cd80",
+            "excerpt": "离线独立来源确认 event-026 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 026",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/026"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_9e8f5c5bd8ca1cd83260153188290f84",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_d8dde80eb8d711632ed44c9a26a61802",
+            "eventId": "event_9d1b98ca14438022c560acbb76d0ffcb",
+            "eventRevision": 2,
+            "headline": "离线验收事件 027",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_297ca675f446d4abfb03dd295762c845",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300043.SZ",
+        "companyName": "星辉娱乐",
+        "companyWindowId": "window_d8dde80eb8d711632ed44c9a26a61802",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 26,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_12b16155948492cd331c3a777283b8f8",
+            "excerpt": "离线独立来源确认 event-027 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 027",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/027"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_94cd3154ca134e0f899c42012d2eec92",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_d4eda974d520d58f0b6a59c00bce7265",
+            "eventId": "event_751888a3bf13139d87ab7c9974bd29c4",
+            "eventRevision": 2,
+            "headline": "离线验收事件 028",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_8b56c2a3749a670725733b50cbbfd036",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300045.SZ",
+        "companyName": "华力创通",
+        "companyWindowId": "window_d4eda974d520d58f0b6a59c00bce7265",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 27,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_671cd2c7c1ed93faae12e973ae84a4fe",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0028：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0028"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_bd07fe61e5d666e829ae1296d58b04ff",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_e69281b38a2a123709e15e9fe5688552",
+            "eventId": "event_2c12effa2f022a7b0fddb76b8252c2dc",
+            "eventRevision": 2,
+            "headline": "离线验收事件 029",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_fc0bf070a347e470b179e13c5b9c0565",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300046.SZ",
+        "companyName": "台基股份",
+        "companyWindowId": "window_e69281b38a2a123709e15e9fe5688552",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 28,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_903f15345ca134d94b77d4f06d02df8d",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0029：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0029"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_3b62b566fdc806ee45181f96b7ebe22e",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_046e8a02d8715f47482d260603583794",
+            "eventId": "event_81ea8eaa7e0caaa43546450aceec274e",
+            "eventRevision": 2,
+            "headline": "离线验收事件 030",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_783362fa635237ea7d69f4eb19faf8d3",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300047.SZ",
+        "companyName": "天源迪科",
+        "companyWindowId": "window_046e8a02d8715f47482d260603583794",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 29,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_09a77cfb84a785e896e0f26edd08da65",
+            "excerpt": "离线独立来源确认 event-030 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-08T14:00:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 030",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/030"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      },
+      {
+        "canSelect": false,
+        "cardId": "card_82ae2b8e5498e3d60d0a57a8402e9f3b",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_7d757aa996a6a4134ff1163d4613dc10",
+            "eventId": "event_2b8e46978dae72b3a8b1708f414b0830",
+            "eventRevision": 2,
+            "headline": "离线验收事件 031",
+            "lifecycleState": "expired",
+            "opportunityId": "opportunity_dd5c160f823058a0264ece9a54fb4f98",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300048.SZ",
+        "companyName": "合康新能",
+        "companyWindowId": "window_7d757aa996a6a4134ff1163d4613dc10",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-09",
+        "d2TradeDate": "2026-09-10",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 30,
+        "sampleClass": "primary",
+        "section": "evening",
+        "sourceMarker": "evening",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_27196e0a6248e0503ba839e34814acd9",
+            "excerpt": null,
+            "factId": null,
+            "fetchedAt": "2026-09-07T13:02:00+00:00",
+            "publishedAt": "2026-09-07T13:01:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 1,
+            "sourceKey": "tushare-major-news",
+            "title": "离线验收标题 0031：新增经营事件",
+            "tradeDate": null,
+            "url": "https://fixture.invalid/acceptance/0031"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      }
+    ],
+    "incompleteReviews": [],
+    "lifecycleUpdates": [],
+    "nextCursor": null,
+    "parentReportId": null,
+    "reportId": "report_scan_9e38338815dd92c04e54df634caa0333",
+    "status": "partial",
+    "strategySnapshotId": "k10-v2-20260909",
+    "strategyVersion": "K10-v2",
+    "updatedCards": [],
+    "verificationCutoffAt": "2026-09-08T14:00:00+00:00",
+    "windowKind": "evening"
+  },
+  "schemaVersion": 8,
+  "state": "available"
+}

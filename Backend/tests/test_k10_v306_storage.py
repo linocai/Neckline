@@ -19,6 +19,7 @@ NOW = datetime(2026, 9, 8, 6, tzinfo=timezone.utc).isoformat()
 
 def _task(path, task_id: str = "task") -> tuple[str, int]:
     assert initialize_schema(path) == SCHEMA_VERSION
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=NOW, changed_by="test", db_path=path)
     config_id, revision = append_approved_execution_profile(db_path=path, created_at=NOW)
     store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id, input_version="frozen",
                        input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)

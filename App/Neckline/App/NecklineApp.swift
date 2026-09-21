@@ -73,18 +73,21 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
                        let window = model.companyWindows.first(where: { $0.companyWindowId == "synthetic-evening-window" }) {
                         await model.act("keep", window: window)
                     }
-                    applyQARoute()
+                    await applyQARoute()
                     #endif
                     return
                 }
                 model.bind(config: config)
                 #if os(iOS)
-                appDelegate.attach(config: config, model: model)
+                let initialRoute = appDelegate.attach(config: config, model: model)
                 model.notificationRegistrar = { await appDelegate.requestAuthorizationAndRegister() }
-                #endif
+                if let initialRoute { await model.openNotification(initialRoute) }
+                else { await model.refresh() }
+                #else
                 await model.refresh()
+                #endif
                 #if DEBUG
-                applyQARoute()
+                await applyQARoute()
                 #endif
             }
         }.defaultSize(width: 1180, height: 760)
@@ -93,10 +96,14 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
     #if DEBUG
     /// A process-only starting route for the single reusable QA client.
     /// Real data remains read-only; synthetic selection seeding is confined above.
-    private func applyQARoute() {
+    private func applyQARoute() async {
         guard ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1" else { return }
         if let name = ProcessInfo.processInfo.environment["NK_QA_TAB"], let tab = AppTab(rawValue: name) { model.tab = tab }
         if let window = ProcessInfo.processInfo.environment["NK_QA_DAILY_WINDOW"], ["evening", "morning"].contains(window) { model.dailyWindow = window }
+        if ProcessInfo.processInfo.environment["NK_QA_MATERIALS"] == "1",
+           let report = (model.dailyWindow == "morning" ? model.dailyMorning : model.dailyEvening)?.report {
+            await model.openMaterials(for: report)
+        }
         if ProcessInfo.processInfo.environment["NK_QA_READING"] == "1",
            let window = model.companyWindows.first(where: { model.selection(for: $0)?.state == "kept" }) {
             model.tab = .focus
@@ -106,8 +113,16 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
         if let path = ProcessInfo.processInfo.environment["NK_QA_RENDER_PATH"],
            path.hasPrefix("/tmp/neckline-v3-qa/"), path.hasSuffix(".png") {
             // Render only our own SwiftUI view tree. This never reads the desktop,
-            // other applications or the macOS window compositor.
-            let view = NSHostingView(rootView: RootView(model: model, config: config).frame(width: 1180, height: 760))
+            // other applications or the macOS window compositor. Sheets do not present from
+            // a detached hosting view, so the material QA route renders that exact view tree.
+            let root: AnyView
+            if ProcessInfo.processInfo.environment["NK_QA_MATERIALS"] == "1",
+               let report = selectedMaterialsReportForQA {
+                root = AnyView(ReportMaterialsSheet(report: report, model: model).frame(width: 1180, height: 760))
+            } else {
+                root = AnyView(RootView(model: model, config: config).frame(width: 1180, height: 760))
+            }
+            let view = NSHostingView(rootView: root)
             view.appearance = NSAppearance(named: .aqua)
             view.setFrameSize(NSSize(width: 1180, height: 760))
             view.layoutSubtreeIfNeeded()
@@ -119,6 +134,10 @@ private struct K10SyntheticTokenStore: APIAccessTokenStore {
             }
         }
         #endif
+    }
+
+    private var selectedMaterialsReportForQA: K10DailyReport? {
+        (model.dailyWindow == "morning" ? model.dailyMorning : model.dailyEvening)?.report
     }
     #endif
 }

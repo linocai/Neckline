@@ -107,7 +107,7 @@ struct SettingsView: View {
     var body: some View {
         if qaCoverageRoute {
             SettingsCoverageScreen(model: model, scans: model.scanSummaries)
-                .task { await model.refreshAdminSettings() }
+                .task { await model.loadSettingsContent(); await model.refreshAdminSettings() }
         } else {
             settingsBody
         }
@@ -141,6 +141,7 @@ struct SettingsView: View {
                 }
 
                 V3SectionTitle(title: "资讯与模型", icon: "sparkles")
+                SettingsReadNotice(model: model)
                 V3Card {
                     VStack(spacing: 0) {
                         SettingsEntry(icon: "newspaper", title: "资讯来源", detail: sourceDetail, badge: nil) {
@@ -207,7 +208,7 @@ struct SettingsView: View {
         }
         .background(NK.pageBg)
         .navigationTitle("设置")
-        .task { await model.refreshAdminSettings() }
+        .task { await model.loadSettingsContent(); await model.refreshAdminSettings() }
         .sheet(isPresented: $showConnectionEditor) { ConnectionEditor(config: config, model: model) }
         .sheet(isPresented: $showModelEditor) { ModelEditor(model: model) }
         .sheet(isPresented: $showSourceEditor) { SourceEditor(model: model, tavilyKey: $tavilyKey) }
@@ -239,8 +240,11 @@ struct SettingsView: View {
         case .idle: return config.hasToken ? "已配置" : "待配置"
         }
     }
-    private var sourceDetail: String { model.tavilyKeySet ? "Tavily 定向核验已配置；覆盖和缺口按扫描显示。" : "Tavily 密钥未配置；不会把来源不足当作空结果。" }
+    private var sourceDetail: String {
+        if let message = k10SettingsReadMessage(model.settingsReadState) { return message }
+        return model.tavilyKeySet ? "Tavily 定向核验已配置；覆盖和缺口按扫描显示。" : "Tavily 密钥未配置；不会把来源不足当作空结果。" }
     private var providerDetail: String {
+        if let message = k10SettingsReadMessage(model.settingsReadState) { return message }
         let active = model.providers.filter(\.enabled)
         guard let provider = active.first else { return "添加端点、模型名称和 API Key" }
         return "\(provider.name) · \(provider.model) · \(provider.keySet ? "Key 已配置" : "缺少 Key")"
@@ -383,6 +387,16 @@ private struct DiscoveryControlRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("资讯处理").font(NKFont.callout.weight(.semibold))
                 Text(detail).font(NKFont.caption).foregroundStyle(control?.state == "paused" ? NK.amber : NK.textSecondary)
+                if let tasks = control?.activeTasks, !tasks.isEmpty {
+                    DisclosureGroup("活动任务（\(tasks.count)）") {
+                        ForEach(tasks) { task in
+                            Text("\(task.windowKind.map(k10StatusText) ?? "任务") · \(k10StatusText(task.status))\(task.stage.map { " · \(k10ExecutionStageText($0))" } ?? "")")
+                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        }
+                    }
+                    .font(NKFont.caption)
+                    .foregroundStyle(NK.textSecondary)
+                }
             }
             Spacer()
             if control?.state == "paused" {
@@ -401,9 +415,15 @@ private struct DiscoveryControlRow: View {
 
     private var detail: String {
         guard let control else { return "运行控制状态尚未读取" }
-        if control.state == "paused" {
-            return "后续自动处理已暂停；不会自动恢复"
+        if let executionState = control.executionState {
+            var text = k10ExecutionStateText(executionState)
+            if let inFlight = control.inFlightCount, let unknown = control.unknownCount {
+                text += " · 在途 \(inFlight) · 结果待确认 \(unknown)"
+            }
+            if executionState == "paused" { text += "；不会自动恢复" }
+            return text
         }
+        if control.state == "paused" { return "后续自动处理已暂停；不会自动恢复" }
         return "开关已打开；仍须通过配置检查"
     }
 }
@@ -685,6 +705,7 @@ struct ModelEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                     V3PageHeader(title: "我的模型", subtitle: "填写自己的 API 地址、模型和 Key。支持 OpenAI 兼容的 Chat Completions 接口。")
+                    SettingsReadNotice(model: model)
                     connectionsCard
                     editorCard
                 }
@@ -722,7 +743,7 @@ struct ModelEditor: View {
                     Button { load(nil) } label: { Label("新增", systemImage: "plus") }
                         .disabled(model.providerSettingsSaving)
                 }
-                if model.providers.isEmpty {
+                if model.providers.isEmpty && model.settingsReadState == .loaded {
                     Text("还没有模型连接。填写下方信息后保存。")
                         .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 }
@@ -837,14 +858,15 @@ private struct SourceEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                     V3PageHeader(title: "资讯来源", subtitle: "来源权限、覆盖与失败都会如实显示，不会被当作空结果。")
+                    SettingsReadNotice(model: model)
                     V3Card {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Text("Tavily 定向核验").font(NKFont.headline)
                                 Spacer()
-                                V3Pill(text: model.tavilyKeySet ? "available" : "not_configured")
+                                V3Pill(text: model.settingsReadState == .loaded ? (model.tavilyKeySet ? "configured" : "not_configured") : "状态待读取")
                             }
-                            Text(model.tavilyKeySet ? "密钥已配置，页面不会回显。" : "尚未配置密钥。")
+                            Text(k10SettingsReadMessage(model.settingsReadState) ?? (model.tavilyKeySet ? "密钥已配置，页面不会回显。" : "尚未配置密钥。"))
                                 .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                             SecureField("新的 Tavily Key", text: $tavilyKey).textFieldStyle(.roundedBorder)
                             HStack(spacing: 10) {
@@ -907,5 +929,25 @@ struct DisciplineView: View {
         .toolbar(.visible, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+}
+
+private struct SettingsReadNotice: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        if let message = k10SettingsReadMessage(model.settingsReadState) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                if model.settingsReadState == .failed {
+                    Text("请重试；已显示的内容可能不是最新状态。")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
+                if model.settingsReadState != .loading {
+                    Button("重新读取配置") { Task { await model.refreshAdminSettings() } }
+                        .buttonStyle(V3SecondaryButtonStyle())
+                }
+            }
+        }
     }
 }

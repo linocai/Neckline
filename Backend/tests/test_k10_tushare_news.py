@@ -49,10 +49,10 @@ def test_major_news_uses_official_endpoint_and_exact_second_parameters_with_mock
     assert seen["payload"]["api_name"] == "major_news"
     assert seen["payload"]["fields"] == MAJOR_NEWS_FIELDS
     assert seen["payload"]["params"] == {
-        "start_date": "2026-09-06 21:00:00", "end_date": "2026-09-07 09:00:00", "src": "新华社",
+        "start_date": "2026-09-06 21:00:00", "end_date": "2026-09-07 08:30:00", "src": "新华社",
     }
     assert result.complete is True
-    assert result.success_watermark == _moment(7, 9)
+    assert result.success_watermark == _moment(7, 8, 30)
     document = result.documents[0]
     assert document.canonical_url is None
     assert document.original_text == "完整通讯正文"
@@ -124,7 +124,7 @@ def test_empty_result_is_a_complete_empty_communications_window_not_an_error():
     result = TuShareMajorNewsAdapter(token="runtime-token", request_callable=lambda _payload: _body([])).fetch_incremental(_request())
     assert result.complete is True
     assert result.documents == ()
-    assert result.success_watermark == _moment(7, 9)
+    assert result.success_watermark == _moment(7, 8, 30)
 
 
 def test_content_correction_keeps_stable_identity_without_inventing_url():

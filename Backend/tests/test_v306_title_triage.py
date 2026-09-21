@@ -21,13 +21,10 @@ from neckline.k10.title_triage import (
     TitleTriageProtocolError,
     TitleTriageResult,
     TitleSelection,
-    apply_title_review,
     batch_request_spec,
     normalize_batch_result,
     normalize_reconcile_result,
-    normalize_review_result,
     reconcile_request_spec,
-    review_request_spec,
     title_batch_payload,
     triage_titles,
     validate_batch_result,
@@ -62,27 +59,6 @@ def _choose(items, results, limit):
                                     "全局排序" if index < limit else "超出文章上限",
                                     selected_rank=index + 1 if index < limit else None)
                  for index, item in enumerate(items))
-
-
-def _review_fixture():
-    items = _items(5)
-    results = (
-        TitleTriageResult("doc-0", 1, "candidate", "a", "initial", "主事实"),
-        TitleTriageResult("doc-1", 1, "candidate", "b", "initial", "同类报道"),
-        TitleTriageResult("doc-2", 1, "correction_or_denial", "c", "denial", "重大否认"),
-        TitleTriageResult("doc-3", 1, "same_matter", "b", "initial", "转载"),
-        TitleTriageResult("doc-4", 1, "no_value", "d", "none", "无关"),
-    )
-    selection_items = (
-        TitleSelectionItem("doc-0", 1, "selected", "a", "initial", "拟深读 A", selected_rank=1),
-        TitleSelectionItem("doc-1", 1, "selected", "b", "initial", "拟深读 B", selected_rank=2),
-        TitleSelectionItem("doc-2", 1, "selected", "c", "denial", "拟深读反证", selected_rank=3),
-        TitleSelectionItem("doc-3", 1, "merged", "b", "initial", "原合并", merged_into=("doc-1", 1)),
-        TitleSelectionItem("doc-4", 1, "no_value", "d", "none", "无关"),
-    )
-    selection = TitleSelection("frozen", "evening", len(tuple(item.ref for item in items)), tuple(item.ref for item in items), results,
-                               selection_items, (("doc-0", 1), ("doc-1", 1), ("doc-2", 1)), "f" * 64)
-    return items, results, selection
 
 
 def test_title_payload_is_a_sealed_five_field_contract():
@@ -385,71 +361,6 @@ def test_compact_global_declaration_generates_the_full_not_selected_complement_w
 def test_compact_global_declaration_rejects_missing_completion_count_or_invalid_selection(raw, message):
     with pytest.raises(TitleTriageProtocolError, match=message):
         validate_reconcile_result(raw, _items(2), _batch(_items(2)), len(_items(2)))
-
-
-def test_title_final_review_is_title_only_and_can_only_prune_or_rewire_normal_duplicates():
-    items, results, proposed = _review_fixture()
-    operation, payload = review_request_spec(items, results, proposed, POLICY)
-    assert payload["operation"] == "titleSelectionReview"
-    assert len(payload["items"]) == 3
-    assert set(payload["items"][0]) == {"i", "sourceKey", "publishedAt", "title", "status", "proposedReason"}
-    assert "documentId" not in str(payload) and "正文" not in str(payload)
-    assert "只能保留或删除" in operation and "proposedReason 当作证据" in operation
-
-    review = {"complete": True,
-              "kept": [{"i": 0, "reason": "标题明确新增实质事实"}],
-              "removed": [
-                  {"i": 1, "reason": "同次报道无新增事实", "duplicateOf": 0},
-                  {"i": 2, "reason": "低价值更正，单独保留审计但不深读", "duplicateOf": None},
-              ]}
-    normalized = normalize_review_result(review, items, results, proposed)
-    assert normalized == review
-    final = apply_title_review(items, results, proposed, review)
-    by_ref = {item.ref: item for item in final}
-    assert by_ref[("doc-0", 1)].disposition == "selected"
-    assert by_ref[("doc-0", 1)].selected_rank == 1
-    assert by_ref[("doc-1", 1)].disposition == "merged"
-    assert by_ref[("doc-1", 1)].merged_into == ("doc-0", 1)
-    assert by_ref[("doc-2", 1)].disposition == "not_selected"  # correction cannot be swallowed
-    assert by_ref[("doc-3", 1)].disposition == "merged"  # old merged target relinks through doc-1
-    assert by_ref[("doc-3", 1)].merged_into == ("doc-0", 1)
-    assert by_ref[("doc-4", 1)] == proposed.items[4]  # no_value is untouched
-
-
-def test_title_final_review_allows_two_protected_corrections_to_reduce_without_merging_them():
-    items = _items(2)
-    results = tuple(TitleTriageResult(item.document_id, 1, "correction_or_denial", item.document_id,
-                                      "denial", "同一低价值更正") for item in items)
-    proposed_items = tuple(TitleSelectionItem(item.document_id, 1, "selected", item.document_id, "denial",
-                                              "拟深读反证", selected_rank=index + 1)
-                           for index, item in enumerate(items))
-    proposed = TitleSelection("frozen", "evening", len(tuple(item.ref for item in items)), tuple(item.ref for item in items), results,
-                              proposed_items, tuple(item.ref for item in items), "e" * 64)
-    review = {"complete": True, "kept": [{"i": 0, "reason": "保留一条反证"}],
-              "removed": [{"i": 1, "reason": "同一更正不重复深读", "duplicateOf": 0}]}
-    final = apply_title_review(items, results, proposed, review)
-    assert next(item for item in final if item.ref == ("doc-0", 1)).disposition == "selected"
-    assert next(item for item in final if item.ref == ("doc-1", 1)).disposition == "not_selected"
-
-
-@pytest.mark.parametrize("review, message", [
-    ({"complete": True, "kept": [{"i": 0, "reason": "保留"}],
-      "removed": [{"i": 1, "reason": "删除", "duplicateOf": None}]}, "未完整覆盖"),
-    ({"complete": True, "kept": [{"i": 0, "reason": "保留"}],
-      "removed": [{"i": 0, "reason": "重复", "duplicateOf": None},
-                  {"i": 1, "reason": "删除", "duplicateOf": None},
-                  {"i": 2, "reason": "删除", "duplicateOf": None}]}, "重复"),
-    ({"complete": True, "kept": [{"i": 0, "reason": "保留"}],
-      "removed": [{"i": 1, "reason": "删除", "duplicateOf": 2},
-                  {"i": 2, "reason": "删除", "duplicateOf": None}]}, "指向 kept"),
-    ({"complete": True, "kept": [{"i": 0, "reason": "保留"}],
-      "removed": [{"i": 1, "reason": "删除", "duplicateOf": 0},
-                  {"i": 2, "reason": "反证被吞", "duplicateOf": 0}]}, "反证并入普通"),
-])
-def test_title_final_review_rejects_incomplete_duplicate_or_nonkept_duplicate_target(review, message):
-    items, results, proposed = _review_fixture()
-    with pytest.raises(TitleTriageProtocolError, match=message):
-        normalize_review_result(review, items, results, proposed)
 
 
 def test_frozen_incident_2472_titles_are_all_audited_without_body_or_search_calls():

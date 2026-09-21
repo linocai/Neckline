@@ -37,7 +37,7 @@ def title_codes(value, codes):
 @pytest.mark.parametrize('codes,expected', [
     (['300002.SZ', '300487.SZ'], ['300002.SZ']),
     (['300487.SZ'], []),
-    (['300002.SZ', '300487.SZ', '300002.SZ'], ['300002.SZ', '300002.SZ']),
+    (['300002.SZ', '300487.SZ', '300002.SZ'], ['300002.SZ']),
 ])
 def test_cli_worker_discards_only_outside_title_hints(tmp_path, monkeypatch, codes, expected):
     edit_responses(monkeypatch, lambda value: title_codes(value, codes))
@@ -89,19 +89,43 @@ def test_recover_real_completed_legacy_title_checkpoint_without_rebilling(tmp_pa
 
 
 def test_mixed_research_company_hints_keep_in_pool_work(tmp_path, monkeypatch):
-    def edit(value):
-        for question in value.get('questions', []):
-            question['companyCodes'].append('300487.SZ')
-        conclusion = value.get('conclusion') or {}
-        for collection, owner in [('companyMappings', conclusion), ('companyAssessments', value)]:
-            rows = owner.get(collection, [])
-            if rows:
-                rows.append({**rows[0], 'companyCode': '300487.SZ'})
-    edit_responses(monkeypatch, edit)
-    db, _, task, _, gateway = e2e._run(tmp_path, monkeypatch, v2=True)
-    assert task.status == 'completed'
-    assert gateway.search_paths == ['path-1', 'path-2']
-    assert [row['companyCode'] for row in read_report(db_path=db)['eveningCards']] == ['300002.SZ']
+    """A direct B78 research reply may contain a discardable pool outsider.
+
+    The in-pool mapping remains publishable; the response must not revive the
+    old multi-stage research route or fail the whole event.
+    """
+    import socket
+    from tests import v340_acceptance_fixture as base
+    from tests.test_v350_cli_api import DirectRoundTransport
+
+    class MixedScopeTransport(DirectRoundTransport):
+        def respond(self, request):
+            response = super().respond(request)
+            payload = self._packet(request)
+            if payload.get('action') != 'research_round':
+                return response
+            body = response.json()
+            value = json.loads(body['choices'][0]['message']['content'])
+            outsider = '300487.SZ'
+            conclusion = value['conclusion']
+            conclusion['companyMappings'].append({
+                **conclusion['companyMappings'][0], 'companyCode': outsider,
+            })
+            value['companyAssessments'].append({
+                **value['companyAssessments'][0], 'companyCode': outsider,
+            })
+            body['choices'][0]['message']['content'] = json.dumps(value)
+            return httpx.Response(response.status_code, json=body, headers=response.headers)
+
+    monkeypatch.setattr(base, 'TITLE_COUNT', 130)
+    monkeypatch.setattr(base, 'DeterministicTransport', MixedScopeTransport)
+    monkeypatch.setattr(socket.socket, 'connect', base._deny_network)
+    monkeypatch.setattr(socket.socket, 'connect_ex', base._deny_network)
+    flow = base.run_full_scale_flow(tmp_path, monkeypatch, name='mixed-direct-pool', selected_event_count=1)
+    assert flow.task_status == 'completed', flow
+    assert flow.calls.get('research:research_round') == 1
+    assert not any(name.startswith('forbidden:') for name in flow.calls)
+    assert [row['companyCode'] for row in read_report(db_path=flow.db_path)['eveningCards']] == [flow.company_codes[0]]
 
 
 # Resolve after production implementation; absent on the red regression run.

@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from . import store
 from .config import validate_run_config
+from .delivery import runtime_contract
 from .schema import read_connection, require_schema
 from .windows import SHANGHAI
 
@@ -166,7 +167,8 @@ def maintain_evaluations(*, db_path, now: datetime) -> ScheduleResult:
                                idempotency_key=f"market-day:{company_code}:{trade_date}:{'late' if late else 'regular'}", input_version="k10-market-v1.4",
                                input_cutoff_at=close_at.isoformat(),
                                payload={"companyCode": company_code, "tradeDate": trade_date,
-                                        "collectionMode": "late_recovery" if late else "regular"},
+                                        "collectionMode": "late_recovery" if late else "regular",
+                                        "runtimeContract": runtime_contract()},
                                budget={"maxAttempts": maximum},
                                created_at=now.isoformat(), db_path=db_path)
             market_created += 1
@@ -209,7 +211,8 @@ def maintain_evaluations(*, db_path, now: datetime) -> ScheduleResult:
                                payload={"companyWindowId": str(window["companyWindowId"]), "companyCode": str(window["companyCode"]),
                                         "d0TradeDate": str(window["d0TradeDate"]), "d1TradeDate": d1, "d2TradeDate": d2,
                                         "configId": config_id, "configRevision": config_revision,
-                                        "evaluationStage": stage, "marketFactRevisions": facts},
+                                        "evaluationStage": stage, "marketFactRevisions": facts,
+                                        "runtimeContract": runtime_contract()},
                                budget={"maxAttempts": maximum}, created_at=now.isoformat(), db_path=db_path)
             evaluation_created += 1
         elif _retry_if_bounded(task_id, maximum=maximum, retry_interval=policy[1],

@@ -1,4 +1,4 @@
-"""K10 09:00 固定截止的晨间变化记录。
+"""K10 08:30 资料截止的晨间变化记录。
 
 晨报更新资料和风险状态，绝不覆盖既有计划、替换用户名单或为未选候选自动启动正反分析。
 """
@@ -299,16 +299,28 @@ def record_morning_update(
     created_at: str | None = None, occurred_at: str | None = None, update_id: str | None = None, scan_id: str | None = None, material: bool = False,
 ) -> str:
     """Append a lifecycle event; withdrawal never alters the fixed D1/D2 window."""
+    record = morning_update_record(update=update, opportunity_id=opportunity_id,
+        created_at=created_at, occurred_at=occurred_at, update_id=update_id,
+        scan_id=scan_id, material=material)
+    repository.append_opportunity_update(**record, db_path=db_path)
+    return record["lifecycle_event_id"]
+
+
+def morning_update_record(
+    *, update: MorningUpdate, opportunity_id: str, created_at: str | None = None,
+    occurred_at: str | None = None, update_id: str | None = None,
+    scan_id: str | None = None, material: bool = False,
+) -> dict[str, Any]:
+    """Freeze a review's proposed lifecycle fact without making it public."""
     identifier = update_id or str(uuid4())
     if not isinstance(opportunity_id, str) or not opportunity_id:
         raise MorningUpdateError("晨间更新缺少正式机会")
     kind = "withdrawal" if update.reason_status == "invalidated" else ("risk" if update.requires_review else "evidence_update")
-    repository.append_opportunity_update(
+    return dict(
         lifecycle_event_id=identifier, opportunity_id=opportunity_id, kind=kind, reason=update.summary,
         source_refs=update.source_refs, content={**update.to_dict(), "material": material, **({"scanId":scan_id} if scan_id else {})}, occurred_at=occurred_at or _utc_now(),
-        created_at=created_at or _utc_now(), db_path=db_path,
+        created_at=created_at or _utc_now(),
     )
-    return identifier
 
 
 __all__ = [

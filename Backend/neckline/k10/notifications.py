@@ -26,6 +26,11 @@ NOTIFICATION_KINDS = frozenset(notify_kinds.ALL_KINDS)
 TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "not_configured", "cancelled"})
 _PERMANENT_DEVICE_REASONS = frozenset({"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"})
 _CONFIGURATION_BLOCK_REASONS = frozenset({"credentials_missing", "key_unreadable", "key_invalid"})
+_B76_REPORT_TASK_KINDS = frozenset({"evening_scan", "morning_scan"})
+# An analysis task remains an independently user-visible result.  Review and
+# evaluation tasks are prerequisites/maintenance, so their B76 marker must not
+# turn their terminal worker hooks into report (or generic) pushes.
+_B76_AUTOMATIC_TASK_KINDS = _B76_REPORT_TASK_KINDS | frozenset({"analysis"})
 
 
 class NotificationError(RuntimeError):
@@ -220,7 +225,7 @@ def rollback_notifications_schema(db_path: Path, *, target_version: int = 0) -> 
     return 0
 
 
-_CURRENT_DEEP_LINK_KEYS = frozenset(("companyWindowId", "opportunityId", "batchId", "scanId"))
+_CURRENT_DEEP_LINK_KEYS = frozenset(("companyWindowId", "opportunityId", "batchId", "scanId", "reportId", "windowKind"))
 _LEGACY_DEEP_LINK_KEYS = frozenset(("observationId", "companyCandidateId"))
 _LEGACY_ANALYSIS_BODY = "可查看正反全文，以及资料与价位草案的完成状态。"
 
@@ -342,92 +347,392 @@ def _message(kind: str, *, terminal_status: str, stage: str) -> tuple[str, str]:
     return "K10 任务需要查看", f"{reason}，未自动执行任何交易操作。请打开 APP 查看详情或重试。"
 
 
+def _b76_delivery_is_well_formed(delivery: object, *, allow_failed: bool = False) -> bool:
+    """Check the public manifest shape before using it as a notification identity.
+
+    The report writer remains the authority for all semantic checks.  This
+    narrower fence prevents a malformed checkpoint or coverage JSON from
+    becoming an apparently successful push identity.
+    """
+    if not isinstance(delivery, Mapping):
+        return False
+    expected = {
+        "contractVersion", "outcome", "rankingScope", "counts", "gaps",
+        "inputManifestSha256", "eligibleSetSha256", "rankingInputSha256",
+    }
+    from .delivery import REPORT_DELIVERY_CONTRACT, LEGACY_REPORT_DELIVERY_CONTRACT
+    if set(delivery) != expected or delivery.get("contractVersion") not in {
+        REPORT_DELIVERY_CONTRACT, LEGACY_REPORT_DELIVERY_CONTRACT,
+    }:
+        return False
+    outcome, scope = delivery.get("outcome"), delivery.get("rankingScope")
+    allowed_outcomes = {"complete", "partial"} | ({"failed"} if allow_failed else set())
+    if outcome not in allowed_outcomes or scope not in {"all_processed", "completed_subset", "none"}:
+        return False
+    counts = delivery.get("counts")
+    expected_counts = {
+        "titleInput", "titleProcessed", "titleFailed", "titleUnprocessed",
+        "eventInput", "eventProcessed", "eventFailed", "eventUnprocessed",
+        "comparableCompanies", "publishedCompanies",
+    }
+    if (not isinstance(counts, Mapping) or set(counts) != expected_counts
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts.values())):
+        return False
+    if (counts["titleProcessed"] + counts["titleFailed"] + counts["titleUnprocessed"] != counts["titleInput"]
+            or counts["eventProcessed"] + counts["eventFailed"] + counts["eventUnprocessed"] != counts["eventInput"]):
+        return False
+    gaps = delivery.get("gaps")
+    if not isinstance(gaps, list) or any(not isinstance(item, Mapping) for item in gaps):
+        return False
+    if outcome == "complete" and (scope != "all_processed" or gaps):
+        return False
+    if outcome == "partial" and not gaps:
+        return False
+    if outcome == "failed" and scope != "none":
+        return False
+    ranking_input = delivery.get("rankingInputSha256")
+    if (scope == "none") != (ranking_input is None):
+        return False
+    def valid_hash(value: object) -> bool:
+        return isinstance(value, str) and len(value) == 64 and all(ch in "0123456789abcdef" for ch in value)
+    return (valid_hash(delivery.get("inputManifestSha256"))
+            and valid_hash(delivery.get("eligibleSetSha256"))
+            and (ranking_input is None or valid_hash(ranking_input)))
+
+
+def _b76_committed_delivery(
+    conn, *, task_kind: str, terminal_status: str, stage: str,
+    payload: Mapping[str, Any], checkpoint: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Read the already-committed report back before creating its outbox row.
+
+    The notification transaction deliberately does not publish or repair any
+    report state.  A mismatch stays without a push until the publication
+    transaction itself has been corrected or replayed safely.
+    """
+    if terminal_status != "completed" or stage not in {"report_complete", "report_partial"}:
+        raise NotificationConflict("B76 成功通知只能来自已公开报告终态")
+    if checkpoint.get("deliveryPublicationAtomic") is not True:
+        raise NotificationConflict("B76 报告未通过原子公开边界")
+    scan_id = checkpoint.get("scanId")
+    delivery = checkpoint.get("delivery")
+    if not isinstance(scan_id, str) or not scan_id or not _b76_delivery_is_well_formed(delivery):
+        raise NotificationConflict("B76 报告任务缺少有效交付清单")
+    assert isinstance(delivery, Mapping)
+    expected_window = {"evening_scan": "evening", "morning_scan": "morning"}.get(task_kind)
+    if expected_window is None:
+        raise NotificationConflict("B76 报告任务类型无效")
+    aggregate_status = checkpoint.get("morningAggregateStatus")
+    if aggregate_status not in {None, "completed", "partial"}:
+        raise NotificationConflict("晨报聚合终态无效")
+    if aggregate_status is not None and task_kind != "morning_scan":
+        raise NotificationConflict("非晨报任务不得声明晨报聚合终态")
+    public_status = (
+        "partial" if aggregate_status == "partial" or delivery["outcome"] == "partial"
+        else "completed"
+    )
+    required_stage = "report_partial" if public_status == "partial" else "report_complete"
+    if stage != required_stage:
+        raise NotificationConflict("B76 报告终态与公开交付范围不一致")
+    row = conn.execute(
+        "SELECT r.report_id,r.scan_id,r.window_kind,r.available_at,r.status,c.content_json "
+        "FROM k10_v2_report_runs r JOIN k10_v2_report_coverage c ON c.report_id=r.report_id "
+        "WHERE r.scan_id=?",
+        (scan_id,),
+    ).fetchone()
+    if row is None:
+        raise NotificationConflict("B76 报告尚未提交，不能通知")
+    report_id, report_scan_id, window_kind, available_at, report_status, coverage_raw = row
+    if (report_id != "report_" + scan_id or report_scan_id != scan_id or window_kind != expected_window
+            or not isinstance(available_at, str) or not available_at or report_status != public_status):
+        raise NotificationConflict("B76 已提交报告与任务交付状态不一致")
+    try:
+        coverage = json.loads(coverage_raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise NotificationConflict("B76 报告完整度记录无效") from exc
+    if not isinstance(coverage, Mapping) or coverage.get("delivery") != dict(delivery):
+        raise NotificationConflict("B76 报告与任务交付清单不一致")
+    scan = conn.execute(
+        "SELECT window_kind,status,coverage_json FROM k10_scans WHERE scan_id=?", (scan_id,)
+    ).fetchone()
+    if scan is None or scan[0] != expected_window or scan[1] != public_status:
+        raise NotificationConflict("B76 扫描终态与交付清单不一致")
+    try:
+        scan_coverage = json.loads(scan[2])
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise NotificationConflict("B76 扫描完整度记录无效") from exc
+    if not isinstance(scan_coverage, Mapping) or scan_coverage.get("delivery") != dict(delivery):
+        raise NotificationConflict("B76 扫描与任务交付清单不一致")
+    from .delivery import digest
+    ranking_input = scan_coverage.get("rankingInput")
+    if ((delivery["rankingInputSha256"] is None and ranking_input is not None)
+            or (delivery["rankingInputSha256"] is not None
+                and delivery["rankingInputSha256"] != digest(ranking_input))):
+        raise NotificationConflict("B76 扫描排序依据与交付清单不一致")
+    from .v2_store import delivery_identity_from_cards
+    try:
+        published_identity = delivery_identity_from_cards(conn, report_id=str(report_id))
+    except ValueError as exc:
+        raise NotificationConflict(str(exc)) from exc
+    counts = delivery["counts"]
+    if (counts["publishedCompanies"] != len(published_identity)
+            or len({item["companyCode"] for item in published_identity}) != len(published_identity)
+            or delivery["eligibleSetSha256"] != digest(published_identity)):
+        raise NotificationConflict("B76 报告卡片身份与交付清单不一致")
+    notification_outcome = "partial" if public_status == "partial" else str(delivery["outcome"])
+    if task_kind == "morning_scan":
+        morning_id = checkpoint.get("morningReportId")
+        morning_revision = checkpoint.get("morningReportRevision")
+        if (not isinstance(morning_id, str) or not morning_id or isinstance(morning_revision, bool)
+                or not isinstance(morning_revision, int) or morning_revision < 1):
+            raise NotificationConflict("B76 晨间聚合报告未与公开交付一同提交")
+        morning = conn.execute(
+            "SELECT scan_id,revision,status FROM k10_morning_reports WHERE report_id=?", (morning_id,)
+        ).fetchone()
+        if (morning is None or morning[0] != scan_id or int(morning[1]) != morning_revision
+                or morning[2] != (aggregate_status or "completed")):
+            raise NotificationConflict("B76 晨间聚合报告与公开交付不一致")
+    return {
+        "reportId": str(report_id), "delivery": dict(delivery), "windowKind": str(window_kind),
+        "notificationOutcome": notification_outcome,
+    }
+
+
+def _current_committed_delivery(conn, *, task_kind: str, terminal_status: str, stage: str,
+                                payload: Mapping[str, Any], checkpoint: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the sole public authority; publication already validated its cards."""
+    from .delivery import REPORT_DELIVERY_CONTRACT
+    if terminal_status != "completed" or stage not in {"report_complete", "report_partial"}:
+        raise NotificationConflict("报告尚未正式发布")
+    row = conn.execute(
+        "SELECT r.report_id,r.window_kind,r.available_at,r.status,c.content_json "
+        "FROM k10_v2_report_runs r JOIN k10_v2_report_coverage c ON c.report_id=r.report_id WHERE r.scan_id=?",
+        (checkpoint.get("scanId"),),
+    ).fetchone()
+    expected_window = {"evening_scan": "evening", "morning_scan": "morning"}.get(task_kind)
+    if row is None or row[1] != expected_window or not row[2] or row[3] not in {"completed", "partial"}:
+        raise NotificationConflict("报告没有可公开的正式结果")
+    try:
+        delivery = json.loads(row[4])["delivery"]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise NotificationConflict("报告交付记录不可读") from exc
+    if not _b76_delivery_is_well_formed(delivery) or delivery.get("contractVersion") != REPORT_DELIVERY_CONTRACT:
+        raise NotificationConflict("报告交付记录无效")
+    return {"reportId": str(row[0]), "windowKind": str(row[1]), "delivery": delivery,
+            "notificationOutcome": "partial" if row[3] == "partial" else "complete"}
+
+
+def _b76_failure_incident(conn, *, terminal_status: str, stage: str, checkpoint: Mapping[str, Any]) -> str:
+    """Return a stable failure incident identity, independent of worker attempts."""
+    if stage == "paused":
+        raise NotificationConflict("受控暂停不是任务故障，不生成失败通知")
+    if terminal_status not in {"failed", "not_configured", "cancelled"}:
+        raise NotificationConflict("B76 任务终态不能形成失败通知")
+    delivery = checkpoint.get("delivery")
+    if delivery is not None and not _b76_delivery_is_well_formed(delivery, allow_failed=True):
+        raise NotificationConflict("B76 失败诊断交付清单无效")
+    # A diagnostic ``outcome=failed`` is intentionally not publication.  A
+    # stale checkpoint must also not suppress a truthful failure push.  Only a
+    # report that is actually readable as a public complete/partial report
+    # proves that there is no failure incident left to notify.
+    scan_id = checkpoint.get("scanId")
+    if isinstance(scan_id, str) and scan_id:
+        public = conn.execute(
+            "SELECT status,available_at FROM k10_v2_report_runs WHERE scan_id=?", (scan_id,)
+        ).fetchone()
+        if public is not None and public[0] in {"completed", "partial"} and isinstance(public[1], str) and public[1]:
+            raise NotificationConflict("已公开 B76 报告的任务不能再作为失败通知")
+    authorization = checkpoint.get("recoveryAuthorized")
+    if authorization is None:
+        return "initial"
+    if not isinstance(authorization, Mapping):
+        raise NotificationConflict("B76 恢复授权记录无效")
+    scan_id = authorization.get("scanId")
+    input_hash = authorization.get("frozenInputSha256")
+    authorized_at = authorization.get("authorizedAt")
+    previous_attempt = authorization.get("previousAttemptCount")
+    if (not isinstance(scan_id, str) or not scan_id or not isinstance(input_hash, str) or len(input_hash) != 64
+            or not isinstance(authorized_at, str) or not authorized_at or isinstance(previous_attempt, bool)
+            or not isinstance(previous_attempt, int) or previous_attempt < 1):
+        raise NotificationConflict("B76 恢复授权记录无效")
+    from .delivery import digest
+    return "recovery:" + digest({
+        "scanId": scan_id, "frozenInputSha256": input_hash,
+        "authorizedAt": authorized_at, "previousAttemptCount": previous_attempt,
+    })
+
+
+def _b76_message(
+    *, kind: str, terminal_status: str, delivery: Mapping[str, Any] | None,
+    notification_outcome: str | None = None,
+) -> tuple[str, str]:
+    if delivery is None:
+        return (
+            "K10 报告未交付",
+            "本次报告未完成，未发布新机会，也未自动执行任何交易操作。请打开 APP 查看详情。",
+        )
+    prefix = "晨间" if kind == notify_kinds.KIND_K10_MORNING else "晚间"
+    if (notification_outcome or delivery["outcome"]) == "complete":
+        return f"K10 {prefix}报告已就绪", "本次报告已完整发布，请查看事件、公司候选与资料覆盖情况。"
+    return (
+        f"K10 {prefix}报告已发布（含执行缺口）",
+        "已发布独立完成内容；部分处理单元未完成。请查看报告中的范围、缺口与未完成数量。",
+    )
+
+
 def enqueue_task_notification(
     *, task_id: str, db_path: Path, created_at: datetime,
-    notification_kind: str | None = None,
+    notification_kind: str | None = None, automatic: bool = False,
 ) -> Notification:
-    """Create one notification per task attempt, terminal state, and kind.
-
-    A task retry increments ``k10_tasks.attempt_count`` on its next lease.  A later
-    terminal failure is therefore a new user-visible incident, while duplicate
-    terminal hooks for the same attempt remain idempotent.
-    """
-    stamp = _utc_text(created_at)
+    """Enqueue a terminal failure/analysis or read an existing report outbox."""
     with write_connection(db_path) as conn:
-        _require_notifications_schema(conn)
-        row = conn.execute(
-            "SELECT kind,status,stage,attempt_count,payload_json,checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)
-        ).fetchone()
-        if row is None:
-            raise NotificationError("K10 任务不存在")
-        task_kind, terminal_status, stage, task_attempt_count = str(row[0]), str(row[1]), str(row[2]), int(row[3])
-        if terminal_status not in TERMINAL_TASK_STATUSES:
-            raise NotificationConflict("通知只能由已经终态的 K10 任务触发")
-        if terminal_status == "failed" and stage == "paused":
-            raise NotificationConflict("受控暂停不是任务故障，不生成失败通知")
-        if task_attempt_count < 1:
-            raise NotificationConflict("未领取过的 K10 任务不能生成终态通知")
+        return _enqueue_task_notification(conn, task_id=task_id, created_at=created_at,
+                                          notification_kind=notification_kind, automatic=automatic)
+
+
+def enqueue_committed_report_notification(conn, *, task_id: str, created_at: datetime | str) -> Notification:
+    """Create the report outbox in the caller's publication transaction."""
+    if not conn.in_transaction:
+        raise NotificationConflict("报告通知必须与报告使用同一事务")
+    stamp = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if isinstance(created_at, str) else created_at
+    return _enqueue_task_notification(conn, task_id=task_id, created_at=stamp,
+                                      notification_kind=None, automatic=True, publishing=True)
+
+
+def _enqueue_task_notification(conn, *, task_id: str, created_at: datetime,
+                               notification_kind: str | None, automatic: bool,
+                               publishing: bool = False) -> Notification:
+    stamp = _utc_text(created_at)
+    _require_notifications_schema(conn)
+    row = conn.execute(
+        "SELECT kind,status,stage,attempt_count,payload_json,checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise NotificationError("K10 任务不存在")
+    task_kind, terminal_status, stage, task_attempt_count = str(row[0]), str(row[1]), str(row[2]), int(row[3])
+    if terminal_status not in TERMINAL_TASK_STATUSES:
+        raise NotificationConflict("通知只能由已经终态的 K10 任务触发")
+    if terminal_status == "failed" and stage == "paused":
+        raise NotificationConflict("受控暂停不是任务故障，不生成失败通知")
+    if task_attempt_count < 1:
+        raise NotificationConflict("未领取过的 K10 任务不能生成终态通知")
+    try:
         payload = json.loads(row[4])
-        payload = payload if isinstance(payload, Mapping) else {}
-        kind = _kind(task_kind=task_kind, terminal_status=terminal_status, payload=payload, requested=notification_kind)
         checkpoint = json.loads(row[5])
-        checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
-        disclosure = _evidence_disclosure(payload=payload, checkpoint=checkpoint)
-        title, body = _message(kind, terminal_status=terminal_status, stage=stage)
-        body += _rumor_notice(disclosure)
-        deep_link = _deep_link({**payload, **checkpoint})
-        notification_payload = _notification_payload(deep_link=deep_link, evidence_disclosure=disclosure)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise NotificationConflict("K10 通知任务记录无效") from exc
+    payload = payload if isinstance(payload, Mapping) else {}
+    checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+    from .delivery import is_b76_runtime_contract, is_current_runtime_contract, digest
+    is_current = is_current_runtime_contract(payload.get("runtimeContract"))
+    is_b76 = is_b76_runtime_contract(payload.get("runtimeContract"))
+    is_b76_report = is_b76 and task_kind in _B76_REPORT_TASK_KINDS
+    if automatic and (not is_current or task_kind not in _B76_AUTOMATIC_TASK_KINDS):
+        raise NotificationConflict("该任务不触发当前协议自动通知")
+    b76_delivery: Mapping[str, Any] | None = None
+    b76_notification_outcome: str | None = None
+    if is_b76_report and terminal_status == "completed":
+        committed = (_current_committed_delivery if is_current else _b76_committed_delivery)(
+            conn, task_kind=task_kind, terminal_status=terminal_status, stage=stage,
+            payload=payload, checkpoint=checkpoint,
+        )
+        b76_delivery = committed["delivery"]
+        b76_notification_outcome = str(committed["notificationOutcome"])
+        kind = (notify_kinds.KIND_K10_MORNING if committed["windowKind"] == "morning"
+                else notify_kinds.KIND_K10_EVENING)
+        if notification_kind is not None and notification_kind != kind:
+            raise NotificationConflict("B76 报告通知类型与已提交报告不一致")
+        idempotency_key = "k10-report-notification:" + committed["reportId"] + ":" + digest(b76_delivery)
+    elif is_b76_report:
+        kind = notify_kinds.KIND_K10_FAILURE
+        if notification_kind is not None and notification_kind != kind:
+            raise NotificationConflict("B76 失败通知类型无效")
+        incident = _b76_failure_incident(
+            conn,
+            terminal_status=terminal_status, stage=stage, checkpoint=checkpoint,
+        )
+        idempotency_key = f"k10-report-notification:{task_id}:failure:{terminal_status}:{incident}"
+    else:
+        kind = _kind(task_kind=task_kind, terminal_status=terminal_status, payload=payload, requested=notification_kind)
         idempotency_key = f"k10-notification:{task_id}:attempt:{task_attempt_count}:{terminal_status}:{kind}"
-        existing = conn.execute(
-            "SELECT notification_id,task_id,kind,terminal_status,task_attempt_count,title,body,deep_link_json,status,attempt_count,created_at "
-            "FROM k10_task_notifications WHERE idempotency_key=?", (idempotency_key,)
-        ).fetchone()
-        if existing is not None:
-            expected = (task_id, kind, terminal_status, task_attempt_count, title, body, _json(notification_payload))
+    disclosure = _evidence_disclosure(payload=payload, checkpoint=checkpoint)
+    title, body = (_b76_message(
+                       kind=kind, terminal_status=terminal_status, delivery=b76_delivery,
+                       notification_outcome=b76_notification_outcome,
+                   )
+                   if is_b76_report else _message(kind, terminal_status=terminal_status, stage=stage))
+    body += _rumor_notice(disclosure)
+    deep_link = _deep_link({**payload, **checkpoint})
+    if is_current and is_b76_report:
+        report_link = conn.execute("SELECT report_id,window_kind FROM k10_v2_report_runs WHERE scan_id=?",
+                                   (checkpoint.get("scanId"),)).fetchone()
+        if report_link is not None:
+            deep_link.update(reportId=str(report_link[0]), windowKind=str(report_link[1]))
+    notification_payload = _notification_payload(deep_link=deep_link, evidence_disclosure=disclosure)
+    existing = conn.execute(
+        "SELECT notification_id,task_id,kind,terminal_status,task_attempt_count,title,body,deep_link_json,status,attempt_count,created_at "
+        "FROM k10_task_notifications WHERE idempotency_key=?", (idempotency_key,)
+    ).fetchone()
+    if existing is not None:
+        if is_b76_report:
             try:
                 stored_payload = json.loads(existing[7])
-            except json.JSONDecodeError:
-                raise NotificationConflict("K10 通知幂等键对应深链无效") from None
-            if not isinstance(stored_payload, Mapping) or set(stored_payload) - (_CURRENT_DEEP_LINK_KEYS | _LEGACY_DEEP_LINK_KEYS | {"research"}):
-                raise NotificationConflict("K10 通知幂等键对应深链无效")
-            stored_disclosure = _stored_evidence_disclosure(stored_payload)
-            if "research" in stored_payload and stored_disclosure is None:
-                raise NotificationConflict("K10 通知幂等键对应研究披露无效")
-            if kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) not in {body, _LEGACY_ANALYSIS_BODY}:
-                raise NotificationConflict("K10 通知幂等键对应内容已变化")
-            stored_link = _stored_deep_link(stored_payload)
-            stored_notification_payload = _notification_payload(deep_link=stored_link, evidence_disclosure=stored_disclosure)
-            actual = (*tuple(existing[1:6]), body if str(existing[2]) == notify_kinds.KIND_K10_ANALYSIS else existing[6],
-                      _json(stored_notification_payload))
-            immutable_match = tuple(existing[1:6]) == (task_id, kind, terminal_status, task_attempt_count, title)
-            permitted_analysis_body = kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) in {body, _LEGACY_ANALYSIS_BODY}
-            matching_current_ids = all(
-                key not in stored_payload or stored_payload[key] == deep_link.get(key)
-                for key in _CURRENT_DEEP_LINK_KEYS
-            )
-            legacy_upgrade_match = (immutable_match and permitted_analysis_body and
-                                    _legacy_deep_link_only(stored_payload) and matching_current_ids)
-            if actual != expected and not legacy_upgrade_match:
-                raise NotificationConflict("K10 通知幂等键对应内容已变化")
-            # Keep a legacy row readable but return the current public contract to
-            # the task hook.  Dispatch applies the same filter for rows which never
-            # receive another terminal hook.
-            return Notification(str(existing[0]), task_id, kind, terminal_status, task_attempt_count,
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise NotificationConflict("B76 通知幂等键对应深链无效") from None
+            expected = (task_id, kind, terminal_status, title, body, _json(notification_payload))
+            actual = (str(existing[1]), str(existing[2]), str(existing[3]), str(existing[5]), str(existing[6]),
+                      _json(stored_payload) if isinstance(stored_payload, Mapping) else None)
+            if actual != expected:
+                raise NotificationConflict("B76 通知幂等键对应内容已变化")
+            return Notification(str(existing[0]), task_id, kind, terminal_status, int(existing[4]),
                                 title, body, deep_link, str(existing[8]), int(existing[9]), str(existing[10]), disclosure)
-        notification_id = str(uuid4())
-        conn.execute(
-            "INSERT INTO k10_task_notifications(notification_id,idempotency_key,task_id,kind,terminal_status,task_attempt_count,title,body,"
-            "deep_link_json,status,attempt_count,last_error,lease_owner,lease_until,created_at,updated_at,next_attempt_at,blocked_reason) "
-            "VALUES(?,?,?,?,?,?,?,?,?,'queued',0,NULL,NULL,NULL,?,?,?,NULL)",
-            (notification_id, idempotency_key, task_id, kind, terminal_status, task_attempt_count, title, body,
-             _json(notification_payload), stamp, stamp, stamp),
+        expected = (task_id, kind, terminal_status, task_attempt_count, title, body, _json(notification_payload))
+        try:
+            stored_payload = json.loads(existing[7])
+        except json.JSONDecodeError:
+            raise NotificationConflict("K10 通知幂等键对应深链无效") from None
+        if not isinstance(stored_payload, Mapping) or set(stored_payload) - (_CURRENT_DEEP_LINK_KEYS | _LEGACY_DEEP_LINK_KEYS | {"research"}):
+            raise NotificationConflict("K10 通知幂等键对应深链无效")
+        stored_disclosure = _stored_evidence_disclosure(stored_payload)
+        if "research" in stored_payload and stored_disclosure is None:
+            raise NotificationConflict("K10 通知幂等键对应研究披露无效")
+        if kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) not in {body, _LEGACY_ANALYSIS_BODY}:
+            raise NotificationConflict("K10 通知幂等键对应内容已变化")
+        stored_link = _stored_deep_link(stored_payload)
+        stored_notification_payload = _notification_payload(deep_link=stored_link, evidence_disclosure=stored_disclosure)
+        actual = (*tuple(existing[1:6]), body if str(existing[2]) == notify_kinds.KIND_K10_ANALYSIS else existing[6],
+                  _json(stored_notification_payload))
+        immutable_match = tuple(existing[1:6]) == (task_id, kind, terminal_status, task_attempt_count, title)
+        permitted_analysis_body = kind == notify_kinds.KIND_K10_ANALYSIS and str(existing[6]) in {body, _LEGACY_ANALYSIS_BODY}
+        matching_current_ids = all(
+            key not in stored_payload or stored_payload[key] == deep_link.get(key)
+            for key in _CURRENT_DEEP_LINK_KEYS
         )
+        legacy_upgrade_match = (immutable_match and permitted_analysis_body and
+                                _legacy_deep_link_only(stored_payload) and matching_current_ids)
+        if actual != expected and not legacy_upgrade_match:
+            raise NotificationConflict("K10 通知幂等键对应内容已变化")
+        # Keep a legacy row readable but return the current public contract to
+        # the task hook.  Dispatch applies the same filter for rows which never
+        # receive another terminal hook.
+        return Notification(str(existing[0]), task_id, kind, terminal_status, task_attempt_count,
+                            title, body, deep_link, str(existing[8]), int(existing[9]), str(existing[10]), disclosure)
+    if is_current and is_b76_report and terminal_status == "completed" and not publishing:
+        raise NotificationConflict("新报告缺少原子通知记录，需修复原公开事务；后台不另造成功通知")
+    notification_id = str(uuid4())
+    conn.execute(
+        "INSERT INTO k10_task_notifications(notification_id,idempotency_key,task_id,kind,terminal_status,task_attempt_count,title,body,"
+        "deep_link_json,status,attempt_count,last_error,lease_owner,lease_until,created_at,updated_at,next_attempt_at,blocked_reason) "
+        "VALUES(?,?,?,?,?,?,?,?,?,'queued',0,NULL,NULL,NULL,?,?,?,NULL)",
+        (notification_id, idempotency_key, task_id, kind, terminal_status, task_attempt_count, title, body,
+         _json(notification_payload), stamp, stamp, stamp),
+    )
     return Notification(notification_id, task_id, kind, terminal_status, task_attempt_count, title, body, deep_link, "queued", 0, stamp, disclosure)
 
 
 def on_task_terminal(**kwargs) -> Notification:
-    """Worker-friendly terminal hook; intentionally a named wrapper for runtime wiring."""
-    return enqueue_task_notification(**kwargs)
+    """Automatic hook for exact B76 report and user-visible analysis tasks."""
+    return enqueue_task_notification(automatic=True, **kwargs)
 
 
 def _notification(row) -> Notification:

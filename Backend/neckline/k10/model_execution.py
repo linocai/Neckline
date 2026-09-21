@@ -24,6 +24,9 @@ _OPERATIONS = frozenset({
     "titleBatch", "titleReconcile", "understand", "verify", "map", "compare", "classify", "prioritize",
     "investigation_extract_claims", "investigation_plan_gaps", "investigation_plan_queries",
     "investigation_assess_evidence", "investigation_close_research", "investigation_compare_companies",
+    # B76 keeps persisted stage actions stable while these names identify the
+    # one provider receipt that fans out into those stage records.
+    "investigation_plan_research", "investigation_assess_and_decide", "investigation_research_round",
 })
 _JSON_CODES = frozenset({"json_invalid", "json_root_invalid", "response_json_invalid", "response_structure_invalid"})
 _NETWORK_CODES = frozenset({
@@ -50,6 +53,15 @@ class ModelNetworkError(ModelOperationError):
     pass
 
 
+class ModelReceiptRecoveryUnavailable(ModelOperationError):
+    """A running checkpoint may only consume an exact saved response.
+
+    This is deliberately distinct from a provider/network failure: the caller
+    did not reserve a new request and must leave the original running evidence
+    untouched when the durable receipt cannot be replayed.
+    """
+
+
 class JsonRepairError(ModelOperationError):
     pass
 
@@ -72,7 +84,7 @@ class ModelInvocation:
 class ModelOperationResult:
     """A safe result for discovery orchestration; ``value`` is normalized JSON only."""
 
-    status: Literal["completed", "failed"]
+    status: Literal["completed", "failed", "blocked"]
     value: Mapping[str, Any] | list[Any] | None
     reused: bool
     safe_error_code: str | None
@@ -87,7 +99,7 @@ class ModelOperationResult:
 
 @dataclass(frozen=True)
 class _Reservation:
-    state: Literal["reserved", "completed", "failed"]
+    state: Literal["reserved", "completed", "failed", "receipt_recovery"]
     attempt_count: int
     network_attempt_count: int
     repair_attempt_count: int
@@ -219,6 +231,7 @@ def _read_result(raw: object) -> Mapping[str, Any] | list[Any] | None:
 def _reserve(
     *, task_id: str, operation: str, item_key: str, input_sha256: str, network_limit: int,
     repair_limit: int, db_path, leaseguard: Callable[[], None] | None, updated_at: str,
+    allow_receipt_recovery: bool = False,
 ) -> _Reservation:
     if leaseguard is not None:
         leaseguard()
@@ -249,6 +262,12 @@ def _reserve(
             # Remaining network attempts do not authorize resending a request
             # whose paid outcome was lost before the result checkpoint.
             prior_attempts, prior_network, prior_repairs = int(row[1]), int(row[2]), int(row[3])
+            if allow_receipt_recovery:
+                # The caller must bind a provider context that can only read an
+                # exact durable response.  Do not turn this checkpoint into a
+                # fresh reservation before that proof succeeds.
+                return _Reservation("receipt_recovery", prior_attempts, prior_network, prior_repairs,
+                                    int(row[4]), row[5], row[6])
             return _Reservation("failed", prior_attempts, prior_network, prior_repairs, int(row[4]), row[5], row[6],
                                 "model_request_outcome_unknown")
         prior_attempts = int(row[1]) if row is not None else 0
@@ -314,6 +333,7 @@ def execute_model_operation(
     db_path, leaseguard: Callable[[], None] | None = None, repair_call: Callable[[], Any] | None = None,
     spend_context_factory: Callable[[int, bool], Any] | None = None,
     now: Callable[[], datetime] | None = None, monotonic_clock: Callable[[], float] = monotonic,
+    allow_receipt_recovery: bool = False,
 ) -> ModelOperationResult:
     """Execute at most one provider call and durably account for it first.
 
@@ -334,7 +354,8 @@ def execute_model_operation(
     updated_at = timestamp.astimezone(timezone.utc).isoformat(timespec="seconds")
     reservation = _reserve(task_id=task_id, operation=operation, item_key=item_key, input_sha256=input_sha256,
                            network_limit=network_limit, repair_limit=repair_limit, db_path=db_path,
-                           leaseguard=leaseguard, updated_at=updated_at)
+                           leaseguard=leaseguard, updated_at=updated_at,
+                           allow_receipt_recovery=allow_receipt_recovery)
     if reservation.state == "completed":
         return ModelOperationResult("completed", reservation.value, True, None, reservation.attempt_count,
                                     reservation.network_attempt_count, reservation.repair_attempt_count,
@@ -358,6 +379,15 @@ def execute_model_operation(
         with manager:
             candidate, provider_input, provider_output, provider_total = _parse_invocation(call())
         normalized = _normal_json(validate(candidate))
+    except ModelReceiptRecoveryUnavailable:
+        # Preserve a started/unknown checkpoint exactly as it was.  It may be
+        # reconciled later only from its matching receipt, never by a new POST.
+        return ModelOperationResult("blocked", None, False, "model_request_outcome_unknown",
+                                    reservation.attempt_count, reservation.network_attempt_count,
+                                    reservation.repair_attempt_count, reservation.elapsed_ms,
+                                    reservation.input_tokens, reservation.output_tokens,
+                                    None if reservation.input_tokens is None or reservation.output_tokens is None
+                                    else reservation.input_tokens + reservation.output_tokens)
     except Exception as exc:
         failure = _classify_error(exc)
         if provider_input is None:
@@ -391,5 +421,5 @@ def execute_model_operation(
 
 __all__ = [
     "JsonRepairError", "ModelInvocation", "ModelNetworkError", "ModelOperationError", "ModelOperationResult",
-    "SemanticValidationError", "execute_model_operation",
+    "ModelReceiptRecoveryUnavailable", "SemanticValidationError", "execute_model_operation",
 ]

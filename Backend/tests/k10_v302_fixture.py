@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from neckline.api.k10 import create_router
 from neckline.k10 import runtime, store
+from neckline.k10.delivery import runtime_contract
 from neckline.k10.evaluation import evaluate_company_window, evaluation_state
 from neckline.k10.market_observation import fetch_market_day_fact, record_market_day_fact
 from neckline.k10.morning_runtime import morning_review_handler
@@ -173,23 +174,17 @@ def _append_morning_document(path: Path, *, document_id: str, source_key: str, t
     return [{"documentId": document_id, "revision": 1}]
 
 
-def _bind_v305_execution(path: Path, *, task_id: str, bound_at: str) -> None:
-    """Bind each paid fixture task to the test-only approved V2 profile.
+def _approved_execution_binding(path: Path) -> dict[str, Any]:
+    """Return the producer-time binding required by the strict B76 worker gate.
 
-    The worker must exercise the same fail-closed V3.0.5 gate as production;
-    fake providers replace only the network seam, never the durable approval
-    or run-control boundary.
+    The fixture's direct child-task setup is deliberately small, but it still
+    creates the approved profile and task binding in the producer transaction.
+    Fake providers replace only the network seam.
     """
     config_id, revision = append_approved_execution_profile(
-        # The immutable approval timestamp is fixed.  Later task bindings are
-        # distinct scheduled actions, not attempts to rewrite that approval.
         db_path=path, created_at=FIRST_CUTOFF, config_id="v302-fixture-execution",
     )
-    store.bind_task_execution(
-        task_id=task_id, execution_config_id=config_id,
-        execution_config_revision=revision, binding_kind="scheduled",
-        bound_at=bound_at, db_path=path,
-    )
+    return {"configId": config_id, "revision": revision, "bindingKind": "scheduled"}
 
 
 def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
@@ -218,16 +213,18 @@ def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict
             "morningEvidenceRefs": morning_refs, "independentVerificationRefs": independent_refs,
             "companyWindowId": target["companyWindowId"], "displayRank": index,
             "selectionState": descriptor["selectionState"], "lifecycle": target["state"], "isNew": descriptor["isNew"],
-            "sourceStatus": source_status, "configId": "cfg-fixture", "configRevision": 1}
+            "sourceStatus": source_status, "configId": "cfg-fixture", "configRevision": 1,
+            "runtimeContract": runtime_contract()}
         task_id = f"morning-review-{index}"
         store.enqueue_task(task_id=task_id, kind="morning_review", idempotency_key=task_id, input_version="fixture-config",
-            input_cutoff_at=MORNING_AT, payload=payload, budget=_config()["taskPolicies"]["morning"], created_at=MORNING_AT, db_path=path)
-        _bind_v305_execution(path, task_id=task_id, bound_at=MORNING_AT)
+            input_cutoff_at=MORNING_AT, payload=payload, budget=_config()["taskPolicies"]["morning"], created_at=MORNING_AT,
+            execution_binding=_approved_execution_binding(path), db_path=path)
         provider = _Provider([response])
         resolution = lambda **_: ProviderResolution("configured", provider, "fixture", None)
         with patch("neckline.k10.morning_runtime.resolve_deepseek_v4_pro", resolution):
             task = run_once(db_path=path, worker_id=f"fixture-morning-{index}", lease_for=timedelta(minutes=5),
-                handlers={"morning_review": morning_review_handler}, clock=lambda: datetime.fromisoformat("2026-09-01T01:00:00+00:00"), task_id=task_id)
+                handlers={"morning_review": morning_review_handler}, require_b76_contract=True,
+                clock=lambda: datetime.fromisoformat("2026-09-01T01:00:00+00:00"), task_id=task_id)
         if task is None or task.status != "completed":
             raise RuntimeError(f"fixture morning handler failed for {target['companyCode']}")
         import sqlite3
@@ -246,15 +243,17 @@ def _run_morning_reviews(path: Path, *, targets: list[tuple[dict[str, Any], dict
 def _run_analyses(path: Path, window: dict[str, Any]) -> None:
     payload = {"configId": "cfg-fixture", "configRevision": 1, "companyWindow": window,
         "opportunities": [item for item in store.list_opportunities(db_path=path) if item["companyWindowId"] == window["companyWindowId"]],
-        "publicationSamples": [], "marketContext": {"status": "unavailable", "reason": "fixture_no_parquet", "asOf": FIRST_AVAILABLE, "sourceRefs": [], "recentDays": []}}
+        "publicationSamples": [], "marketContext": {"status": "unavailable", "reason": "fixture_no_parquet", "asOf": FIRST_AVAILABLE, "sourceRefs": [], "recentDays": []},
+        "runtimeContract": runtime_contract()}
     observed = store.observe_company_window(action_id="keep-action", observation_id="fixture-observation", task_id="fixture-analysis-1",
         outbox_id="fixture-outbox", company_window_id=window["companyWindowId"], idempotency_key="fixture-keep",
         task_input_version="fixture-config", task_input_cutoff_at=FIRST_AVAILABLE, task_payload=payload,
-        task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-08-31T09:00:00+08:00", db_path=path)
-    _bind_v305_execution(path, task_id=observed.task_id, bound_at="2026-08-31T09:00:00+08:00")
+        task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-08-31T09:00:00+08:00",
+        execution_binding=_approved_execution_binding(path), db_path=path)
     resolver = lambda **_: ProviderResolution("configured", _Provider([debate_text("第一版正方全文"), debate_text("第一版反方全文")]), "fixture", None)
     completed = run_once(db_path=path, worker_id="fixture-analysis-1", lease_for=timedelta(minutes=5),
         handlers={"analysis": runtime.production_analysis_handler(provider_resolver=resolver)},
+        require_b76_contract=True,
         clock=lambda: datetime.fromisoformat("2026-08-31T01:01:00+00:00"), task_id=observed.task_id)
     if completed is None or completed.status != "completed" or completed.attempt_count != 1:
         raise RuntimeError("fixture initial analysis worker did not finish exactly once")
@@ -271,10 +270,10 @@ def _run_analyses(path: Path, window: dict[str, Any]) -> None:
         kind="evidence_update", question=None, source_refs=[{"documentId": "doc-fixture", "revision": 2}], idempotency_key="fixture-update",
         input_cutoff_at="2026-09-04T16:00:00+08:00", task_input_version="fixture-config", task_payload=payload,
         task_budget=_config()["taskPolicies"]["analysis"], created_at="2026-09-04T16:00:00+08:00", db_path=path)
-    _bind_v305_execution(path, task_id=str(request["taskId"]), bound_at="2026-09-04T16:00:00+08:00")
     resolver = lambda **_: ProviderResolution("configured", _Provider([debate_text("第二版正方全文"), debate_text("第二版反方全文")]), "fixture", None)
     completed = run_once(db_path=path, worker_id="fixture-analysis-2", lease_for=timedelta(minutes=5),
         handlers={"analysis": runtime.production_analysis_handler(provider_resolver=resolver)},
+        require_b76_contract=True,
         clock=lambda: datetime.fromisoformat("2026-09-04T08:01:00+00:00"), task_id=request["taskId"])
     if completed is None or completed.status != "completed" or completed.attempt_count != 1:
         raise RuntimeError("fixture evidence-update analysis worker did not finish exactly once")

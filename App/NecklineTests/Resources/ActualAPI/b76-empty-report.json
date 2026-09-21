@@ -1,0 +1,10 @@
+{
+  "reason": {
+    "message": "尚无日报",
+    "missing": [],
+    "reason": "no_report"
+  },
+  "report": null,
+  "schemaVersion": 8,
+  "state": "empty"
+}

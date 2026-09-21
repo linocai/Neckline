@@ -19,7 +19,7 @@ struct PerformanceView: View {
                 }.pickerStyle(.segmented).disabled(model.offline)
                 .onChange(of: model.resultsStrategyVersion) { _, _ in
                     model.results = nil
-                    Task { await model.refresh() }
+                    Task { await model.loadPerformanceContent() }
                 }
 
                 if let results = model.results {
@@ -68,6 +68,7 @@ struct PerformanceView: View {
         }
         .background(NK.pageBg)
         .navigationTitle("选股表现")
+        .task { await model.loadPerformanceContent() }
     }
 
     private var emptyTitle: String {

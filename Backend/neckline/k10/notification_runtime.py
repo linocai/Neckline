@@ -15,7 +15,7 @@ from neckline.push.apns import apns_readiness, send_push
 from neckline.settings_store import push_kind_enabled
 
 from .notifications import (
-    DeliveryResult, NOTIFICATION_SCHEMA_VERSION, NotificationSchemaUnavailable, dispatch_task_notifications,
+    DeliveryResult, NOTIFICATION_SCHEMA_VERSION, NotificationConflict, NotificationSchemaUnavailable, dispatch_task_notifications,
     NotificationRetryPolicy, on_task_terminal, resume_configuration_blocked_notifications,
     suspend_notifications_for_configuration,
 )
@@ -119,20 +119,79 @@ def notification_readiness(*, db_path: Path, now: datetime | None = None) -> Not
 
 
 def reconcile_terminal_notifications(*, db_path: Path, now: datetime, limit: int = 100) -> int:
-    """Recover a crash between task completion and insertion of the notification."""
-    with read_connection(db_path) as conn:
-        require_schema(conn)
-        rows = conn.execute(
-            "SELECT t.task_id FROM k10_tasks t WHERE t.kind IN ('analysis','evening_scan','morning_scan') "
-            "AND t.status IN ('completed','failed','not_configured','cancelled') AND t.attempt_count>0 "
-            "AND NOT (t.status='failed' AND t.stage='paused') "
-            "AND NOT EXISTS (SELECT 1 FROM k10_task_notifications n WHERE n.task_id=t.task_id "
-            "AND n.task_attempt_count=t.attempt_count AND n.terminal_status=t.status) "
-            "ORDER BY t.updated_at LIMIT ?", (limit,),
-        ).fetchall()
-    for task_id, in rows:
-        on_task_terminal(task_id=task_id, db_path=db_path, created_at=now)
-    return len(rows)
+    """Recover terminal failure/analysis notifications without producing reports.
+
+    B78 report success outboxes are part of publication and never synthesized
+    by maintenance. Historical successful reports require explicit repair.
+    Internal review/evaluation work is outside this loop. Pagination is cursor based: a
+    page containing only already-pushed tasks can never starve a later missing
+    hook, while the scan budget remains bounded for a damaged task table.
+    """
+    if limit < 1:
+        raise ValueError("limit 必须为正")
+    from .delivery import REPORT_DELIVERY_CONTRACT, RESEARCH_CONTRACT
+    repaired = 0
+    # Normal maintenance must make progress beyond an already-pushed first
+    # page, but it must also not become an unbounded table scan when a corrupt
+    # report is intentionally being withheld from notification.
+    page_size = min(100, max(1, limit))
+    candidate_budget = max(1000, limit * 10)
+    seen = 0
+    cursor: tuple[str, str] | None = None
+    while repaired < limit and seen < candidate_budget:
+        where_cursor = ""
+        cursor_values: tuple[object, ...] = ()
+        if cursor is not None:
+            where_cursor = "AND (t.updated_at>? OR (t.updated_at=? AND t.task_id>?)) "
+            cursor_values = (cursor[0], cursor[0], cursor[1])
+        with read_connection(db_path) as conn:
+            require_schema(conn)
+            rows = conn.execute(
+                "SELECT t.task_id,t.updated_at FROM k10_tasks t "
+                "WHERE t.kind IN ('evening_scan','morning_scan','analysis') "
+                "AND t.status IN ('completed','failed','not_configured','cancelled') AND t.attempt_count>0 "
+                "AND NOT (t.kind IN ('evening_scan','morning_scan') AND t.status='completed') "
+                "AND t.stage<>'paused' "
+                "AND json_type(t.payload_json,'$.runtimeContract')='object' "
+                "AND json_extract(t.payload_json,'$.runtimeContract.reportDelivery')=? "
+                "AND json_extract(t.payload_json,'$.runtimeContract.research')=? "
+                "AND (SELECT count(*) FROM json_each(t.payload_json,'$.runtimeContract'))=2 "
+                # Skip durable success/analysis rows before paging.  Failure
+                # rows remain candidates because explicit recovery is a new
+                # incident whose stable identity is deliberately richer than
+                # the mutable worker attempt counter.
+                "AND NOT EXISTS (SELECT 1 FROM k10_task_notifications n WHERE n.task_id=t.task_id "
+                "AND n.terminal_status=t.status AND ((t.kind='analysis' AND n.task_attempt_count=t.attempt_count) "
+                "OR (t.kind IN ('evening_scan','morning_scan') AND t.status='completed' "
+                "AND n.idempotency_key LIKE 'k10-report-notification:report_%'))) "
+                + where_cursor + "ORDER BY t.updated_at,t.task_id LIMIT ?",
+                (REPORT_DELIVERY_CONTRACT, RESEARCH_CONTRACT, *cursor_values,
+                 min(page_size, candidate_budget - seen)),
+            ).fetchall()
+        if not rows:
+            break
+        for task_id, updated_at in rows:
+            cursor = (str(updated_at), str(task_id))
+            seen += 1
+            with read_connection(db_path) as conn:
+                before = int(conn.execute(
+                    "SELECT count(*) FROM k10_task_notifications WHERE task_id=?", (task_id,)
+                ).fetchone()[0])
+            try:
+                on_task_terminal(task_id=task_id, db_path=db_path, created_at=now)
+            except NotificationConflict:
+                # An incomplete/mismatched publication is deliberately left without
+                # a push.  The atomic report writer or an explicit repair must make
+                # it consistent first; reconciliation never manufactures success.
+                continue
+            with read_connection(db_path) as conn:
+                after = int(conn.execute(
+                    "SELECT count(*) FROM k10_task_notifications WHERE task_id=?", (task_id,)
+                ).fetchone()[0])
+            repaired += int(after > before)
+            if repaired >= limit or seen >= candidate_budget:
+                break
+    return repaired
 
 
 def create_notification_maintenance(
@@ -143,7 +202,7 @@ def create_notification_maintenance(
     def sender(*, token, title, body, kind, deep_link, evidence_disclosure, collapse_id):
         if not push_kind_enabled(kind, db_path=db_path):
             return DeliveryResult(ok=True)  # A disabled preference is terminal, not delayed delivery.
-        custom = {"kind": kind, **deep_link}
+        custom = {"schemaVersion": 2, "kind": kind, **deep_link}
         if evidence_disclosure is not None:
             custom["evidenceDisclosure"] = dict(evidence_disclosure)
         result = send_push(token, title, body, category=notify_kinds.category_of(kind),

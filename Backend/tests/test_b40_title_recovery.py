@@ -91,9 +91,9 @@ def test_same_task_title_recovery_reuses_completed_batch_and_only_retries_known_
     assert sorted(states) == [("completed", 1), ("completed", 1), ("failed", 2)]
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE k10_execution_item_checkpoints SET status='running' WHERE status='completed'")
-    with pytest.raises(pipeline.PipelineError) as unknown:
-        invoke(resumed, first)
-    assert unknown.value.code == "model_request_outcome_unknown" and len(calls) == 4
+    # The exact paid receipt is still durable even when the execution marker
+    # was interrupted. Revalidate it locally instead of billing or blocking.
+    assert invoke(resumed, first) == complete and len(calls) == 4
 
 
 @pytest.mark.parametrize("legacy_partial", [False, True])

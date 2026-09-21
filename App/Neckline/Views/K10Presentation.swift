@@ -31,6 +31,7 @@ func k10ReasonText(_ value: String?) -> String {
         return k10ReasonText(String(value[value.index(after: separator)...]))
     }
     let known = [
+        "data_gap":"行情资料缺失", "historical_evidence_requires_investigation_path":"历史依据仍需定向核验",
         "limit_data_unavailable":"涨停价或封板状态缺失", "evaluation_configuration_missing":"评价规则未配置", "coverage_incomplete":"资料覆盖不完整", "source_unavailable":"资料暂不可用", "search_failed":"资料检索未完成",
         "missing_outcomes":"所需历史结果不完整", "single_source_fallback":"仅单一来源，未能交叉核验",
         "quote_trade_date_unproven":"无法证明报价属于目标交易日", "source_conflict":"来源数值存在冲突",
@@ -56,7 +57,7 @@ func k10ReasonText(_ value: String?) -> String {
     }
     if let translated = known[value] { return translated }
     if value.unicodeScalars.contains(where: { $0.value >= 0x4E00 && $0.value <= 0x9FFF }) { return value }
-    return "已记录原因：\(value)（请结合来源核对）"
+    return "原因尚待说明，请结合来源核对"
 }
 func k10AnomalyReasonText(_ value: String) -> String {
     guard value.hasPrefix("cross_source_conflict:") else { return k10ReasonText(value) }
@@ -73,7 +74,228 @@ func k10CoverageGapText(_ value: String) -> String {
         "source_coverage_incomplete":"来源覆盖不完整", "morning_source_missing":"晨间资料缺失",
         "task_failed":"任务执行失败", "data_gap":"行情资料缺失"
     ]
-    return known[value] ?? "存在未说明的资料缺口"
+    if let translated = known[value] { return translated }
+    if value.unicodeScalars.contains(where: { $0.value >= 0x4E00 && $0.value <= 0x9FFF }) { return value }
+    return "存在未说明的资料缺口"
+}
+
+func k10VisibleCoverageGapTexts(_ values: [String], responseReason: String?) -> [String] {
+    let normalizedReason = responseReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var seen = Set<String>()
+    return values.compactMap { value in
+        let text = k10CoverageGapText(value)
+        let repeatsReviewSummary = value.hasPrefix("morning_review_") && (normalizedReason?.contains("晨间复核") ?? false)
+        guard text != normalizedReason, !repeatsReviewSummary, seen.insert(text).inserted else { return nil }
+        return text
+    }
+}
+
+struct K10IncompleteReviewGroup: Identifiable {
+    let companyWindowId: String
+    let companyCode: String
+    var reviews: [K10IncompleteReview]
+    var id: String { companyCode }
+}
+
+func k10IncompleteReviewGroups(_ reviews: [K10IncompleteReview]) -> [K10IncompleteReviewGroup] {
+    var groups: [K10IncompleteReviewGroup] = []
+    for review in reviews {
+        if let index = groups.firstIndex(where: { $0.companyCode == review.companyCode }) {
+            groups[index].reviews.append(review)
+        } else {
+            groups.append(K10IncompleteReviewGroup(
+                companyWindowId: review.companyWindowId,
+                companyCode: review.companyCode,
+                reviews: [review]
+            ))
+        }
+    }
+    return groups
+}
+
+func k10DeliveryOutcomeText(_ value: String) -> String {
+    ["complete": "完整交付", "partial": "部分完成", "failed": "整体失败"][value] ?? "交付状态待核"
+}
+
+struct K10DeliveryPresentation: Equatable {
+    enum Tone: Equatable { case positive, caution, negative }
+
+    let title: String
+    let message: String
+    let tone: Tone
+}
+
+struct K10OpportunityEmptyPresentation: Equatable {
+    let title: String
+    let message: String
+}
+
+func k10OpportunityEmptyPresentation(
+    responseState: String?,
+    hasReportLoadError: Bool,
+    reportStatus: String?,
+    deliveryOutcome: String?,
+    segment: String,
+    currentMorningUpdateCount: Int,
+    hasEndedRecommendations: Bool,
+    responseReason: String?
+) -> K10OpportunityEmptyPresentation {
+    if responseState == "not_configured" {
+        return K10OpportunityEmptyPresentation(
+            title: "今天没跑成 · 参数未配置",
+            message: "请到设置查看缺少的参数或公司资料，配置齐全后再运行。"
+        )
+    }
+    if hasReportLoadError {
+        return K10OpportunityEmptyPresentation(
+            title: "暂时无法读取报告",
+            message: "可以重新读取；读取失败不代表本轮没有机会。"
+        )
+    }
+    guard let reportStatus else {
+        return K10OpportunityEmptyPresentation(
+            title: "等待首次报告",
+            message: "正式报告完成后在这里逐张查看，未操作的公司记为未处理。"
+        )
+    }
+    // B76 supplies an explicit delivery outcome.  Earlier published failure
+    // reports predate that additive field, but their terminal report status
+    // and envelope reason are still authoritative.
+    if deliveryOutcome == "failed" || (deliveryOutcome == nil && reportStatus == "failed") {
+        return K10OpportunityEmptyPresentation(
+            title: "今天没跑成",
+            message: responseReason ?? "本轮执行未能形成正式交付，没有新增机会卡。"
+        )
+    }
+    // A published card that has reached D2 belongs to history even when the
+    // report itself was partial. This is distinct from a partial report that
+    // never published a card at all.
+    if hasEndedRecommendations {
+        return K10OpportunityEmptyPresentation(
+            title: "暂无进行中的机会",
+            message: "本轮已发布的公司已撤回或结束观察，可在下方历史记录中查看原报告与两日窗口。"
+        )
+    }
+    if segment == "morning", currentMorningUpdateCount > 0 {
+        return K10OpportunityEmptyPresentation(
+            title: "本次没有新增卡片",
+            message: "已有公司的晨间更新列在上方，原有选择继续保留。"
+        )
+    }
+    if deliveryOutcome == "partial" {
+        return K10OpportunityEmptyPresentation(
+            title: "本轮未完成，不能判断是否没有机会",
+            message: "存在执行缺口，本轮没有形成可发布公司，不能据此判断市场没有机会。"
+        )
+    }
+    if ["completed", "published", "available"].contains(reportStatus) {
+        return K10OpportunityEmptyPresentation(
+            title: segment == "morning" ? "本晨没有新增公司" : "本轮未推荐公司",
+            message: segment == "morning"
+                ? "已有公司的变化列在晨间更新中，原有选择继续保留。"
+                : "本轮比较已完成，没有形成正式推荐。"
+        )
+    }
+    return K10OpportunityEmptyPresentation(
+        title: "报告尚未完成",
+        message: "正式报告完成后在这里逐张查看，未操作的公司记为未处理。"
+    )
+}
+
+func k10ShowsOpportunityEmptyState(segment: String, currentMorningUpdateCount: Int) -> Bool {
+    segment != "morning" || currentMorningUpdateCount == 0
+}
+
+func k10DeliveryPresentation(
+    outcome: String,
+    reportStatus: String,
+    incompleteReviewCount: Int
+) -> K10DeliveryPresentation {
+    if outcome == "complete", reportStatus == "partial" {
+        if incompleteReviewCount > 0 {
+            return K10DeliveryPresentation(
+                title: "部分完成",
+                message: "本轮消息已全部处理；部分晨间复核未完成，以下展示已完成的发现结果。",
+                tone: .caution
+            )
+        }
+        return K10DeliveryPresentation(
+            title: "部分完成",
+            message: "本轮消息已全部处理，但报告仍有未完成部分，请结合缺口阅读。",
+            tone: .caution
+        )
+    }
+    switch outcome {
+    case "complete":
+        return K10DeliveryPresentation(
+            title: "完整交付",
+            message: "本轮消息已全部处理，结果按全部处理范围排序。",
+            tone: .positive
+        )
+    case "partial":
+        return K10DeliveryPresentation(
+            title: "部分完成",
+            message: "部分消息处理失败，以下仅展示不受影响的结果。",
+            tone: .caution
+        )
+    case "failed":
+        return K10DeliveryPresentation(
+            title: "整体失败",
+            message: "执行失败，未形成新的正式机会卡；详情可查看。",
+            tone: .negative
+        )
+    default:
+        return K10DeliveryPresentation(
+            title: "交付状态待核",
+            message: "服务返回了无法识别的交付状态，请结合缺口阅读。",
+            tone: .caution
+        )
+    }
+}
+
+func k10DeliveryGapMessageText(_ value: String) -> String {
+    if value.contains("供应商内容策略拒绝") || value.contains("不参与本轮聚合推荐") {
+        return "这条消息未能完成资料处理，关联公司未纳入本轮结果。"
+    }
+    return value
+}
+
+func k10DeliveryGapReasonText(_ value: String) -> String {
+    let known = [
+        // `content_policy_refused` is the production B76 reason code.  Keep
+        // the earlier provider-prefixed spelling readable for saved data.
+        "content_policy_refused": "内容被供应商拒绝",
+        "provider_content_policy_refused": "内容被供应商拒绝",
+        "insufficient_balance": "模型服务余额不足",
+        "provider_authorization_failed": "供应商授权未通过",
+        "provider_call_failed": "模型服务未能完成本次处理",
+        "morning_closeout_reserve": "为按时交付，未启动新的晨间复核",
+        "rate_limited": "模型服务限流",
+        "provider_http_402": "模型服务余额不足",
+        "provider_http_429": "模型服务限流",
+        "morning_review_failed": "部分晨间复核未完成",
+        "morning_review_not_configured": "晨间复核参数未配置",
+        "not_configured": "参数未配置",
+        "model_output_invalid": "模型回复格式无效",
+        "model_response_unreadable": "模型回复无法读取",
+        "model_response_incomplete": "模型回复不完整",
+        "network_retry_exhausted": "网络重试已用尽",
+        "source_unavailable": "资料来源暂不可用",
+        "dependency_unresolved": "依赖关系未能确认",
+        "ranking_invalid": "最终排序无效",
+        "input_manifest_invalid": "冻结输入无法核验"
+    ]
+    return known[value] ?? k10ReasonText(value)
+}
+
+func k10ExecutionStateText(_ value: String?) -> String {
+    switch value {
+    case "accepting": return "允许新任务"
+    case "draining": return "只结算在途请求"
+    case "paused": return "处理已暂停"
+    case "blocked": return "新任务已阻止"
+    default: return "运行状态待核"
+    }
 }
 
 func k10ExecutionStageText(_ value: String) -> String {
@@ -93,4 +315,49 @@ func k10ExecutionFailureText(_ value: String) -> String {
         "notification_schema_unavailable": "推送状态暂不可用"
     ]
     return known[value] ?? "已记录的安全错误"
+}
+
+func k10CatalystStageText(_ value: String) -> String {
+    if value == "initial" { return "初始阶段" }
+    if value.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return value }
+    return "催化阶段待说明"
+}
+
+func k10SettingsReadMessage(_ state: K10SettingsReadState) -> String? {
+    switch state {
+    case .idle: return "尚未读取配置"
+    case .loading: return "正在读取配置…"
+    case .failed: return "配置读取失败"
+    case .loaded: return nil
+    }
+}
+
+// Keep business facts visible; identifiers and the exact payload remain in diagnostics.
+func k10LifecycleFactLines(_ content: [String: K10Value]) -> [String] {
+    let labels = ["reasonStatus": "推荐依据", "sourceStatus": "资料状态", "observationStatus": "观察状态",
+                  "materialContraryEvidence": "重大反证", "summary": "说明", "text": "内容", "reason": "原因",
+                  "statement": "事实", "claim": "说明", "title": "标题", "evidenceDisclosure": "核验说明",
+                  "conditionalAnalysis": "条件判断", "unverifiedReasons": "待核原因", "verificationStatus": "核验状态",
+                  "isRumor": "是否传闻", "originStatus": "源头状态"]
+    let states = ["current": "仍有效", "needs_review": "需要复核", "invalidated": "已失效", "unavailable": "暂不可用",
+                  "complete": "完整", "partial": "部分完成", "expired": "已到期", "verified": "已核验",
+                  "partially_supported": "部分支持", "contradicted": "存在反证", "unverified": "未核实",
+                  "identified": "已识别", "unknown": "未知"]
+    func lines(_ value: K10Value) -> [String] {
+        switch value {
+        case .string(let value): return [states[value] ?? k10ReasonText(value)]
+        case .bool(let value): return [value ? "是" : "否"]
+        case .number(let value): return [String(value)]
+        case .array(let values): return values.flatMap(lines)
+        case .object(let values):
+            return values.keys.sorted().flatMap { key -> [String] in
+                let metadata = ["sourceMarker", "cutoffAt", "sourceRefs", "independentVerificationRefs", "originEvidenceRef", "requiresReview", "automaticDebateStarted", "material"]
+                guard !metadata.contains(key), !key.hasSuffix("Id"), !key.hasSuffix("Ids"), let value = values[key] else { return [] }
+                let label = labels[key] ?? (key.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) } ? key : "补充资料")
+                return lines(value).map { "\(label)：\($0)" }
+            }
+        case .null: return []
+        }
+    }
+    return lines(.object(content))
 }

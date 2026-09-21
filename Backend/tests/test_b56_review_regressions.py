@@ -3,13 +3,13 @@ import sqlite3
 from datetime import datetime, timedelta
 import httpx
 import pytest
-from neckline.k10 import pipeline, runtime, store
+from neckline.k10 import morning_runtime, pipeline, runtime, store
 from neckline.k10.metering import MeteredProvider
 from neckline.k10.providers import ProviderResolution
 from neckline.k10.worker import run_once
 from neckline.k10.v2_store import read_report
 import tests.test_v310_pipeline_e2e as e2e
-from tests.test_b54_review_regressions import client_for
+from tests.test_b54_review_regressions import client_for, later_scan
 from tests.test_k10_api import _freeze_k10_clocks
 
 @pytest.mark.parametrize('status,retry_succeeds', [(402,False), (429,True), (429,False)])
@@ -109,82 +109,45 @@ def test_paid_analysis_error_contract(tmp_path, monkeypatch, status, retry_succe
         assert work(e2e.RUN_AT+timedelta(minutes=5)) is None and len(calls)==expected_calls
 
 @pytest.mark.parametrize('status', [402, 429])
-def test_paid_morning_review_error_contract(tmp_path, monkeypatch, status, late_retry=False, interrupt_after_failure=False):
-    from neckline.k10 import morning_runtime
-    from tests.test_b54_review_regressions import later_scan
+def test_paid_morning_work_item_failure_is_terminal_and_readable(tmp_path, monkeypatch, status):
+    """A parent-owned review may fail once, but it never becomes a child retry."""
     calls=[]
-    recover=[False]
     def resolve(**kwargs):
         def respond(request):
             calls.append(json.loads(request.content))
-            if recover[0]:
-                content={'material':False,'reasonStatus':'current','observationStatus':'current','summary':'冻结资料复核无新增变化','materialContraryEvidence':[]}
-                return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':json.dumps(content)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':3,'completion_tokens':3,'total_tokens':6}})
-            return httpx.Response(status,headers={'Retry-After':'900' if interrupt_after_failure else '60'},json={'error':{'message':'deterministic morning failure'}})
+            return httpx.Response(status,headers={'Retry-After':'60'},json={'error':{'message':'deterministic morning failure'}})
         transport=httpx.MockTransport(respond)
         monkeypatch.setattr(httpx,'Client',lambda **opts:e2e._HTTPX_CLIENT(**{**opts,'transport':transport}))
         provider=MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-flash',name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
         return ProviderResolution('configured',provider,'fixture',None)
     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',resolve)
-    if interrupt_after_failure:
-        failure_result=morning_runtime.provider_failure_result
-        def crash(**kwargs):raise SystemExit('after morning failure ledger commit')
-        monkeypatch.setattr(morning_runtime,'provider_failure_result',crash)
-        with pytest.raises(SystemExit):later_scan(tmp_path,monkeypatch,lambda payload,value:None)
-        db=tmp_path/'b39-e2e.sqlite';old=store.list_opportunities(db_path=db)[0]
-        with sqlite3.connect(db) as conn:
-            child_id,lease_until=conn.execute("SELECT task_id,lease_until FROM k10_tasks WHERE kind='morning_review'").fetchone()
-            parent_id=conn.execute("SELECT task_id FROM k10_tasks WHERE kind='morning_scan'").fetchone()[0]
-        parent=store.get_task(task_id=parent_id,db_path=db)
-        assert store.task_execution_input(task_id=child_id,db_path=db)['checkpoint']['providerFailureReceipt']['errorCode']==('rate_limited' if status==429 else 'insufficient_balance')
-        monkeypatch.setattr(morning_runtime,'provider_failure_result',failure_result)
-        claimed_at=datetime.fromisoformat(lease_until)+timedelta(seconds=1)
-        task=run_once(db_path=db,worker_id='morning-after-crash',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:claimed_at,task_id=child_id)
-        assert task.status==('queued' if status==429 else 'failed')
-        assert 'providerFailureReceipt' not in store.task_execution_input(task_id=child_id,db_path=db)['checkpoint']
-    else:
-        db, old, parent, _=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
+    db, old, parent, _=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
+    assert parent.status=='completed'
     with sqlite3.connect(db) as conn:
-        children=conn.execute("SELECT task_id,status,error_text FROM k10_tasks WHERE kind='morning_review'").fetchall()
-        assert len(children)==1
-        task_id=children[0][0]
-        retries=conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]
-        external=conn.execute('SELECT error_code FROM k10_external_attempts WHERE task_id=? ORDER BY rowid',(task_id,)).fetchall()
+        work_items=conn.execute(
+            'SELECT work_item_id,status,result_json,report_item_json,safe_error_code FROM k10_morning_review_work_items'
+        ).fetchall()
+        child_count=conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+        retries=conn.execute('SELECT count(*) FROM k10_task_retry_schedules').fetchone()[0]
+        unsettled=conn.execute("SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','unknown')").fetchone()[0]
+        external_errors=conn.execute('SELECT error_code FROM k10_external_attempts WHERE error_code IS NOT NULL').fetchall()
+    assert len(work_items)==1
+    work_item=work_items[0]
+    assert work_item[1]=='failed' and work_item[3] is not None
+    assert external_errors[-1][0]==('rate_limited' if status==429 else 'insufficient_balance')
+    assert child_count==0 and retries==0 and unsettled==0 and len(calls)==1
     with client_for(db) as client:
         report=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
-    print(json.dumps({'providerStatus':status,'scope':'morning_review','parentStatus':parent.status,'childStatus':children[0][1],'httpCalls':len(calls),'retries':retries,'attemptErrors':external,'error':children[0][2],'clientIncomplete':report['report']['incompleteReviews']},ensure_ascii=False))
-    (tmp_path / f'b56_morning_{status}.json').write_text(json.dumps(report,ensure_ascii=False))
-    assert len(calls)==1 and external[-1][0]==('rate_limited' if status==429 else 'insufficient_balance')
-    if status==429:
-        assert '限流' in report['report']['incompleteReviews'][0]['reason']
-        assert children[0][1]=='queued' and retries==1, '429 morning child must schedule only its failed review'
-        with sqlite3.connect(db) as conn:
-            due=datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0])
-        from neckline.k10.windows import SHANGHAI
-        assert due==datetime(2026,9,9,9,25 if interrupt_after_failure else 11,tzinfo=SHANGHAI)
-        opportunities=store.list_opportunities(db_path=db)
-        recover[0]=True
-        retried=run_once(db_path=db,worker_id='morning-recovery',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:due+timedelta(hours=7) if late_retry else due,task_id=task_id)
-        if late_retry:
-            assert retried.status=='failed' and len(calls)==1
-            with client_for(db) as client:
-                expired=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
-            assert expired['report']['status']=='partial'
-            assert '完成时限' in expired['report']['incompleteReviews'][0]['reason']
-            assert expired['report']['updatedCards']==report['report']['updatedCards']
-            assert store.list_opportunities(db_path=db)==opportunities
-            return
-        assert retried.status=='completed' and len(calls)==2 and calls[0]==calls[1]
-        with client_for(db) as client:
-            recovered=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
-        assert recovered['report']['incompleteReviews']==[] and recovered['report']['status']=='completed'
-        for section in ('updatedCards','addedCards','eveningCards'):
-            assert recovered['report'][section]==report['report'][section]
-        assert store.list_opportunities(db_path=db)==opportunities
-        (tmp_path / 'b56_morning_recovered.json').write_text(json.dumps(recovered,ensure_ascii=False))
-    else:
-        assert '余额不足' in json.dumps(report,ensure_ascii=False), '402 must be readable in current morning report'
-        assert children[0][1]=='failed' and retries==0
+    assert report['report']['status']=='partial'
+    assert report['reason']['reason']=='partial_delivery'
+    assert report['report']['delivery']['outcome']=='partial'
+    assert 'morning_review_failed' in report['report']['coverageGaps']
+    assert any(gap['reasonCode']==('rate_limited' if status==429 else 'insufficient_balance')
+               for gap in report['report']['delivery']['gaps'])
+    assert any(row['taskId']==work_item[0] and row['status']=='failed'
+               for row in report['report']['incompleteReviews'])
+    with client_for(db) as client:
+        assert client.post('/api/v1/k10/jobs/'+work_item[0]+'/retry',json={'expectedAttemptCount':1}).status_code==409
 
 def test_material_stage_continuation_keeps_its_related_window(tmp_path,monkeypatch):
     from datetime import date,datetime
@@ -340,28 +303,14 @@ def test_late_claim_of_analysis_retry_cannot_spend_after_frozen_deadline(tmp_pat
     test_paid_analysis_error_contract(tmp_path,monkeypatch,429,True,role,late_retry=True)
 
 
-def test_late_claim_of_morning_retry_retains_incomplete_report_without_spending(tmp_path,monkeypatch):
-    test_paid_morning_review_error_contract(tmp_path,monkeypatch,429,late_retry=True)
-
-
 def test_completed_analysis_can_finalize_after_deadline_without_any_provider_call(tmp_path,monkeypatch):
     test_pro_commit_interruption_does_not_repeat_successful_provider_call(tmp_path,monkeypatch,429,completed_roles='both',late_resume=True)
-
-
-def test_cached_morning_can_finalize_after_deadline_without_any_provider_call(tmp_path,monkeypatch):
-    from tests.test_b54_boundary_regressions import test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry
-    test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,'current','evidence_update',late_retry=True)
 
 
 @pytest.mark.parametrize('status',[402,429])
 @pytest.mark.parametrize('role',['pro','con'])
 def test_failure_artifact_crash_restores_terminal_or_original_retry_without_new_call(tmp_path,monkeypatch,status,role):
     test_paid_analysis_error_contract(tmp_path,monkeypatch,status,True,role,interrupt_after_failure=True)
-
-
-@pytest.mark.parametrize('status',[402,429])
-def test_morning_failure_ledger_crash_restores_original_outcome_without_new_call(tmp_path,monkeypatch,status):
-    test_paid_morning_review_error_contract(tmp_path,monkeypatch,status,interrupt_after_failure=True)
 
 
 def test_failure_receipt_rolls_back_with_attempt_and_unknown_outcome_blocks_new_attempt(tmp_path,monkeypatch):

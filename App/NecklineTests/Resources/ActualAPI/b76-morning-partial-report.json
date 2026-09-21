@@ -1,0 +1,218 @@
+{
+  "reason": {
+    "message": "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。",
+    "missing": [],
+    "reason": "partial_delivery"
+  },
+  "report": {
+    "addedCards": [
+      {
+        "canSelect": true,
+        "cardId": "card_89d62121774ae9c7800e1b52f761a392",
+        "catalysts": [
+          {
+            "classification": "initial",
+            "companyWindowId": "window_77b99b41f6b74ef0497470b8bbeb9e2b",
+            "eventId": "event_9082ccc7e9de09e8203200126703abce",
+            "eventRevision": 4,
+            "headline": "离线验收事件 002",
+            "lifecycleState": "active",
+            "opportunityId": "opportunity_e58b76e4c92010c1ca0f445a0f60ae8e",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300151.SZ",
+        "companyName": "昌红科技",
+        "companyWindowId": "window_77b99b41f6b74ef0497470b8bbeb9e2b",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-16",
+        "d2TradeDate": "2026-09-17",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 2,
+        "sampleClass": "primary",
+        "section": "added",
+        "sourceMarker": "morning",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_d81264aa31847c764ac477dd860f500c",
+            "excerpt": "离线独立来源确认 event-002 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-16T01:05:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 2,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 002",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/002"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      }
+    ],
+    "availableAt": "2026-09-16T01:05:00+00:00",
+    "coverageGaps": [
+      "morning_discovery_partial",
+      "morning_review_failed",
+      "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。"
+    ],
+    "cutoffAt": "2026-09-16T01:00:00+00:00",
+    "delivery": {
+      "contractVersion": "k10-report-delivery-3.4.0-b76",
+      "counts": {
+        "comparableCompanies": 2,
+        "eventFailed": 1,
+        "eventInput": 3,
+        "eventProcessed": 2,
+        "eventUnprocessed": 0,
+        "publishedCompanies": 2,
+        "titleFailed": 0,
+        "titleInput": 1602,
+        "titleProcessed": 1602,
+        "titleUnprocessed": 0
+      },
+      "eligibleSetSha256": "6d26a6ef92b2ee407b8c3ec227bde2b6a883648bca6823f439525fa08e2b4727",
+      "gaps": [
+        {
+          "companyCodes": [
+            "300150.SZ"
+          ],
+          "companyScopeKnown": true,
+          "eventIds": [
+            "event_708ea4def782618c6f50836c045f386f"
+          ],
+          "gapId": "gap_c397f222e37ae110c574cef468583fb1",
+          "message": "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。",
+          "reasonCode": "content_policy_refused",
+          "sourceRefs": [
+            {
+              "collectedAt": null,
+              "companyCode": null,
+              "documentId": "doc_ec5cb40bde6b6fc21fdd756788de43ec",
+              "excerpt": null,
+              "factId": null,
+              "fetchedAt": "2026-09-15T01:02:00+00:00",
+              "publishedAt": "2026-09-15T01:01:00+00:00",
+              "publishedPrecision": "exact",
+              "revision": 2,
+              "sourceKey": "tushare-major-news",
+              "title": "离线验收标题 0001：新增经营事件",
+              "tradeDate": null,
+              "url": "https://fixture.invalid/acceptance/0001"
+            }
+          ],
+          "stage": "verify_or_map",
+          "unitId": "event_708ea4def782618c6f50836c045f386f",
+          "unitKind": "event"
+        }
+      ],
+      "inputManifestSha256": "92ceec106907f2c352752d6ba9cfb01578f223a519c11f5428b51c96830adb2d",
+      "outcome": "partial",
+      "rankingInputSha256": "1fc99c9461b6954ca26e3d4c62eb0702c4ccc3475830b1ce6d060bb0c3242471",
+      "rankingScope": "completed_subset"
+    },
+    "eveningCards": [],
+    "incompleteReviews": [
+      {
+        "companyCode": "300002.SZ",
+        "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+        "opportunityId": "opportunity_47ad1881641acf9f099f57837b69a35e",
+        "reason": "模型调用失败",
+        "status": "failed",
+        "taskId": "morning_review_007c8d9c5920e83eb4714f81d32c0f5d"
+      },
+      {
+        "companyCode": "300002.SZ",
+        "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+        "opportunityId": "opportunity_6fdeed1fe86a1ce327a49c70e9fcfb29",
+        "reason": "模型调用失败",
+        "status": "failed",
+        "taskId": "morning_review_a1492007a408507da58b77a833e68a76"
+      },
+      {
+        "companyCode": "300004.SZ",
+        "companyWindowId": "window_077750ba706664317e47d834da4bf8ec",
+        "opportunityId": "opportunity_5070572eda3eb8cf316ae86a574df5b4",
+        "reason": "模型调用失败",
+        "status": "failed",
+        "taskId": "morning_review_a9956f1cbaf499de9cce8f7caf287cc2"
+      }
+    ],
+    "lifecycleUpdates": [],
+    "nextCursor": null,
+    "parentReportId": "report_scan_a69870d54cf2b508f02536fb2d7c2367",
+    "reportId": "report_scan_efe712d3fe5b473c5e3e2071c4f4a395",
+    "status": "partial",
+    "strategySnapshotId": "k10-v2-20260909",
+    "strategyVersion": "K10-v2",
+    "updatedCards": [
+      {
+        "canSelect": true,
+        "cardId": "card_f8cd466336e94195bb133c1556f2ccf1",
+        "catalysts": [
+          {
+            "classification": "continuation",
+            "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+            "eventId": "event_195ae93872cd5e8483277ca5843f3e87",
+            "eventRevision": 4,
+            "headline": "离线验收事件 000",
+            "lifecycleState": "active",
+            "opportunityId": "opportunity_6fdeed1fe86a1ce327a49c70e9fcfb29",
+            "summary": "独立完成的公司比较",
+            "verificationStatus": "unverified"
+          }
+        ],
+        "companyCode": "300002.SZ",
+        "companyName": "神州泰岳",
+        "companyWindowId": "window_24d8bda5637b4ac2a451eb470392b5ef",
+        "currentSelectionState": "unhandled",
+        "d1TradeDate": "2026-09-16",
+        "d2TradeDate": "2026-09-17",
+        "latePublication": false,
+        "priceContext": null,
+        "priceReaction": "已有价格反应：暂无截止时点前可核的涨跌资料。",
+        "rank": 1,
+        "sampleClass": "primary",
+        "section": "updated",
+        "sourceMarker": "morning",
+        "sourceRefs": [
+          {
+            "collectedAt": null,
+            "companyCode": null,
+            "documentId": "doc_393399f4dc8876bbbf454efe1904a01f",
+            "excerpt": "离线独立来源确认 event-000 仍需正式公告核实。",
+            "factId": null,
+            "fetchedAt": "2026-09-16T01:05:00+00:00",
+            "publishedAt": "2026-09-07T12:00:00+00:00",
+            "publishedPrecision": "exact",
+            "revision": 2,
+            "sourceKey": "tavily_verification",
+            "title": "离线独立来源 000",
+            "tradeDate": null,
+            "url": "https://evidence.fixture.invalid/000"
+          }
+        ],
+        "strategyVersion": "K10-v2",
+        "summary": "独立完成的公司比较",
+        "twoDayReason": "新事件窗口",
+        "uncertainty": [
+          "独立资料无新增"
+        ]
+      }
+    ],
+    "verificationCutoffAt": "2026-09-16T01:05:00+00:00",
+    "windowKind": "morning"
+  },
+  "schemaVersion": 8,
+  "state": "available"
+}

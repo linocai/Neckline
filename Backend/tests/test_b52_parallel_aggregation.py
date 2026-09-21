@@ -2,6 +2,7 @@ import pytest
 from tests import k10_v306_fixture
 from tests.test_v310_pipeline_e2e import _run,_api
 from neckline.k10 import store
+from neckline.k10.research_store import load_research_round_state
 
 
 def test_six_way_research_preserves_candidate_pending_and_excluded_collections(tmp_path,monkeypatch):
@@ -14,11 +15,13 @@ def test_six_way_research_preserves_candidate_pending_and_excluded_collections(t
     db,task_id,task,calls,gateway=_run(tmp_path,monkeypatch)
     assert task.status=='completed'
     scan=store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['scanId']
-    with _api(db) as client:
-        response=client.get('/api/v1/k10/scans/'+scan+'/assessments').json()
-    assert {row['role'] for row in response['items']}=={'primary','pending','excluded'}
+    snapshot_id = store.get_scan(scan_id=scan, db_path=db)['coverage']['researchSnapshotIds'][0]
+    state = load_research_round_state(snapshot_id=snapshot_id, db_path=db)
+    assert {row['role'] for row in state['rounds'][0]['result']['companyAssessments']} == {
+        'primary', 'pending', 'excluded',
+    }
     assert len(store.list_candidates(scan_id=scan,state='offered',db_path=db))==1
-    assert calls.count('understand')==1 and len(gateway.search_paths)==2
+    assert calls.count('understand')==1 and gateway.search_paths == []
 
 
 @pytest.mark.parametrize("paused_operation", ["classify", "prioritize"])
@@ -55,5 +58,6 @@ def test_paused_finalization_recovers_without_repeating_completed_research(tmp_p
         handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:RUN_AT)
     assert done.status=='completed'
     assert calls==(['classify','classify','classify','prioritize'] if paused_operation=='classify' else ['prioritize'])
-    assert len(gateway.search_paths)==2
+    assert 'research:research_round' not in calls
+    assert gateway.search_paths == []
     assert len(store.list_candidates(scan_id=scan,state='offered',db_path=db))==1

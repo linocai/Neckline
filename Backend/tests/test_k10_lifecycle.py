@@ -20,6 +20,8 @@ def _calendar(path: Path, *days: tuple[str, int]) -> None:
 
 
 def _candidate(path: Path, *, suffix: str, scan_id: str, company: str = "300001.SZ") -> tuple[str, str]:
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at="2026-09-07T09:00:00+08:00",
+                          changed_by="test", db_path=path)
     store.create_scan(scan_id=scan_id, window_kind="evening", cutoff_at="2026-09-07T21:00:00+08:00",
                       config_id=None, config_revision=None, status="completed", coverage={},
                       created_at="2026-09-07T21:01:00+08:00", completed_at="2026-09-07T21:01:00+08:00", db_path=path)
@@ -209,7 +211,7 @@ def test_window_action_uses_one_representative_and_one_shared_analysis_chain(tmp
         assert conn.execute("SELECT COUNT(*) FROM k10_tasks WHERE kind='analysis'").fetchone() == (1,)
     from neckline.k10.schema import rollback_schema, K10SchemaError
     before = path.read_bytes()
-    with pytest.raises(K10SchemaError, match="schema 9"):
+    with pytest.raises(K10SchemaError, match=f"schema {SCHEMA_VERSION}"):
         rollback_schema(path)
     assert path.read_bytes() == before
 

@@ -1,5 +1,9 @@
 # Neckline
 
+本地已完成 **3.5.0（81）前端展示快修**，范围、进度及验收以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 和 [本版记录](archive/v3.5.0-b78_execution.md) 为准。新版本晨报交易日 **08:30** 开始，**09:20** 前提供可读结果；晚报保持前一自然日 **21:00** 开始，不设整报业务截止。排序失败或请求费用待确认时可查看已完成的安全材料或诊断，但不产生正式推荐、选择或观察样本。本轮仅本地实现与离线验收，尚未部署，也未恢复任何定时。
+
+本地版本采用内部 **Schema 10 / 公开报告 Schema 9**；双端一起升级，新App保留历史Schema 8报告读取。新协议只执行新任务，旧任务及付费记录保持只读，不自动重绑恢复。未来发布必须单独核对生产目标、备份与受控迁移；本轮测试只使用隔离数据库。
+
 Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-15 当前发布为
 **3.3.0 / 双端发布 Build 69 / 后端 Build 75 / K10-v2 / 内部 Schema 9**，公开报告协议保持 Schema 8，后端发布集合为 `v3.3.0-b75`。K9 已退出活动生产。
 [后端B75与校验值](https://github.com/linocai/Neckline/releases/tag/v3.3.0-b75)；[客户端B69下载](https://github.com/linocai/Neckline/releases/tag/v3.3.0-b69)；Mac 已安装并验收 3.3.0（69）；iOS 签名归档就绪，通过 Xcode 由用户直接安装，不生成 IPA。
@@ -29,7 +33,7 @@ Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI �
 正反观点并排；原始资料与搜索摘录分开标识，正文引用可定位到冻结资料修订。
 
 K10-v2 资格以已确认的 1,089 公司固定快照为准，运行期不按动态行业或 ST 信息重新增删名单。21:00 为晚扫资料截止
-（不含整点），次一交易日 09:00 为晨间截止（含整点）；发布、采集、分析、实际可查看和操作时间分别记录。
+（不含整点）；3.5.0 新晨报资料窗口为前一自然日 21:00 至交易日 08:30（含端点），不声称覆盖至 09:20。旧任务保留原时间绑定；发布、采集、分析、实际可查看和操作时间分别记录。
 全部正式主推与备选自动记录两日行情，与用户是否留下无关。D1 是推荐可查看后的第一个完整交易日，
 D2 为下一交易日；推荐因延迟错过预定 D1 的 09:30 开盘时点，从下一交易日起观察并标迟到，
 晚间扫描拖到次晨才完成也遵守相同时点规则。
@@ -88,6 +92,8 @@ worker 自动冻结 D1 选择、采集共享的公司日行情并生成结果修
 真实 API/凭据和工作数据不作为测试输入。
 
 修改 Swift 后，从 App 依次运行三条门禁：
+
+使用 Xcode 27 及以上、最低 OS 27.0。运行验收复用 iPhone 18 Pro／iOS 27 的「主模拟器」，按名称与运行环境核验，不固定设备 UUID。测试数据库、构建缓存和 QA 副本由本轮版本记录登记并在收尾核验清理。
 
 ```bash
 xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' -derivedDataPath /tmp/neckline-v3-qa/macos NK_BUNDLE_SUFFIX=.qa CODE_SIGNING_ALLOWED=NO build

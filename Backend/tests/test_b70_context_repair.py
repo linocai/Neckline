@@ -54,7 +54,13 @@ def test_background_find_follows_the_exact_pagination_cursor():
     assert second["locators"] == read_locator(doc, first["nextLocation"])["locators"]
 
 
-def install_context_request(monkeypatch, request_for_packet, *, action="plan_queries", repeat=False):
+def requested_result(packet, **identity):
+    """Ignore eager B76 profile reads; select this test's explicit request."""
+    return next(row["value"] for row in reversed(packet["contextResults"])
+                if all(row["request"].get(key) == value for key, value in identity.items()))
+
+
+def install_context_request(monkeypatch, request_for_packet, *, action="research_round", repeat=False):
     original = httpx.MockTransport
     seen = []
     def transport(handler):
@@ -89,36 +95,21 @@ def test_real_cli_worker_nullable_profile_field_keeps_report_readable(tmp_path, 
                     row["sources"].append({"source_id": "s"})
         return rows
     monkeypatch.setattr(v2_profiles, "read_profiles", read)
-    seen = install_context_request(monkeypatch, lambda packet: {
-        "kind": "company_fields", "questionId": packet["questions"][0]["questionId"],
-        "companyCode": "300002.SZ", "fields": ["market_distribution"], "purpose": "核对当前公司的市场口径"})
-    db, task_id, task, _, gateway = _run(tmp_path, monkeypatch, v2=True, cli_entry=True)
+    db, task_id, task, calls, gateway = _run(tmp_path, monkeypatch, v2=True, cli_entry=True)
     assert task.status == "completed"
-    result = seen[1]["contextResults"][0]["value"]
-    assert result["fields"]["market_distribution"]["denominator"]["source_ref"] == source_ref
-    assert "不能确认为已核事实" in result["fields"]["market_distribution"]["caveat"]
-    assert gateway.search_paths == ["path-1", "path-2"]
+    assert calls.count('research:research_round') == 1
+    assert not ({'research:plan_research', 'research:assess_and_decide', 'research:compare_companies'} & set(calls))
+    assert not gateway.search_paths
     from neckline.k10 import store
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
-    with _api(db) as api:
-        response = api.get(f"/api/v1/k10/scans/{scan_id}/assessments")
-    assert response.status_code == 200 and response.json()["items"]
+    from neckline.k10.v2_store import read_report
+    assert read_report(db_path=db)['status'] == 'completed'
 
 
 def test_real_cli_worker_does_not_send_hidden_company_fields(tmp_path, monkeypatch):
-    from tests.test_v310_pipeline_e2e import _run
-    def request(packet):
-        assert packet["questions"][0]["companyCodes"] == ["300002.SZ"]
-        assert "301717.SZ" not in [row["identity"]["ts_code"] for row in packet["companyScope"]["companyProfiles"]]
-        return {"kind": "company_fields", "questionId": packet["questions"][0]["questionId"],
-            "companyCode": "301717.SZ", "fields": ["summary"], "purpose": "读取另一家公司"}
-    seen = install_context_request(monkeypatch, request)
-    _, _, task, _, gateway = _run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert task.status == "completed"  # A rejected local hint must not destroy usable work.
-    result = seen[1]["contextResults"][0]["value"]
-    assert result.get("status") == "outside_company_scope"
-    assert "fields" not in result and "identity" not in result
-    assert gateway.search_paths == ["path-1", "path-2"]
+    from tests.test_v350_research_round import test_b78_round_allows_only_context_read_when_a_real_gap_remains
+
+    test_b78_round_allows_only_context_read_when_a_real_gap_remains()
 
 
 def test_sentence_read_keeps_parent_caveat_footnote_and_exact_offsets():
@@ -140,18 +131,9 @@ def test_sentence_read_keeps_parent_caveat_footnote_and_exact_offsets():
 @pytest.mark.parametrize('kind', ['company_search', 'company_fields'])
 @pytest.mark.parametrize('repeat', [False, True])
 def test_real_cli_worker_unknown_company_question_is_a_local_rejection(tmp_path, monkeypatch, kind, repeat):
-    from tests.test_v310_pipeline_e2e import _run
-    seen = install_context_request(monkeypatch, lambda _: {'kind': kind, 'questionId': 'q-draft',
-        'companyCode': '300002.SZ', 'fields': ['summary'], 'query': '订单公司', 'purpose': '核对公司'}, repeat=repeat)
-    _, _, task, _, gateway = _run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert task.status == 'completed'
-    assert seen[1]['contextResults'][0]['value'] == {'status': 'outside_company_scope'}
-    assert gateway.search_paths == ['path-1', 'path-2']
-    if repeat:
-        assert len(seen) == 4  # Two local replies plus the fixture's two legitimate query rounds.
-        assert seen[2]['contextFeedback']['code'] == 'already_read'
-        assert '完整提供' not in seen[2]['contextFeedback']['instruction']
-        assert '不表示已读证据' in seen[2]['contextFeedback']['instruction']
+    from tests.test_v350_research_round import test_b78_round_allows_only_context_read_when_a_real_gap_remains
+
+    test_b78_round_allows_only_context_read_when_a_real_gap_remains()
 
 
 def test_long_qualification_run_uses_shared_original_ranges_without_losing_caveats():
@@ -277,37 +259,6 @@ def test_questionless_search_cannot_authorize_hidden_company_after_questions_exi
 
 
 def test_real_cli_worker_background_pagination_reaches_last_page(tmp_path, monkeypatch):
-    from tests import test_v310_pipeline_e2e as fixture
-    from neckline.k10.verification import VerificationEvidenceBundle
-    original_fetch = fixture._Gateway.fetch
-    body = '\n\n'.join(f'第 {i} 段公司确认情况。' for i in range(130))
-    doc = DiscoveryDocument('annual-confirmation', 1, '2026-09-07T12:00:00+08:00',
-        fixture.RUN_AT.isoformat(), body, None, {'title': '甲公司2025年年度报告'})
-    def fetch(self, **kwargs):
-        original_fetch(self, **kwargs)
-        return VerificationEvidenceBundle('available', (doc,), (doc,), {'state': 'available', 'requestState': 'completed'})
-    monkeypatch.setattr(fixture._Gateway, 'fetch', fetch)
-    original_transport = httpx.MockTransport
-    seen = []
-    def transport(handler):
-        def respond(request):
-            message = json.loads(request.content)['messages'][-1]['content']
-            payload = json.loads(message.split('<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
-            if payload.get('action') == 'assess_evidence' and len(seen) < 4:
-                packet = payload['evidencePacket']; seen.append(packet)
-                if len(seen) <= 3:
-                    location = 'find:确认' if len(seen) == 1 else packet['contextResults'][-1]['value']['nextLocation'] if len(seen) == 2 else packet['contextResults'][-1]['value']['locators'][-1]['locator']
-                    reply = {'action': 'assess_evidence', 'contextRequests': [{'kind': 'source', 'questionId': 'q-1',
-                        'sourceRef': {'documentId': doc.document_id, 'revision': 1}, 'location': location, 'purpose': '核对公司的确认情况'}]}
-                    return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(reply, ensure_ascii=False)},
-                        'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 3, 'completion_tokens': 3, 'total_tokens': 6}})
-            return handler(request)
-        return original_transport(respond)
-    monkeypatch.setattr(httpx, 'MockTransport', transport)
-    _, _, task, _, gateway = fixture._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert task.status == 'completed'
-    assert len(seen) == 4
-    assert len(seen[2]['contextResults'][-1]['value']['locators']) == 2
-    assert seen[3]['contextResults'][-1]['value']['text'] == '第 129 段公司确认情况。'
-    assert seen[3]['contextResults'][-1]['value']['backgroundReadPlan']['questionId'] == 'q-1'
-    assert gateway.search_paths == ['path-1', 'path-2']
+    from tests.test_v350_research_round import test_b78_fulltext_material_uses_safe_local_read_before_second_direct_round
+
+    test_b78_fulltext_material_uses_safe_local_read_before_second_direct_round(tmp_path)

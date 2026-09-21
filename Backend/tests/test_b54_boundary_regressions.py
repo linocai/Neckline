@@ -33,7 +33,7 @@ def test_missing_runtime_binding_rejects_keep_without_any_writes(tmp_path,monkey
 
 
 @pytest.mark.parametrize('entry',['keep','retry'])
-def test_legacy_unbound_task_recovers_through_real_post_with_explicit_binding(tmp_path,monkeypatch,entry):
+def test_unbound_analysis_task_requires_explicit_rebinding_before_retry(tmp_path,monkeypatch,entry):
     db,_,_,_,_=e2e._run(tmp_path,monkeypatch,v2=True)
     now=e2e.RUN_AT+timedelta(minutes=1);_freeze_k10_clocks(monkeypatch,now.isoformat())
     card=read_report(db_path=db)['eveningCards'][0]
@@ -44,6 +44,11 @@ def test_legacy_unbound_task_recovers_through_real_post_with_explicit_binding(tm
         with sqlite3.connect(db) as conn:conn.execute('DELETE FROM k10_task_execution_bindings WHERE task_id=?',(job,))
         first=run_once(db_path=db,worker_id='unbound',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:now,task_id=job)
         assert first.status=='not_configured'
+        if entry=='retry':
+            response=client.post('/api/v1/k10/jobs/'+job+'/retry',json={'expectedAttemptCount':first.attempt_count})
+            assert response.status_code==409
+            assert store.task_execution_profile(task_id=job,db_path=db) is None
+            return
         if entry=='keep':
             response=client.post(route,json={'action':'keep','idempotencyKey':'restored'})
             assert response.status_code==200 and response.json()['analysisJobId']==job
@@ -57,7 +62,7 @@ def test_legacy_unbound_task_recovers_through_real_post_with_explicit_binding(tm
         assert result.status=='completed' and provider.results==[]
 
 
-def test_failed_morning_child_is_visible_in_current_daily_dto(tmp_path,monkeypatch):
+def test_failed_morning_parent_work_item_is_visible_in_current_daily_dto(tmp_path,monkeypatch):
     provider=FakeProvider([replace(_result(''),ok=False)])
     monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
     db,old,_,_=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
@@ -68,51 +73,51 @@ def test_failed_morning_child_is_visible_in_current_daily_dto(tmp_path,monkeypat
     assert report['status'] in {'partial','failed'} and envelope['reason'] is not None
     assert report['updatedCards'] or report['addedCards']
     assert report['coverageGaps'] and any(row['opportunityId']==old['opportunityId'] and row['status']=='failed' for row in report['incompleteReviews'])
-    child=report['incompleteReviews'][0]
-    provider.results=[_result(json.dumps({'material':False,'reasonStatus':'current','observationStatus':'current','summary':'完整复核无变化','materialContraryEvidence':[]}))]
-    now=datetime(2026,9,9,9,12,tzinfo=SHANGHAI);_freeze_k10_clocks(monkeypatch,now.isoformat())
-    task=store.get_task(task_id=child['taskId'],db_path=db)
+    item=report['incompleteReviews'][0]
+    with sqlite3.connect(db) as conn:
+        stored=conn.execute(
+            'SELECT status,result_json,report_item_json,safe_error_code FROM k10_morning_review_work_items WHERE work_item_id=?',
+            (item['taskId'],),
+        ).fetchone()
+        child_count=conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+        unsettled=conn.execute("SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','unknown')").fetchone()[0]
+    assert stored is not None and stored[0]=='failed' and stored[2] is not None
+    assert child_count==0 and unsettled==0 and provider.results==[]
+    # A work item has no independent retry endpoint.  The failed result is
+    # disclosed by the parent report and cannot quietly repeat the paid call.
     with client_for(db) as client:
-        assert client.post('/api/v1/k10/jobs/'+child['taskId']+'/retry',json={'expectedAttemptCount':task.attempt_count}).status_code==200
-    result=run_once(db_path=db,worker_id='failure-recovered',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:now,task_id=child['taskId'])
-    assert result.status=='completed'
-    with client_for(db) as client:
-        recovered=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
-    assert recovered['report']['status']=='completed' and recovered['reason'] is None
-    assert recovered['report']['coverageGaps']==[] and recovered['report']['incompleteReviews']==[]
-    assert recovered['report']['updatedCards']==report['updatedCards']
+        assert client.post('/api/v1/k10/jobs/'+item['taskId']+'/retry',json={'expectedAttemptCount':1}).status_code==409
 
 
 @pytest.mark.parametrize('status,kind', [('needs_review','risk'),('current','evidence_update')])
-def test_morning_lifecycle_commit_before_checkpoint_is_reused_on_retry(tmp_path,monkeypatch,status,kind,late_retry=False):
+def test_morning_parent_work_item_keeps_settled_raw_result_after_report_checkpoint_failure(tmp_path,monkeypatch,status,kind):
     now=[datetime(2026,9,9,9,10,tzinfo=SHANGHAI)]
     class ClockDateTime(datetime):
         @classmethod
         def now(cls,tz=None):return now[0].astimezone(tz) if tz else now[0].replace(tzinfo=None)
     monkeypatch.setattr(morning_runtime,'datetime',ClockDateTime)
     response=_result(json.dumps({'material':True,'reasonStatus':status,'observationStatus':status,'summary':'新增资料尚有不确定性','materialContraryEvidence':[]}))
-    provider=FakeProvider([response,response]);monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
+    provider=FakeProvider([response]);monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
     real=morning_runtime._report_checkpoint
-    def interrupted(**kwargs):raise morning_runtime.MorningReportError('synthetic interruption after lifecycle commit')
+    def interrupted(**kwargs):raise morning_runtime.MorningReportError('synthetic interruption after paid result before report checkpoint')
     monkeypatch.setattr(morning_runtime,'_report_checkpoint',interrupted)
     db,_,_,_=later_scan(tmp_path,monkeypatch,lambda payload,value:None)
     with sqlite3.connect(db) as conn:
-        child=conn.execute("SELECT task_id,status,attempt_count FROM k10_tasks WHERE kind='morning_review'").fetchone()
+        item=conn.execute("SELECT work_item_id,status,input_sha256,result_json,report_item_json FROM k10_morning_review_work_items").fetchone()
         before=conn.execute("SELECT * FROM k10_opportunity_lifecycle_events WHERE kind=?",(kind,)).fetchall()
-    assert before and child[1]=='failed' and len(provider.results)==1
+        child_count=conn.execute("SELECT count(*) FROM k10_tasks WHERE kind='morning_review'").fetchone()[0]
+        unsettled=conn.execute("SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','unknown')").fetchone()[0]
+    assert item is not None and item[1]=='failed' and item[3] is not None and item[4] is not None
+    assert child_count==0 and unsettled==0 and provider.results==[]
     monkeypatch.setattr(morning_runtime,'_report_checkpoint',real)
-    now[0]+=(timedelta(hours=7) if late_retry else timedelta(minutes=1));_freeze_k10_clocks(monkeypatch,now[0].isoformat())
     with client_for(db) as client:
-        assert client.post('/api/v1/k10/jobs/'+child[0]+'/retry',json={'expectedAttemptCount':child[2]}).status_code==200
-    result=run_once(db_path=db,worker_id='interruption-retry',lease_for=timedelta(minutes=5),handlers=pipeline.production_handlers(tushare_token='fixture',parquet_dir=tmp_path/'parquet'),clock=lambda:now[0],task_id=child[0])
-    assert result.status=='completed' and len(provider.results)==1
-    with client_for(db) as client:
-        recovered=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
-    assert recovered['report']['status']=='completed' and recovered['reason'] is None
-    assert recovered['report']['coverageGaps']==[] and recovered['report']['incompleteReviews']==[]
+        report=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()['report']
+    assert report['status']=='partial'
+    with sqlite3.connect(db) as conn:
+        scan_id = conn.execute("SELECT scan_id FROM k10_morning_review_work_items WHERE work_item_id=?", (item[0],)).fetchone()[0]
+        assert conn.execute("SELECT count(*) FROM k10_opportunity_lifecycle_events WHERE lifecycle_event_id LIKE 'morning_%' AND json_extract(content_json,'$.scanId')=?", (scan_id,)).fetchone()[0] == 0
+    assert any(row['taskId']==item[0] and row['status']=='failed' for row in report['incompleteReviews'])
     with sqlite3.connect(db) as conn:assert conn.execute("SELECT * FROM k10_opportunity_lifecycle_events WHERE kind=?",(kind,)).fetchall()==before
-
-    assert len([item for item in recovered['report']['lifecycleUpdates'] if item['kind']==kind])==1
 
 
 def test_closed_restore_is_rejected_and_history_exposes_same_can_select(tmp_path,monkeypatch):

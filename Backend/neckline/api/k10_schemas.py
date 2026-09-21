@@ -233,6 +233,18 @@ class ExecutionRunControlOut(K10Model):
     state: Literal["paused", "ready"]
     reasonCode: str = Field(min_length=1, max_length=120)
     changedAt: str
+    executionState: Literal["accepting", "draining", "paused", "blocked"]
+    inFlightCount: int = Field(ge=0)
+    unknownCount: int = Field(ge=0)
+    activeTasks: list["ExecutionActiveTaskOut"] = Field(default_factory=list)
+
+
+class ExecutionActiveTaskOut(K10Model):
+    taskId: str = Field(min_length=1)
+    status: Literal["queued", "running", "retry_pending", "paused"]
+    stage: str | None = Field(default=None, max_length=80)
+    windowKind: Literal["evening", "morning"] | None = None
+    executionStartedAt: str | None = None
 
 
 class ExecutionTitleCountsOut(K10Model):
@@ -903,6 +915,81 @@ class V2IncompleteReviewOut(K10Model):
     reason: str
 
 
+class V2DeliveryCountsOut(K10Model):
+    """System-derived processing counts; title/event/company axes never mix."""
+    titleInput: int = Field(ge=0)
+    titleProcessed: int = Field(ge=0)
+    titleFailed: int = Field(ge=0)
+    titleUnprocessed: int = Field(ge=0)
+    eventInput: int = Field(ge=0)
+    eventProcessed: int = Field(ge=0)
+    eventFailed: int = Field(ge=0)
+    eventUnprocessed: int = Field(ge=0)
+    comparableCompanies: int = Field(ge=0)
+    publishedCompanies: int = Field(ge=0)
+
+
+class V2DeliveryGapOut(K10Model):
+    """One independently located execution gap. It is not model evidence."""
+    gapId: str = Field(min_length=1, max_length=160)
+    stage: str = Field(min_length=1, max_length=80)
+    unitKind: str = Field(min_length=1, max_length=80)
+    unitId: str = Field(min_length=1, max_length=320)
+    reasonCode: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=500)
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+    eventIds: list[str] = Field(default_factory=list)
+    companyCodes: list[str] = Field(default_factory=list)
+    companyScopeKnown: bool
+
+
+class V2ReportDeliveryOut(K10Model):
+    contractVersion: Literal["k10-report-delivery-3.4.0-b76", "k10-report-delivery-3.5.0-b78"]
+    outcome: Literal["complete", "partial", "failed"]
+    rankingScope: Literal["all_processed", "completed_subset", "none"]
+    counts: V2DeliveryCountsOut
+    gaps: list[V2DeliveryGapOut] = Field(default_factory=list)
+    inputManifestSha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    eligibleSetSha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    rankingInputSha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class V2ReportMaterialsOut(K10Model):
+    state: Literal["available", "empty", "unavailable"]
+    count: int = Field(ge=0)
+    reason: ApiFailure | None = None
+
+
+class V2MaterialFactOut(K10Model):
+    text: str = Field(min_length=1, max_length=4000)
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+
+
+class V2MaterialCompanyRelationOut(K10Model):
+    companyCode: str = Field(min_length=1, max_length=32)
+    companyName: str = Field(min_length=1, max_length=160)
+    relation: str = Field(min_length=1, max_length=500)
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+
+
+class V2ReportMaterialOut(K10Model):
+    materialId: str = Field(min_length=1, max_length=160)
+    eventId: str = Field(min_length=1, max_length=160)
+    eventTitle: str = Field(min_length=1, max_length=1000)
+    facts: list[V2MaterialFactOut] = Field(default_factory=list)
+    companyRelations: list[V2MaterialCompanyRelationOut] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+    asOf: str
+
+
+class V2ReportMaterialsEnvelope(K10Model):
+    schemaVersion: int = 9
+    reportId: str
+    items: list[V2ReportMaterialOut]
+    page: PageMeta
+
+
 class V2ReportOut(K10Model):
     coverageGaps: list[str] = Field(default_factory=list)
     incompleteReviews: list[V2IncompleteReviewOut] = Field(default_factory=list)
@@ -916,6 +1003,12 @@ class V2ReportOut(K10Model):
     verificationCutoffAt: str | None = None
     availableAt: str | None = None
     status: str
+    # Absent is a material legacy condition. It must never be interpreted as
+    # a complete B76 delivery.
+    delivery: V2ReportDeliveryOut | None = None
+    materials: V2ReportMaterialsOut | None = None
+    resultAvailableAt: str | None = None
+    deliveryDeadlineAt: str | None = None
     eveningCards: list[V2CardOut]
     updatedCards: list[V2CardOut]
     addedCards: list[V2CardOut]
@@ -936,6 +1029,7 @@ class V2ReportSummaryOut(K10Model):
     cutoffAt: str
     availableAt: str | None = None
     status: str
+    delivery: V2ReportDeliveryOut | None = None
 
 
 class V2ReportListOut(K10Model):

@@ -37,30 +37,29 @@ def test_independent_research_is_bounded_and_results_keep_input_order():
     assert not run.issues
 
 
-def test_truncated_assessment_gets_one_concise_delta_repair_without_repeating_search(tmp_path, monkeypatch):
-    db, task_id, task, calls, gateway = _run(tmp_path, monkeypatch, truncate_action="assess_evidence")
+def test_truncated_direct_round_gets_one_concise_repair_without_search(tmp_path, monkeypatch):
+    db, task_id, task, calls, gateway = _run(tmp_path, monkeypatch, truncate_action="research_round")
     assert task.status == "completed"
-    assert calls.count("research:assess_evidence") == 3
-    assert len(gateway.search_paths) == 2
+    assert calls.count("research:research_round") == 2
+    assert gateway.search_paths == []
     assert calls.count("understand") == 1
 
 
-def test_real_worker_reuses_paid_research_action_after_slice_before_snapshot_write(tmp_path, monkeypatch):
+def test_real_worker_reuses_paid_direct_round_after_slice_before_snapshot_append(tmp_path, monkeypatch):
     tick = [0.0]
     monkeypatch.setattr(pipeline, "time", SimpleNamespace(monotonic=lambda: tick[0]))
-    original = pipeline._CheckpointedDiscoveryModel.advance_research
+    original = pipeline._CheckpointedDiscoveryModel.advance_research_round
     triggered = [False]
     def complete_then_expire(self, **kwargs):
         result = original(self, **kwargs)
-        if kwargs["action"] == "plan_gaps" and not triggered[0]:
+        if not triggered[0]:
             triggered[0] = True
             tick[0] = 10_000.0
         return result
-    monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel, "advance_research", complete_then_expire)
+    monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel, "advance_research_round", complete_then_expire)
     db, task_id, first, calls, _ = _run(tmp_path, monkeypatch)
     assert first.status == "queued"
-    assert calls.count("research:plan_gaps") == 1
-    assert "research:plan_queries" not in calls
+    assert calls.count("research:research_round") == 1
     before = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["executionStartedAt"]
     tick[0] = 0.0
     with sqlite3.connect(db) as conn:
@@ -69,7 +68,7 @@ def test_real_worker_reuses_paid_research_action_after_slice_before_snapshot_wri
                     handlers=pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet"),
                     clock=lambda: next_run + timedelta(seconds=1))
     assert done.status == "completed"
-    assert calls.count("research:plan_gaps") == 1 and calls.count("understand") == 1
+    assert calls.count("research:research_round") == 1 and calls.count("understand") == 1
     assert store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["executionStartedAt"] == before
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
     assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1

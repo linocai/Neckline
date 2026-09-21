@@ -38,18 +38,21 @@ def _event():
     return EventDraft("event", "stage", "confirmed", "事件", "disclosure", {}, (EvidenceRef("doc-origin", 1),))
 
 
-def _bound_task(path, *, task_id="task-verification", opened=True):
+def _bound_task(path, *, task_id="task-verification", opened=True, payload=None):
     created = NOW.isoformat()
+    # Establish the producer prerequisite before enqueueing; paused gateway
+    # tests close it after creating the task they are about to exercise.
+    store.set_run_control(state="open", reason_code="fixture", changed_at=created, changed_by="test", db_path=path)
     store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id,
-                       input_version="input-v1", input_cutoff_at=created, payload={}, budget={},
+                       input_version="input-v1", input_cutoff_at=created, payload=payload or {}, budget={},
                        created_at=created, db_path=path)
     config_id, revision = append_approved_execution_profile(
         db_path=path, created_at=created, config_id=f"{task_id}-execution",
     )
     store.bind_task_execution(task_id=task_id, execution_config_id=config_id, execution_config_revision=revision,
                               binding_kind="scheduled", bound_at=created, db_path=path)
-    if opened:
-        store.set_run_control(state="open", reason_code="fixture", changed_at=created, changed_by="test", db_path=path)
+    if not opened:
+        store.set_run_control(state="closed", reason_code="fixture_paused", changed_at=created, changed_by="test", db_path=path)
     return task_id
 
 

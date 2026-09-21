@@ -1,238 +1,274 @@
-"""Independent read-only review reproductions; temporary DBs, offline transports."""
+"""Direct-round review regressions through the real offline worker."""
 import json
 import sqlite3
-from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from neckline.k10 import pipeline, store
-from neckline.k10.research_runtime import _Investigation
+from neckline.k10 import store
+from neckline.k10.cli import frozen_scan_input_sha256, recover_scan
 from neckline.k10.worker import run_once
+from neckline.k10.v2_store import read_report
 from tests import test_v310_pipeline_e2e as e2e
+from tests.test_b54_review_regressions import client_for
 
 
-def payload_of(request):
-    text = json.loads(request.content)['messages'][-1]['content']
-    return json.loads(text.split('<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
+def _payload_of(request):
+    text = json.loads(request.content)["messages"][-1]["content"]
+    return json.loads(text.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
 
 
-def reply(value):
-    return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(value)}, 'finish_reason': 'stop'}],
-                                   'usage': {'prompt_tokens': 3, 'completion_tokens': 3, 'total_tokens': 6}})
+def _reply(value):
+    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(value)},
+        "finish_reason": "stop"}], "usage": {"prompt_tokens": 3, "completion_tokens": 3, "total_tokens": 6}})
 
 
-@pytest.mark.parametrize('kind,pause', [('question', False), ('question', True), ('claim', False), ('claim', True)])
-def test_question_local_read_tracks_current_revision(tmp_path, monkeypatch, kind, pause):
-    tick, tripped = [0.0], [False]
-    monkeypatch.setattr(pipeline, 'time', SimpleNamespace(monotonic=lambda: tick[0]))
-    original_record = _Investigation._record
-    def save_then_pause(self, result, **kwargs):
-        original_record(self, result, **kwargs)
-        if pause and not tripped[0] and (result.conclusion or {}).get('runtimeContextRead'):
-            tripped[0] = True
-            tick[0] = 10000.0
-    monkeypatch.setattr(_Investigation, '_record', save_then_pause)
-    collection, field, object_id = (('questions', 'missingEvidence', 'q-1') if kind == 'question'
-        else ('claims', 'decisionImpact', 'article-claim-1'))
-    transport = httpx.MockTransport
-    seen = []
-    closed = []
+def _direct_query_round(payload, *, paths=(("path-1", "项目 送样 公告", "公司公告"),)):
+    packet = payload["evidencePacket"]
+    ref = packet["allowedEvidenceRefs"][0]
+    claim_id = packet["claims"][0]["claimId"]
+    return {
+        "action": "research_round",
+        "questions": [{
+            "questionId": "q-1", "claimIds": [claim_id], "companyCodes": ["300001.SZ"],
+            "question": "送样是否获公司确认", "knownEvidence": [ref], "missingEvidence": ["公司确认"],
+            "supportCondition": "公司确认", "refuteCondition": "公司否认", "decisionImpact": "影响主推",
+            "state": "open", "resumeCondition": "出现公司公告",
+        }],
+        "queryPaths": [{
+            "pathId": path_id, "questionId": "q-1", "query": query, "intent": "确认送样",
+            "targetSource": source, "newPathReason": "首批必要来源", "expectedInformationGain": "确认主体",
+            "expectedJudgmentChange": "改变比较", "purposeKind": "event_fact",
+            "targetRefs": [{"kind": "claim", "claimId": claim_id}], "state": "planned", "resultSummary": None,
+        } for path_id, query, source in paths],
+        "conclusion": {
+            "researchStatus": "continue_research", "companyMappings": [], "materialGaps": ["公司确认"],
+            "stopReason": "需要必要公开资料", "resumeCondition": "取得公司公告",
+        },
+        "companyAssessments": [],
+    }
+
+
+def _resume_failed_same_task(*, db, task_id, tmp_path):
+    """Use the production recovery entry, preserving the CLI task binding."""
+    execution = store.task_execution_input(task_id=task_id, db_path=db)
+    scan = store.get_scan(scan_id=execution["checkpoint"]["scanId"], db_path=db)
+    recovered = recover_scan(
+        db_path=db, scan_id=scan["scanId"], execution_config_id="b39-execution", execution_config_revision=1,
+        confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan["scanId"], db_path=db), now=e2e.RUN_AT,
+    )
+    assert recovered == task_id
+    task = run_once(
+        db_path=db, worker_id="v321-direct-resume", lease_for=e2e.timedelta(minutes=5),
+        handlers=e2e.pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet"),
+        clock=lambda: e2e.RUN_AT,
+    )
+    assert task is not None
+    return task
+
+
+def _pause_after_committed_round(monkeypatch):
+    """Interrupt after receipt/checkpoint durability, before the direct result is consumed."""
+    original, tripped = store.record_execution_checkpoint, {"value": False}
+
+    def interrupt(**kwargs):
+        result = original(**kwargs)
+        if (kwargs.get("stage") == "model:investigation_research_round"
+                and kwargs.get("status") == "completed" and not tripped["value"]):
+            tripped["value"] = True
+            raise sqlite3.OperationalError("fixture interruption after committed direct round")
+        return result
+
+    monkeypatch.setattr(store, "record_execution_checkpoint", interrupt)
+    return original, tripped
+
+
+@pytest.mark.parametrize("kind,pause", [("question", False), ("question", True), ("claim", False), ("claim", True)])
+def test_current_question_or_claim_read_cannot_create_a_new_paid_direct_round(tmp_path, monkeypatch, kind, pause):
+    """These values are already in a B78 packet; a reread cannot advance research."""
+    transport, rounds = httpx.MockTransport, []
+    original_checkpoint = None
+    if pause:
+        original_checkpoint, tripped = _pause_after_committed_round(monkeypatch)
+
     def wrap(handler):
         def respond(request):
-            payload = payload_of(request)
-            action = payload.get('action')
-            packet = payload.get('evidencePacket', {})
-            if action == 'plan_queries':
-                if not packet.get('contextResults'):
-                    return reply({'action': action, 'contextRequests': [
-                        {'kind': kind, 'id': object_id, 'purpose': '读取当前剩余证据缺口'}]})
-                seen.append({'current': packet[collection][0][field],
-                             'localRead': packet['contextResults'][0]['value'][field]})
-            response = handler(request)
-            body = response.json()
-            value = json.loads(body['choices'][0]['message']['content'])
-            if action == 'close_research' and not closed:
-                closed.append(True)
-                value['questions'] = [{'questionId': 'q-1', 'state': 'open',
-                    'missingEvidence': ['新增实质缺口：当前送样适用范围已变化'],
-                    'knownEvidence': packet['questions'][0]['knownEvidence'],
-                    'resumeCondition': '取得适用范围说明'}]
-                if kind == 'claim':
-                    value['claims'] = [{'claimId': object_id, 'decisionImpact': '适用范围变化导致影响判断改变'}]
-                body['choices'][0]['message']['content'] = json.dumps(value)
-                return httpx.Response(response.status_code, json=body)
-            return response
+            payload = _payload_of(request)
+            if payload.get("action") == "research_round":
+                rounds.append(payload)
+                request_row = ({"kind": "question", "id": "q-1", "questionId": "q-1", "purpose": "读取当前缺口"}
+                               if kind == "question" else
+                               {"kind": "claim", "id": "article-claim-1", "purpose": "读取当前判断依据"})
+                return _reply({"action": "research_round", "contextRequests": [request_row]})
+            return handler(request)
         return transport(respond)
-    monkeypatch.setattr(httpx, 'MockTransport', wrap)
-    db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True)
+
+    monkeypatch.setattr(httpx, "MockTransport", wrap)
+    db, task_id, task, _calls, _gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking="legacy_wrong")
     if pause:
-        assert task.status == 'queued'
-        tick[0] = 0.0
-        task = resume_task(db, task_id, tmp_path)
-    print('question-read', json.dumps({'task': task.status, 'seen': seen}, ensure_ascii=False))
-    assert task.status == 'completed'
-    assert len(seen) == 2
-    assert seen[-1]['localRead'] == seen[-1]['current']
-    assert seen[0]['localRead'] != seen[-1]['localRead']
-    with sqlite3.connect(db) as conn:
-        reads = [json.loads(row[0])['conclusion']['runtimeContextRead'] for row in conn.execute(
-            "SELECT result_json FROM k10_research_stage_results WHERE json_extract(result_json,'$.conclusion.runtimeContextRead') IS NOT NULL")]
-    assert len(reads) == 2  # Restart reuses the exact already-paid input/read.
-    assert reads[0]['contentSha256'] != reads[1]['contentSha256']
+        assert tripped["value"] and task.status == "failed"
+        monkeypatch.setattr(store, "record_execution_checkpoint", original_checkpoint)
+        task = _resume_failed_same_task(db=db, task_id=task_id, tmp_path=tmp_path)
+    assert task.status == "completed"
+    assert len(rounds) == 1
+    report = read_report(db_path=db)
+    assert report["eveningCards"] == []
 
 
-@pytest.mark.parametrize('continue_research', [False, True])
-def test_empty_search_pause_resumes_closure_before_another_query(tmp_path, monkeypatch, continue_research):
-    tick, tripped = [0.0], [False]
-    monkeypatch.setattr(pipeline, 'time', SimpleNamespace(monotonic=lambda: tick[0]))
-    original = _Investigation._tool
-    def save_then_yield(self, bundle, **kwargs):
-        original(self, bundle, **kwargs)
-        if not tripped[0] and kwargs.get('path') is not None and not bundle.documents:
-            tripped[0] = True
-            tick[0] = 10000.0
-    monkeypatch.setattr(_Investigation, '_tool', save_then_yield)
-    db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking=None if continue_research else 'legacy_wrong')
-    assert task.status == 'queued', task
-    before = list(calls)
-    tick[0] = 0.0
-    with sqlite3.connect(db) as conn:
-        due = datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?', (task_id,)).fetchone()[0])
-    resumed = run_once(db_path=db, task_id=task_id, worker_id='review-empty-resume', lease_for=timedelta(minutes=5),
-        handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
-        clock=lambda: due + timedelta(seconds=1))
-    after = calls[len(before):]
-    with sqlite3.connect(db) as conn:
-        physical = conn.execute('SELECT stage,count(*) FROM k10_external_attempts WHERE task_id=? GROUP BY stage', (task_id,)).fetchall()
-    print('empty-search-resume', json.dumps({'taskId': task_id, 'task': resumed.status, 'before': before, 'after': after,
-        'queries': gateway.search_paths, 'physicalAttempts': physical}, ensure_ascii=False))
-    assert resumed.status == 'completed'
-    assert after[0] == 'research:close_research'
-    assert len(gateway.search_paths) == (2 if continue_research else 1)
-    assert dict(physical)['investigation'] == (6 if continue_research else 4)
+@pytest.mark.parametrize("pause", [False, True])
+def test_empty_search_recovery_finishes_without_a_second_direct_round(tmp_path, monkeypatch, pause):
+    """An interrupted empty lookup resumes its durable reply and ends as pending evidence."""
+    transport, rounds = httpx.MockTransport, []
+    original_checkpoint = None
+    if pause:
+        original_checkpoint, tripped = _pause_after_committed_round(monkeypatch)
+
+    def wrap(handler):
+        def respond(request):
+            payload = _payload_of(request)
+            if payload.get("action") == "research_round":
+                rounds.append(payload)
+                return _reply(_direct_query_round(payload))
+            return handler(request)
+        return transport(respond)
+
+    monkeypatch.setattr(httpx, "MockTransport", wrap)
+    db, task_id, task, _calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking="legacy_wrong")
+    if pause:
+        assert tripped["value"] and task.status == "failed"
+        monkeypatch.setattr(store, "record_execution_checkpoint", original_checkpoint)
+        task = _resume_failed_same_task(db=db, task_id=task_id, tmp_path=tmp_path)
+    assert task.status == "completed"
+    e2e.assert_search_routes(gateway, [('项目 送样 公告','公司公告','q-1')])
+    assert len(rounds) == 1
+    assert read_report(db_path=db)["eveningCards"] == []
 
 
-def test_control_empty_search_without_pause_closes_after_one_query(tmp_path, monkeypatch):
-    db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking='legacy_wrong')
+@pytest.mark.parametrize("pause", [False, True])
+def test_admitted_distinct_source_batch_completes_once_each_after_recovery(tmp_path, monkeypatch, pause):
+    """Different necessary sources survive dedupe and retain their durable batch on resume."""
+    transport, rounds = httpx.MockTransport, []
+    original_checkpoint = None
+    if pause:
+        original_checkpoint, tripped = _pause_after_committed_round(monkeypatch)
+
+    def wrap(handler):
+        def respond(request):
+            payload = _payload_of(request)
+            if payload.get("action") == "research_round":
+                rounds.append(payload)
+                return _reply(_direct_query_round(payload, paths=(
+                    ("announcement", "项目 送样 公告", "公司公告"),
+                    ("industry", "项目 送样 行业核实", "行业媒体"),
+                )))
+            return handler(request)
+        return transport(respond)
+
+    monkeypatch.setattr(httpx, "MockTransport", wrap)
+    db, task_id, task, _calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking="legacy_wrong")
+    if pause:
+        assert tripped["value"] and task.status == "failed"
+        monkeypatch.setattr(store, "record_execution_checkpoint", original_checkpoint)
+        task = _resume_failed_same_task(db=db, task_id=task_id, tmp_path=tmp_path)
+    assert task.status == "completed"
+    e2e.assert_search_routes(gateway, [('项目 送样 公告','公司公告','q-1'), ('项目 送样 行业核实','行业媒体','q-1')])
+    assert len(rounds) == 1
+
+
+def test_empty_search_finishes_direct_round_without_a_synthetic_closure(tmp_path, monkeypatch):
+    """An empty necessary search is terminal evidence, never a paid close-stage replay."""
+    transport = httpx.MockTransport
+    rounds = []
+
+    def wrap(handler):
+        def respond(request):
+            payload = _payload_of(request)
+            if payload.get("action") == "research_round":
+                rounds.append(payload)
+                if len(rounds) == 1:
+                    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(
+                        _direct_query_round(payload))}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 3, "total_tokens": 6}})
+            return handler(request)
+        return transport(respond)
+
+    monkeypatch.setattr(httpx, "MockTransport", wrap)
+    db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking="legacy_wrong")
+    assert task.status == "completed"
+    e2e.assert_search_routes(gateway, [('项目 送样 公告','公司公告','q-1')])
+    assert len(rounds) == 1
+    assert calls.count("research:research_round") == 0  # The crafted direct reply is the one paid request.
+    assert read_report(db_path=db)["eveningCards"] == []
     with sqlite3.connect(db) as conn:
-        physical = conn.execute('SELECT stage,count(*) FROM k10_external_attempts WHERE task_id=? GROUP BY stage', (task_id,)).fetchall()
-    print('empty-search-control', json.dumps({'taskId': task_id, 'task': task.status, 'calls': calls,
-        'queries': gateway.search_paths, 'physicalAttempts': physical}, ensure_ascii=False))
-    assert task.status == 'completed'
-    assert gateway.search_paths == ['path-1']
-    assert dict(physical)['investigation'] == 4
+        assert conn.execute("SELECT COUNT(*) FROM k10_research_round_results").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM k10_research_stage_results").fetchone() == (0,)
+        attempts = conn.execute(
+            "SELECT state FROM k10_external_attempts WHERE task_id=? AND stage='investigation'", (task_id,)
+        ).fetchall()
+    assert attempts and all(state[0] == "succeeded" for state in attempts)
 
 
 @pytest.mark.parametrize("correction", ["reject", "visible", "read"])
-def test_comparison_cannot_publish_a_source_hidden_from_this_request(tmp_path, monkeypatch, correction):
-    from dataclasses import replace
-    from neckline.k10.v2_store import read_report
-    from tests.test_b54_review_regressions import client_for
-    original_news = e2e._News
-    class News(original_news):
-        def fetch_incremental(self, request):
-            result = super().fetch_incremental(request)
-            first = result.documents[0]
-            extra = replace(first, external_id='news-2', original_text='隐含来源：仅附旧项目背景，无本次独立命题。',
-                metadata={'title': '项目补充背景说明'})
-            return replace(result, documents=(first, extra))
-    monkeypatch.setattr(e2e, '_News', News)
+def test_direct_round_rejects_hidden_comparison_source_before_publication(tmp_path, monkeypatch, correction):
+    """A comparison may only use packet-visible or explicitly read source facts."""
     transport = httpx.MockTransport
-    hidden, observed = [], []
+    rounds = []
+    hidden = {"documentId": "hidden-source", "revision": 1}
+
     def wrap(handler):
         def respond(request):
-            payload = payload_of(request)
+            payload = _payload_of(request)
+            if payload.get("action") != "research_round":
+                return handler(request)
+            rounds.append(payload)
             response = handler(request)
             body = response.json()
-            value = json.loads(body['choices'][0]['message']['content'])
-            if 'items' in value and all('matterKey' in row for row in value['items']):
-                for index, row in enumerate(value['items']):
-                    row['matterKey'] = f'project-{index}'
-            if 'events' in value and '隐含来源' in json.dumps(payload, ensure_ascii=False):
-                value['events'][0]['claims'] = []
-                hidden.append(value['events'][0]['sourceRefs'][0])
-            if payload.get('action') == 'compare_companies':
-                assert hidden
-                packet = payload['evidencePacket']
-                observed.append({'hidden': hidden[0], 'visible': packet['allowedEvidenceRefs'],
-                    'packetContainsHiddenID': hidden[0]['documentId'] in json.dumps(packet)})
-                if not packet.get('contextResults'):
-                    assert hidden[0] not in packet['allowedEvidenceRefs']
-                if len(observed) > 1 and correction != 'reject':
-                    if not packet.get('contextResults'):
-                        assert 'investigation_reference_invalid' in json.loads(request.content)['messages'][-1]['content']
-                    if correction == 'read' and not packet.get('contextResults'):
-                        return reply({'action': 'compare_companies', 'contextRequests': [
-                            {'kind': 'source', 'sourceRef': hidden[0], 'location': 'paragraph:1', 'purpose': '核实补充背景'}]})
-                    if correction == 'read':
-                        assert hidden[0] in packet['allowedEvidenceRefs']
-                        assert '仅附旧项目背景' in packet['contextResults'][0]['value']['text']
-                    # The old fixture downgrades its second comparison to pending;
-                    # this correction scenario keeps the same valid recommendation.
-                    value['companyAssessments'][0].update(role='primary', rank=1)
-                    value['conclusion']['evidenceRefs'] = [hidden[0] if correction == 'read' else packet['allowedEvidenceRefs'][0]]
-                    value['conclusion']['summary'] = '已读资料仅补充旧背景，当前推荐仍保留未核实标记。'
-                else:
-                    value['conclusion']['evidenceRefs'] = [hidden[0]]
-                    value['conclusion']['summary'] = '未在本次请求展示的来源被用作共同事实依据。'
-            body['choices'][0]['message']['content'] = json.dumps(value)
-            return httpx.Response(response.status_code, json=body)
+            value = json.loads(body["choices"][0]["message"]["content"])
+            if len(rounds) == 1:
+                assert hidden not in payload["evidencePacket"]["allowedEvidenceRefs"]
+                value["comparison"]["evidenceRefs"] = [hidden]
+                body["choices"][0]["message"]["content"] = json.dumps(value)
+                return httpx.Response(response.status_code, json=body)
+            assert "上次输出未通过校验" in json.loads(request.content)["messages"][-1]["content"]
+            if correction == "reject":
+                return _reply({
+                    "action": "research_round",
+                    "conclusion": {"researchStatus": "background_only", "companyMappings": [],
+                                   "materialGaps": ["比较来源不可见"], "stopReason": "无法验证来源",
+                                   "resumeCondition": "公开资料出现"},
+                    "companyAssessments": [],
+                })
+            if correction == "read" and len(rounds) == 2:
+                source_ref = payload["evidencePacket"]["allowedEvidenceRefs"][0]
+                return _reply({"action": "research_round", "contextRequests": [{
+                    "kind": "source", "sourceRef": source_ref, "location": "excerpt",
+                    "purpose": "核对可见原文",
+                }]})
+            if correction == "read":
+                assert payload["evidencePacket"]["contextResults"]
+            return response
         return transport(respond)
-    monkeypatch.setattr(httpx, 'MockTransport', wrap)
-    db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking='legacy_wrong')
-    with sqlite3.connect(db) as conn:
-        comparisons = [json.loads(row[0])['conclusion'] for row in conn.execute(
-            "SELECT result_json FROM k10_research_stage_results WHERE action='compare_companies'")]
-    with client_for(db) as client:
-        actual = client.get('/api/v1/k10/v2/reports/latest?window=evening')
+
+    monkeypatch.setattr(httpx, "MockTransport", wrap)
+    db, _task_id, task, _calls, _gateway = e2e._run(
+        tmp_path, monkeypatch, v2=True, pending_ranking="legacy_wrong",
+    )
+    assert task.status == "completed"
+    assert len(rounds) == 2
     report = read_report(db_path=db)
-    print('hidden-comparison-source', json.dumps({'task': task.status, 'observed': observed,
-        'persistedComparisons': comparisons, 'apiStatus': actual.status_code,
-        'publishedCardCount': len(report['eveningCards']) if report else 0}, ensure_ascii=False))
-    assert observed
-    if correction == 'reject':
-        assert not comparisons or hidden[0] not in comparisons[0]['evidenceRefs']
-        assert not report or not report['eveningCards']
-    else:
-        assert task.status == 'completed'
-        assert len(report['eveningCards']) == 1
-        assert actual.status_code == 200
-        assert len(observed) == (3 if correction == 'read' else 2)
-
-
-def resume_task(db, task_id, tmp_path):
+    assert len(report["eveningCards"]) == (0 if correction in {"reject", "read"} else 1)
     with sqlite3.connect(db) as conn:
-        due = datetime.fromisoformat(conn.execute('SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?', (task_id,)).fetchone()[0])
-    return run_once(db_path=db, task_id=task_id, worker_id='review-resume', lease_for=timedelta(minutes=5),
-        handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'),
-        clock=lambda: due + timedelta(seconds=1))
-
-
-@pytest.mark.parametrize('pause', [False, True])
-def test_admitted_empty_search_batch_is_finished_before_closure(tmp_path, monkeypatch, pause):
-    from tests.test_b60_pool_filtering import edit_responses
-    tick, tripped = [0.0], [False]
-    monkeypatch.setattr(pipeline, 'time', SimpleNamespace(monotonic=lambda: tick[0]))
-    def add_second_path(value):
-        if value.get('action') == 'plan_queries':
-            first = value['queryPaths'][0]
-            value['queryPaths'].append({**first, 'pathId': 'path-2', 'query': '项目更正公告编号核实'})
-    edit_responses(monkeypatch, add_second_path)
-    original = _Investigation._tool
-    def save_then_pause(self, bundle, **kwargs):
-        original(self, bundle, **kwargs)
-        if pause and not tripped[0] and kwargs.get('path'):
-            tripped[0] = True
-            tick[0] = 10000.0
-    monkeypatch.setattr(_Investigation, '_tool', save_then_pause)
-    db, task_id, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, pending_ranking='legacy_wrong')
-    if pause:
-        assert task.status == 'queued'
-        tick[0] = 0.0
-        task = resume_task(db, task_id, tmp_path)
-    assert task.status == 'completed'
-    assert gateway.search_paths == ['path-1', 'path-2']
-    assert calls.count('research:plan_queries') == 1
-    assert calls.count('research:close_research') == 1
+        persisted = [json.loads(row[0]) for row in conn.execute("SELECT result_json FROM k10_research_round_results")]
+    assert len(persisted) == 1
+    if correction == "reject":
+        assert persisted[0]["conclusion"]["researchStatus"] == "background_only"
+    elif correction == "read":
+        # Requesting a source with no newly visible text cannot turn that
+        # source into evidence; the direct runner terminates safely.
+        assert persisted[0]["conclusion"]["researchStatus"] == "pending_verification"
+    else:
+        assert hidden not in persisted[0]["comparison"]["evidenceRefs"]
+    with client_for(db) as client:
+        response = client.get("/api/v1/k10/v2/reports/latest?window=evening")
+    assert response.status_code == 200
+    assert len(response.json()["report"]["eveningCards"]) == (0 if correction in {"reject", "read"} else 1)

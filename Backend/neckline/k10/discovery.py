@@ -726,6 +726,10 @@ def run_discovery(
     selected_source_refs: Sequence[EvidenceRef] | None = None,
     investigate: InvestigationFunction | None = None,
     investigation_concurrency: int | None = None,
+    pre_ranking_exclusions: Callable[[Sequence[DiscoveryCandidate]], set[str]] | None = None,
+    finalization_guard: Callable[[], None] | None = None,
+    finalization_pending_codes: Sequence[str] = (),
+    fatal_issue_codes: Sequence[str] = (),
 ) -> DiscoveryRun:
     """执行可注入发现链；仅晚间可生成最多 30 条新候选。
 
@@ -750,6 +754,17 @@ def run_discovery(
     config = validate_run_config(configuration, scope="discovery")
     if not config.ready:
         return DiscoveryRun("not_configured", config, (), (), (), (), (), (), 0)
+    fatal_codes = {code for code in fatal_issue_codes if isinstance(code, str) and code}
+    finalization_pending = {code for code in finalization_pending_codes if isinstance(code, str) and code}
+
+    def issue_code_or_raise(exc: Exception) -> str:
+        """Keep known per-unit gaps local, but never publish after a fatal boundary."""
+        code = _safe_issue_code(exc)
+        if code in fatal_codes:
+            if getattr(exc, "code", None) == code:
+                raise exc
+            raise ValueError(code) from exc
+        return code
     # V3 title triage freezes body admission before this module is permitted to
     # touch readable source text.  The caller must provide exactly those real
     # source revisions, never a larger list that this routine silently filters.
@@ -841,7 +856,7 @@ def run_discovery(
             checkpoint(record)
 
     def fail_understanding(document: DiscoveryDocument, exc: Exception) -> str | None:
-        code = _safe_issue_code(exc)
+        code = issue_code_or_raise(exc)
         pending = code in _PENDING_ADMISSION_CODES
         full_text_requested = getattr(model, "full_text_requested", None)
         requested_full_text = bool(full_text_requested(document=document)) if callable(full_text_requested) else False
@@ -947,11 +962,10 @@ def run_discovery(
             # The iterator still owns items that were never offered to the model.
             mark_unadmitted(tuple(documents_iter), code=admission_blocked_code)
 
-    if investigate is not None and (counts["understandFailed"] or counts.get("understandPending", 0)):
-        # A failed selected body is not evidence that there are no events.
-        # Keep all successful document checkpoints, but never start research
-        # or publish the surviving subset as a completed B39 discovery run.
-        raise DiscoveryUnderstandingIncomplete()
+    # A selected-body failure is an explicit document-local gap.  Successful
+    # bodies still form independent event units; the pipeline removes every
+    # durably known affected company before the one final priority call and
+    # records an unranked/unknown-scope gap when it cannot prove that boundary.
 
     def record_pending_event(*, stage: str, code: str, event: EventDraft,
                              company_code: str | None = None) -> None:
@@ -997,6 +1011,7 @@ def run_discovery(
                         # no paid result is abandoned by cancelling its thread.
                         raise
                     except Exception as exc:
+                        issue_code_or_raise(exc)
                         research_results[id(event)] = exc
                     submit_next()
     event_admission_closed = False
@@ -1038,7 +1053,7 @@ def run_discovery(
             except Exception as exc:
                 if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
                     raise
-                code = _safe_issue_code(exc)
+                code = issue_code_or_raise(exc)
                 if code in _PENDING_ADMISSION_CODES:
                     record_pending_event(stage="verify_or_map", code=code, event=event)
                     event_admission_closed = True
@@ -1067,7 +1082,7 @@ def run_discovery(
             except Exception as exc:
                 if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
                     raise
-                code = _safe_issue_code(exc)
+                code = issue_code_or_raise(exc)
                 if code in _PENDING_ADMISSION_CODES:
                     record_pending_event(stage="compare", code=code, event=event)
                     event_admission_closed = True
@@ -1105,7 +1120,7 @@ def run_discovery(
                 if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
                     raise
                 counts["eventFailed"] += 1
-                issue = DiscoveryIssue("compare", _safe_issue_code(exc), canonical_key=event.canonical_key)
+                issue = DiscoveryIssue("compare", issue_code_or_raise(exc), canonical_key=event.canonical_key)
                 issues.append(issue)
                 if checkpoint is not None:
                     checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
@@ -1146,7 +1161,7 @@ def run_discovery(
                 except Exception as exc:
                     if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
                         raise
-                    code = _safe_issue_code(exc)
+                    code = issue_code_or_raise(exc)
                     if code in _PENDING_ADMISSION_CODES:
                         record_pending_event(stage="classify", code=code, event=event,
                                              company_code=mapping.company_code)
@@ -1238,32 +1253,64 @@ def run_discovery(
         # visible as pending work rather than consuming a final unreserved call.
         pending.extend(all_candidates)
         all_candidates.clear()
+    if all_candidates and pre_ranking_exclusions is not None:
+        excluded_codes = pre_ranking_exclusions(tuple(all_candidates))
+        if not isinstance(excluded_codes, set) or not all(isinstance(code, str) and code for code in excluded_codes):
+            raise ValueError("排序依赖排除必须返回公司代码集合")
+        if excluded_codes:
+            # A failed event can share a company or source fact with a peer that
+            # otherwise completed.  Exclude that peer *before* the one global
+            # ranking call, retain it as pending evidence, and never repair an
+            # already-paid ranking by deleting cards afterwards.
+            retained: list[DiscoveryCandidate] = []
+            for candidate in all_candidates:
+                (pending if candidate.mapping.company_code in excluded_codes else retained).append(candidate)
+            all_candidates = retained
     if all_candidates:
         choices = getattr(model, "prioritize", None)
         if not callable(choices):
             raise ValueError("发现模型缺少跨事件公司比较")
-        if leaseguard is not None:
-            leaseguard()
+        # One company can retain several independently useful catalysts.  The
+        # final global ordering is nevertheless a company ordering, so choose
+        # a deterministic representative before asking the model to rank. The
+        # peer catalysts are reattached below under the representative's rank.
+        # This prevents a valid cross-event aggregation from becoming a whole
+        # report failure merely because a transport echoes the same company
+        # once for each catalyst.
+        rank_inputs_by_company: dict[str, list[DiscoveryCandidate]] = {}
+        for candidate in all_candidates:
+            rank_inputs_by_company.setdefault(candidate.mapping.company_code, []).append(candidate)
+        rank_inputs = tuple(
+            min(values, key=lambda item: (item.event.canonical_key, item.event.stage_key))
+            for _company, values in sorted(rank_inputs_by_company.items())
+        )
         try:
-            ordered_keys = tuple(choices(candidates=tuple(all_candidates)))
+            if finalization_guard is not None:
+                finalization_guard()
+            elif leaseguard is not None:
+                leaseguard()
+            ordered_keys = tuple(choices(candidates=rank_inputs))
         except Exception as exc:
             if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
                 raise
-            code = _safe_issue_code(exc)
-            if code not in _PENDING_ADMISSION_CODES:
+            code = issue_code_or_raise(exc)
+            if code not in (_PENDING_ADMISSION_CODES | finalization_pending):
                 raise
             # A ranking budget refusal is a visible partial state; without a
             # frozen global order none of the otherwise valid rows may publish.
-            anchor = all_candidates[0].event
+            anchor = rank_inputs[0].event
             record_pending_event(stage="prioritize", code=code, event=anchor)
             pending.extend(all_candidates)
             all_candidates.clear()
     unique_by_company: dict[str, list[DiscoveryCandidate]] = {}
     for candidate in all_candidates:
         unique_by_company.setdefault(candidate.mapping.company_code, []).append(candidate)
-    expected = {(item.event.canonical_key, company) for company, items in unique_by_company.items() for item in items}
+    expected = {(min(items, key=lambda item: (item.event.canonical_key, item.event.stage_key)).event.canonical_key, company)
+                for company, items in unique_by_company.items()}
     selected_by_key: dict[tuple[str, str], DiscoveryCandidate] = {
-        (item.event.canonical_key, item.mapping.company_code): item for item in all_candidates
+        (min(items, key=lambda item: (item.event.canonical_key, item.event.stage_key)).event.canonical_key, company):
+        min(items, key=lambda item: (item.event.canonical_key, item.event.stage_key))
+        for company, items in unique_by_company.items()
     }
     selected_companies: set[str] = set()
     ordered: list[DiscoveryCandidate] = []
@@ -1383,20 +1430,24 @@ class SqliteDiscoveryWriter:
     def append_update(self, *, event: EventRevision, candidate: DiscoveryCandidate) -> None:
         self.update_inputs.append((event, candidate))
 
-    def publish_updates(self, *, at: str) -> None:
-        from .store import append_opportunity_update
+    def publish_updates(self, *, at: str, conn=None) -> None:
+        from .store import append_opportunity_update, append_opportunity_update_conn
         for event, candidate in self.update_inputs:
             decision = candidate.opportunity
             related = str(decision["relatedOpportunityId"])
             kind = {"continuation": "evidence_update", "needs_review": "risk", "invalidated": "withdrawal"}[decision["kind"]]
-            append_opportunity_update(
+            values = dict(
                 lifecycle_event_id=_stable_id("update", self._scan_id, related, event.event_id, str(event.revision)),
                 opportunity_id=related, kind=kind, reason=str(decision["reason"]),
                 source_refs=self._refs(candidate.event.source_refs),
                 content={"classification": dict(decision), "eventId": event.event_id, "eventRevision": event.revision,
                          "comparison": candidate.comparison.summary, "scanId": self._scan_id},
-                occurred_at=at, created_at=at, db_path=self._db_path,
+                occurred_at=at, created_at=at,
             )
+            if conn is None:
+                append_opportunity_update(**values, db_path=self._db_path)
+            else:
+                append_opportunity_update_conn(conn, **values)
 
 
 def persist_discovery(*, run: DiscoveryRun, writer: DiscoveryWriter,

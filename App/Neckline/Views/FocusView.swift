@@ -40,6 +40,7 @@ struct FocusView: View {
         }
         .background(NK.pageBg)
         .navigationTitle("关注")
+        .task { await model.loadOpportunityContext() }
         .onAppear(perform: alignSelection)
         .onChange(of: model.selectedWindow?.id) { _, _ in alignSelection() }
         .onChange(of: scope) { _, _ in selectFirstVisibleWindow() }

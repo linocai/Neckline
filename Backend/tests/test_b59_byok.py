@@ -132,29 +132,55 @@ def test_request_and_cache_identity_include_provider_but_not_credentials(tmp_pat
 
 
 def test_saved_byok_drives_real_cli_discovery_through_publication(tmp_path,monkeypatch,client,AUTH,api_env):
-    import neckline.api.app as api
-    observed=[]
-    def configure(db):
-        monkeypatch.setattr(api,'_DB_PATH_OVERRIDE',db)
-        response=client.post(PATH,headers=AUTH,json={'name':'my-gateway','baseUrl':'https://gateway.example/v1','model':'vendor/custom-model','apiKey':'custom-fixture'})
-        assert response.status_code==201,response.text
-        _allow_isolated_capacity(monkeypatch, endpoint='https://gateway.example/v1/chat/completions', model='vendor/custom-model')
-    def observe(request):
-        wire=json.loads(request.content)
-        observed.append(wire['model'])
-        assert str(request.url)=='https://gateway.example/v1/chat/completions'
-        assert request.headers['authorization']=='Bearer custom-fixture'
-        assert wire['model']=='vendor/custom-model'
-        assert 'thinking' not in wire and wire['max_tokens']>0
-    db,task_id,task,calls,_=e2e._run(tmp_path,monkeypatch,v2=True,provider_setup=configure,request_observer=observe)
-    assert task.status=='completed',task
-    assert {'titleBatch','understand','research:compare_companies'} <= set(calls)
-    assert len(observed)==len(calls)
-    assert read_report(db_path=db)['eveningCards']
-    binding=store.task_execution_input(task_id=task_id,db_path=db)['checkpoint']['providerBinding']
-    assert binding['model']=='vendor/custom-model'
-    with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT DISTINCT model FROM k10_fact_cache').fetchall()==[('vendor/custom-model',)]
+    """A saved provider must survive the B78 direct-round CLI path.
+
+    The previous fixture asserted calls to retired research sub-stages.  This
+    uses the production CLI/worker path and rejects any such call while still
+    proving that every model request uses the saved endpoint, key and model.
+    """
+    import socket
+    from tests import v340_acceptance_fixture as base
+    from tests.test_v350_cli_api import DirectRoundTransport
+
+    seen = []
+    class ObservedDirectTransport(DirectRoundTransport):
+        def respond(self, request):
+            wire = json.loads(request.content)
+            seen.append((str(request.url), request.headers.get('authorization'), wire))
+            return super().respond(request)
+
+    original_seed = base.seed_database
+    def seed_with_saved_provider(path, **kwargs):
+        result = original_seed(path, **kwargs)
+        settings_store.create_provider('my-gateway', 'https://gateway.example/v1', 'vendor/custom-model',
+                                       api_key='custom-fixture', db_path=path)
+        return result
+
+    original_provider = base.MeteredProvider
+    class SavedProvider(original_provider):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, 'api_key': 'custom-fixture', 'model': 'vendor/custom-model',
+                                'api_url': 'https://gateway.example/v1/chat/completions'})
+
+    monkeypatch.setattr(base, 'TITLE_COUNT', 130)
+    monkeypatch.setattr(base, 'DeterministicTransport', ObservedDirectTransport)
+    monkeypatch.setattr(base, 'seed_database', seed_with_saved_provider)
+    monkeypatch.setattr(base, 'MeteredProvider', SavedProvider)
+    monkeypatch.setattr(socket.socket, 'connect', base._deny_network)
+    monkeypatch.setattr(socket.socket, 'connect_ex', base._deny_network)
+    _allow_isolated_capacity(monkeypatch, endpoint='https://gateway.example/v1/chat/completions', model='vendor/custom-model')
+
+    flow = base.run_full_scale_flow(tmp_path, monkeypatch, name='saved-byok', selected_event_count=1)
+    assert flow.task_status == 'completed', flow
+    assert seen
+    assert all(url == 'https://gateway.example/v1/chat/completions' for url, _, _ in seen)
+    assert all(authorization == 'Bearer custom-fixture' for _, authorization, _ in seen)
+    assert all(wire['model'] == 'vendor/custom-model' and wire['max_tokens'] > 0
+               and 'thinking' not in wire for _, _, wire in seen)
+    assert not any(name.startswith('forbidden:') for name in flow.calls)
+    assert flow.calls.get('research:research_round') == 1
+    saved = settings_store.get_provider_record('my-gateway', db_path=flow.db_path)
+    assert saved and saved.model == 'vendor/custom-model'
 
 
 def test_invalid_key_type_never_echoes_submitted_secret(client,AUTH):

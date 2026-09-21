@@ -18,6 +18,9 @@ struct RootView: View {
                 model.resetForConnectionChange(); model.bind(config: config)
             }
             .sheet(item: primaryOpportunity) { OpportunitySheet(detail: $0, model: model) }
+            .sheet(item: $model.selectedMaterialsReport) { report in
+                ReportMaterialsSheet(report: report, model: model)
+            }
             #if os(iOS)
             .sheet(item: $model.selectedWindow) { window in
                 FocusReadingSheet(window: window, model: model)

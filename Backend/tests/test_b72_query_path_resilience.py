@@ -6,9 +6,8 @@ from datetime import timedelta
 from contextlib import contextmanager
 
 import pytest
-from neckline.k10 import investigation, pipeline, store
-from neckline.k10.cli import recover_scan, frozen_scan_input_sha256
-from neckline.k10.worker import run_once
+from neckline.k10 import investigation, pipeline
+from neckline.k10.research_contracts import Question
 from tests import test_v310_pipeline_e2e as e2e
 from tests.test_b60_pool_filtering import edit_responses
 from tests.test_b61_output_recovery import api_for
@@ -59,69 +58,77 @@ def test_invalid_uncovered_or_unknown_routes_are_not_hidden(mode):
     runtime.state={'questions':packet['_localState']['questions']}
     runtime.context={'canonicalKey':'event','stageKey':'stage','eventState':'reported'}
     with pytest.raises(investigation.InvestigationError):
-        runtime._bind_query_paths('plan_queries',result,packet)
+        for route in result.query_paths:
+            row=next((q for q in packet['_localState']['questions'] if q['questionId']==route.question_id),None)
+            question=Question.from_dict({**row,'question':'Confirm current event','knownEvidence':[],
+                'missingEvidence':['Company notice'],'supportCondition':'Confirmed','refuteCondition':'Refuted',
+                'decisionImpact':'Changes comparison','resumeCondition':'New notice'}) if row else None
+            runtime._b78_bound_query_path(route,question)
+
+
+def assert_failed_round_without_search(connection):
+    rows = connection.execute(
+        'SELECT r.result_json,r.tool_evidence_json,s.execution_status FROM k10_research_round_results r '
+        'JOIN k10_research_snapshot_revisions s USING(snapshot_id,revision)'
+    ).fetchall()
+    assert len(rows) == 1
+    result = json.loads(rows[0][0])
+    assert result['safeErrorCode'] == 'investigation_path_scope_invalid'
+    assert result['comparison'] is None and result['companyAssessments'] == []
+    assert json.loads(rows[0][1]) == [] and rows[0][2] == 'failed'
 
 
 def edit_mixed_plan(value):
-    if value.get('action')=='plan_gaps':
-        value['questions'].append({**copy.deepcopy(value['questions'][0]),'questionId':'q-2','companyCodes':['300004.SZ']})
-    elif value.get('action')=='plan_queries':
-        first=value['queryPaths'][0]
-        other={**copy.deepcopy(first),'pathId':first['pathId']+'-other','questionId':'q-2','query':first['query']+' 二公司'}
-        mixed={**copy.deepcopy(first),'pathId':first['pathId']+'-mixed','query':'Forbidden mixed search',
-               'targetRefs':[{'kind':'company','companyCode':'300002.SZ'},{'kind':'company','companyCode':'300004.SZ'}]}
-        value['queryPaths'] += [other,mixed]
+    if value.get('action')!='research_round': return
+    ref=value['conclusion']['companyMappings'][0]['relationEvidence'][0]
+    questions=[{'questionId':qid,'claimIds':['article-claim-1'],'companyCodes':[code],
+        'question':'Confirm current event '+qid,'knownEvidence':[ref],'missingEvidence':['Company notice'],
+        'supportCondition':'Confirmed','refuteCondition':'Refuted','decisionImpact':'Changes comparison',
+        'state':'open','resumeCondition':'New company notice'} for qid,code in [('q-1','300002.SZ'),('q-2','300004.SZ')]]
+    first=path('path-1','q-1',[{'kind':'claim','claimId':'article-claim-1'}])
+    other=path('path-1-other','q-2',[{'kind':'company','companyCode':'300004.SZ'}])
+    mixed=path('path-1-mixed','q-1',[{'kind':'company','companyCode':'300002.SZ'},{'kind':'company','companyCode':'300004.SZ'}])
+    value.clear(); value.update(action='research_round',questions=questions,queryPaths=[first,other,mixed],
+        conclusion={'researchStatus':'continue_research','companyMappings':[],
+            'stopReason':'Necessary event confirmation','resumeCondition':'New material'})
 
 
-@pytest.mark.parametrize('recover',[False,True])
-def test_real_cli_worker_keeps_scoped_searches_and_reuses_paid_failed_plan(tmp_path,monkeypatch,recover):
+@pytest.mark.parametrize('force_invalid',[False,True])
+def test_real_cli_worker_prunes_mixed_routes_and_isolates_a_paid_invalid_plan(tmp_path,monkeypatch,force_invalid):
     serial=[0]
     def edit(value):
         edit_mixed_plan(value)
-        if value.get('action')=='plan_queries':
+        if value.get('action')=='research_round':
             serial[0]+=1
             for row in value['queryPaths']:
                 row['pathId']+=f'-reply-{serial[0]}'
                 row['query']+=f' {serial[0]}'
+            if force_invalid:
+                value['queryPaths'][-1]['targetRefs']=[{'kind':'claim','claimId':'unknown-claim'}]
     edit_responses(monkeypatch,edit)
-    prune=investigation._prune_cross_question_paths
-    validation=pipeline._CheckpointedDiscoveryModel.research_validation
-    if recover:
-        monkeypatch.setattr(investigation,'_prune_cross_question_paths',lambda paths,packet:(paths,0))
-        @contextmanager
-        def legacy_validation(self,validator,**kwargs):
-            yield
-        monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel,'research_validation',legacy_validation)
     db,tid,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
-    if recover:
-        assert first.status=='failed'
+    if force_invalid:
+        # B76 turns an event-local contract refusal into an honest partial
+        # delivery. The paid typed reply stays intact; its invalid scope is
+        # rejected locally without publishing it or issuing another request.
+        assert first.status=='completed'
         with sqlite3.connect(db) as c:
-            prior=c.execute("select * from k10_execution_item_checkpoints where task_id=? and stage='model:investigation_plan_queries' and safe_error_code='investigation_path_scope_invalid'",(tid,)).fetchall()
-            completed=c.execute("select * from k10_execution_item_checkpoints where task_id=? and status='completed' order by item_key",(tid,)).fetchall()
-        assert len(prior)==1 and prior[0][-1] is not None
-        scan=store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['scanId']
-        digest=frozen_scan_input_sha256(scan_id=scan,db_path=db)
-        assert recover_scan(db_path=db,scan_id=scan,execution_config_id='b39-execution',execution_config_revision=1,
-            confirmed_input_sha256=digest,now=e2e.RUN_AT)==tid
-        monkeypatch.setattr(investigation,'_prune_cross_question_paths',prune)
-        monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel,'research_validation',validation)
-        resumed=e2e._http_transport(monkeypatch,v2=True)
-        done=run_once(db_path=db,task_id=tid,worker_id='b72',lease_for=timedelta(minutes=5),
-            handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:e2e.RUN_AT)
-        assert done.status=='completed'
-        # The first invalid plan was reused; only the genuinely new second round is paid.
-        assert resumed.count('research:plan_queries')==1
-        assert 'understand' not in resumed and 'titleBatch' not in resumed
-        with sqlite3.connect(db) as c:
-            assert c.execute("select * from k10_execution_item_checkpoints where task_id=? and stage='model:investigation_plan_queries' and safe_error_code='investigation_path_scope_invalid'",(tid,)).fetchall()==prior
-            after=c.execute("select * from k10_execution_item_checkpoints where task_id=? and status='completed' order by item_key",(tid,)).fetchall()
-            assert all(r in after for r in completed)
-        assert frozen_scan_input_sha256(scan_id=scan,db_path=db)==digest
-    else:assert first.status=='completed'
-    assert gateway.search_paths and all('-mixed' not in name for name in gateway.search_paths)
-    assert any('-other' in name for name in gateway.search_paths)
+            prior=c.execute("select * from k10_execution_item_checkpoints where task_id=? and stage='model:investigation_research_round' and status='completed'",(tid,)).fetchall()
+            assert len(prior)==1
+            assert_failed_round_without_search(c)
+        assert calls.count('research:research_round') == 1
+        assert gateway.search_paths == []
+    else:
+        assert first.status=='completed'
+        e2e.assert_search_routes(gateway, [('path-1 1','Company notice','q-1'), ('path-1-other 1','Company notice','q-2')])
+        assert gateway.search_routes[1]['targetRefs'] == [{'kind':'company','companyCode':'300004.SZ'}]
     report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
-    assert report['status']=='completed' and report['eveningCards']
+    if force_invalid:
+        assert report['status']=='partial' and report['availableAt']
+    else:
+        assert report['status']=='completed' and report['availableAt']
+        with sqlite3.connect(db) as c:
+            assert {r[0] for r in c.execute('SELECT execution_status FROM k10_research_snapshot_revisions')}=={'ok'}
 
     from neckline.k10.notifications import initialize_notifications_schema, enqueue_task_notification, dispatch_task_notifications, DeliveryResult, NotificationRetryPolicy
     initialize_notifications_schema(db)
@@ -138,36 +145,15 @@ def test_real_cli_worker_keeps_scoped_searches_and_reuses_paid_failed_plan(tmp_p
 
 def test_real_cli_local_scope_refusal_is_not_a_search_result(tmp_path, monkeypatch):
     from neckline.k10.research_runtime import _Investigation
-    original_call = _Investigation._call
-    original_scope = _Investigation._query_path_scope_error
-    blocked = set()
-    def call(self, action, extra=None):
-        value = original_call(self, action, extra)
-        if action == 'plan_queries':
-            blocked.update(p.path_id for p in value.query_paths)
-        return value
-    def scope(self, path, question, packet):
-        if path.path_id in blocked:
-            return 'query_path_scope_stale'
-        return original_scope(self, path, question, packet)
-    monkeypatch.setattr(_Investigation, '_call', call)
-    monkeypatch.setattr(_Investigation, '_query_path_scope_error', scope)
-    db, tid, task, calls, gateway = e2e._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    assert task.status == 'completed'
-    assert gateway.search_paths == []
-    report = api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
-    assert report['status'] == 'completed' and report['availableAt']
+    def denied(*args, **kwargs):
+        raise investigation.InvestigationError('scope changed',code='investigation_path_scope_invalid')
+    monkeypatch.setattr(_Investigation,'_b78_bound_query_path',denied)
+    edit_responses(monkeypatch,edit_mixed_plan)
+    db,tid,task,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
+    assert task.status=='completed' and gateway.search_paths==[]
+    report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
+    assert report['status']=='partial' and report['availableAt'] and report['coverageGaps']
     with sqlite3.connect(db) as c:
-        rows = [json.loads(r[0]) for r in c.execute('select result_json from k10_research_stage_results')]
-    refused = [r for r in rows if _Investigation._blocked_query({'result': r})]
-    assert refused and all(p['state'] == 'blocked' for r in refused for p in r['queryPaths'])
-    # Read old immutable refusal records after an interruption, on both sides
-    # of an assessment revision. No provider call or invented empty search.
-    for assessed_revision in (0, len(refused) + 1):
-        runtime = object.__new__(_Investigation)
-        runtime.state = {'stageResults': [{'revision': i + 1, 'action': 'assess_evidence', 'result': r}
-                                         for i, r in enumerate(refused)]}
-        if assessed_revision:
-            runtime.state['stageResults'].append({'revision': assessed_revision, 'action': 'assess_evidence', 'result': {}})
-        runtime._call = lambda *a, **kw: pytest.fail('local refusal must not request assessment')
-        assert runtime._assess_due() is False
+        assert c.execute("SELECT COUNT(*) FROM k10_external_attempts WHERE stage='search'").fetchone()==(0,)
+        assert_failed_round_without_search(c)
+    assert calls.count('research:research_round')==1

@@ -5,6 +5,7 @@ from datetime import date
 from hashlib import sha256
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -89,13 +90,25 @@ def test_verification_search_and_cached_bundle_keep_prospectus_local_before_any_
         "coverage": {"provider": "tavily", "state": "available"},
     })
     assert not cached.documents and not cached.eligible_documents
-    runtime = object.__new__(_Investigation)
+    # A B78 packet has no legacy card builder.  Its program-owned packet must
+    # likewise omit an excluded prospectus before any direct model call.
     excluded = DiscoveryDocument(prospectus_row["documentId"], prospectus_row["revision"], prospectus_row.get("publishedAt"),
                                  prospectus_row["fetchedAt"], prospectus_row.get("originalText"), prospectus_row.get("excerpt"),
                                  prospectus_row.get("metadata") or {})
+    runtime = object.__new__(_Investigation)
     runtime.allowed, runtime.documents = {excluded.evidence_ref}, {excluded.evidence_ref: excluded}
-    runtime.event, runtime.state = type("Event", (), {"source_refs": ()})(), {"claims": [], "stageResults": []}
-    assert runtime._cards() == []
+    runtime.event = SimpleNamespace(source_refs=(), facts={})
+    runtime.state = {"snapshot": SimpleNamespace(news_cutoff_at=NOW.isoformat(),
+                                                   verification_cutoff_at=NOW.isoformat())}
+    runtime.context = {"canonicalKey": "prospectus-event", "stageKey": "initial", "eventState": "reported",
+                       "headline": "招股书", "eventKind": "disclosure"}
+    runtime.db_path, runtime.identity = db, "prospectus-round"
+    runtime._b78_reusable_source_evidence = lambda: {"claims": [], "companyRelations": [], "isolated": []}
+    packet = runtime._b78_packet(claims=(), company_scope={}, comparison_context={
+        "marketContext": {}, "historicalCases": [], "historicalCoverage": {},
+    })
+    assert packet["evidenceCards"] == [] and packet.get("fullTextDocuments", []) == []
+    assert "募集资金运用" not in json.dumps(packet, ensure_ascii=False)
 
 
 def test_long_single_line_context_returns_locator_not_whole_body() -> None:
@@ -231,48 +244,81 @@ def test_b69_scoped_events_share_one_unknown_physical_search_after_restart(tmp_p
     assert store.external_attempt_summary(task_id=task_id, db_path=db)["unknown"] == 1
 
 
-def test_same_task_receiver_refreshes_empty_shared_facts_after_peer_commit(tmp_path) -> None:
-    """A concurrent receiver must refresh, not permanently cache its empty first read."""
+def test_same_task_receiver_refreshes_empty_shared_facts_after_peer_direct_commit(tmp_path) -> None:
+    """A receiver refreshes source facts from a peer B78 receipt, never a stage row."""
     from dataclasses import replace
-    from types import SimpleNamespace
     from datetime import datetime
-    from tests.test_v310_research_storage import _seed, _claim, NOW, LATER
-    from neckline.k10.discovery import EventDraft
-    from neckline.k10.research_contracts import ResearchStageResult
+    from neckline.k10.research_contracts import RESEARCH_ROUND_CONTRACT, Claim, ResearchRoundResult, ResearchSnapshot
     from neckline.k10.research_runtime import _Investigation
-    from neckline.k10.research_store import create_research_snapshot, advance_research_snapshot, read_research_state
+    from neckline.k10.research_store import append_research_round, create_research_snapshot
 
+    now, later = "2026-09-08T13:05:00+00:00", "2026-09-08T13:06:00+00:00"
     db = tmp_path / "shared-refresh.sqlite"
-    source_snapshot = _seed(db)
-    store.append_event_revision(event_id="receiver-event", stable_key="receiver", headline="同源接收事件",
-                                event_kind="disclosure", facts={}, source_refs=[{"documentId": "source-1", "revision": 1}],
-                                supersedes_revision=None, created_at=NOW, db_path=db)
-    receiver_snapshot = replace(source_snapshot, snapshot_id="receiver-snapshot", event_id="receiver-event")
+    initialize_schema(db)
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at=now, changed_by="test", db_path=db)
+    store.enqueue_task(task_id="task-1", kind="evening_scan", idempotency_key="shared-direct",
+                       input_version="fixture", input_cutoff_at=now, payload={}, budget={}, created_at=now, db_path=db)
+    source = store.append_document_version(
+        document_id="source-1", source_key="fixture", external_id="source-1",
+        canonical_url="https://example.test/source-1", content_sha256="a" * 64,
+        published_at=now, published_precision="exact", fetched_at=now,
+        original_text="frozen source", excerpt="供应商称项目进入送样", fetch_version="fixture",
+        metadata={}, created_at=now, db_path=db,
+    )
+    source_ref = {"documentId": source.document_id, "revision": source.revision}
+    peer_event = store.append_event_revision(
+        event_id="peer-event", stable_key="peer", headline="同源提供事件", event_kind="disclosure", facts={},
+        source_refs=[source_ref], supersedes_revision=None, created_at=now, db_path=db,
+    )
+    receiver_event = store.append_event_revision(
+        event_id="receiver-event", stable_key="receiver", headline="同源接收事件", event_kind="disclosure", facts={},
+        source_refs=[source_ref], supersedes_revision=None, created_at=now, db_path=db,
+    )
+    base = ResearchSnapshot("peer-snapshot", "task-1", peer_event.event_id, peer_event.revision, now, later,
+                            "b" * 64, RESEARCH_ROUND_CONTRACT, "c" * 64,
+                            "continue_research", "ok", 1, now, now)
+    receiver_snapshot = replace(base, snapshot_id="receiver-snapshot", event_id=receiver_event.event_id,
+                                event_revision=receiver_event.revision)
+    create_research_snapshot(snapshot=base, db_path=db)
     create_research_snapshot(snapshot=receiver_snapshot, db_path=db)
-    event = EventDraft("receiver", "initial", "reported", "同源接收事件", "disclosure", {},
-                       (EvidenceRef("source-1", 1),))
+
     runtime = object.__new__(_Investigation)
-    runtime.task_id, runtime.db_path, runtime.identity = "task-1", db, "receiver-snapshot"
-    runtime.event, runtime.state, runtime.documents, runtime.allowed = event, read_research_state(snapshot_id="receiver-snapshot", db_path=db), {}, set()
-    runtime.clock, runtime.guard = lambda: datetime.fromisoformat(LATER), None
-    runtime.model = SimpleNamespace(_company_profiles_binding=(db, "fixture"))
+    document = DiscoveryDocument(source.document_id, source.revision, now, now,
+                                 "frozen source", "供应商称项目进入送样", {})
+    runtime.task_id, runtime.db_path, runtime.identity = "task-1", db, receiver_snapshot.snapshot_id
+    runtime.event = EventDraft("receiver", "initial", "reported", "同源接收事件", "disclosure", {},
+                               (document.evidence_ref,))
+    runtime.state, runtime.documents, runtime.allowed = {"snapshot": receiver_snapshot}, {document.evidence_ref: document}, {document.evidence_ref}
+    runtime.context = {"canonicalKey": runtime.event.canonical_key, "stageKey": runtime.event.stage_key,
+                       "eventState": runtime.event.event_state, "headline": runtime.event.headline,
+                       "eventKind": runtime.event.event_kind}
+    runtime.clock, runtime.guard = lambda: datetime.fromisoformat(later), None
 
-    runtime._freeze_prior_evidence()
-    assert runtime.state["stageResults"][-1]["result"]["conclusion"]["runtimePriorEvidence"]["claims"] == []
+    assert runtime._b78_reusable_source_evidence()["claims"] == []
+    peer_claim = Claim("peer-source-fact", "供应商称项目进入送样", "rumor", "new_fact", "供应商", "项目", "产品",
+                       "送样", "待确认", "今日", "verified", "影响阶段判断", source_ref, "paragraph:1")
+    append_research_round(
+        snapshot_id=base.snapshot_id, expected_revision=1,
+        input_packet={"allowedEvidenceRefs": [source_ref], "claims": [peer_claim.to_dict()],
+                      "evidenceCards": [{**source_ref, "excerpt": "供应商称项目进入送样"}]},
+        result=ResearchRoundResult(claims=(peer_claim,), conclusion={
+            "researchStatus": "pending_verification", "companyMappings": [],
+            "stopReason": "同源事实待核", "resumeCondition": "出现直接公告",
+        }), research_status="pending_verification", updated_at=later, db_path=db,
+    )
 
-    create_research_snapshot(snapshot=source_snapshot, db_path=db)
-    advance_research_snapshot(snapshot_id="snapshot-1", expected_revision=1, research_status="continue_research",
-        execution_status="ok", stage_result=ResearchStageResult("extract_claims", claims=(_claim(),)),
-        input_sha256="1" * 64, updated_at=LATER, db_path=db)
-    runtime._freeze_prior_evidence()
-    refreshed = runtime.state["stageResults"][-1]["result"]["conclusion"]["runtimePriorEvidence"]
+    refreshed = runtime._b78_reusable_source_evidence()
     assert [claim["text"] for claim in refreshed["claims"]] == ["供应商称项目进入送样"]
-    assert len(runtime._cards()[0]["sourceStatements"]) == 1
-    revision = runtime.snapshot.revision
-    runtime.clock = lambda: datetime.fromisoformat("2026-09-08T13:16:00+00:00")
-    runtime._freeze_prior_evidence()
-    assert runtime.snapshot.revision == revision
-
+    assert refreshed["claims"][0]["verificationStatus"] == "unverified"
+    assert refreshed["claims"][0]["sourceTiming"] == {"publishedAt": now, "fetchedAt": now}
+    packet = runtime._b78_packet(claims=(), company_scope={}, comparison_context={
+        "marketContext": {}, "historicalCases": [], "historicalCoverage": {},
+    })
+    shared = packet["reusableSourceEvidence"]
+    assert [claim["claimId"] for claim in shared["claims"]] == ["peer-source-fact"]
+    assert shared["claims"][0]["verificationStatus"] == "unverified"
+    assert shared["companyRelations"] == []
+    assert not ({"originalText", "metadata", "rawResponse"} & set(shared["claims"][0]))
 
 def test_company_projection_keeps_only_summary_until_local_field_read() -> None:
     packet = {
@@ -294,6 +340,7 @@ def test_final_provider_guard_blocks_over_context_before_socket(tmp_path, monkey
     initialize_schema(db)
     execution_id, execution_revision = append_approved_execution_profile(db_path=db, created_at="2026-09-13T13:00:00+00:00",
                                                                            config_id="execution")
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at="2026-09-13T13:00:00+00:00", changed_by="test", db_path=db)
     store.enqueue_task(task_id="task", kind="evening_scan", idempotency_key="task", input_version="fixture",
                        input_cutoff_at="2026-09-13T13:00:00+00:00", payload={}, budget={},
                        created_at="2026-09-13T13:00:00+00:00", db_path=db)
@@ -381,6 +428,7 @@ def _receipt_provider(tmp_path, *, task_id: str = "receipt-task"):
     config_id, revision = append_approved_execution_profile(
         db_path=db, created_at="2026-09-13T13:00:00+00:00", config_id="receipt-execution",
     )
+    store.set_run_control(state="open", reason_code="offline_fixture", changed_at="2026-09-13T13:00:00+00:00", changed_by="test", db_path=db)
     store.enqueue_task(task_id=task_id, kind="evening_scan", idempotency_key=task_id, input_version="fixture",
                        input_cutoff_at="2026-09-13T13:00:00+00:00", payload={}, budget={},
                        created_at="2026-09-13T13:00:00+00:00", db_path=db)
@@ -733,6 +781,18 @@ def test_manual_enqueue_remains_rejected_when_closed(tmp_path) -> None:
         raise AssertionError("manual enqueue must remain rejected while run control is closed")
 
 
+def _historical_schema9_snapshot(db):
+    """Remove only empty B78 additions from this disposable historical fixture."""
+    with sqlite3.connect(db) as conn:
+        for table in ("k10_v2_report_delivery_metadata", "k10_v2_report_materials",
+                      "k10_tavily_response_receipts", "k10_morning_review_work_items",
+                      "k10_research_round_results"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("DELETE FROM k10_schema_migrations WHERE version=10")
+        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (9,)
+
+
 def test_schema9_empty_receipt_rolls_back_to_schema8_and_forwards_without_rewriting_rows(tmp_path) -> None:
     from neckline.k10 import schema
     db, _provider = _receipt_provider(tmp_path)
@@ -741,13 +801,14 @@ def test_schema9_empty_receipt_rolls_back_to_schema8_and_forwards_without_rewrit
         assert conn.execute("SELECT COUNT(*) FROM k10_model_response_receipts").fetchone()[0] == 0
     store.set_run_control(state="closed", reason_code="rollback_rehearsal", changed_at="2026-09-13T13:01:00+00:00",
                           changed_by="test", db_path=db)
-    assert schema.schema_version(db) == schema.SCHEMA_VERSION == 9
+    assert schema.schema_version(db) == schema.SCHEMA_VERSION
+    _historical_schema9_snapshot(db)
     assert schema.rollback_schema(db, target_version=8) == 8
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone()[0] == 8
         assert conn.execute("SELECT name FROM sqlite_master WHERE name='k10_model_response_receipts'").fetchone() is None
         assert conn.execute("SELECT group_concat(task_id || ':' || input_version, '|') FROM k10_tasks ORDER BY task_id").fetchone()[0] == before
-    assert schema.initialize_schema(db) == 9
+    assert schema.initialize_schema(db) == schema.SCHEMA_VERSION
 
 
 def test_schema9_refuses_to_drop_unresolved_or_private_paid_receipts(tmp_path, monkeypatch) -> None:
@@ -762,6 +823,7 @@ def test_schema9_refuses_to_drop_unresolved_or_private_paid_receipts(tmp_path, m
             pass
     store.set_run_control(state="closed", reason_code="rollback_rehearsal", changed_at="2026-09-13T13:01:00+00:00",
                           changed_by="test", db_path=db)
+    _historical_schema9_snapshot(db)
     try:
         schema.rollback_schema(db, target_version=8)
     except schema.K10SchemaError as exc:
@@ -784,10 +846,13 @@ def test_schema9_nonempty_receipts_export_is_private_and_rollback_refuses(tmp_pa
     export = tmp_path / "private-receipts.json"
     details = schema.export_model_response_receipts(db, export_path=export)
     assert details["receiptCount"] == 1 and export.stat().st_mode & 0o777 == 0o600
+    _historical_schema9_snapshot(db)
     try:
         schema.rollback_schema(db, target_version=8, receipt_export_path=export)
     except schema.K10SchemaError as exc:
-        assert "回执" in str(exc) and schema.schema_version(db) == 9
+        assert "回执" in str(exc)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (9,)
     else:
         raise AssertionError("nonempty paid receipts must block automatic Schema 9 rollback")
 
@@ -797,6 +862,7 @@ def test_schema9_migration_failure_rolls_back_table_and_version(tmp_path, monkey
     db, _provider = _receipt_provider(tmp_path)
     store.set_run_control(state="closed", reason_code="rollback_rehearsal", changed_at="2026-09-13T13:01:00+00:00",
                           changed_by="test", db_path=db)
+    _historical_schema9_snapshot(db)
     assert schema.rollback_schema(db, target_version=8) == 8
     original = schema._apply_v9
 

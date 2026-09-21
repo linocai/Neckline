@@ -51,8 +51,9 @@ def test_explicit_output_repair_preserves_successful_research_and_classification
         handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'), clock=lambda: RUN_AT)
     assert done.status == 'completed'
     assert calls == (['classify', 'prioritize'] if operation == 'classify' else ['prioritize'])
+    assert 'research:research_round' not in calls
     assert observed == [512] * len(calls)
-    assert len(gateway.search_paths) == 2
+    assert gateway.search_paths == []
     after = store.task_execution_input(task_id=task_id, db_path=db)
     assert after['checkpoint']['executionStartedAt'] == before['checkpoint']['executionStartedAt']
     assert after['checkpoint']['runtimeRepair']['finalizationModelOptions']['companyComparison']['maxTokens'] == 512

@@ -116,7 +116,7 @@ def test_explicit_retry_only_authorizes_confirmed_failed_attempt(tmp_path, monke
     assert len(calls) == (1 if first_status == 200 else 2)
 
 
-@pytest.mark.parametrize('status', [402, 432, 433, 429])
+@pytest.mark.parametrize('status', [401, 402, 403, 432, 433, 429])
 def test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, status):
     from neckline.k10.discovery import ProviderThrottleYield
     from neckline.k10.verification import TavilyEvidenceGateway
@@ -147,8 +147,10 @@ def test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, st
     restarted = TavilyEvidenceGateway(db_path=db, task_id=task_id, client=client,
         clock=lambda: COMPLETED_AT+timedelta(seconds=59), network_max_attempts=2)
     restarted.context_protocol = "k10-v2-context-3.2.1"
-    if status in {402, 432, 433}:
-        assert fetch(restarted).coverage['reason'] == 'insufficient_balance'
+    if status in {401, 402, 403, 432, 433}:
+        assert fetch(restarted).coverage['reason'] == (
+            'provider_authorization_failed' if status in {401, 403} else 'insufficient_balance'
+        )
         assert len(calls) == 1
         return
     with pytest.raises(ProviderThrottleYield) as waiting:
@@ -158,37 +160,16 @@ def test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, st
     assert fetch(restarted).state == 'available' and len(calls) == 2
 
 
-@pytest.mark.parametrize('initial_status', [200, 402])
-def test_morning_user_retry_accepts_confirmed_failure(tmp_path, monkeypatch, initial_status):
-    from neckline.k10.metering import MeteredProvider
-    calls = []
-    def resolve(**kwargs):
-        def respond(request):
-            calls.append(request.content)
-            answer = {} if len(calls) == 1 else {'material':False,'reasonStatus':'current','observationStatus':'current',
-                'summary':'完整复核无新增变化','materialContraryEvidence':[]}
-            return httpx.Response(initial_status if len(calls)==1 else 200,
-                json={'choices':[{'message':{'content':json.dumps(answer)},'finish_reason':'stop'}]})
-        transport = httpx.MockTransport(respond)
-        monkeypatch.setattr(httpx,'Client',lambda **kw:e2e._HTTPX_CLIENT(**{**kw,'transport':transport}))
-        provider = MeteredProvider(ledger_db=kwargs['db_path'],ledger_task='morning',api_key='fixture',model='deepseek-flash',
-            name='fixture',api_url='https://api.deepseek.com/chat/completions',read_timeout=1,use_streaming=False)
-        return ProviderResolution('configured',provider,'fixture',None)
-    monkeypatch.setattr(morning_runtime,'resolve_deepseek_v4_pro',resolve)
-    db, _, _, _ = later_scan(tmp_path,monkeypatch,lambda *_:None)
-    with sqlite3.connect(db) as conn:
-        task_id, count, status = conn.execute("SELECT task_id,attempt_count,status FROM k10_tasks WHERE kind='morning_review'").fetchone()
-    assert status == 'failed' and len(calls) == 1
-    with client_for(db) as client:
-        response = client.post('/api/v1/k10/jobs/'+task_id+'/retry',json={'expectedAttemptCount':count})
-        assert response.status_code == 200,response.text
-    at = datetime(2026,9,9,9,11,tzinfo=SHANGHAI)
-    result = run_once(db_path=db,worker_id='morning-explicit',lease_for=timedelta(minutes=5),clock=lambda:at,
-        handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),task_id=task_id)
-    if initial_status == 200:
-        assert result.status == 'failed' and len(calls) == 1
-    else:
-        assert result.status == 'completed' and len(calls) == 2
+def test_morning_failed_review_stays_on_parent_and_keeps_evening_report(tmp_path, monkeypatch):
+    """B78 has no retryable ``morning_review`` child task.
+
+    A refusal is instead retained on the morning parent as a failed work item;
+    the formal morning result is partial and the prior evening result remains
+    readable.  Keep this regression at the real CLI/worker/API boundary.
+    """
+    from tests.test_v350_morning import test_morning_review_failure_stays_in_parent_and_keeps_evening_readable
+
+    test_morning_review_failure_stays_in_parent_and_keeps_evening_readable(tmp_path, monkeypatch)
 
 
 def test_historical_evidence_rejects_superseded_source_revision(tmp_path):
@@ -234,127 +215,34 @@ def test_history_reuses_latest_relation_set_including_deletion(tmp_path, final_r
     assert [row['inference']['relationship'] for row in packet['companyRelations']] == ([] if final_relation is None else [final_relation])
 
 
-def test_title_interruption_does_not_authorize_another_paid_attempt(tmp_path, monkeypatch):
-    from neckline.k10 import model_execution
-    persist = model_execution._persist
-    def interrupt(**kwargs):
-        if kwargs['status'] == 'completed':
-            raise SystemExit('provider returned; checkpoint not yet persisted')
-        return persist(**kwargs)
-    monkeypatch.setattr(model_execution, '_persist', interrupt)
-    with pytest.raises(SystemExit):
-        e2e._run(tmp_path, monkeypatch, v2=True)
-    db = tmp_path/'b39-e2e.sqlite'
-    with sqlite3.connect(db) as conn:
-        task_id = conn.execute('SELECT task_id FROM k10_tasks').fetchone()[0]
-        before = conn.execute('SELECT COUNT(*) FROM k10_external_attempts').fetchone()[0]
-    monkeypatch.setattr(model_execution, '_persist', persist)
-    at = e2e.RUN_AT+timedelta(minutes=6)
-    monkeypatch.setattr(pipeline, '_now', lambda: at)
-    task = run_once(db_path=db, worker_id='title-interruption', lease_for=timedelta(minutes=5), clock=lambda: at,
-        handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'), task_id=task_id)
-    assert task.status == 'failed'
-    with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT COUNT(*) FROM k10_external_attempts').fetchone()[0] == before == 1
+def test_direct_round_interruption_does_not_authorize_another_paid_attempt(tmp_path):
+    from tests.test_v350_research_round import test_b78_resume_rebuilds_next_packet_after_durable_round_without_reposting_prior_round
+
+    test_b78_resume_rebuilds_next_packet_after_durable_round_without_reposting_prior_round(tmp_path)
 
 
-def test_morning_success_before_cache_interruption_never_repeats_payment(tmp_path, monkeypatch):
-    from neckline.k10 import v2_store
-    from neckline.k10.metering import MeteredProvider
-    calls = []
-    def respond(request):
-        calls.append(request.content)
-        answer = {'material': False, 'reasonStatus': 'current', 'observationStatus': 'current',
-                  'summary': '原理由继续观察', 'materialContraryEvidence': []}
-        return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(answer)}, 'finish_reason': 'stop'}]})
-    transport = httpx.MockTransport(respond)
-    def resolve(**kwargs):
-        monkeypatch.setattr(httpx, 'Client', lambda **opts: e2e._HTTPX_CLIENT(**{**opts, 'transport': transport}))
-        provider = MeteredProvider(ledger_db=kwargs['db_path'], ledger_task='morning', api_key='fixture', model='deepseek-flash',
-            name='fixture', api_url='https://api.deepseek.com/chat/completions', read_timeout=1, use_streaming=False)
-        return ProviderResolution('configured', provider, 'fixture', None)
-    monkeypatch.setattr(morning_runtime, 'resolve_deepseek_v4_pro', resolve)
-    save = v2_store.save_morning_result
-    def interrupt(**kwargs):
-        raise SystemExit('paid morning result not yet cached')
-    monkeypatch.setattr(v2_store, 'save_morning_result', interrupt)
-    with pytest.raises(SystemExit):
-        later_scan(tmp_path, monkeypatch, lambda *_: None)
-    db = tmp_path/'b39-e2e.sqlite'
-    with sqlite3.connect(db) as conn:
-        task_id, lease_until = conn.execute("SELECT task_id,lease_until FROM k10_tasks WHERE kind='morning_review'").fetchone()
-        assert conn.execute("SELECT state FROM k10_external_attempts WHERE task_id=?", (task_id,)).fetchone()[0] == 'succeeded'
-    monkeypatch.setattr(v2_store, 'save_morning_result', save)
-    at = datetime.fromisoformat(lease_until)+timedelta(seconds=1)
-    task = run_once(db_path=db, worker_id='morning-interruption', lease_for=timedelta(minutes=5), clock=lambda: at,
-        handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'), task_id=task_id)
-    assert task.status == 'completed' and len(calls) == 1
+def test_morning_work_item_refusal_has_no_unknown_or_repeated_paid_attempt(tmp_path, monkeypatch):
+    from tests.test_v350_morning import test_morning_review_failure_stays_in_parent_and_keeps_evening_readable
+
+    test_morning_review_failure_stays_in_parent_and_keeps_evening_readable(tmp_path, monkeypatch)
 
 
-def test_next_day_new_articles_reuse_prior_facts_and_relations(tmp_path, monkeypatch):
-    packets = []
-    def capture(payload, value):
-        if payload.get('action') == 'plan_gaps':
-            packets.append(payload['evidencePacket'])
-    db, _, task, _ = later_scan(tmp_path, monkeypatch, capture)
-    assert task.status == 'completed' and packets
-    packet = packets[0]
-    prior = packet['reusableSourceEvidence']
-    assert prior['claims'] and prior['companyRelations'], 'new-day inputs must not erase reusable prior evidence'
-    old_refs = {(row['sourceRef']['documentId'], row['sourceRef']['revision']) for row in prior['claims']}
-    new_refs = {(row['sourceRef']['documentId'], row['sourceRef']['revision']) for row in packet['claims']}
-    assert not old_refs & new_refs
-    allowed = {(ref['documentId'], ref['revision']) for ref in packet['allowedEvidenceRefs']}
-    assert old_refs <= allowed
-    assert 'originalText' not in json.dumps(prior)
+def test_new_research_round_receives_only_durable_relevant_material(tmp_path):
+    """B78 feeds newly admitted material into the next direct round once.
+
+    It replaces the retired ``plan_research.reusableSourceEvidence`` payload
+    without copying article bodies or reopening a prior protocol.
+    """
+    from tests.test_v350_research_round import test_b78_search_material_is_visible_before_a_second_direct_round
+
+    test_b78_search_material_is_visible_before_a_second_direct_round(tmp_path)
 
 
-@pytest.mark.parametrize('status', [402, 432, 433, 429])
-def test_real_scan_tavily_failure_stops_or_resumes_affected_step(tmp_path, monkeypatch, status):
-    from neckline.k10.verification import TavilyEvidenceGateway
-    from neckline.search.tavily import TavilySearchClient
-    calls = []
-    def respond(request):
-        calls.append(json.loads(request.content))
-        if len(calls) == 1:
-            return httpx.Response(status, headers={'Retry-After': '60'}, json={})
-        return httpx.Response(200, json={'results': [], 'usage': {'credits': 1}})
-    transport = httpx.MockTransport(respond)
-    # Explicit isolated transport remains independent of the model fixture.
-    class Client(TavilySearchClient):
-        def search(self, query):
-            with monkeypatch.context() as local:
-                local.setattr(httpx, 'Client', lambda **kw: e2e._HTTPX_CLIENT(**{**kw, 'transport': transport}))
-                return super().search(query)
-    def gateway():
-        db = tmp_path/'b39-e2e.sqlite'
-        with sqlite3.connect(db) as conn:
-            task_id = conn.execute('SELECT task_id FROM k10_tasks').fetchone()[0]
-        policy = store.task_execution_profile(task_id=task_id, db_path=db)['payload']['discovery']
-        return TavilyEvidenceGateway(db_path=db, task_id=task_id, client=Client('fixture'),
-            clock=lambda: pipeline._now(), network_max_attempts=policy['networkMaxAttempts'])
-    monkeypatch.setattr(e2e, '_Gateway', gateway)
-    db, task_id, task, model_calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
-    assert len(calls) == 1
-    if status in {402, 432, 433}:
-        assert task.status == 'failed'
-        with sqlite3.connect(db) as conn:
-            tail = conn.execute('SELECT error_code FROM k10_external_attempts WHERE task_id=? ORDER BY rowid DESC', (task_id,)).fetchone()[0]
-        assert tail == 'insufficient_balance'
-        return
-    assert task.status == 'queued'
-    before = list(model_calls)
-    def work(at):
-        monkeypatch.setattr(pipeline, '_now', lambda: at)
-        handlers = pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet')
-        return run_once(db_path=db, worker_id='throttle-resume', lease_for=timedelta(minutes=5), clock=lambda: at,
-            handlers=handlers, task_id=task_id)
-    assert work(e2e.RUN_AT+timedelta(seconds=59)) is None
-    assert len(calls) == 1 and model_calls == before
-    result = work(e2e.RUN_AT+timedelta(seconds=60))
-    assert result.status == 'completed'
-    assert calls[0]['query'] == calls[1]['query']
-    assert model_calls.count('research:plan_gaps') == 1
+@pytest.mark.parametrize('status', [401, 402, 403, 432, 433, 429])
+def test_tavily_failure_stops_or_resumes_affected_step(tmp_path, monkeypatch, status):
+    # Keep B58's error-classification and receipt/retry assertions, but do not
+    # enter the removed legacy research-stage pipeline.
+    test_extract_failure_receipt_survives_interruption(tmp_path, monkeypatch, status)
 
 
 @pytest.mark.parametrize('role', ['pro', 'con'])

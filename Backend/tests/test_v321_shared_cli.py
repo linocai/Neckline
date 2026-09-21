@@ -18,6 +18,35 @@ from tests.test_b54_review_regressions import client_for
 from tests.test_v310_tavily import _SearchExtract
 
 
+def _direct_query_round(payload):
+    """Return one necessary shared-source query under the B78 direct contract."""
+    packet = payload["evidencePacket"]
+    ref = packet["allowedEvidenceRefs"][0]
+    claim_id = packet["claims"][0]["claimId"]
+    code = packet["companyScope"]["candidateCompanyCodes"][0]
+    return {
+        "action": "research_round",
+        "questions": [{
+            "questionId": "shared-question", "claimIds": [claim_id], "companyCodes": [code],
+            "question": "送样是否获公司确认", "knownEvidence": [ref], "missingEvidence": ["公司确认"],
+            "supportCondition": "公司确认", "refuteCondition": "公司否认", "decisionImpact": "影响比较",
+            "state": "open", "resumeCondition": "出现公司公告",
+        }],
+        "queryPaths": [{
+            "pathId": "shared-path", "questionId": "shared-question", "query": "项目 送样 公告",
+            "intent": "确认送样", "targetSource": "公司公告", "newPathReason": "首批必要来源",
+            "expectedInformationGain": "确认主体", "expectedJudgmentChange": "改变比较",
+            "purposeKind": "event_fact", "targetRefs": [{"kind": "claim", "claimId": claim_id}],
+            "state": "planned", "resultSummary": None,
+        }],
+        "conclusion": {
+            "researchStatus": "continue_research", "companyMappings": [], "materialGaps": ["公司确认"],
+            "stopReason": "需要必要公开资料", "resumeCondition": "取得公司公告",
+        },
+        "companyAssessments": [],
+    }
+
+
 @pytest.mark.parametrize('concurrency,interrupt', [(1, True), (2, False)])
 def test_real_cli_related_events_share_search_and_resume_without_rebilling(tmp_path, monkeypatch, concurrency, interrupt):
     db = tmp_path/'b39-e2e.sqlite'
@@ -59,27 +88,29 @@ def test_real_cli_related_events_share_search_and_resume_without_rebilling(tmp_p
             return self.gateway.fetch_fulltext(**kwargs)
     monkeypatch.setattr(e2e, '_Gateway', Gateway)
     transport = httpx.MockTransport
-    payloads = []
+    rounds = []
+    initial_events = set()
     def wrap(handler):
         def respond(request):
-            response = handler(request)
-            body = response.json()
             payload = json.loads(json.loads(request.content)['messages'][-1]['content'].split(
                 '<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
+            if payload.get('action') == 'research_round':
+                event_key = payload['evidencePacket']['event']['canonicalKey']
+                rounds.append((event_key, payload))
+                if event_key not in initial_events:
+                    initial_events.add(event_key)
+                    if concurrency == 2 and len(initial_events) == 2:
+                        assert started.wait(10)
+                        release.set()  # The second event reaches its own direct round before the shared fetch resolves.
+                    return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(
+                        _direct_query_round(payload))}, 'finish_reason': 'stop'}],
+                        'usage': {'prompt_tokens': 3, 'completion_tokens': 3, 'total_tokens': 6}})
+            response = handler(request)
+            body = response.json()
             value = json.loads(body['choices'][0]['message']['content'])
             if 'events' in value:
                 value['events'].append({**copy.deepcopy(value['events'][0]),
                     'canonicalKey':'project-supplier-capacity', 'headline':'同份消息的另一产能影响'})
-            if value.get('action') == 'plan_queries':
-                value['queryPaths'][0].update(pathId='shared-path', query='项目 送样 公告',
-                    intent='确认送样', targetSource='公司公告')
-                if concurrency == 2 and any(item.get('action') == 'plan_queries' for item in payloads):
-                    assert started.wait(10)
-                    release.set()  # Production serializes the gateway, while event research overlaps.
-            if value.get('action') == 'close_research':
-                value['conclusion']['researchStatus'] = 'pending_verification'
-            if payload.get('action'):
-                payloads.append(payload)
             body['choices'][0]['message']['content'] = json.dumps(value)
             return httpx.Response(response.status_code, json=body)
         return transport(respond)
@@ -99,7 +130,12 @@ def test_real_cli_related_events_share_search_and_resume_without_rebilling(tmp_p
     assert client.calls == 1
     assert set(searches) == {'project-delivery','project-supplier-capacity'}
     assert calls.count('understand') == 1 and calls.count('titleBatch') == 1
-    assert calls.count('research:compare_companies') == 2  # Facts shared, judgments remain per-event.
+    assert len(initial_events) == 2
+    assert [key for key, _payload in rounds].count('project-delivery') >= 1
+    assert [key for key, _payload in rounds].count('project-supplier-capacity') >= 1
+    # The search was shared, but each event gets a fresh direct result that
+    # can see only its own packet plus the same durable source fact.
+    assert calls.count('research:research_round') == 2
     report = read_report(db_path=db)
     assert len(report['eveningCards']) == 1 and not report['incompleteReviews']
     with client_for(db) as api:

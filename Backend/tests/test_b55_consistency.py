@@ -20,7 +20,7 @@ def test_material_morning_without_recommendation(tmp_path,monkeypatch):
     provider=FakeProvider([_result(json.dumps({'material':True,'reasonStatus':'current','observationStatus':'current','summary':marker,'materialContraryEvidence':[]}))])
     mp.setattr(morning_runtime,'resolve_deepseek_v4_pro',lambda **_:ProviderResolution('configured',provider,'deepseek',None))
     def change(payload,value):
-        if payload.get('action')=='compare_companies':
+        if payload.get('action')=='research_round':
             for row in value['companyAssessments']:
                 if row['companyCode']=='300002.SZ':row.update(role='excluded',rank=None,summary='本轮不推荐旧催化')
     db,old,task,_=later_scan(tmp_path,mp,change)

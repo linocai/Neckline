@@ -21,8 +21,11 @@ def test_v2_actual_cli_worker_fixed_pool_and_unverified_publication(tmp_path,mon
     card=report['eveningCards'][0]
     assert card['currentSelectionState']=='unhandled'
     assert card['catalysts'][0]['verificationStatus']=='unverified'
-    assert calls.count('understand')==1 and calls.count('research:compare_companies')==1
-    assert len(gateway.search_paths)==2
+    assert calls.count('understand') == calls.count('research:research_round') == 1
+    assert not ({'research:plan_research', 'research:assess_and_decide', 'research:compare_companies'} & set(calls))
+    # The direct round can publish from the admitted event evidence; it must
+    # not buy an otherwise unnecessary verification search.
+    assert not gateway.search_paths
     assert 'classify' not in calls  # Valid first v2 recommendations have a derivable initial identity.
     with sqlite3.connect(db) as conn:
         assert conn.execute('SELECT count(*) FROM k10_v2_title_company_hints WHERE company_codes_json LIKE ?', ('%300002.SZ%',)).fetchone()[0] == 1
@@ -95,8 +98,8 @@ def test_python_subprocess_inherits_external_network_denial():
 def test_pool_outside_question_is_discarded_before_any_search(tmp_path, monkeypatch):
     db,task_id,task,calls,gateway = _run(tmp_path,monkeypatch,v2=True,outside_pool=True)
     assert task.status == 'completed'
-    assert 'research:plan_gaps' in calls
-    assert 'research:plan_queries' not in calls and not gateway.search_paths
+    assert 'research:research_round' in calls
+    assert not ({'research:plan_research', 'research:plan_queries'} & set(calls)) and not gateway.search_paths
     assert all(row['companyCode'] != '600000.SH' for row in read_report(db_path=db)['eveningCards'])
 
 
@@ -125,12 +128,16 @@ def test_native_network_subprocess_cannot_bypass_guard():
 
 @pytest.mark.parametrize('status', [402, 429])
 def test_later_provider_failure_preserves_successful_work_without_search(tmp_path, monkeypatch, status):
-    db,task_id,task,calls,gateway = _run(tmp_path,monkeypatch,v2=True,provider_status=status,failure_action='plan_queries')
-    assert 'research:plan_gaps' in calls and not gateway.search_paths
+    db,task_id,task,calls,gateway = _run(tmp_path,monkeypatch,v2=True,provider_status=status,failure_action='research_round')
+    # B78 has one direct research receipt. A refusal leaves the earlier
+    # title/body work durable and never starts a verification search.
+    assert calls[:3] == ['titleBatch', 'titleGlobal', 'understand']
+    assert calls[-1] == f'http_{status}'
+    assert 'research:research_round' not in calls and not gateway.search_paths
     assert task.status == ('failed' if status == 402 else 'queued')
     if status == 429:
         resumed = run_once(db_path=db,worker_id='late-retry',lease_for=timedelta(minutes=5),
             handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:RUN_AT)
         assert resumed.status == 'completed'
-        assert calls.count('titleBatch') == calls.count('understand') == calls.count('research:plan_gaps') == 1
+        assert calls.count('titleBatch') == calls.count('understand') == calls.count('research:research_round') == 1
         assert calls.count('http_429') == 1 and len(read_report(db_path=db)['eveningCards']) == 1
