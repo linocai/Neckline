@@ -24,18 +24,20 @@ from . import store
 from .discovery import (
     CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoverySliceYield,
     EvidenceRef, EventComparison, EventDraft, InvestigationOutcome,
-    SqliteDiscoveryWriter, Verification, reject_uncalibrated_prediction,
+    SqliteDiscoveryWriter, Verification, _merge_same_event_sources, thaw_event_drafts,
+    reject_uncalibrated_prediction,
 )
 from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError
 from .opportunity_discovery import validate_event_comparison
 from .research_contracts import (Claim, FullTextRequest, Question, QueryPath,
-    RESEARCH_ROUND_ACTION, ResearchContractError, ResearchRoundResult, ResearchSnapshot,
+    RESEARCH_ROUND_ACTION, RESEARCH_ROUND_CONTRACT, ResearchContractError, ResearchRoundResult, ResearchSnapshot,
     validate_company_assessment, validate_company_mapping)
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_material import admit_material
 from .research_store import (append_research_round, create_research_snapshot, load_prior_research_evidence,
                              load_research_round_state, mark_research_round_failed, read_research_state)
+from .schema import SqliteWriteBusy
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -57,6 +59,146 @@ def _ref(value: EvidenceRef | DiscoveryDocument) -> dict[str, Any]:
     return {"documentId": value.document_id, "revision": value.revision}
 
 
+def research_context_payload(*, event: EventDraft, cutoff_at: datetime,
+                             cutoff_inclusive: bool, strip_event_comparison: bool = False) -> dict[str, Any]:
+    """Return the exact immutable context bound to a research snapshot.
+
+    ``EventDraft.facts`` is source-owned and immutable for this purpose.
+    Program-derived comparison state lives in ``EventDraft.derived_facts``;
+    the retained compatibility argument therefore has no effect for new B82
+    snapshots.  Admission retains every supplied source fact, including a
+    source fact named ``eventComparison``.
+    """
+    facts = dict(event.facts)
+    return {
+        "canonicalKey": event.canonical_key,
+        "stageKey": event.stage_key,
+        "eventState": event.event_state,
+        "headline": event.headline,
+        "eventKind": event.event_kind,
+        "sourceRefs": [_ref(ref) for ref in event.source_refs],
+        "facts": facts,
+        "newsCutoffAt": _text(cutoff_at),
+        "cutoffInclusive": cutoff_inclusive,
+    }
+
+
+def research_context_digest(*, event: EventDraft, cutoff_at: datetime,
+                            cutoff_inclusive: bool, strip_event_comparison: bool = False) -> str:
+    return _hash(research_context_payload(
+        event=event, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+        strip_event_comparison=strip_event_comparison,
+    ))
+
+
+def _legacy_frozen_understanding_order(*, task_id: str, db_path: Path) -> dict[EvidenceRef, int] | None:
+    """Read the original body-admission order, never a checkpoint key order."""
+    selection = store.read_title_selection_manifest(task_id=task_id, db_path=db_path)
+    refs = selection.get("selectedRefs") if isinstance(selection, Mapping) else None
+    if not isinstance(refs, list):
+        # A title manifest proves this task used title-gated body admission.
+        # Its selection order is then mandatory: falling back to all title
+        # inputs would invent an order for a missing/corrupt selection row.
+        if store.read_title_triage_manifest(task_id=task_id, db_path=db_path) is not None:
+            return None
+        task = store.task_execution_input(task_id=task_id, db_path=db_path)
+        checkpoint = task.get("checkpoint") if isinstance(task, Mapping) else None
+        scan_id = checkpoint.get("scanId") if isinstance(checkpoint, Mapping) else None
+        scan = store.get_scan(scan_id=scan_id, db_path=db_path) if isinstance(scan_id, str) else None
+        coverage = scan.get("coverage") if isinstance(scan, Mapping) else None
+        refs = coverage.get("inputDocumentRefs") if isinstance(coverage, Mapping) else None
+    if not isinstance(refs, list):
+        return None
+    order: dict[EvidenceRef, int] = {}
+    try:
+        for index, raw in enumerate(refs):
+            ref = _key(raw) if isinstance(raw, Mapping) else None
+            if ref is None or ref in order:
+                return None
+            order[ref] = index
+    except InvestigationError:
+        return None
+    return order or None
+
+
+def _legacy_merged_understanding_events(*, task_id: str, db_path: Path) -> tuple[EventDraft, ...]:
+    """Rebuild B81's admitted event units from its paid understand results.
+
+    A B81 investigation can bind a single event assembled from several source
+    bodies.  Its completed document checkpoints therefore cannot be compared
+    one-by-one with the snapshot: reproduce the same deterministic merge that
+    discovery used before research.  This is a local read of completed
+    derivatives only; it neither repairs a checkpoint nor calls a provider.
+    Checkpoint item keys are hashed implementation details, not source order:
+    restore the immutable title selection (or the pre-title frozen input for a
+    legacy no-title task) before applying discovery's merge routine.
+    """
+    source_order = _legacy_frozen_understanding_order(task_id=task_id, db_path=db_path)
+    if source_order is None:
+        return ()
+    understood: list[tuple[int, int, int, EventDraft]] = []
+    checkpoint_index = 0
+    for checkpoint in store.completed_execution_items(
+        task_id=task_id, item_kind="document", stage="understand", db_path=db_path,
+    ):
+        result = checkpoint.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        try:
+            events = thaw_event_drafts(result.get("events"))
+        except (TypeError, ValueError):
+            continue
+        for event_index, event in enumerate(events):
+            ranks = [source_order.get(ref) for ref in event.source_refs]
+            # A completed derivative that names a source outside the frozen
+            # admission order cannot be used to recreate a historical input.
+            if not ranks or any(rank is None for rank in ranks):
+                return ()
+            understood.append((min(int(rank) for rank in ranks if rank is not None),
+                               checkpoint_index, event_index, event))
+        checkpoint_index += 1
+    return _merge_same_event_sources(tuple(item[3] for item in sorted(understood)))
+
+
+def _legacy_snapshot_event(*, snapshot: ResearchSnapshot, current: EventDraft,
+                           task_id: str, cutoff_at: datetime,
+                           cutoff_inclusive: bool, db_path: Path) -> EventDraft | None:
+    """Return the one B81 frozen event that can prove a legacy snapshot.
+
+    Old rows have no admission context.  The only accepted substitute is the
+    same-task, completed source-understanding output after the historic merge.
+    A running old scan might carry the program's former ``eventComparison``
+    projection in facts, which is the sole allowed difference; all source
+    identity and remaining facts must still be exact.
+    """
+    if (snapshot.task_id != task_id
+            or snapshot.prompt_contract_revision not in {"k10-investigation-v1", RESEARCH_ROUND_CONTRACT}):
+        return None
+    matches: list[EventDraft] = []
+    current_refs = [_ref(ref) for ref in current.source_refs]
+    for candidate in _legacy_merged_understanding_events(task_id=task_id, db_path=db_path):
+        if (candidate.canonical_key != current.canonical_key
+                or candidate.stage_key != current.stage_key
+                or candidate.event_state != current.event_state
+                or candidate.headline != current.headline
+                or candidate.event_kind != current.event_kind
+                or [_ref(ref) for ref in candidate.source_refs] != current_refs):
+            continue
+        projected = dict(candidate.facts)
+        if "eventComparison" in current.facts:
+            projected["eventComparison"] = current.facts["eventComparison"]
+        if projected != dict(current.facts):
+            continue
+        context = research_context_payload(
+            event=candidate, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+        )
+        if (context["newsCutoffAt"] != snapshot.news_cutoff_at
+                or _hash(context) != snapshot.context_sha256):
+            continue
+        matches.append(candidate)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _key(value: Mapping[str, Any]) -> EvidenceRef:
     doc, revision = value.get("documentId"), value.get("revision")
     if not isinstance(doc, str) or not doc or isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -68,6 +210,95 @@ def _refs(value: Any) -> tuple[EvidenceRef, ...]:
     if not isinstance(value, (list, tuple)) or any(not isinstance(item, Mapping) for item in value):
         raise InvestigationError("调查引用列表无效", code="investigation_reference_invalid")
     return tuple(dict.fromkeys(_key(item) for item in value))
+
+
+def _body_claim_identity(*, source_ref: EvidenceRef, location: str, text: str, kind: str) -> str:
+    """Return the durable identity of one fact extracted from one body.
+
+    This is deliberately narrower than a semantic similarity key.  The body
+    revision and locator prove where the fact came from; the proposition text
+    and its contract category distinguish a positive assertion from a denial
+    or a different kind of statement at that location.  Stripping only outer
+    whitespace makes an unchanged model answer stable without rewriting the
+    visible evidence text.
+    """
+    return "claim_" + _hash({
+        "documentId": source_ref.document_id,
+        "revision": source_ref.revision,
+        "location": location.strip(),
+        "text": text.strip(),
+        "kind": kind,
+    })
+
+
+def normalize_body_claims(*, raw_claims: Sequence[Mapping[str, Any]],
+                          allowed_source_refs: Sequence[Mapping[str, Any] | EvidenceRef],
+                          fallback_source_ref: Mapping[str, Any] | EvidenceRef | None = None) -> tuple[Claim, ...]:
+    """Turn fresh body-extraction claims into program-owned source facts.
+
+    A provider must describe the proposition, but it must not manufacture the
+    internal identifier or mark its own first reading as verified.  Explicit
+    claim references must be in the frozen event source set.  An omitted
+    duplicate ``sourceRef`` is restored only when the caller has one
+    unambiguous fallback reference; it is never guessed from the first item of
+    a multi-source event.  Existing persisted claims are intentionally not
+    passed through this helper, so old readable evidence keeps its original
+    identity and linkage.
+    """
+    try:
+        allowed = frozenset(
+            item if isinstance(item, EvidenceRef) else _key(item)
+            for item in allowed_source_refs
+        )
+        fallback = (fallback_source_ref if isinstance(fallback_source_ref, EvidenceRef)
+                    else _key(fallback_source_ref)) if fallback_source_ref is not None else None
+    except (AttributeError, TypeError, InvestigationError) as exc:
+        raise ResearchContractError(
+            "正文允许来源引用无效", field_name="events[].sourceRefs", expected="reference_array",
+        ) from exc
+    if fallback is not None and fallback not in allowed:
+        raise ResearchContractError(
+            "正文默认来源不属于允许来源", field_name="events[].sourceRefs", expected="allowed_body_reference",
+        )
+    normalized: list[Claim] = []
+    seen: set[str] = set()
+    for raw in raw_claims:
+        if not isinstance(raw, Mapping):
+            raise ResearchContractError("claims 项必须为对象", field_name="events[].claims", expected="object")
+        value = dict(raw)
+        if "sourceRef" in value:
+            try:
+                source = _key(value["sourceRef"])
+            except (AttributeError, TypeError, InvestigationError) as exc:
+                raise ResearchContractError(
+                    "claim sourceRef 无效", field_name="events[].claims[].sourceRef", expected="body_source_reference",
+                ) from exc
+        elif fallback is not None:
+            source = fallback
+        else:
+            raise ResearchContractError(
+                "多来源正文的 claim 不能省略 sourceRef", field_name="events[].claims[].sourceRef",
+                expected="explicit_allowed_body_reference",
+            )
+        if source not in allowed:
+            raise ResearchContractError(
+                "claim sourceRef 不属于当前正文", field_name="events[].claims[].sourceRef",
+                expected="current_body_reference",
+            )
+        value["sourceRef"] = _ref(source)
+        # This placeholder permits the typed contract to validate model-owned
+        # fields before the deterministic ID is calculated.  It is never
+        # persisted or returned to the caller.
+        value["claimId"] = "body_claim_pending"
+        value["verificationStatus"] = "unverified"
+        claim = Claim.from_dict(value)
+        identity = _body_claim_identity(source_ref=source, location=claim.location,
+                                        text=claim.text, kind=claim.kind)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        normalized.append(replace(claim, claim_id=identity))
+    return tuple(normalized)
 
 
 def build_research_round_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
@@ -84,10 +315,12 @@ def build_research_round_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def research_round_request_spec(*, snapshot: ResearchSnapshot,
-                                evidence_packet: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+                                evidence_packet: Mapping[str, Any],
+                                contract_revision: str | None = None) -> tuple[str, dict[str, Any]]:
     """Return the direct B78 prompt contract without selecting a provider."""
     return investigation_request_spec(snapshot=snapshot, action=RESEARCH_ROUND_ACTION,
-                                      evidence_packet=evidence_packet)
+                                      evidence_packet=evidence_packet,
+                                      contract_revision=contract_revision)
 
 
 def _round_ref_keys(values: Any, *, field: str) -> set[tuple[str, int]]:
@@ -203,13 +436,92 @@ def _b78_filter_pool_result(*, result: ResearchRoundResult,
         return result
     retained_mappings = [dict(row) for row in mappings
                          if isinstance(row, Mapping) and row.get("companyCode") in allowed]
-    retained_codes = {row["companyCode"] for row in retained_mappings}
+    # Pool membership is the only filtering boundary here.  A pool company
+    # that lacks a mapping must survive this mechanical cleanup so the common
+    # comparison validator can reject a pending/recommended assessment for a
+    # company that the result never related to the event.  Filtering against
+    # ``retained_mappings`` would silently erase that business assertion.
     retained_assessments = tuple(dict(row) for row in result.company_assessments
-                                  if isinstance(row, Mapping) and row.get("companyCode") in retained_codes)
+                                  if isinstance(row, Mapping) and row.get("companyCode") in allowed)
     if retained_mappings == mappings and retained_assessments == result.company_assessments:
         return result
     conclusion["companyMappings"] = retained_mappings
     return replace(result, conclusion=conclusion, company_assessments=retained_assessments)
+
+
+def _b78_normalize_company_assessments(*, result: ResearchRoundResult,
+                                       evidence_packet: Mapping[str, Any]) -> ResearchRoundResult:
+    """Keep one durable company-result set rooted in company mappings.
+
+    ``companyMappings`` names the companies for which the round established an
+    evidence-backed event relationship.  It is therefore the comparison set.
+    Older model replies sometimes add an ``excluded`` assessment for a merely
+    retrieved candidate in order to explain why it is absent.  That explanation
+    must not turn a harmless non-result into a second coverage set, a repair
+    request, or an invented company relationship.  Discard that one redundant
+    shape with a durable diagnostic.  Every other non-mapping assessment is a
+    business assertion and remains a contract error in the validator below.
+    """
+    if result.context_requests or not isinstance(result.conclusion, Mapping):
+        return result
+    mapping_codes = _round_mapping_codes(result.conclusion)
+    allowed = _round_ref_keys(evidence_packet.get("allowedEvidenceRefs", ()),
+                              field="allowedEvidenceRefs")
+    retained: list[Mapping[str, Any]] = []
+    discarded = 0
+    for assessment in result.company_assessments:
+        clean = validate_company_assessment(assessment)
+        if clean["companyCode"] in mapping_codes:
+            retained.append(clean)
+        elif clean["role"] == "excluded" and _assessment_origin_ref_is_allowed(clean, allowed):
+            discarded += 1
+        else:
+            # Leave the row for the common business validator so it produces
+            # the stable coverage error rather than silently making a company
+            # recommendation disappear.
+            retained.append(clean)
+    if not discarded:
+        return result
+    conclusion = dict(result.conclusion)
+    diagnostics = conclusion.get("runtimeOutputSanitization")
+    diagnostics = dict(diagnostics) if isinstance(diagnostics, Mapping) else {}
+    prior_discarded = diagnostics.get("discardedNonMappingExcludedAssessments", 0)
+    # This is program-owned bookkeeping.  A model-supplied string/object must
+    # not turn harmless cleanup into a decoder failure or inflate the count.
+    if isinstance(prior_discarded, bool) or not isinstance(prior_discarded, int) or prior_discarded < 0:
+        prior_discarded = 0
+    diagnostics["discardedNonMappingExcludedAssessments"] = prior_discarded + discarded
+    conclusion["runtimeOutputSanitization"] = diagnostics
+    return replace(result, conclusion=conclusion, company_assessments=tuple(retained))
+
+
+def _assessment_origin_ref_is_allowed(assessment: Mapping[str, Any],
+                                      allowed: set[tuple[str, int]]) -> bool:
+    """Whether an otherwise redundant assessment carries only visible origin.
+
+    Normalization may discard an old, non-mapping ``excluded`` explanation,
+    but it must never use that cleanup to hide an unknown source.  The full
+    validator receives an out-of-scope origin unchanged and raises its stable
+    reference error below.
+    """
+    disclosure = assessment.get("evidenceDisclosure")
+    origin = disclosure.get("originEvidenceRef") if isinstance(disclosure, Mapping) else None
+    return origin is None or _round_ref_keys([origin], field="companyAssessments[].evidenceDisclosure.originEvidenceRef") <= allowed
+
+
+def normalize_research_round_result(*, result: ResearchRoundResult,
+                                    evidence_packet: Mapping[str, Any]) -> ResearchRoundResult:
+    """Apply program-owned result normalization before any business validation.
+
+    The direct model adapter, coordinator and receipt replay all call this
+    function.  Model output cannot replace a frozen claim identity, optional
+    out-of-pool hints stay local, and old non-mapping ``excluded`` explanations
+    cannot invalidate an otherwise complete comparison.  This function never
+    manufactures a fact, source reference, company assessment or support link.
+    """
+    normalized = _b78_filter_pool_result(result=result, evidence_packet=evidence_packet)
+    normalized = _b78_reconcile_result_claims(result=normalized, evidence_packet=evidence_packet)
+    return _b78_normalize_company_assessments(result=normalized, evidence_packet=evidence_packet)
 
 
 def validate_research_round_result(*, result: ResearchRoundResult,
@@ -318,8 +630,23 @@ def validate_research_round_result(*, result: ResearchRoundResult,
                         and _key(previous.source_ref) == _key(request.source_ref)
                         and previous.state in {"fulfilled", "rejected"}):
                     raise InvestigationError("同一问题重复申请已处理的全文", code="investigation_fulltext_duplicate")
+    mapping_rows = result.conclusion.get("companyMappings", ())
+    if not isinstance(mapping_rows, list):
+        raise InvestigationError("研究轮次公司映射无效", code="investigation_mapping_invalid")
     codes = _round_mapping_codes(result.conclusion)
-    if result.company_assessments:
+    if len(mapping_rows) != len(codes):
+        raise InvestigationError("公司映射不得重复", code="investigation_mapping_invalid")
+    for mapping in mapping_rows:
+        clean_mapping = validate_company_mapping(mapping)
+        mapping_refs = _round_ref_keys(clean_mapping["relationEvidence"],
+                                       field="conclusion.companyMappings[].relationEvidence")
+        if not mapping_refs <= allowed:
+            raise InvestigationError("公司映射引用未输入资料", code="investigation_reference_invalid")
+    assessments = [validate_company_assessment(row) for row in result.company_assessments]
+    for assessment in assessments:
+        if not _assessment_origin_ref_is_allowed(assessment, allowed):
+            raise InvestigationError("公司披露来源未输入资料", code="investigation_reference_invalid")
+    if codes or result.company_assessments:
         if not isinstance(result.comparison, Mapping):
             raise InvestigationError("公司比较缺少共同事实", code="investigation_comparison_summary_missing")
         summary = result.comparison.get("summary")
@@ -329,8 +656,8 @@ def validate_research_round_result(*, result: ResearchRoundResult,
                                            field="comparison.evidenceRefs")
         if not comparison_refs <= allowed:
             raise InvestigationError("公司比较引用未输入资料", code="investigation_reference_invalid")
-        assessed = {validate_company_assessment(row)["companyCode"] for row in result.company_assessments}
-        if assessed != codes:
+        assessed = [assessment["companyCode"] for assessment in assessments]
+        if len(assessed) != len(set(assessed)) or set(assessed) != codes:
             raise InvestigationError("公司比较覆盖与映射不一致", code="investigation_company_coverage_invalid")
 
 
@@ -361,7 +688,7 @@ def run_research_round(model: Any, *, snapshot: ResearchSnapshot,
         # an invalid source/status, but it is not an independent model fact.
         # The immutable packet claim remains the only identity visible to the
         # rest of this direct round.
-        result = _b78_reconcile_result_claims(result=result, evidence_packet=evidence_packet)
+        result = normalize_research_round_result(result=result, evidence_packet=evidence_packet)
         validate_research_round_result(result=result, evidence_packet=evidence_packet)
         return result
     except ResearchContractError as exc:
@@ -374,10 +701,17 @@ class _Investigation:
                  cutoff_at: datetime, db_path: Path, created_at: datetime,
                  leaseguard: Callable[[], None] | None, cutoff_inclusive: bool,
                  snapshot_created: Callable[[str], None] | None, clock: Callable[[], datetime],
-                 allow_failed_resume: bool = False, runtime_contract: Mapping[str, Any] | None = None) -> None:
+                 allow_failed_resume: bool = False, runtime_contract: Mapping[str, Any] | None = None,
+                 new_research_admission_guard: Callable[[], None] | None = None,
+                 new_external_admission_guard: Callable[[], None] | None = None) -> None:
         self.model, self.verifier, self.event, self.db_path = model, verifier, event, db_path
         self.task_id, self.guard, self.clock = task_id, leaseguard, clock
         self.allow_failed_resume = allow_failed_resume
+        if ((new_research_admission_guard is not None and not callable(new_research_admission_guard))
+                or (new_external_admission_guard is not None and not callable(new_external_admission_guard))):
+            raise ValueError("研究准入回调无效")
+        self.new_research_admission_guard = new_research_admission_guard
+        self.new_external_admission_guard = new_external_admission_guard
         from .delivery import RESEARCH_CONTRACT
         # This marker owns the B78 wire migration.  Its direct result is not
         # a compatibility projection of the historic plan/assess/close loop.
@@ -399,14 +733,38 @@ class _Investigation:
         self.policy = execution_profile["payload"]["discovery"]
         self.identity = "research_" + _hash([task_id, event.canonical_key, event.stage_key,
                                              event.event_state, [_ref(ref) for ref in event.source_refs]])[:32]
-        self.context = {"canonicalKey": event.canonical_key, "stageKey": event.stage_key,
-            "eventState": event.event_state, "headline": event.headline, "eventKind": event.event_kind,
-            "sourceRefs": [_ref(ref) for ref in event.source_refs], "facts": dict(event.facts),
-            "newsCutoffAt": _text(cutoff_at), "cutoffInclusive": cutoff_inclusive}
+        self.context = research_context_payload(
+            event=event, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+        )
         self.context_digest = _hash(self.context)
         self.state = read_research_state(snapshot_id=self.identity, db_path=db_path)
+        # Every B81 snapshot lacks B82's admission context.  Its persisted
+        # direct-round result or frozen discovery draft is an *outcome*, not
+        # proof of the original source input.  Before either local replay can
+        # advance that snapshot, reconstruct the exact pre-research merged
+        # event from same-task completed understand derivatives.  This also
+        # repairs the former program-derived eventComparison projection when
+        # present, but never lets a matching old context hash skip proof.
+        if self.state is not None and self.snapshot.admission_context is None:
+            legacy = _legacy_snapshot_event(
+                snapshot=self.snapshot, current=event, task_id=task_id,
+                cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive, db_path=db_path,
+            )
+            if legacy is None:
+                raise InvestigationError("旧调查快照缺少可证明的冻结正文输入", code="investigation_context_mismatch")
+            self.event = legacy
+            self.allowed = set(legacy.source_refs)
+            self.context = research_context_payload(
+                event=legacy, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+            )
+            self.context_digest = _hash(self.context)
         if self.state is None:
             self._guard()
+            # A restored snapshot is already frozen work.  The admission gate
+            # applies only before creating a genuinely new research identity;
+            # it must never turn later local recovery into a false closeout.
+            if self.new_research_admission_guard is not None:
+                self.new_research_admission_guard()
             writer = SqliteDiscoveryWriter(scan_id="research-input", db_path=db_path, created_at=_text(created_at))
             event_revision = writer.append_event(event=event, verification=Verification(
                 "needs_review", "调查输入，尚未完成比较。", event.source_refs, {"state": "available"}))
@@ -415,7 +773,8 @@ class _Investigation:
                 self.policy["investigationPromptContractRevision"],
                 _hash({"model": self.policy["model"], "options": self.policy["modelOptions"]["investigation"],
                        **({"runtimeProvider": execution_profile["runtimeProvider"]} if "runtimeProvider" in execution_profile else {})}),
-                "continue_research", "ok", 1, _text(created_at), _text(created_at)), db_path=db_path, lease_guard=leaseguard)
+                "continue_research", "ok", 1, _text(created_at), _text(created_at), dict(self.context)),
+                db_path=db_path, lease_guard=leaseguard)
             self._refresh()
         if self.snapshot.context_sha256 != self.context_digest:
             raise InvestigationError("调查输入与恢复快照不一致", code="investigation_context_mismatch")
@@ -438,6 +797,23 @@ class _Investigation:
             message = ('余额不足，停止后续模型及搜索步骤' if terminal == 'insufficient_balance'
                        else '供应商授权失败，停止后续模型及搜索步骤')
             raise InvestigationError(message, code=terminal)
+
+    def _new_external_guard(self) -> None:
+        """Admit a new search/fulltext provider request at its exact boundary.
+
+        Model calls are guarded by the checkpointed model operation after it
+        has determined that the operation is a new reservation.  Calling this
+        before that lookup would also reject completed receipts.  The verifier
+        has no such ledger wrapper, so its two real wire boundaries use this
+        method immediately before their request instead.
+        """
+        guard = getattr(self, "new_external_admission_guard", None)
+        # A durable verification gateway performs this check inside its exact
+        # checkpoint claim, after it knows the result is not a receipt replay.
+        # Its lightweight coordinator wrapper exposes the same callback as a
+        # marker so this outer runtime does not reject that replay too early.
+        if guard is not None and getattr(self.verifier, "new_external_admission_guard", None) is not guard:
+            guard()
 
     def _refresh(self) -> None:
         self.state = read_research_state(snapshot_id=self.identity, db_path=self.db_path)
@@ -1156,6 +1532,7 @@ class _Investigation:
                 continue
             seen_paths.add(identity)
             self._external_guard()
+            self._new_external_guard()
             bundle = self.verifier.fetch(event=self.event, retrieved_at=self.clock(), cutoff_at=self.cutoff,
                                          cutoff_inclusive=self.cutoff_inclusive, question=question,
                                          query_path=path)
@@ -1198,6 +1575,7 @@ class _Investigation:
                     "independentVerification": False,
                 })
             else:
+                self._new_external_guard()
                 bundle = self.verifier.fetch_fulltext(event=self.event, document=document, question=question,
                                                        request=request, cutoff_at=self.cutoff,
                                                        cutoff_inclusive=self.cutoff_inclusive)
@@ -1369,8 +1747,11 @@ class _Investigation:
             if not isinstance(packet, Mapping) or not isinstance(raw_result, Mapping):
                 raise InvestigationError("研究轮次状态不可读取", code="investigation_round_state_invalid")
             try:
-                result = ResearchRoundResult.from_dict(raw_result)
-            except ResearchContractError as exc:
+                result = normalize_research_round_result(
+                    result=ResearchRoundResult.from_dict(raw_result), evidence_packet=packet,
+                )
+                validate_research_round_result(result=result, evidence_packet=packet)
+            except (ResearchContractError, InvestigationError) as exc:
                 raise InvestigationError("研究轮次状态不可读取", code="investigation_round_state_invalid") from exc
             first_packet = packet if first_packet is None else first_packet
             last_result = result
@@ -1549,8 +1930,7 @@ class _Investigation:
             # checkpoint has completed but before a usable result exists.
             self._b78_active_packet = packet
             result = run_research_round(self.model, snapshot=self.snapshot, evidence_packet=packet)
-            result = _b78_reconcile_result_claims(result=result, evidence_packet=packet)
-            result = _b78_filter_pool_result(result=result, evidence_packet=packet)
+            result = normalize_research_round_result(result=result, evidence_packet=packet)
             round_context_results: list[Mapping[str, Any]] = []
             round_tool_evidence: list[Mapping[str, Any]] = []
             if result.context_requests:
@@ -1646,13 +2026,28 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
                      claim_cache: Any = None, snapshot_created: Callable[[str], None] | None = None,
                      clock: Callable[[], datetime] | None = None,
                      allow_failed_resume: bool = False,
-                     runtime_contract: Mapping[str, Any] | None = None) -> InvestigationOutcome:
-    runtime = _Investigation(model=model, verifier=verifier, task_id=task_id, event=event, documents=documents,
-        execution_profile=execution_profile, cutoff_at=cutoff_at, db_path=db_path, created_at=created_at,
-        leaseguard=leaseguard, cutoff_inclusive=cutoff_inclusive, snapshot_created=snapshot_created, clock=clock or _now,
-        allow_failed_resume=allow_failed_resume, runtime_contract=runtime_contract)
+                     runtime_contract: Mapping[str, Any] | None = None,
+                     new_research_admission_guard: Callable[[], None] | None = None,
+                     new_external_admission_guard: Callable[[], None] | None = None) -> InvestigationOutcome:
+    runtime: _Investigation | None = None
     try:
+        # Snapshot creation and its caller's durable coverage checkpoint are
+        # research writes too. Keep a bounded SQLite contention distinct all
+        # the way to the worker even if it happens before ``run`` starts.
+        runtime = _Investigation(model=model, verifier=verifier, task_id=task_id, event=event, documents=documents,
+            execution_profile=execution_profile, cutoff_at=cutoff_at, db_path=db_path, created_at=created_at,
+            leaseguard=leaseguard, cutoff_inclusive=cutoff_inclusive, snapshot_created=snapshot_created, clock=clock or _now,
+            allow_failed_resume=allow_failed_resume, runtime_contract=runtime_contract,
+            new_research_admission_guard=new_research_admission_guard,
+            new_external_admission_guard=new_external_admission_guard)
         return runtime.run()
+    except SqliteWriteBusy as exc:
+        # Preserve the storage identity until the real worker boundary.  A
+        # generic discovery slice is unbounded by design; translating a
+        # bounded SQLite wait into that class would silently reset the
+        # same-task contention cap on every worker slice.  The worker owns the
+        # durable counter and will resume or terminalize this exact task.
+        raise
     except DiscoverySliceYield:
         raise
     except Exception as exc:
@@ -1674,7 +2069,7 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
         if code == "research_storage_unavailable":
             raise InvestigationError("研究账本无法持久化", code=code) from exc
         packet = getattr(runtime, "_b78_active_packet", None)
-        if (getattr(runtime, "b78_research", False) and isinstance(packet, Mapping)
+        if (runtime is not None and getattr(runtime, "b78_research", False) and isinstance(packet, Mapping)
                 and runtime.snapshot.execution_status != "failed"):
             try:
                 runtime._b78_mark_failed(packet=packet, safe_error_code=code)
@@ -1686,6 +2081,6 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
 
 
 __all__ = [
-    "build_research_round_packet", "research_outcome", "research_round_request_spec",
-    "run_research_round", "validate_research_round_result",
+    "build_research_round_packet", "normalize_body_claims", "research_outcome", "research_round_request_spec",
+    "normalize_research_round_result", "run_research_round", "validate_research_round_result",
 ]

@@ -126,7 +126,7 @@ actor K10SyntheticUIService: K10Servicing {
 
     init(presentsB39State: Bool = false) { self.presentsB39State = presentsB39State }
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.5.0 Build 78") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.5.1 Build 82") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from neckline.k10 import store
-from neckline.k10.schema import initialize_schema, read_connection
+from neckline.k10.schema import SqliteWriteBusy, initialize_schema, read_connection
 from neckline.k10.worker import TaskResult, run_once
 from tests.k10_v306_fixture import append_approved_execution_profile
 
@@ -168,6 +168,66 @@ def test_store_retry_write_is_closed_by_durable_pause(task_db):
     )
     with read_connection(task_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_task_retry_schedules").fetchone()[0] == 0
+
+
+def test_sqlite_busy_continuation_is_bounded_across_real_worker_slices(task_db):
+    """A transient writer lock recovers the original task once, never forever.
+
+    The V3 fixture's frozen ``networkMaxAttempts`` is two.  This enters the
+    actual worker handler boundary twice: the first busy condition releases
+    the same queued task with a durable counter; the next one reaches the
+    existing finite cap without adding an outbox message or a replacement
+    task.
+    """
+    task_id = enqueue(task_db, budget={})
+    calls: list[int] = []
+
+    def contended(_context):
+        calls.append(1)
+        raise SqliteWriteBusy("fixture real write holder")
+
+    first = run_once(db_path=task_db, worker_id="sqlite-busy-worker", lease_for=timedelta(seconds=30),
+                     handlers={"analysis": contended}, clock=lambda: NOW, task_id=task_id)
+    assert first is not None and first.status == "queued"
+    with read_connection(task_db) as conn:
+        checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+        retry = conn.execute("SELECT retry_kind,safe_error_code FROM k10_task_retry_schedules WHERE task_id=?", (task_id,)).fetchone()
+        assert checkpoint["sqliteBusyContinuationCount"] == 1
+        assert retry == ("continuation", "sqlite_busy")
+        assert conn.execute("SELECT count(*) FROM k10_task_outbox WHERE task_id=?", (task_id,)).fetchone()[0] == 0
+
+    second = run_once(db_path=task_db, worker_id="sqlite-busy-worker", lease_for=timedelta(seconds=30),
+                      handlers={"analysis": contended}, clock=lambda: NOW + timedelta(seconds=2), task_id=task_id)
+    assert second is not None and second.status == "failed"
+    assert calls == [1, 1]
+    with read_connection(task_db) as conn:
+        checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+        assert checkpoint["sqliteBusyContinuationCount"] == 2
+        assert conn.execute("SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?", (task_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM k10_task_outbox WHERE task_id=?", (task_id,)).fetchone()[0] == 0
+
+
+def test_handler_sqlite_busy_continuation_preserves_its_durable_recovery_checkpoint(task_db):
+    """The worker counter must not discard a handler's current scan identity."""
+    task_id = enqueue(task_db, budget={})
+    projected = {"scanId": "scan_busy_projection", "researchSnapshotIds": ["research_busy_projection"]}
+
+    def contended(_context):
+        return TaskResult(
+            "failed", "storage_busy", projected,
+            retry_at=NOW + timedelta(seconds=1), retry_kind="continuation", safe_error_code="sqlite_busy",
+        )
+
+    task = run_once(db_path=task_db, worker_id="sqlite-busy-projection", lease_for=timedelta(seconds=30),
+                    handlers={"analysis": contended}, clock=lambda: NOW, task_id=task_id)
+    assert task is not None and task.status == "queued"
+    with read_connection(task_db) as conn:
+        checkpoint = json.loads(conn.execute(
+            "SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)
+        ).fetchone()[0])
+    assert checkpoint["scanId"] == projected["scanId"]
+    assert checkpoint["researchSnapshotIds"] == projected["researchSnapshotIds"]
+    assert checkpoint["sqliteBusyContinuationCount"] == 1
 
 
 def test_crash_recovery_retries_one_unfinished_generic_task(task_db):

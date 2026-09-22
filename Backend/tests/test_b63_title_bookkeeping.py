@@ -45,13 +45,20 @@ def test_production_reconcile_bookkeeping_preserves_selected_sources():
     assert {571, 831} <= set(value["notSelected"])
 
 
-@pytest.mark.parametrize("complete,count", [(False, 2), (True, True), (True, 99)])
-def test_bookkeeping_tolerance_does_not_invent_completed_review(complete, count):
+@pytest.mark.parametrize("count", [2, True, 99, "stale"])
+def test_bookkeeping_is_derived_after_all_title_batches_complete(count):
     titles = [TitleDTO(f"d{i}", 1, "fixture", None, "title") for i in range(2)]
     batch = [TitleTriageResult(t.document_id, 1, "candidate", "m", "s", "r") for t in titles]
-    with pytest.raises(TitleTriageProtocolError):
-        normalize_reconcile_result({"selectionComplete": complete, "reviewedCount": count,
-                                    "selected": [], "merged": []}, titles, batch, 2)
+    assert normalize_reconcile_result({"reviewedCount": count, "selected": [], "merged": []}, titles, batch, 2) == {
+        "selected": [], "merged": [], "notSelected": [0, 1],
+    }
+
+
+def test_explicit_incomplete_global_review_remains_rejected():
+    titles = [TitleDTO(f"d{i}", 1, "fixture", None, "title") for i in range(2)]
+    batch = [TitleTriageResult(t.document_id, 1, "candidate", "m", "s", "r") for t in titles]
+    with pytest.raises(TitleTriageProtocolError, match="未明确完成"):
+        normalize_reconcile_result({"selectionComplete": False, "selected": [], "merged": []}, titles, batch, 2)
 
 
 def test_official_recovery_reuses_duplicate_paid_title_result_and_publishes(tmp_path, monkeypatch):

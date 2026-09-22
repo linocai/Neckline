@@ -68,7 +68,8 @@
     "taskSliceSeconds": 110,
     "completionDeadlineSeconds": 21600,
     "continuationDelaySeconds": 1,
-    "investigationPromptContractRevision": "k10-investigation-v1",
+    "titleReconcileContractVersion": "k10-title-reconcile-v2",
+    "investigationPromptContractRevision": "k10-investigation-v2",
     "modelOptions": {
       "titleBatch": {
         "maxTokens": 12288,
@@ -79,9 +80,8 @@
       "titleReconcile": {
         "maxTokens": 32768,
         "thinking": {
-          "type": "enabled"
-        },
-        "reasoningEffort": "high"
+          "type": "disabled"
+        }
       },
       "understand": {
         "maxTokens": 8192,

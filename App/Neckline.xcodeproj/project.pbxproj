@@ -55,7 +55,7 @@
 		0D61F0BE6ACF497914A35E26 /* b76-operations-readiness.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "b76-operations-readiness.json"; sourceTree = "<group>"; };
 		2053FCE0AF9C850C3FFFAFAB /* b76-partial-report.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "b76-partial-report.json"; sourceTree = "<group>"; };
 		257C5FA6EAD00B1A3CCCE6AE /* b76-empty-report.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "b76-empty-report.json"; sourceTree = "<group>"; };
-		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4037AAEDF2991B7415648397 /* K10V3Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10V3Tests.swift; sourceTree = "<group>"; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		45C8A5B8ED333D054E78670F /* K10Presentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10Presentation.swift; sourceTree = "<group>"; };
@@ -397,13 +397,15 @@
 		4B5C7C2473C0C820F382939E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconV350B81;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconV351B82;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Neckline/Neckline.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Neckline/Neckline.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Neckline/Resources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Neckline;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -413,7 +415,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.5.0;
+				MARKETING_VERSION = 3.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "top.linotsai.neckline$(NK_BUNDLE_SUFFIX)";
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
@@ -482,7 +484,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 81;
+				CURRENT_PROJECT_VERSION = 82;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = HX73DFL88G;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -499,7 +501,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				K10_SYNTHETIC_UI = NO;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 3.5.0;
+				MARKETING_VERSION = 3.5.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				NK_BUNDLE_SUFFIX = "";
@@ -547,7 +549,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 81;
+				CURRENT_PROJECT_VERSION = 82;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = HX73DFL88G;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -570,7 +572,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				K10_SYNTHETIC_UI = NO;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 3.5.0;
+				MARKETING_VERSION = 3.5.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				NK_BUNDLE_SUFFIX = "";
@@ -587,13 +589,15 @@
 		EFD0CAE5927C07C49036D242 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconV350B81;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconV351B82;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Neckline/Neckline.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Neckline/Neckline.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Neckline/Resources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Neckline;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -603,7 +607,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.5.0;
+				MARKETING_VERSION = 3.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "top.linotsai.neckline$(NK_BUNDLE_SUFFIX)";
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;

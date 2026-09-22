@@ -347,3 +347,44 @@ def test_b76_worker_refuses_malformed_contract_before_any_claim(tmp_path):
         assert store.task_execution_input(task_id=task_id, db_path=db_path)["checkpoint"] == {}
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT count(*) FROM k10_external_attempts").fetchone()[0] == 0
+
+
+def test_title_global_failure_projects_completed_batch_counts_to_actual_api(tmp_path, monkeypatch):
+    """A failed reconciliation must not make 25 completed title batches read as zero."""
+    from . import v340_acceptance_fixture as acceptance_base
+
+    class InvalidGlobalTransport(acceptance_base.DeterministicTransport):
+        def respond(self, request):
+            payload = self._packet(request)
+            if "inputCount" in payload:
+                self._record("titleGlobal")
+                # The batches have all persisted; only this global decision is
+                # invalid. An out-of-range selected index remains a hard
+                # protocol failure rather than being silently filtered.
+                return self._ok({"selected": [{"i": payload["inputCount"], "reason": "越界"}], "merged": []})
+            return super().respond(request)
+
+    monkeypatch.setattr(acceptance_base, "TITLE_COUNT", 1600)
+    monkeypatch.setattr(acceptance_base, "DeterministicTransport", InvalidGlobalTransport)
+    flow = acceptance_base.run_full_scale_flow(
+        tmp_path, monkeypatch, name="title-global-after-25-batches", selected_event_count=0,
+        expect_handler_failure=True,
+    )
+    assert flow.task_status == "failed"
+    assert flow.calls["titleBatch"] == 25
+    assert flow.calls["titleGlobal"] == 2
+
+    config_id, config_revision, execution_id, execution_revision = acceptance_base.active_bindings(flow.db_path)
+    with acceptance_base.actual_api(
+        flow.db_path, config_id=config_id, config_revision=config_revision,
+        execution_id=execution_id, execution_revision=execution_revision,
+    ) as client:
+        response = client.get("/api/v1/k10/v2/reports/latest?window=evening")
+    assert response.status_code == 200
+    report = response.json()["report"]
+    assert report is not None and report["status"] == "failed"
+    assert report["delivery"]["counts"] == {
+        "titleInput": 1600, "titleProcessed": 1600, "titleFailed": 0, "titleUnprocessed": 0,
+        "eventInput": 0, "eventProcessed": 0, "eventFailed": 0, "eventUnprocessed": 0,
+        "comparableCompanies": 0, "publishedCompanies": 0,
+    }

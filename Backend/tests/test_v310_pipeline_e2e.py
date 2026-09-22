@@ -322,6 +322,12 @@ def _http_transport(monkeypatch, *, malformed_action: str | None = None,
             result = {"selectionComplete": True, "reviewedCount": len(payload["items"]),
                       "selected": [{"i": row["i"], "selectedRank": index + 1, "reason": "入选"}
                                    for index, row in enumerate(payload["items"])], "merged": []}
+            if title_response == "global_invalid":
+                # Deliberately unsafe global membership remains a whole-report
+                # failure after its bounded repair. This is distinct from a
+                # paid bad *batch* reply, which B82 now isolates as a partial
+                # title gap.
+                result = {"selected": [{"i": len(payload["items"]), "reason": "越界"}], "merged": []}
         elif "items" in payload:
             calls.append("titleBatch")
             result = {"items": [{"i": index, "status": "candidate", "matterKey": "project", "stageKey": "new", "reason": "项目送样", **({"companyCodes":["300002.SZ"]} if v2 else {})}
@@ -493,24 +499,41 @@ def test_cli_worker_real_deepseek_transport_publishes_unverified_primary_and_kee
 
 def _direct_query_fixture(monkeypatch, *, invalid=False, empty=False):
     from neckline.k10.discovery import DiscoveryDocument
-    from tests.test_b60_pool_filtering import edit_responses
     from tests.test_b72_query_path_resilience import path
     edited = []
-    def edit(value):
+    def edit(value, request):
         if value.get('action') != 'research_round' or edited: return
         edited.append(True)
+        message = json.loads(request.content)["messages"][-1]["content"]
+        input_packet = json.loads(message.split("<untrusted-k10-evidence>\n", 1)[1]
+                                  .split("\n</untrusted-k10-evidence>", 1)[0])
+        claim_id = input_packet['evidencePacket']['claims'][0]['claimId']
         ref = value['comparison']['evidenceRefs'][0]
-        question = {'questionId':'q-1','claimIds':['article-claim-1'],'companyCodes':['300002.SZ'],
+        question = {'questionId':'q-1','claimIds':[claim_id],'companyCodes':['300002.SZ'],
             'question':'当前送样是否已获确认','knownEvidence':[ref],'missingEvidence':['公司确认'],
             'supportCondition':'公司确认','refuteCondition':'公司否认','decisionImpact':'影响比较',
             'state':'open','resumeCondition':'新公告'}
         route = path('necessary-query','q-1',[{'kind':'claim',
-            'claimId':'unknown-claim' if invalid else 'article-claim-1'}])
+            'claimId':'unknown-claim' if invalid else claim_id}])
         route['purposeKind'] = 'event_fact'
         value.clear(); value.update(action='research_round',questions=[question],queryPaths=[route],
             conclusion={'researchStatus':'continue_research','companyMappings':[],
                 'stopReason':'需确认来源事实','resumeCondition':'新资料'})
-    edit_responses(monkeypatch,edit)
+    # The understand reply uses a human-readable provider claim ID; B82
+    # normalizes that ID before the direct-round request.  Edit the real wire
+    # response so this positive fixture remains bound to that canonical claim,
+    # while the explicit unknown-claim branch below continues to prove refusal.
+    transport = httpx.MockTransport
+    def wrap(handler):
+        def respond(request):
+            response = handler(request)
+            body = response.json()
+            value = json.loads(body['choices'][0]['message']['content'])
+            edit(value, request)
+            body['choices'][0]['message']['content'] = json.dumps(value)
+            return httpx.Response(response.status_code, json=body, headers=response.headers)
+        return transport(respond)
+    monkeypatch.setattr(httpx, 'MockTransport', wrap)
     scopes = []
     original = _Gateway.fetch
     def fetch(self, **kwargs):
@@ -533,7 +556,8 @@ def test_real_cli_binds_new_query_to_question_scope_before_one_search(tmp_path, 
     assert len(scopes) == 1
     row = scopes[0]
     assert row['purposeKind'] == 'event_fact'
-    assert row['targetRefs'] == [{'kind':'claim','claimId':'article-claim-1'}]
+    assert row['targetRefs'] == [{'kind':'claim','claimId':row['questionScope']['claimIds'][0]}]
+    assert row['targetRefs'][0]['claimId'].startswith('claim_')
     assert row['questionScope']['questionId'] == row['questionId']
     assert row['questionScope']['scopeSha256']
     with sqlite3.connect(db_path) as conn:

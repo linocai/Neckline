@@ -50,6 +50,53 @@ def read_title_failures(*, task_id: str, db_path: Path) -> list[dict[str, Any]]:
     return result
 
 
+def completed_title_batch_refs(*, task_id: str, documents: Sequence[DiscoveryDocument], db_path: Path) -> set[tuple[str, int]]:
+    """Return title inputs durably handled by a valid completed batch.
+
+    Global reconciliation creates the final triage rows, so those rows do not
+    exist when reconciliation itself fails.  The completed batch checkpoints
+    are still durable program-validated work.  Reconstruct only their sealed
+    result refs, then add exact duplicates whose representative was handled;
+    do not infer a missing representative or accept an unknown checkpoint
+    member as progress.
+    """
+    from .schema import read_connection
+
+    sources = tuple(sorted(documents, key=lambda doc: (doc.document_id, doc.revision)))
+    exact = deduplicate_documents(sources)
+    retained = {(document.document_id, document.revision) for document in exact.retained}
+    with read_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT result_json FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND stage='model:titleBatch' AND status='completed' ORDER BY item_key",
+            (task_id,),
+        ).fetchall()
+    completed: set[tuple[str, int]] = set()
+    for (raw,) in rows:
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else None
+            items = value.get("items") if isinstance(value, Mapping) else None
+            if not isinstance(items, list):
+                continue
+            refs = {
+                (row.get("documentId"), row.get("revision"))
+                for row in items if isinstance(row, Mapping)
+                and isinstance(row.get("documentId"), str) and row.get("documentId")
+                and isinstance(row.get("revision"), int) and not isinstance(row.get("revision"), bool)
+            }
+            # Stored title-batch output has passed the production normalizer;
+            # malformed/non-pool rows are not evidence of completed work.
+            if len(refs) != len(items) or not refs <= retained or completed & refs:
+                continue
+            completed.update(refs)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    for duplicate, representative in exact.duplicates.items():
+        if (representative.document_id, representative.revision) in completed:
+            completed.add((duplicate.document_id, duplicate.revision))
+    return completed
+
+
 class _FrozenTitleGap(Exception):
     def __init__(self, code: str):
         self.code = code
@@ -61,7 +108,8 @@ def _local_failure_code(exc: BaseException) -> str | None:
         return code
     if code in {"content_policy_refused", "json_invalid", "json_root_invalid", "model_json_invalid",
                 "model_json_root_invalid", "model_result_not_json", "model_result_root_invalid",
-                "model_result_unsafe", "title_protected_merge_invalid"}:
+                "model_result_unsafe", "response_json_invalid", "model_json_repair_exhausted",
+                "title_protected_merge_invalid"}:
         return code
     if isinstance(code, str) and code.startswith("title_json_"):
         return code
@@ -84,6 +132,31 @@ def _filter_company_hints(value: Any, allowed: set[str]) -> Any:
          if isinstance(row["companyCodes"], list) else []}
         if isinstance(row, Mapping) and "companyCodes" in row else row
         for row in value["items"]]}
+
+
+def _uses_b82_compact_reconcile_contract(execution_profile: Mapping[str, Any]) -> bool:
+    """Read the title wire contract from its immutable execution binding.
+
+    B82 uses the same provider, model and maximum output capacity as B81, but
+    disables extra thinking for the global title reply and asks for a smaller
+    structured object. Existing bindings retain their original request shape
+    during recovery; no live task is silently upgraded by the parser.
+    """
+    payload = execution_profile.get("payload")
+    discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+    if not isinstance(discovery, Mapping):
+        return False
+    if discovery.get("titleReconcileContractVersion") != "k10-title-reconcile-v2":
+        # B81 and older bindings did not declare this contract.  They must
+        # retain both the old prompt and the old response shape, even when a
+        # fixture happened to disable thinking for unrelated reasons.
+        return False
+    options = discovery.get("modelOptions")
+    reconcile = options.get("titleReconcile") if isinstance(options, Mapping) else None
+    thinking = reconcile.get("thinking") if isinstance(reconcile, Mapping) else None
+    if not isinstance(thinking, Mapping) or thinking.get("type") != "disabled":
+        raise TitleTriageProtocolError("B82 标题归并执行契约未关闭 thinking")
+    return True
 
 
 def select_title_documents(
@@ -152,6 +225,7 @@ def select_title_documents(
     restored_gaps = tuple(saved_gaps.values())
 
     title_policy = {**approved, "batchSize": batch_size}
+    compact_reconcile_contract = _uses_b82_compact_reconcile_contract(execution_profile)
     # Known subjects are separate trusted routing context, never old article bodies.
     context = [{key: item[key] for key in ("companyCode", "headline")
                 if isinstance(item.get(key), str)} for item in known_subjects]
@@ -223,7 +297,10 @@ def select_title_documents(
         return results
 
     def reconcile_call(items, results, limit):
-        instruction, payload = reconcile_request_spec(items, results, limit, title_policy)
+        instruction, payload = reconcile_request_spec(
+            items, results, limit, title_policy,
+            compact_output=compact_reconcile_contract,
+        )
         instruction += "同一发布的不同细节在本次全局归并中一并判断；筛选理由不是新增事实依据。纠正、否认及重大反证不得被普通正面消息吞并。"
         # Even an empty answer is explicitly validated, not inferred from a failed call.
         if all(result.status == "no_value" for result in results):

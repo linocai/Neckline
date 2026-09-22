@@ -317,15 +317,21 @@ def _global_participants(items: tuple[TitleDTO, ...], results: tuple[TitleTriage
 
 
 def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[TitleTriageResult], input_count: int,
-                           policy: Mapping[str, object]) -> tuple[str, dict[str, object]]:
-    """Return the global-only reconciliation request after every batch is valid."""
+                           policy: Mapping[str, object], *, compact_output: bool = True) -> tuple[str, dict[str, object]]:
+    """Return the global-only reconciliation request after every batch is valid.
+
+    ``compact_output`` belongs to the frozen execution binding. New B82
+    bindings ask the model only for business judgements; the runtime derives
+    audit counts and ranks. Older bindings retain their original wire shape so
+    a recovery never changes a paid request identity underneath a task.
+    """
     frozen = _validate_items(items)
     parsed = _validate_batch(batch=frozen, results=batch_results)
     if input_count != len(items):
         raise TitleTriageProtocolError("标题全局选择 inputCount 无效")
     if not isinstance(policy, Mapping) or not policy:
         raise TitleTriageProtocolError("标题初筛缺少已批准 policy")
-    operation = (
+    shared_operation = (
         "你在为 K10 选择值得深读的资讯：目标是寻找创业板未来两个交易日的消息驱动机会，"
         "并识别会推翻已有关注理由的重大反证。此处选择资料，不做最终股票推荐或交易判断。"
         "逐条比较标题所显示的新增实质事实、事实可能影响的经营/供需/政策环节、以及继续核查的价值。"
@@ -336,21 +342,54 @@ def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[Ti
         "来源主体在创业板外、海外或上游也可以入选，但必须存在合理的产业链影响路径，不能强行关联。"
         "更正/否认标签只代表不能当普通转载处理，不代表自动值得深读；"
         "须区分关键商业事实被否认与无关紧要的文字订正。已有关注对象的重大反证优先。"
-        "使用全部标题及逐条初筛结果做一次全局事项合并和排序。必须审阅全部参与标题并声明 selectionComplete=true，"
-        "reviewedCount 必须等于输入参与标题数量。"
-        "同一事项的无新增事实转载只保留最合适的真实来源文章；更正、取消、否认、重大反证和独立新阶段"
-        "不得作为普通转载合并。没有正文数量配额，按实际研究价值选取；按 selectedRank 从 1 连续编号；"
-        "不够不凑数。只输出 selected 与 merged；其余已审阅标题由系统记录为未入选，不要重复输出。"
-        "selected/merged 的 i 必须互斥；merged.into 必须指向 selected 的不同真实索引。"
-        "输出协议额外要求：merged 的 i 和 into 两端 status 都必须不是 correction_or_denial。"
-        "重复的更正报道可以只入选最合适的一篇，其余留在未入选补集中；不要把它们写进 merged。"
-        "入选 reason 必须说明值得核查的新增事实和潜在影响，不得只复述标题或称市场关注度高。"
-        "不要伪造标题没有的事实或已发布候选上下文，也不要输出 K10 的最终优先级分类。"
     )
+    if compact_output:
+        operation = shared_operation + (
+            "使用全部标题及逐条初筛结果做一次全局事项合并和排序。系统已记录全部参与标题和批次覆盖，"
+            "只返回你选择保留或合并的真实索引；其余由系统登记为未入选。"
+            "同一事项的无新增事实转载只保留最合适的真实来源文章；更正、取消、否认、重大反证和独立新阶段"
+            "不得作为普通转载合并。没有正文数量配额，按实际研究价值选取；不够不凑数。"
+            "只输出 selected 与 merged；不要输出计数、完成标记、排序号或未入选标题。"
+            "selected/merged 的 i 必须互斥；merged.into 必须指向 selected 的不同真实索引。"
+            "输出协议额外要求：merged 的 i 和 into 两端 status 都必须不是 correction_or_denial。"
+            "重复的更正报道可以只入选最合适的一篇，其余留在未入选补集中；不要把它们写进 merged。"
+            "入选 reason 必须说明值得核查的新增事实和潜在影响，不得只复述标题或称市场关注度高。"
+            "不要伪造标题没有的事实或已发布候选上下文，也不要输出 K10 的最终优先级分类。"
+        )
+    else:
+        # Exact B81 wording is part of the request fingerprint for an already
+        # bound task. Keep it byte-for-byte stable while only new B82 bindings
+        # use the smaller schema above.
+        operation = shared_operation + (
+            "使用全部标题及逐条初筛结果做一次全局事项合并和排序。必须审阅全部参与标题并声明 selectionComplete=true，"
+            "reviewedCount 必须等于输入参与标题数量。"
+            "同一事项的无新增事实转载只保留最合适的真实来源文章；更正、取消、否认、重大反证和独立新阶段"
+            "不得作为普通转载合并。没有正文数量配额，按实际研究价值选取；按 selectedRank 从 1 连续编号；"
+            "不够不凑数。只输出 selected 与 merged；其余已审阅标题由系统记录为未入选，不要重复输出。"
+            "selected/merged 的 i 必须互斥；merged.into 必须指向 selected 的不同真实索引。"
+            "输出协议额外要求：merged 的 i 和 into 两端 status 都必须不是 correction_or_denial。"
+            "重复的更正报道可以只入选最合适的一篇，其余留在未入选补集中；不要把它们写进 merged。"
+            "入选 reason 必须说明值得核查的新增事实和潜在影响，不得只复述标题或称市场关注度高。"
+            "不要伪造标题没有的事实或已发布候选上下文，也不要输出 K10 的最终优先级分类。"
+        )
     participants = _global_participants(frozen, parsed)
     content = policy.get("content")
     if not isinstance(content, Mapping) or not content:
         raise TitleTriageProtocolError("标题初筛 policy.content 无效")
+    output: dict[str, object] = {
+        "selected": [{"i": 0, "reason": "short string"}],
+        "merged": [{"i": 1, "into": 0, "reason": "short string"}],
+    }
+    if not compact_output:
+        # The exact pre-B82 contract stays available only to the frozen
+        # bindings that already paid for it. Do not infer this version from a
+        # response: it is a request-bound execution choice.
+        output = {
+            "selectionComplete": True,
+            "reviewedCount": len(participants),
+            "selected": [{"i": 0, "selectedRank": 1, "reason": "short string"}],
+            "merged": [{"i": 1, "into": 0, "reason": "short string"}],
+        }
     return operation, {
         "policy": {key: policy[key] for key in ("policyId", "revision", "contentSha256") if key in policy},
         "policyContent": dict(content),
@@ -362,27 +401,26 @@ def reconcile_request_spec(items: Sequence[TitleDTO], batch_results: Sequence[Ti
                    "title": item.title, "status": result.status, "matterKey": result.matter_key,
                    "stageKey": result.stage_key}
                   for index, item, result in participants],
-        "output": {"selectionComplete": True, "reviewedCount": len(participants),
-                   "selected": [{"i": 0, "selectedRank": 1, "reason": "short string"}],
-                   "merged": [{"i": 1, "into": 0, "reason": "short string"}]},
+        "output": output,
     }
 
 
 def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
                                batch_results: Sequence[TitleTriageResult], input_count: int) -> dict[str, object]:
-    """Normalize an explicit complete declaration to the canonical old ledger form.
+    """Normalize a model choice to the canonical immutable selection ledger.
 
-    The current model response explicitly declares completion and only names
-    retained/merged rows. The system owns exact counts and reference coverage;
-    a model echoing the whole audited input count is not a lost review. Strict
-    canonical output remains readable for an already-completed old checkpoint.
+    The runtime, rather than the model, owns coverage, counts and ranks. A
+    response can therefore omit legacy bookkeeping or contain an incorrect
+    count/rank without becoming a paid retry. An old complete canonical
+    checkpoint is still decoded strictly and never re-ranked.
     """
     frozen = _validate_items(items)
     results = _validate_batch(batch=frozen, results=batch_results)
     participants = _global_participants(frozen, results)
     by_index = {index: (item, result) for index, item, result in participants}
     canonical_keys = {"selected", "merged", "notSelected"}
-    compact_keys = {"selectionComplete", "reviewedCount", "selected", "merged"}
+    choice_keys = {"selected", "merged"}
+    legacy_choice_keys = {"selectionComplete", "reviewedCount", "selected", "merged"}
     if not isinstance(raw, Mapping):
         raise TitleTriageProtocolError("全局标题 JSON 必须是对象")
     if set(raw) == canonical_keys:
@@ -395,51 +433,85 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
                 or any(isinstance(index, bool) or not isinstance(index, int) for index in raw["notSelected"])):
             raise TitleTriageProtocolError("旧全局标题 checkpoint 条目字段无效")
         canonical = {key: list(raw[key]) for key in canonical_keys}
-    elif set(raw) == compact_keys:
-        if raw.get("selectionComplete") is not True:
+    elif choice_keys <= set(raw) <= legacy_choice_keys:
+        # A false completion declaration is an actual business statement that
+        # the model did not finish. Missing legacy bookkeeping is harmless:
+        # all title input and batch coverage are already frozen locally.
+        if "selectionComplete" in raw and raw.get("selectionComplete") is not True:
             raise TitleTriageProtocolError("全局标题未明确完成审阅")
-        reviewed_count = raw.get("reviewedCount")
-        if (isinstance(reviewed_count, bool) or not isinstance(reviewed_count, int)
-                or reviewed_count not in {len(participants), len(frozen)}):
-            raise TitleTriageProtocolError("全局标题 reviewedCount 与参与标题不一致")
         selected, merged = raw.get("selected"), raw.get("merged")
         if not isinstance(selected, list) or not isinstance(merged, list):
             raise TitleTriageProtocolError("全局标题 selected/merged 必须是数组")
-        selected_keys, merged_keys = {"i", "selectedRank", "reason"}, {"i", "into", "reason"}
+        selected_keys = ({"i", "reason"}, {"i", "selectedRank", "reason"})
+        merged_keys = {"i", "into", "reason"}
         covered: set[int] = set()
 
-        def indexed(row: object, expected_keys: set[str], *, key: str = "i") -> int:
-            if not isinstance(row, Mapping) or set(row) != expected_keys:
+        def indexed(row: object, expected_keys: set[str] | tuple[set[str], ...], *, key: str = "i") -> int:
+            allowed = expected_keys if isinstance(expected_keys, tuple) else (expected_keys,)
+            if not isinstance(row, Mapping) or set(row) not in allowed:
                 raise TitleTriageProtocolError("全局标题条目字段无效")
             value = row.get(key)
             if isinstance(value, bool) or not isinstance(value, int) or value not in by_index:
                 raise TitleTriageProtocolError("全局标题输出含陌生 refIndex")
             return value
 
+        def usable_reason(row: Mapping[str, object]) -> str | None:
+            """Discard a malformed duplicate hint before it can claim an index.
+
+            ``reason`` is a model explanation, not a producer-side identity.
+            A blank/oversized first duplicate must not force a paid repair when
+            a later row for the same real source is already usable.  Unknown
+            indices and unsafe merge relationships remain hard protocol errors
+            in ``indexed`` and below.
+            """
+            reason = row.get("reason")
+            return reason if isinstance(reason, str) and reason.strip() and len(reason) <= 280 else None
+
         selected_rows: list[dict[str, object]] = []
+        invalid_selected_indices: set[int] = set()
         for row in selected:
             index = indexed(row, selected_keys)
             if index in covered:
-                # A repeated source adds no decision. Keep the first judgement
-                # and validate its rank/reason normally below.
+                # A repeated source adds no decision. Preserve the first valid
+                # judgement; any model rank is only legacy bookkeeping.
+                continue
+            reason = usable_reason(row)
+            if reason is None:
+                invalid_selected_indices.add(index)
                 continue
             covered.add(index)
-            selected_rows.append(dict(row))
+            invalid_selected_indices.discard(index)
+            selected_rows.append({"i": index, "selectedRank": len(selected_rows) + 1,
+                                  "reason": reason})
+        if invalid_selected_indices:
+            raise TitleTriageProtocolError("全局标题 selected reason 无效")
         selected_indices = set(covered)
         merged_rows: list[dict[str, object]] = []
+        invalid_merged_indices: set[int] = set()
         for row in merged:
             index = indexed(row, merged_keys)
             target = indexed(row, merged_keys, key="into")
-            if index in covered or index == target:
+            if index == target or index in selected_indices:
                 raise TitleTriageProtocolError("全局标题合并 refIndex 无效")
+            if index in covered:
+                # Retain the first effective merge edge. A later duplicate
+                # cannot destabilize a usable title decision.
+                continue
             if target not in selected_indices:
                 # The model sometimes also groups unselected articles. Such
                 # an optional hint cannot invalidate the explicit selections
                 # or promote an unselected target. Keep both in the separately
                 # audited complement; no merge edge is persisted.
                 continue
+            reason = usable_reason(row)
+            if reason is None:
+                invalid_merged_indices.add(index)
+                continue
             covered.add(index)
-            merged_rows.append(dict(row))
+            invalid_merged_indices.discard(index)
+            merged_rows.append({"i": index, "into": target, "reason": reason})
+        if invalid_merged_indices:
+            raise TitleTriageProtocolError("全局标题 merged reason 无效")
         canonical = {"selected": selected_rows, "merged": merged_rows,
                      "notSelected": sorted(set(by_index) - covered)}
     else:

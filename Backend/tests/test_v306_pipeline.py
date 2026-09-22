@@ -129,13 +129,29 @@ def test_incomplete_title_response_never_admits_any_body(tmp_path, monkeypatch):
     path = tmp_path / "invalid-title.sqlite"
     documents, binding, model = _setup(path, count=4, duplicate=False)
     calls = _mock_http(monkeypatch, invalid_batch=True)
-    with pytest.raises(PipelineError):
-        select_title_documents(documents=documents, window_kind="evening", task_id="titles",
-            execution_profile=binding, model=model, db_path=path)
-    assert calls and all(stage == "titles" for stage, _ in calls)
-    assert store.read_title_selection_manifest(task_id="titles", db_path=path) is None
+    selected = select_title_documents(documents=documents, window_kind="evening", task_id="titles",
+        execution_profile=binding, model=model, db_path=path)
+    # R1 settles a malformed title batch as an explicit local gap.  It may
+    # produce a readable partial report, but the failed batch owns no formal
+    # body admission or selection rank.
+    assert selected == ()
+    assert len(calls) == 2 and all(stage == "titles" for stage, _ in calls)
+    manifest = store.read_title_selection_manifest(task_id="titles", db_path=path)
+    assert manifest is not None and manifest["selectedRefs"] == []
+    from neckline.k10.title_runtime import read_title_failures
+    failures = read_title_failures(task_id="titles", db_path=path)
+    assert failures == [{"batchIndex": 0,
+                         "batchRefs": [{"documentId": document.document_id, "revision": document.revision}
+                                       for document in documents],
+                         "inputRefs": [{"documentId": document.document_id, "revision": document.revision}
+                                       for document in documents],
+                         "reasonCode": "model_json_repair_exhausted"}]
+    with store.read_connection(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE task_id='titles'").fetchone() == (0,)
+    before = len(calls)
     with pytest.raises(PipelineError, match="准入"):
         model.understand(document=documents[0])
+    assert len(calls) == before
 
 
 def test_selected_missing_body_never_calls_provider_or_releases_its_slot(tmp_path, monkeypatch):

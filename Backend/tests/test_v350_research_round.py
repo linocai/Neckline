@@ -14,8 +14,8 @@ from neckline.k10.research_contracts import (
     Question, ResearchRoundResult, ResearchSnapshot,
 )
 from neckline.k10.research_runtime import (
-    _Investigation, _b78_filter_pool_result, _b78_reconcile_result_claims, _b78_visible_shared_claims,
-    build_research_round_packet, research_round_request_spec, run_research_round,
+    _Investigation, _b78_filter_pool_result, _b78_visible_shared_claims,
+    build_research_round_packet, normalize_research_round_result, research_round_request_spec, run_research_round,
 )
 from neckline.k10.research_store import append_research_round, create_research_snapshot, load_research_round_state
 from neckline.k10.schema import initialize_schema
@@ -170,10 +170,177 @@ def test_b78_duplicate_packet_claim_cannot_replace_immutable_source_fact():
     raw["claims"] = [altered, independent]
     result = ResearchRoundResult.from_dict(raw)
 
-    reconciled = _b78_reconcile_result_claims(result=result, evidence_packet=packet)
+    reconciled = normalize_research_round_result(result=result, evidence_packet=packet)
 
     assert [claim.claim_id for claim in reconciled.claims] == ["claim-independent"]
     assert _b78_visible_shared_claims(packet) == ()
+
+
+def test_b82_normalization_keeps_valid_mapping_when_model_explains_an_unmapped_exclusion():
+    """An old excluded explanation is not a second comparison coverage set."""
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["conclusion"]["runtimeOutputSanitization"] = {
+        "discardedNonMappingExcludedAssessments": "untrusted-model-value",
+    }
+    raw["companyAssessments"].append({
+        **raw["companyAssessments"][0], "companyCode": "300002.SZ", "role": "excluded", "rank": None,
+        "summary": "召回资料没有本事件关联", "priorityReason": "没有关系证据", "gap": "无",
+        "rankChangeConditions": "出现关联公告", "twoDayReason": "不属于本轮比较",
+    })
+
+    result = run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    assert [row["companyCode"] for row in result.company_assessments] == ["000001.SZ"]
+    assert result.conclusion["runtimeOutputSanitization"] == {
+        "discardedNonMappingExcludedAssessments": 1,
+    }
+
+
+@pytest.mark.parametrize("role", ["primary", "alternative", "tied", "pending"])
+def test_b82_nonmapping_business_assessment_remains_a_coverage_error(role):
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["companyAssessments"].append({
+        **raw["companyAssessments"][0], "companyCode": "300002.SZ", "role": role,
+        "rank": 2 if role in {"primary", "alternative", "tied"} else None,
+    })
+
+    with pytest.raises(InvestigationError) as caught:
+        run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    assert caught.value.code == "investigation_company_coverage_invalid"
+
+
+def test_b82_mapping_without_its_assessment_remains_a_coverage_error():
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["companyAssessments"] = []
+
+    with pytest.raises(InvestigationError) as caught:
+        run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    assert caught.value.code == "investigation_company_coverage_invalid"
+
+
+def test_b82_company_mappings_are_a_strict_nonrepeating_comparison_set():
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["conclusion"]["companyMappings"].append(dict(raw["conclusion"]["companyMappings"][0]))
+
+    with pytest.raises(InvestigationError) as caught:
+        run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    # The typed decoder rejects the duplicate before normalization, which is
+    # the earliest and therefore canonical strict-set boundary.
+    assert caught.value.code == "investigation_result_invalid"
+
+
+def test_b82_mapping_with_an_unknown_relation_source_remains_a_reference_error():
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["conclusion"]["companyMappings"][0]["relationEvidence"] = [
+        {"documentId": "unknown-source", "revision": 1},
+    ]
+
+    with pytest.raises(InvestigationError) as caught:
+        run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    assert caught.value.code == "investigation_reference_invalid"
+
+
+def test_b82_nonmapping_exclusion_with_unknown_origin_is_not_silently_discarded():
+    """Cleanup may remove old explanations, never an unshown source claim."""
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["companyAssessments"].append({
+        **raw["companyAssessments"][0], "companyCode": "300002.SZ", "role": "excluded", "rank": None,
+        "evidenceDisclosure": {
+            **raw["companyAssessments"][0]["evidenceDisclosure"],
+            "originEvidenceRef": {"documentId": "unknown-source", "revision": 1},
+        },
+    })
+
+    with pytest.raises(InvestigationError) as caught:
+        run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    assert caught.value.code == "investigation_reference_invalid"
+
+
+def test_b82_production_adapter_rejects_in_pool_nonmapping_recommendation():
+    """The live adapter must not let a fixed pool hide an unmapped ranking."""
+    from neckline.k10.pipeline import DeepSeekDiscoveryModel
+
+    packet = build_research_round_packet({
+        **_packet(),
+        "companyScope": {
+            "fixedPool": [{"companyCode": "000001.SZ"}, {"companyCode": "300002.SZ"}],
+            "companyProfiles": [], "candidateCompanyCodes": ["000001.SZ", "300002.SZ"],
+        },
+    })
+    raw = _complete_round()
+    raw["companyAssessments"].append({
+        **raw["companyAssessments"][0], "companyCode": "300002.SZ", "role": "primary", "rank": 2,
+    })
+    adapter = object.__new__(DeepSeekDiscoveryModel)
+    adapter._json = lambda **_kwargs: raw
+    adapter._model_options = lambda _stage: {}
+
+    with pytest.raises(InvestigationError) as caught:
+        adapter.advance_research_round(snapshot=_snapshot(), evidence_packet=packet)
+
+    assert caught.value.code == "investigation_company_coverage_invalid"
+
+
+def test_b82_duplicate_packet_claim_is_normalized_before_validation_and_receipt_replay():
+    """A stale paid reply gets the same canonical local result without a POST."""
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["claims"] = [{
+        **_packet()["claims"][0], "text": "模型篡改的送样事实", "verificationStatus": "verified",
+        "sourceRef": {"documentId": "unknown-source", "revision": 1}, "location": "paragraph:99",
+    }]
+    model = _DirectModel(raw)
+
+    live = run_research_round(model, snapshot=_snapshot(), evidence_packet=packet)
+    replay = run_research_round(model, snapshot=_snapshot(), evidence_packet=packet,
+                                restored_receipt=raw)
+
+    assert not live.claims and not replay.claims
+    assert len(model.calls) == 1
+
+
+def test_b82_production_research_adapter_normalizes_duplicate_claim_before_validation():
+    """Exercise the actual production adapter order, without a provider POST."""
+    from neckline.k10.pipeline import DeepSeekDiscoveryModel
+
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["claims"] = [{
+        **_packet()["claims"][0], "text": "模型篡改的送样事实", "verificationStatus": "verified",
+        "sourceRef": {"documentId": "unknown-source", "revision": 1}, "location": "paragraph:99",
+    }]
+    adapter = object.__new__(DeepSeekDiscoveryModel)
+    adapter._json = lambda **_kwargs: raw
+    adapter._model_options = lambda _stage: {}
+
+    result = adapter.advance_research_round(snapshot=_snapshot(), evidence_packet=packet)
+
+    assert not result.claims
+
+
+def test_b82_new_verified_claim_without_support_is_not_normalized_into_acceptance():
+    packet = build_research_round_packet(_packet())
+    raw = _complete_round()
+    raw["claims"] = [{
+        **_packet()["claims"][0], "claimId": "new-unsupported-verified", "text": "新增但无支持命题",
+        "verificationStatus": "verified",
+    }]
+
+    with pytest.raises(InvestigationError) as caught:
+        run_research_round(_DirectModel(raw), snapshot=_snapshot(), evidence_packet=packet)
+
+    assert caught.value.code == "investigation_support_missing"
 
 
 def test_b78_round_rejects_old_compound_action_instead_of_projecting_it():
@@ -315,7 +482,8 @@ class _RoundVerifier:
         })
 
 
-def _runtime(tmp_path, *, model, verifier, extra_documents=(), allowed_extra=()):
+def _runtime(tmp_path, *, model, verifier, extra_documents=(), allowed_extra=(),
+             new_external_admission_guard=None):
     original = _document("doc-1", text="原始事件正文\n公司披露项目处于送样阶段。", excerpt="公司披露项目处于送样阶段")
     event = EventDraft("event-round", "stage-round", "new", "送样进展", "company_event", {
         "researchClaims": [_packet()["claims"][0]],
@@ -326,6 +494,7 @@ def _runtime(tmp_path, *, model, verifier, extra_documents=(), allowed_extra=())
     runtime.clock = lambda: datetime(2026, 9, 20, 1, 0, tzinfo=timezone.utc)
     runtime.cutoff, runtime.cutoff_inclusive = datetime(2026, 9, 20, 0, 30, tzinfo=timezone.utc), False
     runtime.allow_failed_resume = False
+    runtime.new_external_admission_guard = new_external_admission_guard
     runtime.context = {
         "canonicalKey": event.canonical_key, "stageKey": event.stage_key, "eventState": event.event_state,
         "headline": event.headline, "eventKind": event.event_kind,
@@ -361,6 +530,126 @@ def test_non_b78_research_construction_is_read_only_and_writes_nothing(tmp_path)
 
     assert error.value.code == "research_legacy_read_only"
     assert not database.exists()
+
+
+def test_b82_new_research_admission_runs_only_before_creating_a_snapshot(tmp_path):
+    database = tmp_path / "research-admission.sqlite"
+    initialize_schema(database)
+    original = _document("admission-source", text="冻结来源正文", excerpt="冻结来源摘要")
+    event = EventDraft("admission-event", "stage-round", "new", "调查准入", "company_event", {
+        "researchClaims": [_packet()["claims"][0]],
+    }, (original.evidence_ref,))
+    profile = {"payload": {"discovery": {
+        "investigationPromptContractRevision": RESEARCH_ROUND_CONTRACT,
+        "model": "offline-fixture", "modelOptions": {"investigation": {}},
+    }}}
+    moment = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    store.set_run_control(state="open", reason_code="fixture", changed_at=moment,
+                          changed_by="research-admission-test", db_path=database)
+    store.enqueue_task(task_id="admission-task", kind="evening_scan", idempotency_key="research-admission",
+        input_version="frozen-input", input_cutoff_at=moment, payload={"runtimeContract": runtime_contract()},
+        budget={"maxAttempts": 1}, created_at=moment, db_path=database)
+    calls = []
+
+    first = _Investigation(
+        model=_DirectModel(_complete_round()), verifier=_RoundVerifier(), task_id="admission-task", event=event,
+        documents={original.evidence_ref: original}, execution_profile=profile, cutoff_at=moment,
+        db_path=database, created_at=moment, leaseguard=None, cutoff_inclusive=False,
+        snapshot_created=None, clock=lambda: moment, runtime_contract=runtime_contract(),
+        new_research_admission_guard=lambda: calls.append("new"),
+    )
+
+    def should_not_run():
+        raise AssertionError("a restored snapshot must not consume new-research admission")
+
+    restored = _Investigation(
+        model=_DirectModel(_complete_round()), verifier=_RoundVerifier(), task_id="admission-task", event=event,
+        documents={original.evidence_ref: original}, execution_profile=profile, cutoff_at=moment,
+        db_path=database, created_at=moment, leaseguard=None, cutoff_inclusive=False,
+        snapshot_created=None, clock=lambda: moment, runtime_contract=runtime_contract(),
+        new_research_admission_guard=should_not_run,
+    )
+
+    assert calls == ["new"]
+    assert first.snapshot.snapshot_id == restored.snapshot.snapshot_id
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT count(*) FROM k10_research_snapshot_revisions").fetchone()[0] == 1
+
+
+def test_b82_new_research_admission_rejects_before_any_snapshot_write(tmp_path):
+    database = tmp_path / "research-admission-rejected.sqlite"
+    initialize_schema(database)
+    original = _document("rejected-source", text="冻结来源正文", excerpt="冻结来源摘要")
+    event = EventDraft("rejected-event", "stage-round", "new", "调查准入", "company_event", {
+        "researchClaims": [_packet()["claims"][0]],
+    }, (original.evidence_ref,))
+    profile = {"payload": {"discovery": {
+        "investigationPromptContractRevision": RESEARCH_ROUND_CONTRACT,
+        "model": "offline-fixture", "modelOptions": {"investigation": {}},
+    }}}
+    moment = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    store.set_run_control(state="open", reason_code="fixture", changed_at=moment,
+                          changed_by="research-admission-test", db_path=database)
+    store.enqueue_task(task_id="rejected-task", kind="evening_scan", idempotency_key="research-admission-rejected",
+        input_version="frozen-input", input_cutoff_at=moment, payload={"runtimeContract": runtime_contract()},
+        budget={"maxAttempts": 1}, created_at=moment, db_path=database)
+
+    def reject():
+        raise InvestigationError("晨报保留最终排序时间，停止新的事件研究", code="morning_closeout_reserve")
+
+    with pytest.raises(InvestigationError) as caught:
+        _Investigation(
+            model=_DirectModel(_complete_round()), verifier=_RoundVerifier(), task_id="rejected-task", event=event,
+            documents={original.evidence_ref: original}, execution_profile=profile, cutoff_at=moment,
+            db_path=database, created_at=moment, leaseguard=None, cutoff_inclusive=False,
+            snapshot_created=None, clock=lambda: moment, runtime_contract=runtime_contract(),
+            new_research_admission_guard=reject,
+        )
+
+    assert caught.value.code == "morning_closeout_reserve"
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT count(*) FROM k10_events").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM k10_research_snapshot_revisions").fetchone()[0] == 0
+
+
+def test_b82_search_admission_runs_only_at_a_new_provider_search_boundary(tmp_path):
+    searched = _document("search-admission", text="独立公告", excerpt="独立公告")
+    first = {
+        "action": RESEARCH_ROUND_ACTION, "claims": [], "questions": [_question().to_dict()],
+        "queryPaths": [_query().to_dict()], "evidenceUpdates": [], "fulltextRequests": [],
+        "conclusion": {"researchStatus": "continue_research", "companyMappings": [],
+                       "stopReason": "仍需查询", "resumeCondition": "取得公告"},
+        "comparison": None, "companyAssessments": [],
+    }
+    calls = []
+    runtime = _runtime(
+        tmp_path, model=_RoundModel([first, _complete_round({"documentId": searched.document_id, "revision": 1})]),
+        verifier=_RoundVerifier(search_document=searched),
+        new_external_admission_guard=lambda: calls.append("search"),
+    )
+
+    runtime._run_b78()
+
+    assert calls == ["search"]
+
+
+def test_b82_original_source_fulltext_reuse_does_not_consume_new_external_admission(tmp_path):
+    first = {
+        "action": RESEARCH_ROUND_ACTION, "claims": [], "questions": [_question().to_dict()],
+        "queryPaths": [], "evidenceUpdates": [], "fulltextRequests": [FullTextRequest(
+            "original-reuse", "q-order", REF, "需要原文限定条件", "影响关联", "requested",
+        ).to_dict()],
+        "conclusion": {"researchStatus": "continue_research", "companyMappings": [],
+                       "stopReason": "需要本地原文", "resumeCondition": "读原文"},
+        "comparison": None, "companyAssessments": [],
+    }
+    calls = []
+    runtime = _runtime(tmp_path, model=_RoundModel([first, _complete_round()]), verifier=_RoundVerifier(),
+                       new_external_admission_guard=lambda: calls.append("unexpected"))
+
+    runtime._run_b78()
+
+    assert calls == []
 
 
 def test_b78_search_material_is_visible_before_a_second_direct_round(tmp_path):

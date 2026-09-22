@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import socket
 import sqlite3
+import time
 from threading import Lock
 from typing import Any, Mapping
 
@@ -457,6 +458,7 @@ def run_full_scale_flow(tmp_path: Path, monkeypatch, *, name: str, refusal_event
                         all_events_same_company: bool = False,
                         refusal_operation: str | None = None,
                         expect_handler_failure: bool = False,
+                        expected_continuation_codes: tuple[str, ...] = ("DISCOVERY_SLICE",),
                         trading_day: date = DAY, fixture_now: datetime = NOW,
                         fixture_run_at: datetime = RUN_AT) -> FlowResult:
     """Execute one real B76 CLI → claim → production handler flow at release scale."""
@@ -555,16 +557,22 @@ def run_full_scale_flow(tmp_path: Path, monkeypatch, *, name: str, refusal_event
             continuation_scan_id = scan_after_pass
         else:
             assert scan_after_pass == continuation_scan_id
-        # DISCOVERY_SLICE is an ordinary same-task continuation. A failed
-        # provider retry, a different task, or a non-due return must surface as
-        # an acceptance error instead of being silently treated as completion.
+        # A continuation keeps its classified cause. SQLite contention uses a
+        # live worker-clock retry and must never be relabeled as the generic
+        # discovery slice, which would reset its durable retry cap.
         with sqlite3.connect(db_path) as connection:
             retry = connection.execute(
-                "SELECT retry_kind,safe_error_code,failure_attempt_count "
+                "SELECT retry_kind,safe_error_code,failure_attempt_count,not_before_at "
                 "FROM k10_task_retry_schedules WHERE task_id=?",
                 (task_id,),
             ).fetchone()
-        assert retry == ("continuation", "DISCOVERY_SLICE", 0)
+        assert retry is not None and retry[0] == "continuation" and retry[2] == 0
+        assert retry[1] in expected_continuation_codes
+        if retry[1] == "sqlite_busy":
+            due = datetime.fromisoformat(str(retry[3]))
+            wait_seconds = (due - datetime.now(due.tzinfo)).total_seconds()
+            if wait_seconds > 0:
+                time.sleep(wait_seconds + 0.05)
         continuation_count += 1
     else:
         raise AssertionError(f"full-scale task did not terminalize after {max_worker_passes} worker passes")

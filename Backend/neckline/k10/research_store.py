@@ -178,6 +178,7 @@ def append_research_round(
             model_parameters_sha256=current.model_parameters_sha256, research_status=research_status,
             execution_status="ok", revision=current.revision + 1,
             created_at=current.created_at, updated_at=updated_at,
+            admission_context=current.admission_context,
         )
         conn.execute(
             "INSERT INTO k10_research_snapshot_revisions("
@@ -245,6 +246,7 @@ def mark_research_round_failed(
             model_parameters_sha256=current.model_parameters_sha256, research_status=current.research_status,
             execution_status="failed", revision=current.revision + 1,
             created_at=current.created_at, updated_at=updated_at,
+            admission_context=current.admission_context,
         )
         conn.execute(
             "INSERT INTO k10_research_snapshot_revisions("
@@ -358,6 +360,7 @@ def _append_research_stage(conn, *, current: ResearchSnapshot, research_status: 
         model_parameters_sha256=current.model_parameters_sha256, research_status=research_status,
         execution_status=execution_status, revision=current.revision + 1,
         created_at=current.created_at, updated_at=updated_at,
+        admission_context=current.admission_context,
     )
     conn.execute(
         "INSERT INTO k10_research_snapshot_revisions("
@@ -483,6 +486,7 @@ def advance_research_snapshot(
             model_parameters_sha256=current.model_parameters_sha256, research_status=research_status,
             execution_status=execution_status, revision=current.revision + 1,
             created_at=current.created_at, updated_at=updated_at,
+            admission_context=current.admission_context,
         )
         conn.execute(
             "INSERT INTO k10_research_snapshot_revisions("

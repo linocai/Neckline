@@ -28,14 +28,16 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
     from tests import test_v310_pipeline_e2e as e2e
     from tests import test_b72_query_path_resilience as old
     edited=[]
+    request_packets=[]
     def edit(value):
         if value.get('action')!='research_round' or edited: return
         edited.append(True)
-        old.edit_mixed_plan(value)
+        claim_id=old.next_packet_claim_id(request_packets)
+        old.edit_mixed_plan(value,claim_id=claim_id)
         if value.get('action')=='research_round':
             valid=next(path for path in value['queryPaths'] if path['questionId']=='q-2')
             value['queryPaths'].append({**valid,'pathId':'redundant-company','purposeKind':'company_event_link',
-                'targetRefs':[{'kind':'claim','claimId':'article-claim-1'}]})
+                'targetRefs':[{'kind':'claim','claimId':claim_id}]})
     from tests.test_b60_pool_filtering import edit_responses
     edit_responses(monkeypatch,edit)
 
@@ -69,7 +71,8 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
         return result
     monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel,'advance_research_round',pause_after_durable_plan)
 
-    db,task_id,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
+    db,task_id,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True,
+        request_observer=old.capture_research_packets(request_packets))
     assert first.status=='queued' and interrupted
     assert calls.count('research:research_round')==1
     with sqlite3.connect(db) as conn:

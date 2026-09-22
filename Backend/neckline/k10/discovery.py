@@ -17,6 +17,7 @@ import re
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .config import ConfigurationStatus, validate_run_config
+from .schema import SqliteWriteBusy
 from .types import EventRevision
 from .universe import CompanyMetadataProvider, Eligibility, evaluate_company
 from .opportunity_discovery import (
@@ -27,6 +28,61 @@ from .opportunity_discovery import (
     validate_evidence_disclosure,
     validate_event_comparison,
 )
+
+
+# Event facts come from an untrusted extraction and may legitimately use any
+# business key.  Keep runtime metadata in a protected envelope so names such
+# as ``stageKey``, ``verification`` and ``eventComparison`` cannot overwrite
+# a source fact after the paid understand receipt has been frozen.
+_EVENT_SYSTEM_KEY = "_necklineSystem"
+_EVENT_SYSTEM_VERSION = "k10-event-system-v1"
+
+
+def event_system_metadata(facts: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Recognize only a complete writer-owned B82 metadata envelope.
+
+    Source extraction permits arbitrary business fact keys, including an old
+    publisher field named ``_necklineSystem`` with the same version string.
+    A version marker alone is therefore not provenance.  The writer's full
+    invariant binds the protected source copy, stage/state/verification shape
+    and every visible source value before readers may interpret it as runtime
+    metadata; otherwise callers retain the legacy raw-facts behaviour.
+    """
+    if not isinstance(facts, Mapping):
+        return None
+    value = facts.get(_EVENT_SYSTEM_KEY)
+    if not isinstance(value, Mapping) or value.get("version") != _EVENT_SYSTEM_VERSION:
+        return None
+    source = value.get("inputFacts")
+    verification = value.get("verification")
+    if (not isinstance(source, Mapping)
+            or not isinstance(value.get("stageKey"), str) or not value["stageKey"]
+            or not isinstance(value.get("eventState"), str) or not value["eventState"]
+            or not isinstance(verification, Mapping)
+            or not isinstance(verification.get("state"), str)
+            or not isinstance(verification.get("summary"), str)
+            or not isinstance(verification.get("evidenceRefs"), list)
+            or not isinstance(verification.get("coverage"), Mapping)
+            or set(facts) != set(source) | {_EVENT_SYSTEM_KEY}):
+        return None
+    # A source may itself use the envelope key; it is intentionally preserved
+    # only inside inputFacts and cannot equal the runtime envelope at top level.
+    return value if all(facts.get(key) == item for key, item in source.items()
+                        if key != _EVENT_SYSTEM_KEY) else None
+
+
+def event_input_facts(facts: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the exact source facts, preferring a protected persisted copy."""
+    system = event_system_metadata(facts)
+    raw = system.get("inputFacts") if system is not None else None
+    return raw if isinstance(raw, Mapping) else facts
+
+
+def event_verification(facts: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Read system verification while retaining the pre-B82 row shape."""
+    system = event_system_metadata(facts)
+    value = system.get("verification") if system is not None else facts.get("verification")
+    return value if isinstance(value, Mapping) else None
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -198,10 +254,19 @@ class DiscoveryIssue:
     code: str
     document_ref: EvidenceRef | None = None
     canonical_key: str | None = None
+    # Canonical identity is deliberately public-opportunity scoped.  A
+    # correction/denial can share it with the originating announcement, while
+    # still being a distinct research execution unit.  Keep this opaque
+    # runtime-owned identity with an issue so a later finalizer never assigns a
+    # closeout or dependency gap to its sibling.
+    execution_unit_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.stage or not self.code:
             raise ValueError("发现失败状态缺少阶段或错误码")
+        if self.execution_unit_id is not None and (not isinstance(self.execution_unit_id, str)
+                                                   or not re.fullmatch(r"[a-z0-9_]{8,96}", self.execution_unit_id)):
+            raise ValueError("发现失败状态执行单元无效")
 
 
 class DiscoveryUnderstandingIncomplete(RuntimeError):
@@ -230,12 +295,15 @@ class EventDraft:
     event_kind: str
     facts: Mapping[str, Any]
     source_refs: tuple[EvidenceRef, ...]
+    derived_facts: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.canonical_key or not self.stage_key or not self.event_state:
             raise ValueError("事件必须有 canonical_key、stage_key 与 event_state")
         if not self.source_refs:
             raise ValueError("事件必须引用原始资料")
+        if not isinstance(self.facts, Mapping) or not isinstance(self.derived_facts, Mapping):
+            raise ValueError("事件事实必须为对象")
 
 
 @dataclass(frozen=True)
@@ -620,6 +688,7 @@ def freeze_event_drafts(events: Sequence[EventDraft]) -> list[dict[str, Any]]:
     return [{"canonicalKey": event.canonical_key, "stageKey": event.stage_key,
              "eventState": event.event_state, "headline": event.headline,
              "eventKind": event.event_kind, "facts": dict(event.facts),
+             **({"derivedFacts": dict(event.derived_facts)} if event.derived_facts else {}),
              "sourceRefs": [_ref_payload(ref) for ref in event.source_refs]}
             for event in events]
 
@@ -633,11 +702,12 @@ def thaw_event_drafts(value: Any) -> tuple[EventDraft, ...]:
             raise ValueError("理解检查点事件无效")
         required = ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")
         if (any(not isinstance(row.get(key), str) or not row[key] for key in required)
-                or not isinstance(row.get("facts"), Mapping)):
+                or not isinstance(row.get("facts"), Mapping)
+                or ("derivedFacts" in row and not isinstance(row.get("derivedFacts"), Mapping))):
             raise ValueError("理解检查点事件无效")
         events.append(EventDraft(row["canonicalKey"], row["stageKey"], row["eventState"],
                                  row["headline"], row["eventKind"], dict(row["facts"]),
-                                 _refs_from_payload(row.get("sourceRefs"))))
+                                 _refs_from_payload(row.get("sourceRefs")), dict(row.get("derivedFacts", {}))))
     return tuple(events)
 
 
@@ -653,6 +723,20 @@ def _safe_issue_code(exc: Exception) -> str:
     if isinstance(exc, (ValueError, TypeError)):
         return "contract_invalid"
     return "operation_failed"
+
+
+def _event_execution_unit_id(event: EventDraft) -> str:
+    """Stable execution identity for one exact retained event input.
+
+    Public opportunity identity stays canonical-key scoped.  This private
+    checkpoint/issue key instead mirrors the research snapshot's stage,
+    event-state and source-ref boundary, so the caller can distinguish a
+    closeout of a denial from its already-completed announcement.
+    """
+    material = [event.canonical_key, event.stage_key, event.event_state,
+                [_ref_payload(ref) for ref in event.source_refs]]
+    return "research_unit_" + sha256(json.dumps(material, ensure_ascii=False, sort_keys=True,
+                                                   separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
 
 
 _PENDING_ADMISSION_CODES = frozenset({
@@ -726,6 +810,7 @@ def run_discovery(
     selected_source_refs: Sequence[EvidenceRef] | None = None,
     investigate: InvestigationFunction | None = None,
     investigation_concurrency: int | None = None,
+    research_input_checkpoint: Callable[[Sequence[EventDraft]], None] | None = None,
     pre_ranking_exclusions: Callable[[Sequence[DiscoveryCandidate]], set[str]] | None = None,
     finalization_guard: Callable[[], None] | None = None,
     finalization_pending_codes: Sequence[str] = (),
@@ -890,7 +975,7 @@ def run_discovery(
             # prioritized; a checkpoint must never wait for a slow peer.
             complete_understanding(document, future.result())
         except Exception as exc:  # independent document failures are recoverable units
-            if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+            if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                 raise
             return fail_understanding(document, exc)
         return None
@@ -902,7 +987,7 @@ def run_discovery(
             try:
                 complete_understanding(document, model.understand(document=document))
             except Exception as exc:  # independent document failures are recoverable units
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                     raise
                 blocked_code = fail_understanding(document, exc)
                 if blocked_code is not None:
@@ -971,7 +1056,8 @@ def run_discovery(
                              company_code: str | None = None) -> None:
         if stage == "verify_or_map":
             counts["pendingVerification"] = counts.get("pendingVerification", 0) + 1
-        issue = DiscoveryIssue(stage, code, canonical_key=event.canonical_key)
+        issue = DiscoveryIssue(stage, code, canonical_key=event.canonical_key,
+                               execution_unit_id=_event_execution_unit_id(event))
         issues.append(issue)
         if checkpoint is not None:
             payload: dict[str, Any] = {"stage": stage, "state": "pending", "code": code,
@@ -982,6 +1068,13 @@ def run_discovery(
     understood = [event for document in screened_documents
                   for event in understood_by_ref.get(document.evidence_ref, ())]
     merged_events = _merge_same_event_sources(understood)
+    # Persist the exact research-unit set before admitting the first
+    # verification/model request.  A writer can later be contended after only
+    # some snapshots have been created; the terminal diagnostic must still
+    # distinguish all understood research inputs from the subset whose work
+    # reached a durable snapshot.
+    if research_input_checkpoint is not None:
+        research_input_checkpoint(tuple(merged_events))
     research_results: dict[int, InvestigationOutcome | Exception] = {}
     if investigate is not None and investigation_concurrency is not None and investigation_concurrency > 1:
         # Only independent events overlap. Each event retains its sequential
@@ -1006,7 +1099,7 @@ def run_discovery(
                     event = research_futures.pop(future)
                     try:
                         research_results[id(event)] = future.result()
-                    except (DiscoverySliceYield, DiscoveryDeadlineExceeded):
+                    except (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy):
                         # Context manager drains active responses before yielding;
                         # no paid result is abandoned by cancelling its thread.
                         raise
@@ -1040,7 +1133,8 @@ def run_discovery(
                     # pending item, not permission to spend map/compare/classify calls on a
                     # self-certified event.  The append-only event survives for retry.
                     verified_events.append(EventVerification(event, verification))
-                    issue = DiscoveryIssue("verify", "verification_pending", canonical_key=event.canonical_key)
+                    issue = DiscoveryIssue("verify", "verification_pending", canonical_key=event.canonical_key,
+                                           execution_unit_id=_event_execution_unit_id(event))
                     issues.append(issue)
                     if checkpoint is not None:
                         checkpoint({"stage": issue.stage, "state": "pending", "code": issue.code,
@@ -1051,7 +1145,7 @@ def run_discovery(
                         leaseguard()
                     mappings = tuple(model.map_companies(event=event, verification=verification))
             except Exception as exc:
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                     raise
                 code = issue_code_or_raise(exc)
                 if code in _PENDING_ADMISSION_CODES:
@@ -1059,7 +1153,8 @@ def run_discovery(
                     event_admission_closed = True
                     break
                 counts["eventFailed"] += 1
-                issue = DiscoveryIssue("verify_or_map", code, canonical_key=event.canonical_key)
+                issue = DiscoveryIssue("verify_or_map", code, canonical_key=event.canonical_key,
+                                       execution_unit_id=_event_execution_unit_id(event))
                 issues.append(issue)
                 if checkpoint is not None:
                     checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
@@ -1080,7 +1175,7 @@ def run_discovery(
                     event_comparison = comparer(event=event, verification=verification, mappings=mappings)
                 _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
             except Exception as exc:
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                     raise
                 code = issue_code_or_raise(exc)
                 if code in _PENDING_ADMISSION_CODES:
@@ -1088,7 +1183,8 @@ def run_discovery(
                     event_admission_closed = True
                     break
                 counts["eventFailed"] += 1
-                issue = DiscoveryIssue("compare", code, canonical_key=event.canonical_key)
+                issue = DiscoveryIssue("compare", code, canonical_key=event.canonical_key,
+                                       execution_unit_id=_event_execution_unit_id(event))
                 issues.append(issue)
                 if checkpoint is not None:
                     checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
@@ -1111,16 +1207,17 @@ def run_discovery(
                     code: replace(item, rank_namespace="event", event_rank=item.rank)
                     for code, item in event_candidates.items()
                 }
-                event = replace(event, facts={**event.facts, "eventComparison": {
+                event = replace(event, derived_facts={**event.derived_facts, "eventComparison": {
                     "summary": event_comparison.summary,
                     "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
                                      for ref in event_comparison.evidence_refs],
                 }})
             except Exception as exc:
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                     raise
                 counts["eventFailed"] += 1
-                issue = DiscoveryIssue("compare", issue_code_or_raise(exc), canonical_key=event.canonical_key)
+                issue = DiscoveryIssue("compare", issue_code_or_raise(exc), canonical_key=event.canonical_key,
+                                       execution_unit_id=_event_execution_unit_id(event))
                 issues.append(issue)
                 if checkpoint is not None:
                     checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
@@ -1159,7 +1256,7 @@ def run_discovery(
                         )
                     _reject_uncalibrated_prediction(decision, path="classification")
                 except Exception as exc:
-                    if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+                    if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                         raise
                     code = issue_code_or_raise(exc)
                     if code in _PENDING_ADMISSION_CODES:
@@ -1168,7 +1265,8 @@ def run_discovery(
                         event_admission_closed = True
                         break
                     counts["eventFailed"] += 1
-                    issue = DiscoveryIssue("classify", code, canonical_key=event.canonical_key)
+                    issue = DiscoveryIssue("classify", code, canonical_key=event.canonical_key,
+                                           execution_unit_id=_event_execution_unit_id(event))
                     issues.append(issue)
                     if checkpoint is not None:
                         checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
@@ -1291,7 +1389,7 @@ def run_discovery(
                 leaseguard()
             ordered_keys = tuple(choices(candidates=rank_inputs))
         except Exception as exc:
-            if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded)):
+            if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                 raise
             code = issue_code_or_raise(exc)
             if code not in (_PENDING_ADMISSION_CODES | finalization_pending):
@@ -1315,12 +1413,19 @@ def run_discovery(
     selected_companies: set[str] = set()
     ordered: list[DiscoveryCandidate] = []
     for key in ordered_keys:
+        # The global model is allowed to be verbose.  A row which does not
+        # name one of this frozen ranking's real event/company anchors cannot
+        # improve a candidate and must not turn an otherwise complete order
+        # into a zero-card report.  Likewise, retain the first *valid* row for
+        # a company: a duplicate has no additional business meaning.  This is
+        # deliberately before the completeness check below; a missing real
+        # company still blocks publication.
         if not isinstance(key, tuple) or len(key) != 2 or key not in expected:
-            raise ValueError("跨事件公司比较返回了未知候选")
+            continue
         candidate = selected_by_key[key]
         company = candidate.mapping.company_code
         if company in selected_companies:
-            raise ValueError("跨事件公司比较为同一公司返回多次")
+            continue
         selected_companies.add(company)
         ordered.append(candidate)
     if selected_companies != set(unique_by_company):
@@ -1364,9 +1469,25 @@ class SqliteDiscoveryWriter:
 
         event_id = _stable_id("event", event.canonical_key)
         prior = latest_event_revision(event_id=event_id, db_path=self._db_path)
-        facts = {**event.facts, "stageKey": event.stage_key, "eventState": event.event_state,
-                 "verification": {"state": verification.state, "summary": verification.summary,
-                                  "evidenceRefs": self._refs(verification.evidence_refs), "coverage": dict(verification.coverage)}}
+        source_facts = dict(event.facts)
+        facts = {
+            **source_facts,
+            _EVENT_SYSTEM_KEY: {
+                "version": _EVENT_SYSTEM_VERSION,
+                # Preserve even a source-provided reserved name verbatim.  The
+                # top-level envelope is runtime-owned; this nested copy is the
+                # source of truth for public facts and snapshot finalization.
+                "inputFacts": source_facts,
+                "stageKey": event.stage_key,
+                "eventState": event.event_state,
+                "verification": {
+                    "state": verification.state,
+                    "summary": verification.summary,
+                    "evidenceRefs": self._refs(verification.evidence_refs),
+                    "coverage": dict(verification.coverage),
+                },
+            },
+        }
         return append_event_revision(
             event_id=event_id, stable_key=event.canonical_key, headline=event.headline,
             event_kind=event.event_kind, facts=facts, source_refs=self._refs(event.source_refs),
@@ -1542,7 +1663,8 @@ def freeze_discovery_run(run: DiscoveryRun) -> dict[str, Any]:
             "background": [candidate_payload(item) for item in run.background], "deferredCount": run.deferred_count,
             "issues": [{"stage": issue.stage, "code": issue.code,
                         **({"documentRef": _ref_payload(issue.document_ref)} if issue.document_ref else {}),
-                        **({"canonicalKey": issue.canonical_key} if issue.canonical_key else {})}
+                        **({"canonicalKey": issue.canonical_key} if issue.canonical_key else {}),
+                        **({"executionUnitId": issue.execution_unit_id} if issue.execution_unit_id else {})}
                        for issue in run.issues],
             "documentCounts": dict(run.document_counts)}
 
@@ -1564,11 +1686,14 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
         if not isinstance(raw_event, Mapping) or not isinstance(raw_verification, Mapping):
             raise ValueError("冻结发现结果事件无效")
         required = ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")
-        if any(not isinstance(raw_event.get(key), str) or not raw_event[key] for key in required) or not isinstance(raw_event.get("facts"), Mapping):
+        if (any(not isinstance(raw_event.get(key), str) or not raw_event[key] for key in required)
+                or not isinstance(raw_event.get("facts"), Mapping)
+                or ("derivedFacts" in raw_event and not isinstance(raw_event.get("derivedFacts"), Mapping))):
             raise ValueError("冻结发现结果事件无效")
         event = EventDraft(raw_event["canonicalKey"], raw_event["stageKey"], raw_event["eventState"],
                            raw_event["headline"], raw_event["eventKind"], dict(raw_event["facts"]),
-                           _refs_from_payload(raw_event.get("sourceRefs")))
+                           _refs_from_payload(raw_event.get("sourceRefs")),
+                           dict(raw_event.get("derivedFacts", {})))
         if not isinstance(raw_verification.get("state"), str) or not isinstance(raw_verification.get("summary"), str):
             raise ValueError("冻结发现结果核验无效")
         coverage = raw_verification.get("coverage")
@@ -1636,7 +1761,8 @@ def thaw_discovery_run(*, frozen: Mapping[str, Any], configuration: Mapping[str,
         key = row.get("canonicalKey")
         if key is not None and not isinstance(key, str):
             raise ValueError("冻结发现结果失败项无效")
-        issues.append(DiscoveryIssue(row["stage"], row["code"], ref, key))
+        execution_unit_id = row.get("executionUnitId")
+        issues.append(DiscoveryIssue(row["stage"], row["code"], ref, key, execution_unit_id))
     counts = frozen.get("documentCounts", {})
     if not isinstance(counts, Mapping) or any(not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, int) or value < 0
                                               for key, value in counts.items()):

@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping
 
 from neckline.k10 import store
 from neckline.k10.config import validate_execution_config
-from neckline.k10.schema import read_connection, require_schema
+from neckline.k10.schema import SqliteWriteBusy, read_connection, require_schema
 from neckline.k10.types import Task
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,7 @@ class TaskContext:
 
 TaskHandler = Callable[[TaskContext], TaskResult]
 _PAID_TASK_KINDS = frozenset({"evening_scan", "morning_scan", "analysis", "morning_review"})
+_SQLITE_BUSY_CONTINUATION_KEY = "sqliteBusyContinuationCount"
 
 
 def _research_snapshot_ids(checkpoint: Mapping[str, Any]) -> tuple[str, ...]:
@@ -142,6 +143,41 @@ def _retry_maximum(context: TaskContext) -> int | None:
     else:
         maximum = context.budget.get("maxAttempts")
     return None if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1 else maximum
+
+
+def _bounded_sqlite_busy_result(*, context: TaskContext, maximum: int,
+                                retry_at: datetime | None = None,
+                                checkpoint: Mapping[str, Any] | None = None) -> TaskResult:
+    """Turn a bounded SQLite write wait into a durable, same-task recovery.
+
+    SQLite contention is neither a model/provider failure nor an ordinary
+    discovery slice: permitting an unbounded continuation here can strand a
+    task forever while every invocation owns the same durable receipts.  Keep
+    the counter in the task checkpoint so it survives a process restart and
+    use the already-frozen finite retry allowance as its cap.
+    """
+    stored = context.checkpoint.get(_SQLITE_BUSY_CONTINUATION_KEY, 0)
+    if isinstance(stored, bool) or not isinstance(stored, int) or stored < 0:
+        # A corrupt counter must not reset the safety limit.
+        stored = maximum
+    count = stored + 1
+    # A production handler can already have durably assembled a scan ID,
+    # snapshot links, or other exact recovery state before the final storage
+    # write hits contention. Preserve that returned projection; replacing it
+    # with the pre-handler task checkpoint strands the original task on its
+    # next same-task slice. The counter itself remains based only on the
+    # durable checkpoint read at claim time, so a handler cannot reset it.
+    merged_checkpoint = dict(context.checkpoint)
+    if isinstance(checkpoint, Mapping):
+        merged_checkpoint.update(checkpoint)
+    merged_checkpoint[_SQLITE_BUSY_CONTINUATION_KEY] = count
+    message = "SQLite 短暂写入争用，原任务将受控续跑"
+    if count >= maximum:
+        return TaskResult("failed", "storage_busy_limit", merged_checkpoint,
+                          "SQLite 写入争用超过冻结续跑上限")
+    return TaskResult("failed", "storage_busy", merged_checkpoint, message,
+                      retry_at=retry_at or context.clock() + timedelta(seconds=1),
+                      retry_kind="continuation", safe_error_code="sqlite_busy")
 
 
 def _utc_now() -> datetime:
@@ -229,7 +265,14 @@ def run_once(
         raise ValueError("lease_for must be positive")
     # This gate precedes claim so a disabled timer/worker cannot turn a queued
     # historical B36 task into a running task which later reaches a provider.
-    control = store.run_control_status(db_path=db_path)
+    try:
+        control = store.run_control_status(db_path=db_path)
+    except SqliteWriteBusy:
+        # Nothing has been leased yet.  Leave selection to the next regular
+        # worker tick instead of terminating the process or manufacturing a
+        # replacement task.
+        logger.warning("K10 task selection deferred by SQLite write contention")
+        return None
     if control.get("state") != "open":
         return None
     # The real production handler map carries this marker as well as the CLI
@@ -238,17 +281,23 @@ def run_once(
     require_b76_contract = require_b76_contract or any(
         bool(getattr(handler, "requires_b76_contract", False)) for handler in handlers.values()
     )
-    if task_id is None:
-        claimed = store.claim_tasks(
-            worker_id=worker_id, now=clock(), lease_for=lease_for, limit=1, db_path=db_path,
-            require_b76_contract=require_b76_contract,
-        )
-    else:
-        selected = store.claim_task_by_id(
-            task_id=task_id, worker_id=worker_id, now=clock(), lease_for=lease_for, db_path=db_path,
-            require_b76_contract=require_b76_contract,
-        )
-        claimed = [selected] if selected is not None else []
+    try:
+        if task_id is None:
+            claimed = store.claim_tasks(
+                worker_id=worker_id, now=clock(), lease_for=lease_for, limit=1, db_path=db_path,
+                require_b76_contract=require_b76_contract,
+            )
+        else:
+            selected = store.claim_task_by_id(
+                task_id=task_id, worker_id=worker_id, now=clock(), lease_for=lease_for, db_path=db_path,
+                require_b76_contract=require_b76_contract,
+            )
+            claimed = [selected] if selected is not None else []
+    except SqliteWriteBusy:
+        # A claim has no provider side effect.  It is safe to wait for the
+        # ordinary worker cadence and attempt the same task again.
+        logger.warning("K10 task claim deferred by SQLite write contention")
+        return None
     if not claimed:
         return None
     task = claimed[0]
@@ -262,6 +311,14 @@ def run_once(
                     task_id=task.task_id, worker_id=worker_id, now=clock(),
                     lease_for=lease_for, db_path=db_path,
                 )
+            except SqliteWriteBusy:
+                # Do not let a transient writer block turn into a false lost
+                # lease.  Fence further provider work; the owner either gets
+                # a durable continuation below or expires for same-task
+                # recovery with its receipt/checkpoint intact.
+                lease_lost.set()
+                logger.warning("K10 task lease renewal deferred by SQLite contention: %s", task.task_id)
+                return
             except Exception:
                 # A lost lease must not be converted into a successful result.
                 lease_lost.set()
@@ -308,6 +365,11 @@ def run_once(
                 result = _truthful_terminal_result(result, db_path=db_path)
             except store.K10Conflict:
                 raise
+            except SqliteWriteBusy:
+                # The write body was never replayed.  Keep this frozen task
+                # and its durable receipts/checkpoints for one bounded normal
+                # continuation; a later worker must still prove all state.
+                result = _bounded_sqlite_busy_result(context=context, maximum=maximum)
             except Exception as exc:
                 # Do not persist exception bodies, URLs or upstream headers;
                 # they can contain provider credentials or untrusted content.
@@ -319,6 +381,13 @@ def run_once(
             recovered = recover_provider_failure(context=context, checkpoint=result.checkpoint)
             if recovered is not None:
                 result = recovered
+            # Production handlers can catch a bounded SQLite wait around their
+            # own assembly boundary and return this safe continuation.  Apply
+            # the same durable cap here so direct handler and worker-raised
+            # contention cannot diverge or reset across slices.
+            if (result.retry_kind == "continuation" and result.safe_error_code == "sqlite_busy"):
+                result = _bounded_sqlite_busy_result(context=context, maximum=maximum,
+                                                      retry_at=result.retry_at, checkpoint=result.checkpoint)
         published_task = store.get_task(task_id=task.task_id, db_path=db_path)
         # A handler flag is only an intent.  Skip the ordinary terminal write
         # only after the same task is demonstrably terminal in SQLite with the
@@ -376,6 +445,13 @@ def run_once(
                     task_id=task.task_id, worker_id=worker_id, status=result.status, stage=result.stage,
                     checkpoint=result.checkpoint, error_text=result.error, finished_at=clock(), db_path=db_path,
                 )
+    except SqliteWriteBusy:
+        # This covers terminal publication, retry scheduling, and a write
+        # whose outcome cannot safely be replayed.  No new task is made and
+        # no handler closure is rerun: the persisted task remains leased
+        # until the normal same-task recovery path can inspect receipts.
+        logger.warning("K10 task persistence deferred by SQLite contention: %s", task.task_id)
+        return store.get_task(task_id=task.task_id, db_path=db_path)
     finally:
         stopped.set()
         heartbeat_thread.join()
@@ -397,7 +473,7 @@ def run_worker(
         try:
             task = run_once(db_path=db_path, worker_id=worker_id, lease_for=lease_for, handlers=handlers,
                             require_b76_contract=require_b76_contract)
-        except store.K10Conflict:
+        except (store.K10Conflict, SqliteWriteBusy):
             logger.warning("K10 worker lost ownership; leaving the task for recovery")
             task = None
         if maintenance is not None:

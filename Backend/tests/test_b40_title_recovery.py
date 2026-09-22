@@ -98,8 +98,8 @@ def test_same_task_title_recovery_reuses_completed_batch_and_only_retries_known_
 
 @pytest.mark.parametrize("legacy_partial", [False, True])
 def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(tmp_path, monkeypatch, legacy_partial):
-    db, task_id, first, calls, gateway = _run(tmp_path, monkeypatch, title_response="invalid")
-    assert first.status == "failed" and calls == ["titleBatch", "titleBatch"]
+    db, task_id, first, calls, gateway = _run(tmp_path, monkeypatch, title_response="global_invalid")
+    assert first.status == "failed" and calls == ["titleBatch", "titleGlobal", "titleGlobal"]
     checkpoint = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
     scan_id = checkpoint["scanId"]
     before = store.get_scan(scan_id=scan_id, db_path=db)
@@ -119,7 +119,8 @@ def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(t
     second = run_once(db_path=db, worker_id="recovery", lease_for=timedelta(minutes=5),
         handlers=pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet"), clock=lambda: RUN_AT)
     assert second.status == "completed"
-    assert resumed_calls.count("titleBatch") == 1
+    assert resumed_calls.count("titleBatch") == 0
+    assert resumed_calls.count("titleGlobal") == 1
     after = store.get_scan(scan_id=scan_id, db_path=db)
     assert after["coverage"]["inputDocumentRefs"] == before["coverage"]["inputDocumentRefs"]
     assert frozen_scan_input_sha256(scan_id=scan_id, db_path=db) == digest
@@ -132,7 +133,7 @@ def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(t
 
 
 def test_recovery_authorization_survives_real_worker_slice_after_paid_title_checkpoint(tmp_path, monkeypatch):
-    db, task_id, first, _, _ = _run(tmp_path, monkeypatch, title_response="invalid")
+    db, task_id, first, _, _ = _run(tmp_path, monkeypatch, title_response="global_invalid")
     assert first.status == "failed"
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
     recover_scan(db_path=db, scan_id=scan_id, execution_config_id="b39-execution", execution_config_revision=1,
@@ -152,12 +153,12 @@ def test_recovery_authorization_survives_real_worker_slice_after_paid_title_chec
     monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     handlers = pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet")
     sliced = run_once(db_path=db, worker_id="slice", lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT)
-    assert sliced.status == "queued" and calls == ["titleBatch"]
+    assert sliced.status == "queued" and calls == []
     saved = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
     assert saved["recoveryAuthorized"] == authorized
     done = run_once(db_path=db, worker_id="next-slice", lease_for=timedelta(minutes=5), handlers=handlers,
                     clock=lambda: RUN_AT + timedelta(minutes=1))
-    assert done.status == "completed" and calls.count("titleBatch") == 1
+    assert done.status == "completed" and calls.count("titleBatch") == 0 and calls.count("titleGlobal") == 1
     final = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
     assert final["recoveryAuthorized"] == authorized
     assert final["executionStartedAt"] == saved["executionStartedAt"]

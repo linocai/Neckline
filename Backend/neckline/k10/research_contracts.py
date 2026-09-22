@@ -379,6 +379,7 @@ class ResearchSnapshot:
     revision: int
     created_at: str
     updated_at: str
+    admission_context: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("snapshot_id", "task_id", "event_id", "news_cutoff_at", "verification_cutoff_at",
@@ -387,6 +388,17 @@ class ResearchSnapshot:
         _positive(self.event_revision, "eventRevision"); _positive(self.revision, "revision")
         _enum(self.research_status, RESEARCH_STATUSES, "researchStatus")
         _enum(self.execution_status, EXECUTION_STATUSES, "executionStatus")
+        if self.admission_context is not None:
+            if not isinstance(self.admission_context, Mapping):
+                raise ResearchContractError("admissionContext 必须为对象", field_name="admissionContext", expected="object")
+            try:
+                normalized = json.loads(json.dumps(dict(self.admission_context), ensure_ascii=False,
+                                                   sort_keys=True, separators=(",", ":")))
+            except (TypeError, ValueError) as exc:
+                raise ResearchContractError("admissionContext 必须为 JSON 对象", field_name="admissionContext",
+                                            expected="json_object") from exc
+            if not isinstance(normalized, Mapping):
+                raise ResearchContractError("admissionContext 必须为对象", field_name="admissionContext", expected="object")
 
     def to_dict(self) -> dict[str, Any]:
         return {"snapshotId": self.snapshot_id, "taskId": self.task_id, "eventId": self.event_id,
@@ -395,14 +407,16 @@ class ResearchSnapshot:
                 "promptContractRevision": self.prompt_contract_revision,
                 "modelParametersSha256": self.model_parameters_sha256, "researchStatus": self.research_status,
                 "executionStatus": self.execution_status, "revision": self.revision, "createdAt": self.created_at,
-                "updatedAt": self.updated_at}
+                "updatedAt": self.updated_at,
+                **({"admissionContext": dict(self.admission_context)} if self.admission_context is not None else {})}
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ResearchSnapshot":
         return cls(value.get("snapshotId"), value.get("taskId"), value.get("eventId"), value.get("eventRevision"),
                    value.get("newsCutoffAt"), value.get("verificationCutoffAt"), value.get("contextSha256"),
                    value.get("promptContractRevision"), value.get("modelParametersSha256"), value.get("researchStatus"),
-                   value.get("executionStatus"), value.get("revision"), value.get("createdAt"), value.get("updatedAt"))
+                   value.get("executionStatus"), value.get("revision"), value.get("createdAt"), value.get("updatedAt"),
+                   value.get("admissionContext"))
 
 
 def validate_evidence_update(value: Mapping[str, Any]) -> dict[str, Any]:

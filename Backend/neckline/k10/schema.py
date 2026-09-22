@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -21,6 +22,32 @@ class K10SchemaError(RuntimeError):
 
 class SchemaUnavailable(K10SchemaError):
     """读取了尚未经 K10 受控迁移的数据库。"""
+
+
+class SqliteWriteBusy(sqlite3.OperationalError):
+    """A bounded write-lock contention which can continue on the same task."""
+
+
+_WRITE_BEGIN_ATTEMPTS = 8
+_WRITE_BEGIN_BACKOFF_SECONDS = (0.02, 0.05, 0.10, 0.25, 0.50, 1.0, 2.0)
+_WRITE_BEGIN_CONNECTION_TIMEOUT_SECONDS = 0.25
+
+
+def _is_busy_or_locked(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        # SQLite returns extended result codes for BUSY/LOCKED (for example
+        # BUSY_RECOVERY and LOCKED_SHAREDCACHE).  Once SQLite gave us an
+        # error code, its primary byte is authoritative: never turn an I/O,
+        # constraint, or corruption error into a retry merely because a
+        # translated message happens to contain "locked".
+        return (code & 0xFF) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    # Some supported Python/SQLite combinations do not expose error codes.
+    # Keep the narrow legacy fallback only for that case.
+    text = str(exc).lower()
+    return "database is locked" in text or "database is busy" in text or "database table is locked" in text
 
 
 _V1 = """
@@ -868,23 +895,50 @@ def write_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     """受控写连接；仅迁移和 store 写入口可使用。"""
     path = _path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn: sqlite3.Connection | None = None
     try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        # sqlite3 的 executescript 会隐式提交，不能用它承载迁移。本连接先显式开启
-        # 事务，所有 DDL 都逐条执行，因此任一失败会回滚整套版本而非遗留半套表。
-        # Keep this setup inside the lifetime guard as BEGIN itself can fail
-        # under an already-held writer lock.  In that case the connection still
-        # belongs to us and must be closed before the exception escapes.
-        conn.execute("BEGIN IMMEDIATE")
+        # Repeating is safe only before the caller's transaction body has run.
+        # A provider receipt or a commit may already have become durable, so
+        # never rerun an arbitrary write closure after either boundary.
+        for attempt in range(_WRITE_BEGIN_ATTEMPTS):
+            # A short SQLite-level wait handles normal sibling writes without
+            # failing an 84-event slice at the first collision.  The explicit
+            # bounded attempts/backoff below remains the upper bound and is
+            # deliberately far shorter than an unbounded worker wait.
+            candidate = sqlite3.connect(str(path), timeout=_WRITE_BEGIN_CONNECTION_TIMEOUT_SECONDS)
+            try:
+                candidate.execute("PRAGMA foreign_keys=ON")
+                candidate.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                candidate.close()
+                if _is_busy_or_locked(exc) and attempt + 1 < _WRITE_BEGIN_ATTEMPTS:
+                    time.sleep(_WRITE_BEGIN_BACKOFF_SECONDS[attempt])
+                    continue
+                if _is_busy_or_locked(exc):
+                    raise SqliteWriteBusy("SQLite 写入争用仍未释放") from exc
+                raise
+            conn = candidate
+            break
+        if conn is None:  # defensive; the loop either acquires or raises.
+            raise SqliteWriteBusy("SQLite 写入争用仍未释放")
         yield conn
-        conn.commit()
-    except BaseException:
-        if conn.in_transaction:
+        try:
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            # Commit outcome is uncertain.  The next same-task slice reads
+            # durable checkpoints/receipts instead of replaying work here.
+            if _is_busy_or_locked(exc):
+                raise SqliteWriteBusy("SQLite 提交结果待同任务续跑确认") from exc
+            raise
+    except BaseException as exc:
+        if conn is not None and conn.in_transaction:
             conn.rollback()
+        if _is_busy_or_locked(exc) and not isinstance(exc, SqliteWriteBusy):
+            raise SqliteWriteBusy("SQLite 写入争用待同任务续跑") from exc
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @contextmanager
@@ -1427,6 +1481,6 @@ def rollback_schema(db_path: Path, *, target_version: int = 0, receipt_export_pa
 
 
 __all__ = [
-    "K10SchemaError", "SCHEMA_VERSION", "SchemaUnavailable", "export_model_response_receipts", "initialize_schema",
+    "K10SchemaError", "SCHEMA_VERSION", "SchemaUnavailable", "SqliteWriteBusy", "export_model_response_receipts", "initialize_schema",
     "read_connection", "require_schema", "restore_model_response_receipts", "rollback_schema", "schema_version", "write_connection",
 ]

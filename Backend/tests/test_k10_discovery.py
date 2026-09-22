@@ -369,7 +369,10 @@ def test_event_comparison_preserves_model_order_and_shared_primary_rank():
     assert model.compare_calls == 1
     assert [(item.mapping.company_code, item.comparison.rank, item.comparison.differences["role"])
             for item in run.candidates] == [("300000.SZ", 1, "primary"), ("300001.SZ", 2, "alternative")]
-    assert run.events[0].facts["eventComparison"]["summary"] == "事件共同事实已经核对"
+    # The comparison is program-derived runtime state. Source-owned facts are
+    # frozen unchanged for snapshot identity and may themselves contain an
+    # `eventComparison` key, so this assertion must not read it from facts.
+    assert run.events[0].derived_facts["eventComparison"]["summary"] == "事件共同事实已经核对"
 
     class Reversed(WholeEvent):
         def compare_event(self, *, event, verification, mappings):

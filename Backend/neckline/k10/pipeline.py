@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from hashlib import sha256
 import json
 import logging
 import math
-import os
+import sqlite3
 from pathlib import Path
 import re
 import time
@@ -32,13 +32,14 @@ from .delivery import runtime_contract
 from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryModel, DiscoveryRun, EventComparison, InvestigationOutcome,
                         EvidenceRef, EventDraft, FrozenDiscoveryDraftCompatibilityError, SqliteDiscoveryWriter, Verification,
                         DiscoveryDeadlineExceeded, DiscoverySliceYield, DiscoveryUnderstandingIncomplete, ProviderThrottleYield, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
-                        thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows)
+                        thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows,
+                        event_input_facts, event_system_metadata)
 from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
 from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_contracts import (Claim, ResearchRoundResult, ResearchSnapshot,
-                                 RESEARCH_ROUND_ACTION, ResearchContractError)
+                                 RESEARCH_ROUND_ACTION, RESEARCH_ROUND_CONTRACT, ResearchContractError)
 from .research_material import admit_material, source_material_for_understand, read_locator, resize_catalogue
 from .model_execution import (
     JsonRepairError, ModelInvocation, ModelNetworkError, ModelReceiptRecoveryUnavailable,
@@ -53,7 +54,7 @@ from .universe import CHINEXT, CompanyMetadata, CompanyMetadataProvider
 from .verification import TavilyEvidenceGateway
 from .source_metadata import PublicationMetadataResolver, TransportResponse
 from .windows import ScanWindow, evening_window, morning_window, scan_calendar_day
-from .schema import read_connection
+from .schema import SchemaUnavailable, SqliteWriteBusy, read_connection, require_schema
 from .worker import TaskContext, TaskResult
 
 
@@ -456,6 +457,21 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     "thinking": {"type": "disabled"}}
         return dict(value)
 
+    def _investigation_contract_revision(self, *, snapshot: ResearchSnapshot | None = None) -> str:
+        policy = getattr(self, "_execution_policy", None)
+        if policy is None:
+            # This adapter is also used by isolated local replay validation.
+            # It has no task execution policy because it cannot create work;
+            # use only the explicit frozen snapshot contract, never a default.
+            revision = snapshot.prompt_contract_revision if isinstance(snapshot, ResearchSnapshot) else None
+            if revision in {"k10-investigation-v1", "k10-investigation-v2", RESEARCH_ROUND_CONTRACT}:
+                return revision
+            raise PipelineError("发现执行包未绑定", code="execution_policy_missing")
+        revision = policy.get("investigationPromptContractRevision") if isinstance(policy, Mapping) else None
+        if revision not in {"k10-investigation-v1", "k10-investigation-v2"}:
+            raise PipelineError("发现执行包研究提示词契约无效", code="execution_policy_invalid")
+        return revision
+
     def source_context_request_fits(self, *, snapshot, action, evidence_packet, candidate):
         from .research_context import project_packet
         checker = getattr(self.provider, "request_context_error", None)
@@ -463,7 +479,10 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             return True
         packet = project_packet(action, {**evidence_packet,
             "contextResults": [*evidence_packet.get("contextResults", []), candidate]})
-        operation, payload = investigation_request_spec(snapshot=snapshot, action=action, evidence_packet=packet)
+        operation, payload = investigation_request_spec(
+            snapshot=snapshot, action=action, evidence_packet=packet,
+            contract_revision=self._investigation_contract_revision(snapshot=snapshot),
+        )
         messages, kwargs, _ = self._request_parts(operation=operation, payload=payload,
                                                   model_options=self._model_options("investigation"))
         error = checker(messages, **kwargs)
@@ -474,14 +493,18 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
     def advance_research_round(self, *, snapshot: ResearchSnapshot,
                                evidence_packet: Mapping[str, Any]) -> ResearchRoundResult:
         """Execute the B78 direct research result without stage projection."""
-        from .research_runtime import validate_research_round_result
+        from .research_runtime import normalize_research_round_result, validate_research_round_result
         instruction, payload = investigation_request_spec(
             snapshot=snapshot, action=RESEARCH_ROUND_ACTION, evidence_packet=evidence_packet,
+            contract_revision=self._investigation_contract_revision(snapshot=snapshot),
         )
         raw = self._json(operation=instruction, payload=payload,
                          model_options=self._model_options("investigation"))
         try:
-            result = ResearchRoundResult.from_dict(raw, model_reply=True)
+            result = normalize_research_round_result(
+                result=ResearchRoundResult.from_dict(raw, model_reply=True),
+                evidence_packet=evidence_packet,
+            )
             validate_research_round_result(result=result, evidence_packet=evidence_packet)
             return result
         except (InvestigationError, ResearchContractError) as exc:
@@ -551,7 +574,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                 "historicalCoverage": historical_context["historicalCoverage"]}
 
     def _understand_request_spec(self, *, document: DiscoveryDocument, text: str, text_mode: str,
-                                 is_excerpt: bool, paragraph_indexes: Sequence[int]) -> tuple[str, Mapping[str, Any]]:
+                                 is_excerpt: bool, paragraph_indexes: Sequence[int],
+                                 legacy_claim_identity_contract: bool = False) -> tuple[str, Mapping[str, Any]]:
         operation = ("只提取本篇在 publication context 下新增、当前披露或实质更新的事件。"
                      "历史融资轮次、旧投资/合资、旧和解、转载背景和回顾不得因本篇新发布时间重发为当前事件；"
                      "放入 facts.background。若本篇没有当前新增或更新，events 必须是 []。"
@@ -571,7 +595,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             "output": {"events": [{"canonicalKey": "string", "stageKey": "string", "eventState": "string",
                                     "headline": "string", "eventKind": "string", "facts": {},
                                     "sourceRefs": [{"documentId": document.document_id, "revision": document.revision}],
-                                    "claims": [{"claimId":"string","text":"string","kind":"factual_assertion|forecast|opinion|promotion|rumor",
+                                    "claims": [{**({"claimId": "string"} if legacy_claim_identity_contract else {}),
+                                                "text":"string","kind":"factual_assertion|forecast|opinion|promotion|rumor",
                                                 "novelty":"new_fact|new_stage|background|republication|uncertain","speaker":"string|null",
                                                 "subject":"string|null","object":"string|null","action":"string|null","stageOrCondition":"string|null",
                                                 "timeText":"string|null","verificationStatus":"unverified","decisionImpact":"string","sourceRef":{"documentId":document.document_id,"revision":document.revision},"location":"string"}]}],
@@ -584,7 +609,10 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             operation += "本阶段只提取这篇入选文章披露时的原始事实，不判断当前价格、投资优先级或两个交易日的表现。引用只能是该文章的真实 documentId 与 revision。"
             operation += ("claims 的 decisionImpact 必须为非空文字，说明这条命题会影响后续哪项事实核实、公司关联或风险判断；"
                           "这不是当前价格或投资优先级结论。暂不能确定时明确说明尚缺哪种关联依据，不能填空字符串或 null。"
-                          "claimId、text、decisionImpact、location 均须为非空字符串；枚举只能从示意所列值中选一个。")
+                          + ("claimId、text、decisionImpact、location 均须为非空字符串；枚举只能从示意所列值中选一个。"
+                             if legacy_claim_identity_contract else
+                             "text、decisionImpact、location 均须为非空字符串；命题身份由程序按来源、定位、文字和类别生成，"
+                             "不要输出 claimId；枚举只能从示意所列值中选一个。"))
             operation += ("每个事件必须包含 canonicalKey、stageKey、eventState、headline、eventKind 非空字符串及 facts 对象。"
                           "facts 放该事件的当前事实和背景，不能为 null，不能因 claims 已列事实而省略 facts；没有额外事实时可用空对象。")
         binding = getattr(self, "_company_profiles_binding", None)
@@ -599,7 +627,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
 
     @staticmethod
     def _decode_understand(raw: Mapping[str, Any], *, require_claims: bool = False,
-                          full_text: bool = False) -> tuple[tuple[EventDraft, ...], bool]:
+                          full_text: bool = False,
+                          preserve_frozen_claim_ids: bool = False) -> tuple[tuple[EventDraft, ...], bool]:
         needs_full = raw.get("needsFullText", False)
         if not isinstance(needs_full, bool):
             raise PipelineError("理解输出 needsFullText 无效", code="understand_json_contract_invalid")
@@ -627,38 +656,64 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             raw_claims = row.get("claims", [])
             if not isinstance(raw_claims, list):
                 raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid")
-            # A body has one source. Restore only an omitted duplicate claim
-            # reference from the event's explicit, unambiguous reference; the
-            # material validator still checks it against the frozen document.
-            # Explicit null, malformed or conflicting claim references remain
-            # invalid, and neither the paid reply nor its receipt is mutated.
-            if any(isinstance(claim, Mapping) and "sourceRef" not in claim for claim in raw_claims):
-                try:
-                    event_refs = _refs(row.get("sourceRefs"))
-                except PipelineError as exc:
-                    raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from exc
-                if len(event_refs) == 1:
-                    raw_claims = [
-                        {**claim, "sourceRef": _ref_payload(event_refs[0])}
-                        if isinstance(claim, Mapping) and "sourceRef" not in claim else claim
-                        for claim in raw_claims
-                    ]
-            try:
-                claims = tuple(Claim.from_dict(item) for item in raw_claims)
-            except Exception as exc:
-                raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
             raw_refs = row.get("sourceRefs")
-            # Derive a missing duplicate field only from already validated claim
-            # references. Explicit references are never replaced or invented.
-            if raw_refs is None and claims:
-                claim_refs = [claim.source_ref for claim in claims]
-                if all(ref == claim_refs[0] for ref in claim_refs):
-                    raw_refs = [claim_refs[0]]
-            try:
-                refs = _refs(raw_refs)
-            except PipelineError as exc:
-                raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from ResearchContractError(
-                    str(exc), field_name="events[].sourceRefs", expected="single_source_reference_array")
+            if preserve_frozen_claim_ids:
+                # B81 paid understand receipts used provider-supplied claim IDs
+                # as part of the persisted research context.  Replaying one
+                # through B82's deterministic mapper changes the context hash
+                # of an already-created snapshot and turns a local receipt
+                # recovery into a false new-model request.  This branch is
+                # deliberately available only to the task-bound, explicitly
+                # authorized B81 recovery adapter below; new B82 extraction
+                # always follows the program-owned identity path.
+                if any(isinstance(claim, Mapping) and "sourceRef" not in claim for claim in raw_claims):
+                    try:
+                        event_refs = _refs(raw_refs)
+                    except PipelineError as exc:
+                        raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from exc
+                    if len(event_refs) == 1:
+                        raw_claims = [
+                            {**claim, "sourceRef": _ref_payload(event_refs[0])}
+                            if isinstance(claim, Mapping) and "sourceRef" not in claim else claim
+                            for claim in raw_claims
+                        ]
+                try:
+                    claims = tuple(Claim.from_dict(item) for item in raw_claims)
+                except Exception as exc:
+                    raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
+                if raw_refs is None and claims:
+                    claim_refs = [claim.source_ref for claim in claims]
+                    if all(ref == claim_refs[0] for ref in claim_refs):
+                        raw_refs = [claim_refs[0]]
+                try:
+                    refs = _refs(raw_refs)
+                except PipelineError as exc:
+                    raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from ResearchContractError(
+                        str(exc), field_name="events[].sourceRefs", expected="single_source_reference_array")
+            else:
+                try:
+                    refs = _refs(raw_refs)
+                except PipelineError as exc:
+                    raise PipelineError("理解输出 sourceRefs 无效", code="understand_json_contract_invalid") from ResearchContractError(
+                        str(exc), field_name="events[].sourceRefs", expected="single_source_reference_array")
+                # Fresh model extraction describes the fact but never selects its
+                # durable ID or first verification state.  This happens after the
+                # event's frozen source set is parsed, so duplicate/tampered model
+                # IDs cannot overwrite an earlier claim in later keyed research
+                # state.  The helper returns new objects and leaves the paid raw
+                # reply untouched for exact receipt replay.
+                try:
+                    from .research_runtime import normalize_body_claims
+                    claims = normalize_body_claims(
+                        raw_claims=raw_claims, allowed_source_refs=refs,
+                        fallback_source_ref=refs[0] if len(refs) == 1 else None,
+                    )
+                except ResearchContractError as exc:
+                    if exc.field_name == "events[].claims[].sourceRef" and "不属于当前正文" in str(exc):
+                        raise PipelineError("理解命题引用不属于当前正文", code="understand_reference_invalid") from exc
+                    raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
+                except Exception as exc:
+                    raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
             if len(refs) != 1 or any(claim.source_ref != _ref_payload(refs[0]) for claim in claims):
                 raise PipelineError("理解命题引用不属于当前正文", code="understand_reference_invalid")
             facts = {**dict(row["facts"]), "researchClaims": [claim.to_dict() for claim in claims]}
@@ -710,8 +765,11 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     or not isinstance(request["location"], str) or not request["location"].strip()):
                 raise PipelineError("原文局部读取请求无效", code="understand_json_contract_invalid")
             return {"sourceRead": {"location": request["location"]}}
-        events, needs_full = self._decode_understand(raw, require_claims=self._uses_investigation_contract(),
-                                                     full_text=material["textMode"] == "full_text")
+        events, needs_full = self._decode_understand(
+            raw, require_claims=self._uses_investigation_contract(),
+            full_text=material["textMode"] == "full_text",
+            preserve_frozen_claim_ids=bool(getattr(self._thread_usage, "preserve_frozen_claim_ids", False)),
+        )
         visible = {part["locator"] for part in material.get("readResults", []) if isinstance(part.get("text"), str)}
         if material["textMode"] != "full_text" and events and not visible:
             raise PipelineError("未读原文不能从目录编造事件", code="understand_reference_invalid")
@@ -1024,10 +1082,12 @@ class _CheckpointedDiscoveryModel:
 
     def __init__(self, *, base: DiscoveryModel, task_id: str, execution_profile: Mapping[str, Any],
                  cutoff_at: datetime, db_path: Path, leaseguard: Callable[[], None] | None,
-                 allow_failed_research_resume: bool = False) -> None:
+                 allow_failed_research_resume: bool = False,
+                 new_research_external_admission_guard: Callable[[], None] | None = None) -> None:
         self._base, self._task_id, self._binding = base, task_id, execution_profile
         self._cutoff_at, self._db_path, self._leaseguard = _text(cutoff_at), db_path, leaseguard
         self._allow_failed_research_resume = allow_failed_research_resume
+        self._new_research_external_admission_guard = new_research_external_admission_guard
         self._research_validators = local()
         self._full_text_used: set[EvidenceRef] = set()
         self._full_text_requested: set[EvidenceRef] = set()
@@ -1066,6 +1126,269 @@ class _CheckpointedDiscoveryModel:
 
         return isinstance(self._base, DeepSeekDiscoveryModel) and isinstance(self._base.provider, MeteredProvider)
 
+    def _frozen_investigation_contract(self, snapshot: ResearchSnapshot) -> str:
+        revision = self._policy.get("investigationPromptContractRevision") if isinstance(self._policy, Mapping) else None
+        if revision not in {"k10-investigation-v1", "k10-investigation-v2"}:
+            raise PipelineError("冻结研究提示词契约无效", code="execution_policy_invalid")
+        if snapshot.prompt_contract_revision != revision:
+            raise PipelineError("研究快照与冻结提示词契约不匹配", code="investigation_prompt_contract_mismatch")
+        return revision
+
+    def _research_receipt_replay_proof(self, *, snapshot: ResearchSnapshot, action: str,
+                                       original_digest: str) -> dict[str, Any] | None:
+        """Prove the failed direct-round wire before locally parsing its receipt.
+
+        A receipt and external-attempt row agreeing with each other is not
+        enough.  We rebuild the original request from the failed round's saved
+        packet and frozen prompt renderer, then require both its wire SHA and
+        v1 receipt-scope SHA.  Missing historical packet/repair feedback has
+        no safe approximation and remains recovery-blocked.
+        """
+        if action != RESEARCH_ROUND_ACTION or not re.fullmatch(r"[0-9a-f]{64}", original_digest):
+            return None
+        if not isinstance(self._base, DeepSeekDiscoveryModel):
+            return None
+        from .metering import MeteredProvider
+        provider = self._base.provider
+        if not isinstance(provider, MeteredProvider):
+            return None
+        with read_connection(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT rr.input_packet_json,s.snapshot_json FROM k10_research_round_results rr "
+                "JOIN k10_research_snapshot_revisions s ON s.snapshot_id=rr.snapshot_id AND s.revision=rr.revision "
+                "WHERE rr.snapshot_id=? AND s.task_id=? AND s.execution_status='failed' "
+                "ORDER BY rr.revision DESC LIMIT 1",
+                (snapshot.snapshot_id, self._task_id),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            packet = json.loads(row[0])
+            saved_snapshot = ResearchSnapshot.from_dict(json.loads(row[1]))
+        except (TypeError, ValueError, json.JSONDecodeError, ResearchContractError):
+            return None
+        if (not isinstance(packet, Mapping) or saved_snapshot.task_id != self._task_id
+                or saved_snapshot.snapshot_id != snapshot.snapshot_id
+                or saved_snapshot.prompt_contract_revision not in {"k10-investigation-v1", "k10-investigation-v2"}):
+            return None
+        options_value = self._policy.get("modelOptions") if isinstance(self._policy, Mapping) else None
+        base_options = options_value.get("investigation") if isinstance(options_value, Mapping) else None
+        candidates: list[tuple[dict[str, Any], Mapping[str, Any]]] = []
+        if isinstance(base_options, Mapping):
+            candidates.append(({}, base_options))
+        task_input = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)
+        checkpoint = task_input.get("checkpoint") if isinstance(task_input, Mapping) else None
+        repair = checkpoint.get("runtimeRepair") if isinstance(checkpoint, Mapping) else None
+        if isinstance(repair, Mapping) and repair.get("originalExecutionContentSha256") == self._binding.get("contentSha256"):
+            override = repair.get("researchModelOptions")
+            if isinstance(override, Mapping):
+                candidates.append(({"runtimeResearchModelOptions": dict(override)}, override))
+        operation = f"investigation_{action}"
+        natural_key = f"{snapshot.snapshot_id}:{action}"
+        for extra, model_options in candidates:
+            try:
+                instruction, request_payload = investigation_request_spec(
+                    snapshot=saved_snapshot, action=action, evidence_packet=packet,
+                    contract_revision=saved_snapshot.prompt_contract_revision,
+                )
+            except (TypeError, ValueError):
+                continue
+            original_item = {"snapshot": request_payload["snapshot"], "action": action,
+                             "evidencePacket": request_payload["evidencePacket"], **extra}
+            if self._digest(operation=operation, stage="investigation", item=original_item) != original_digest:
+                continue
+            original_ledger = "model:" + operation + ":" + sha256(
+                f"{operation}\x1f{natural_key}\x1f{original_digest}".encode("utf-8")
+            ).hexdigest()
+            with read_connection(self._db_path) as conn:
+                failed = conn.execute(
+                    "SELECT repair_attempt_count,safe_error_ref FROM k10_execution_item_checkpoints "
+                    "WHERE task_id=? AND item_key=? AND stage=? AND input_sha256=? AND status='failed'",
+                    (self._task_id, original_ledger, f"model:{operation}", original_digest),
+                ).fetchone()
+            # B81 does not retain the full repair feedback in durable round
+            # state.  A repaired original must wait rather than replaying a
+            # guessed wire under the new parser.
+            if failed is None or failed[1] not in {original_ledger, natural_key}:
+                continue
+            # B82 persists a renderer revision and the deterministic repair
+            # feedback with each received reply.  Rebuild every raw receipt's
+            # original request with that exact feedback; B81 replies without
+            # metadata are provable only as the un-repaired first wire.
+            raw_receipts = store.load_model_response_receipts_for_operation(
+                task_id=self._task_id, stage="investigation",
+                item_key=f"{operation}:{natural_key}:{original_digest}", db_path=self._db_path,
+            )
+            proofs: list[dict[str, str]] = []
+            unverifiable = not raw_receipts
+            for receipt in raw_receipts:
+                payload = receipt.get("payload") if isinstance(receipt, Mapping) else None
+                metadata = payload.get("replayMetadata") if isinstance(payload, Mapping) else None
+                feedback: Mapping[str, Any] | None = None
+                if metadata is not None:
+                    revision = metadata.get("rendererRevision") if isinstance(metadata, Mapping) else None
+                    raw_feedback = metadata.get("repairFeedback") if isinstance(metadata, Mapping) else None
+                    if revision != saved_snapshot.prompt_contract_revision or (
+                            raw_feedback is not None and not isinstance(raw_feedback, Mapping)):
+                        unverifiable = True
+                        continue
+                    feedback = None if raw_feedback is None else dict(raw_feedback)
+                previous_feedback = getattr(self._base._thread_usage, "repair_feedback", None)
+                try:
+                    self._base._thread_usage.repair_feedback = feedback
+                    messages, kwargs, _ = self._base._request_parts(
+                        operation=instruction, payload=request_payload, model_options=model_options)
+                finally:
+                    self._base._thread_usage.repair_feedback = previous_feedback
+                request_sha = provider._request_input_sha256((messages,), kwargs)
+                if request_sha is None:
+                    unverifiable = True
+                    continue
+                scope = {"receiptContract": "k10-model-response-receipt-v1", "requestSha256": request_sha,
+                         "stage": "investigation", "jsonArrayKey": kwargs.get("json_array_key")}
+                scope_sha = sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True,
+                                               separators=(",", ":")).encode("utf-8")).hexdigest()
+                if (receipt.get("requestSha256") != request_sha
+                        or receipt.get("reuseScopeSha256") != scope_sha):
+                    unverifiable = True
+                    continue
+                proof = {"requestSha256": request_sha, "reuseScopeSha256": scope_sha}
+                if proof not in proofs:
+                    proofs.append(proof)
+            return {"proofs": proofs, "unverifiable": unverifiable}
+        return None
+
+    def _title_receipt_replay_proof(self, *, operation: str, stage: str, item_key: str,
+                                    original_item: Mapping[str, Any], original_digest: str) -> dict[str, Any] | None:
+        """Prove every raw title receipt against its original frozen wire.
+
+        A title repair is a distinct paid request.  B82 stores its deterministic
+        feedback/render revision with the receipt; B81 did not, so only a
+        metadata-free first wire may be reconstructed.  Any other raw receipt
+        that cannot be proven blocks recovery instead of becoming a reason to
+        POST a new correction.
+        """
+        if operation not in {"titleBatch", "titleReconcile"} or not isinstance(self._base, DeepSeekDiscoveryModel):
+            return None
+        from .metering import MeteredProvider
+        provider = self._base.provider
+        instruction, payload = original_item.get("instruction"), original_item.get("payload")
+        if (not isinstance(provider, MeteredProvider) or not isinstance(instruction, str)
+                or not isinstance(payload, Mapping)
+                or self._digest(operation=operation, stage=stage, item=original_item) != original_digest):
+            return None
+        receipt_item_key = f"{operation}:{item_key}:{original_digest}"
+        raw_receipts = store.load_model_response_receipts_for_operation(
+            task_id=self._task_id, stage=stage, item_key=receipt_item_key, db_path=self._db_path,
+        )
+        if operation == "titleReconcile":
+            renderer_revision = self._policy.get("titleReconcileContractVersion", "k10-title-reconcile-v1")
+        else:
+            renderer_revision = "k10-title-batch-v1"
+        if not isinstance(renderer_revision, str) or not renderer_revision:
+            return None
+        model_options = self._base._model_options(operation)
+        proofs: list[dict[str, str]] = []
+        unverifiable = not raw_receipts
+        for receipt in raw_receipts:
+            payload_value = receipt.get("payload") if isinstance(receipt, Mapping) else None
+            metadata = payload_value.get("replayMetadata") if isinstance(payload_value, Mapping) else None
+            feedback: Mapping[str, Any] | None = None
+            if metadata is not None:
+                if not isinstance(metadata, Mapping) or metadata.get("rendererRevision") != renderer_revision:
+                    unverifiable = True
+                    continue
+                raw_feedback = metadata.get("repairFeedback")
+                if raw_feedback is not None and not isinstance(raw_feedback, Mapping):
+                    unverifiable = True
+                    continue
+                feedback = None if raw_feedback is None else dict(raw_feedback)
+            previous_feedback = getattr(self._base._thread_usage, "repair_feedback", None)
+            try:
+                self._base._thread_usage.repair_feedback = feedback
+                messages, kwargs, _ = self._base._request_parts(
+                    operation=instruction, payload=payload, model_options=model_options)
+            except (TypeError, ValueError, PipelineError):
+                unverifiable = True
+                continue
+            finally:
+                self._base._thread_usage.repair_feedback = previous_feedback
+            request_sha = provider._request_input_sha256((messages,), kwargs)
+            if request_sha is None:
+                unverifiable = True
+                continue
+            scope = {"receiptContract": "k10-model-response-receipt-v1", "requestSha256": request_sha,
+                     "stage": stage, "jsonArrayKey": kwargs.get("json_array_key")}
+            scope_sha = sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True,
+                                          separators=(",", ":")).encode("utf-8")).hexdigest()
+            if (receipt.get("requestSha256") != request_sha
+                    or receipt.get("reuseScopeSha256") != scope_sha):
+                unverifiable = True
+                continue
+            proof = {"requestSha256": request_sha, "reuseScopeSha256": scope_sha}
+            if proof not in proofs:
+                proofs.append(proof)
+        return {"proofs": proofs, "unverifiable": unverifiable}
+
+    def _body_receipt_replay_proof(self, *, document: DiscoveryDocument, material: Mapping[str, Any],
+                                   original_digest: str | None = None) -> dict[str, Any] | None:
+        """Rebuild one versioned understand wire from its frozen source input.
+
+        A paid body reply is reusable only when its frozen document, material
+        route, contract shape and provider scope reproduce the receipt
+        identity.  The proof carries no authority for a similar document or a
+        newly shaped request; B81 merely selects its former claim-ID shape.
+        """
+        contract_revision = self._policy.get("investigationPromptContractRevision")
+        if (not isinstance(self._base, DeepSeekDiscoveryModel)
+                or contract_revision not in {"k10-investigation-v1", "k10-investigation-v2"}
+                or (original_digest is not None and not re.fullmatch(r"[0-9a-f]{64}", original_digest))):
+            return None
+        from .metering import MeteredProvider
+        provider = self._base.provider
+        if not isinstance(provider, MeteredProvider):
+            return None
+        required = ("sourceContentSha256", "textMode", "text", "isExcerpt")
+        if any(key not in material for key in required) or not isinstance(material.get("sourceContentSha256"), str):
+            return None
+        try:
+            instruction, payload = self._base._understand_request_spec(
+                document=document, text=material["text"], text_mode=material["textMode"],
+                is_excerpt=material["isExcerpt"], paragraph_indexes=(),
+                legacy_claim_identity_contract=contract_revision == "k10-investigation-v1",
+            )
+            payload = {**payload, "sourceMaterial": {key: value for key, value in material.items() if key != "text"}}
+            options = self._base._model_options("understand")
+            prompt_hash = sha256(json.dumps({"operation": instruction, "payload": payload,
+                "modelOptions": options}, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest()
+            original_item = {"sourceContentSha256": material["sourceContentSha256"],
+                             "requestSha256": prompt_hash, "textMode": material["textMode"],
+                             "material": material}
+            reconstructed_digest = self._digest(operation="understand", stage="understand", item=original_item)
+            if original_digest is not None and reconstructed_digest != original_digest:
+                return None
+            messages, kwargs, _ = self._base._request_parts(
+                operation=instruction, payload=payload, model_options=options)
+            request_sha = provider._request_input_sha256((messages,), kwargs)
+        except (KeyError, TypeError, ValueError, PipelineError):
+            return None
+        if request_sha is None:
+            return None
+        spend_stage = "fullText" if material.get("textMode") == "full_text" else "lightweight"
+        scope = {"receiptContract": "k10-model-response-receipt-v1", "requestSha256": request_sha,
+                 "stage": spend_stage, "jsonArrayKey": kwargs.get("json_array_key")}
+        return {
+            "inputSha256": reconstructed_digest,
+            "requestSha256": request_sha,
+            "reuseScopeSha256": sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True,
+                                                     separators=(",", ":")).encode("utf-8")).hexdigest(),
+            # This exists only in the derived, in-memory operation input while
+            # it is being revalidated. Durable ledgers store the digest and
+            # original provider receipt, never a second copy of source text.
+            "request": {"operation": instruction, "payload": payload, "modelOptions": dict(options)},
+        }
+
     def _reject_unknown_research_checkpoint(self, row: Any) -> None:
         code = row[1] if row is not None and isinstance(row[1], str) else None
         if row is not None and (row[0] == "running" or (isinstance(code, str) and code.endswith("_outcome_unknown"))):
@@ -1078,22 +1401,101 @@ class _CheckpointedDiscoveryModel:
 
     def _recovery_target(self, *, operation: str, stage: str, item_key: str, item: Mapping[str, Any],
                          eligible: Callable[[str], bool]) -> tuple[dict[str, Any], str, str, Any]:
+        def paused_before_external_attempt(*, input_sha256: str) -> bool:
+            """Distinguish a closed gate from a paid/unknown request.
+
+            ``execution_paused`` is written when the admission gate declines
+            before ``begin_model_external_attempt``.  It is safe for an
+            explicitly recovered same task to make its first request.  Once an
+            external-attempt row exists, however, the result may be paid or
+            unknown and must take the exact-receipt proof path instead.
+            """
+            external_item_key = f"{operation}:{item_key}:{input_sha256}"
+            with read_connection(self._db_path) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM k10_external_attempts "
+                    # ``stage`` here is the checkpoint stage (for example
+                    # ``understand``), whereas metering persists the canonical
+                    # spend stage (``lightweight``/``fullText``/``map`` …).
+                    # The external key already binds task, operation, natural
+                    # item key and exact digest, so any row for it proves this
+                    # was not a pre-wire pause.  Filtering by the checkpoint
+                    # stage would let a paid/unknown attempt bypass receipt
+                    # recovery merely because the two namespaces differ.
+                    "WHERE task_id=? AND item_key=? LIMIT 1",
+                    (self._task_id, external_item_key),
+                ).fetchone()
+            return row is None
+
+        def recovered_item(*, current_item: Mapping[str, Any], original_digest: str,
+                           original_code: str) -> dict[str, Any]:
+            if (original_code == "execution_paused"
+                    and paused_before_external_attempt(input_sha256=original_digest)):
+                # This derived local identity lets the controlled recovery
+                # leave its earlier failed checkpoint immutable while making
+                # its first admissible POST.  Do not attach replay feedback or
+                # a semantic receipt link: no provider response exists.
+                return {**current_item,
+                        "authorizedPausedBeforeExternalAttemptOf": original_digest}
+            return {**current_item, "authorizedSemanticRecoveryOf": original_digest,
+                    "authorizedRecoveryFeedback": {"errorCode": original_code, "requiredCorrection":
+                        "已保存上次付费回复，但该回复未满足本阶段契约。请根据当前明确列出的字段、类型、枚举和可见引用修正输出；"
+                        "不要重复上次无效结构，不要新增事实、公司或超出当前问题的调查。"}}
+
         current = dict(item)
         digest, key, row = self._research_checkpoint(operation=operation, stage=stage, item_key=item_key, item=current)
         self._reject_unknown_research_checkpoint(row)
         if not self._allow_failed_research_resume:
             return current, digest, key, row
         grant = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
-        authorized = set(grant.get("failedModelInputSha256", []))
+        raw_authorized = grant.get("failedModelInputSha256", [])
+        authorized = ({value for value in raw_authorized if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)}
+                      if isinstance(raw_authorized, list) else set())
         legacy = "failedModelInputSha256" not in grant
+        # B82 request contracts can evolve while a frozen failed task still
+        # carries a paid response.  The current request shape may therefore
+        # produce a different ledger digest and miss the old row.  Locate only
+        # an explicitly authorized original checkpoint by its durable stage,
+        # natural operation key and original input digest; never approximate by
+        # current prompt text or a diagnostics sidecar.
+        if row is None and authorized:
+            placeholders = ",".join("?" for _ in authorized)
+            with read_connection(self._db_path) as conn:
+                prior_rows = conn.execute(
+                    "SELECT input_sha256,safe_error_code,safe_error_ref FROM k10_execution_item_checkpoints "
+                    "WHERE task_id=? AND stage=? AND status='failed' "
+                    f"AND input_sha256 IN ({placeholders}) ORDER BY updated_at DESC",
+                    (self._task_id, f"model:{operation}", *sorted(authorized)),
+                ).fetchall()
+            usable = []
+            for prior_digest, prior_code, prior_ref in prior_rows:
+                if not isinstance(prior_digest, str) or not isinstance(prior_code, str) or not eligible(prior_code):
+                    continue
+                # Older checkpoint writers recorded either the natural item
+                # key or the durable ledger key as ``safe_error_ref``. Both
+                # are exact functions of this task, operation, item and old
+                # digest; accept neither a merely similar text nor another
+                # operation's authorized digest.
+                old_ledger = "model:" + operation + ":" + sha256(
+                    f"{operation}\x1f{item_key}\x1f{prior_digest}".encode("utf-8")
+                ).hexdigest()
+                if prior_ref in {item_key, old_ledger}:
+                    usable.append((prior_digest, prior_code))
+            if len(usable) > 1:
+                raise PipelineError("授权恢复对应多个原始模型操作", code="model_recovery_identity_ambiguous")
+            if len(usable) == 1:
+                original_digest, original_code = usable[0]
+                current = recovered_item(current_item=current, original_digest=original_digest,
+                                         original_code=original_code)
+                digest, key, row = self._research_checkpoint(
+                    operation=operation, stage=stage, item_key=item_key, item=current)
+                self._reject_unknown_research_checkpoint(row)
         hops = 0
         while row is not None and row[0] == "failed" and isinstance(row[1], str) and eligible(row[1]):
             if digest not in authorized and not (legacy and hops == 0):
                 break
-            current = {**current, "authorizedSemanticRecoveryOf": digest,
-                "authorizedRecoveryFeedback": {"errorCode": row[1], "requiredCorrection":
-                    "已保存上次付费回复，但该回复未满足本阶段契约。请根据当前明确列出的字段、类型、枚举和可见引用修正输出；"
-                    "不要重复上次无效结构，不要新增事实、公司或超出当前问题的调查。"}}
+            current = recovered_item(current_item=current, original_digest=digest,
+                                     original_code=row[1])
             digest, key, row = self._research_checkpoint(operation=operation, stage=stage, item_key=item_key, item=current)
             self._reject_unknown_research_checkpoint(row)
             hops += 1
@@ -1101,14 +1503,28 @@ class _CheckpointedDiscoveryModel:
 
     def _research_operation_target(self, *, snapshot: ResearchSnapshot, action: str,
                                    evidence_packet: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], str, str, Any]:
-        _instruction, request_payload = investigation_request_spec(snapshot=snapshot, action=action,
-                                                                      evidence_packet=evidence_packet)
+        _instruction, request_payload = investigation_request_spec(
+            snapshot=snapshot, action=action, evidence_packet=evidence_packet,
+            contract_revision=self._frozen_investigation_contract(snapshot),
+        )
         item: dict[str, Any] = {"snapshot": request_payload["snapshot"], "action": action,
                                 "evidencePacket": request_payload["evidencePacket"]}
         item_key = f"{snapshot.snapshot_id}:{action}"
         operation = f"investigation_{action}"
         item, digest, ledger_key, row = self._recovery_target(operation=operation, stage="investigation", item_key=item_key,
             item=item, eligible=lambda code: not code.startswith("provider_") and "network" not in code and code != "content_policy_refused")
+        original_digest = item.get("authorizedSemanticRecoveryOf")
+        if isinstance(original_digest, str):
+            proof = self._research_receipt_replay_proof(
+                snapshot=snapshot, action=action, original_digest=original_digest)
+            # The marker is carried into the derived recovery checkpoint so a
+            # later slice preserves the same no-POST decision instead of
+            # re-evaluating an unverifiable old receipt as a fresh request.
+            item = {**item, **({"receiptReplayProof": proof} if proof is not None
+                               else {"receiptReplayUnverifiable": True})}
+            digest, ledger_key, row = self._research_checkpoint(
+                operation=operation, stage="investigation", item_key=item_key, item=item)
+            self._reject_unknown_research_checkpoint(row)
         if self._allow_failed_research_resume and row is not None and row[0] == "failed" and row[1] == "provider_http_400":
             grant = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
             if digest in set(grant.get("failedModelInputSha256", [])):
@@ -1190,7 +1606,7 @@ class _CheckpointedDiscoveryModel:
     def advance_research_round(self, *, snapshot: ResearchSnapshot,
                                evidence_packet: Mapping[str, Any]) -> ResearchRoundResult:
         """Ledger and replay one B78 direct result as one paid operation."""
-        from .research_runtime import validate_research_round_result
+        from .research_runtime import normalize_research_round_result, validate_research_round_result
         if not isinstance(snapshot, ResearchSnapshot):
             raise PipelineError("研究快照无效", code="investigation_snapshot_invalid")
         operation, item_key, item, _digest, _ledger_key, _row = self._research_operation_target(
@@ -1199,14 +1615,17 @@ class _CheckpointedDiscoveryModel:
         def encode(value: ResearchRoundResult) -> Mapping[str, Any]:
             if not isinstance(value, ResearchRoundResult) or value.action != RESEARCH_ROUND_ACTION:
                 raise PipelineError("研究轮次输出无效", code="investigation_result_invalid")
-            validate_research_round_result(result=value, evidence_packet=evidence_packet)
-            return value.to_dict()
+            normalized = normalize_research_round_result(result=value, evidence_packet=evidence_packet)
+            validate_research_round_result(result=normalized, evidence_packet=evidence_packet)
+            return normalized.to_dict()
 
         def decode(value: Mapping[str, Any] | list[Any]) -> ResearchRoundResult:
             if not isinstance(value, Mapping):
                 raise PipelineError("研究缓存无效", code="model_cache_corrupt")
             try:
-                result = ResearchRoundResult.from_dict(value)
+                result = normalize_research_round_result(
+                    result=ResearchRoundResult.from_dict(value), evidence_packet=evidence_packet,
+                )
                 validate_research_round_result(result=result, evidence_packet=evidence_packet)
                 return result
             except (InvestigationError, ResearchContractError) as exc:
@@ -1278,6 +1697,8 @@ class _CheckpointedDiscoveryModel:
              invoke: Callable[[], Any], encode: Callable[[Any], Mapping[str, Any] | list[Any]],
              decode: Callable[[Mapping[str, Any] | list[Any]], Any]) -> Any:
         compact_resume = False
+        original_replay_item = dict(item)
+        original_replay_digest = self._digest(operation=operation, stage=stage, item=original_replay_item)
         if operation in {"verify", "map", "compare", "classify", "prioritize", "titleBatch", "titleReconcile"}:
             original_item = item
             _original_digest, _original_key, original_row = self._research_checkpoint(
@@ -1288,6 +1709,10 @@ class _CheckpointedDiscoveryModel:
                     or (operation in {"titleBatch", "titleReconcile"} and code in {"title_protocol_invalid", "title_protected_merge_invalid"}))
             compact_resume = (item != original_item and original_row is not None
                               and "truncated" in (original_row[1] or ""))
+        title_replay_proof = (self._title_receipt_replay_proof(
+            operation=operation, stage=stage, item_key=item_key,
+            original_item=original_replay_item, original_digest=original_replay_digest)
+            if item.get("authorizedSemanticRecoveryOf") == original_replay_digest else None)
         if operation in {"classify", "prioritize"} and (_row is None or _row[0] != "completed"):
             repair = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("runtimeRepair")
             if repair is not None and repair.get("finalizationModelOptions") is not None:
@@ -1314,7 +1739,26 @@ class _CheckpointedDiscoveryModel:
                 elif compact_resume:
                     self._base._thread_usage.repair_feedback = {**previous_feedback, "compactOutput": True}
             try:
-                return invoke()
+                receipt_context = nullcontext()
+                from .metering import MeteredProvider
+                if isinstance(provider, MeteredProvider):
+                    if operation.startswith("investigation_"):
+                        renderer_revision = self._policy.get("investigationPromptContractRevision")
+                    elif operation == "titleReconcile":
+                        renderer_revision = self._policy.get("titleReconcileContractVersion", "k10-title-reconcile-v1")
+                    elif operation == "titleBatch":
+                        renderer_revision = "k10-title-batch-v1"
+                    else:
+                        renderer_revision = "k10-" + operation + "-v1"
+                    if not isinstance(renderer_revision, str) or not renderer_revision:
+                        raise PipelineError("模型回执 renderer 契约无效", code="execution_policy_invalid")
+                    feedback = getattr(getattr(self._base, "_thread_usage", None), "repair_feedback", None)
+                    receipt_context = provider.receipt_replay_metadata_context({
+                        "rendererRevision": renderer_revision,
+                        "repairFeedback": dict(feedback) if isinstance(feedback, Mapping) else None,
+                    })
+                with receipt_context:
+                    return invoke()
             finally:
                 if isinstance(self._base, DeepSeekDiscoveryModel):
                     self._base._thread_usage.finalization_model_options = None
@@ -1339,101 +1783,138 @@ class _CheckpointedDiscoveryModel:
                 previous = getattr(self._base._thread_usage, "last", None) or {}
                 self._base._thread_usage.last = {**previous, "validationErrors": errors}
 
-        def preserve_rejected_response(exc: Exception) -> None:
-            if not isinstance(self._base, DeepSeekDiscoveryModel):
-                return
-            candidate = getattr(self._base._thread_usage, "last_candidate", None)
-            if not isinstance(candidate, Mapping):
-                return
-            # Private, explicitly unvalidated evidence: never a completed cache
-            # or public API field. Preserve paid answers for offline repairs.
-            value = {"taskId": self._task_id, "operation": operation, "itemKey": item_key,
-                     "inputSha256": self._digest(operation=operation, stage=stage, item=item),
-                     "recordedAt": datetime.now(timezone.utc).isoformat(),
-                     "errorCode": getattr(exc, "code", "model_execution_invalid"),
-                     "constraint": str(exc), "response": dict(candidate)}
-            content = (json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n").encode()
-            folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
-            try:
-                folder.parent.mkdir(mode=0o700, exist_ok=True)
-                folder.mkdir(mode=0o700, exist_ok=True)
-                target = folder / (sha256(content).hexdigest() + ".json")
-                descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(descriptor, "wb") as handle:
-                    handle.write(content)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            except FileExistsError:
-                pass
-            except OSError:
-                logging.getLogger(__name__).warning("Could not preserve rejected model response")
+        spend_stage = ({"understand": "fullText" if item.get("textMode") == "full_text" else "lightweight",
+                        "map": "map", "classify": "classify", "compare": "companyComparison"}.get(operation, stage))
+        provider = getattr(self._base, "provider", None)
 
-        def reusable_paid_response():
+        def reusable_paid_receipts() -> tuple[Mapping[str, Any], ...]:
             previous = item.get("authorizedSemanticRecoveryOf")
             is_title = operation in {"titleBatch", "titleReconcile"}
             is_research = operation in {"investigation_plan_gaps", "investigation_assess_evidence", "investigation_compare_companies", "investigation_plan_queries", "investigation_plan_research", "investigation_assess_and_decide", "investigation_research_round"}
             is_body = operation == "understand"
-            if not (is_title or is_research or is_body) or not previous or not self._allow_failed_research_resume:
-                return None
-            if operation == "investigation_plan_queries":
-                # Older runtimes rejected scope after a successful checkpoint
-                # write. Revalidate that exact paid derivative, preserving the
-                # failed row and its original ledger, before any recovery call.
-                with read_connection(self._db_path) as conn:
-                    prior = conn.execute(
-                        "SELECT c.result_json FROM k10_execution_item_checkpoints c "
-                        "WHERE c.task_id=? AND c.stage=? AND c.input_sha256=? AND c.status='failed' "
-                        "AND c.safe_error_code='investigation_path_scope_invalid' AND c.result_json IS NOT NULL "
-                        "AND EXISTS (SELECT 1 FROM k10_external_attempts a WHERE a.task_id=c.task_id "
-                        "AND a.item_key=? AND a.state='succeeded')",
-                        (self._task_id, f"model:{operation}", previous, f"{operation}:{item_key}:{previous}"),
-                    ).fetchone()
-                if prior is not None:
-                    try:
-                        candidate = decode(json.loads(prior[0]))
-                        validator = getattr(self._research_validators, "recovered", None)
-                        if validator is not None:
-                            validator(candidate)
-                            encode(candidate)
-                            return candidate
-                    except (ValueError, KeyError, TypeError, InvestigationError, PipelineError):
-                        pass
-            folder = self._db_path.parent / "model-diagnostics" / sha256(self._task_id.encode()).hexdigest()
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    if path.is_symlink():
-                        continue
-                    content = path.read_bytes()
-                    if sha256(content).hexdigest() != path.stem:
-                        continue
-                    value = json.loads(content)
-                    if (value.get("taskId"), value.get("operation"), value.get("itemKey"), value.get("inputSha256")) != (self._task_id, operation, item_key, previous):
-                        continue
-                    # The exact-input paid answer must pass current parsing
-                    # AND the same live research evidence boundary before use.
-                    candidate = value["response"] if is_title or is_body else decode(value["response"])
-                    if is_research:
-                        validator = getattr(self._research_validators, "recovered", None)
-                        if validator is None:
-                            continue
-                        validator(candidate)
-                    encode(candidate)
-                    return candidate
-                except (OSError, ValueError, KeyError, TypeError, InvestigationError, PipelineError):
-                    continue
-            return None
+            body_previous = item.get("receiptReplayOriginalDigest") if is_body else None
+            permitted_body_replay = (is_body and isinstance(body_previous, str)
+                                     and item.get("receiptReplayOnly") is True)
+            if (not (is_title or is_research or is_body)
+                    or (not permitted_body_replay and (not previous or not self._allow_failed_research_resume))):
+                return ()
+            from .metering import MeteredProvider
+            if not isinstance(provider, MeteredProvider):
+                # Deterministic in-process models have no paid transport or
+                # durable receipt to protect. Production adapters must take
+                # the receipt-only branch below; tests still exercise their
+                # semantic retry state machine without pretending a synthetic
+                # callback is a provider recovery.
+                return ()
+            if is_research:
+                proof = item.get("receiptReplayProof")
+                if item.get("receiptReplayUnverifiable") is True or not isinstance(proof, Mapping):
+                    raise PipelineError("原始付费研究回执无法证明 wire 身份", code="provider_response_receipt_unverifiable")
+                proof_rows = proof.get("proofs")
+                if proof.get("unverifiable") is True or not isinstance(proof_rows, list) or not proof_rows:
+                    raise PipelineError("原始付费研究回执证明无效", code="provider_response_receipt_unverifiable")
+                expected_proofs: list[tuple[str, str]] = []
+                for row in proof_rows:
+                    expected_request = row.get("requestSha256") if isinstance(row, Mapping) else None
+                    expected_scope = row.get("reuseScopeSha256") if isinstance(row, Mapping) else None
+                    if (not isinstance(expected_request, str) or not isinstance(expected_scope, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", expected_request) is None
+                            or re.fullmatch(r"[0-9a-f]{64}", expected_scope) is None):
+                        raise PipelineError("原始付费研究回执证明无效", code="provider_response_receipt_unverifiable")
+                    pair = (expected_request, expected_scope)
+                    if pair not in expected_proofs:
+                        expected_proofs.append(pair)
+            elif is_title:
+                if not isinstance(title_replay_proof, Mapping):
+                    raise PipelineError("原始付费标题回执无法证明 wire 身份", code="provider_response_receipt_unverifiable")
+                proof_rows = title_replay_proof.get("proofs")
+                if (title_replay_proof.get("unverifiable") is True
+                        or not isinstance(proof_rows, list) or not proof_rows):
+                    raise PipelineError("原始付费标题回执证明无效", code="provider_response_receipt_unverifiable")
+                expected_proofs = []
+                for row in proof_rows:
+                    expected_request = row.get("requestSha256") if isinstance(row, Mapping) else None
+                    expected_scope = row.get("reuseScopeSha256") if isinstance(row, Mapping) else None
+                    if (not isinstance(expected_request, str) or not isinstance(expected_scope, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", expected_request) is None
+                            or re.fullmatch(r"[0-9a-f]{64}", expected_scope) is None):
+                        raise PipelineError("原始付费标题回执证明无效", code="provider_response_receipt_unverifiable")
+                    pair = (expected_request, expected_scope)
+                    if pair not in expected_proofs:
+                        expected_proofs.append(pair)
+            else:
+                proof = item.get("receiptReplayProof")
+                if item.get("receiptReplayUnverifiable") is True or not isinstance(proof, Mapping):
+                    raise PipelineError("原始付费正文回执无法证明 wire 身份", code="provider_response_receipt_unverifiable")
+                expected_request = proof.get("requestSha256")
+                expected_scope = proof.get("reuseScopeSha256")
+                replay_request = proof.get("request")
+                if (not isinstance(expected_request, str) or not isinstance(expected_scope, str)
+                        or re.fullmatch(r"[0-9a-f]{64}", expected_request) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", expected_scope) is None
+                        or not isinstance(replay_request, Mapping)
+                        or not isinstance(replay_request.get("operation"), str)
+                        or not isinstance(replay_request.get("payload"), Mapping)
+                        or not isinstance(replay_request.get("modelOptions"), Mapping)):
+                    raise PipelineError("原始付费正文回执证明无效", code="provider_response_receipt_unverifiable")
+            # ``previous`` is the original frozen semantic input digest, not
+            # the B82-derived recovery digest.  The store then proves the raw
+            # reply belongs to that exact original task/stage/item wire before
+            # the *current* provider parser sees it.  Similar inputs have no
+            # route through this lookup and cannot borrow a paid response.
+            receipt_digest = body_previous if permitted_body_replay else previous
+            if not isinstance(receipt_digest, str):
+                raise PipelineError("原始付费回执身份无效", code="provider_response_receipt_unverifiable")
+            receipt_item_key = f"{operation}:{item_key}:{receipt_digest}"
+            if is_research or is_title:
+                # Read candidates once in their durable newest-first order,
+                # then retain only rows independently re-read through an
+                # exact reconstructed request/scope proof.  Any raw receipt
+                # lacking a proof was already rejected above; it can never
+                # fall through to a fresh POST.
+                raw_receipts = store.load_model_response_receipts_for_operation(
+                    task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path)
+                exact_by_attempt: dict[str, Mapping[str, Any]] = {}
+                for expected_request, expected_scope in expected_proofs:
+                    for receipt in store.load_model_response_receipts_for_operation(
+                            task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path,
+                            expected_request_sha256=expected_request, expected_reuse_scope_sha256=expected_scope):
+                        attempt_id = receipt.get("attemptId")
+                        if isinstance(attempt_id, str):
+                            exact_by_attempt[attempt_id] = receipt
+                receipts = tuple(exact_by_attempt[str(row["attemptId"])] for row in raw_receipts
+                                 if isinstance(row.get("attemptId"), str)
+                                 and str(row["attemptId"]) in exact_by_attempt)
+                if len(receipts) != len(raw_receipts):
+                    raise PipelineError(
+                        "原始付费研究回执无法证明 wire 身份" if is_research else "原始付费标题回执无法证明 wire 身份",
+                        code="provider_response_receipt_unverifiable",
+                    )
+            else:
+                raw_receipts = store.load_model_response_receipts_for_operation(
+                    task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path,
+                )
+                receipts = store.load_model_response_receipts_for_operation(
+                    task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path,
+                    expected_request_sha256=expected_request, expected_reuse_scope_sha256=expected_scope)
+                if len(receipts) != len(raw_receipts):
+                    raise PipelineError("原始付费正文回执无法证明 wire 身份", code="provider_response_receipt_unverifiable")
+            if not receipts:
+                raise PipelineError("授权恢复缺少可证明的原始模型回执", code="provider_response_receipt_unverifiable")
+            return receipts
 
-        recovered_response = reusable_paid_response()
+        recovered_receipts = reusable_paid_receipts()
 
         def validate_with_feedback(value):
             try:
                 return encode(value)
             except Exception as exc:
                 remember_validation(exc)
-                preserve_rejected_response(exc)
                 raise
 
         def metered_invoke() -> Any:
+            from .title_triage import TitleTriageProtocolError
+
             records = getattr(self._base, "usage_records", None)
             start = len(records) if isinstance(records, list) else 0
             thread_usage = getattr(self._base, "_thread_usage", None)
@@ -1447,17 +1928,62 @@ class _CheckpointedDiscoveryModel:
                     return value if isinstance(value, Mapping) else {}
                 added = records[start:] if isinstance(records, list) else []
                 return added[-1] if len(added) == 1 and isinstance(added[-1], Mapping) else {}
+            replayed_receipt_accepted = False
             try:
-                value = recovered_response if recovered_response is not None else invoke_bound_finalization()
+                if recovered_receipts:
+                    # Several answered attempts can share one frozen operation
+                    # (for example, an initial malformed reply and a later
+                    # paid repair). Revalidate every exact DB candidate in the
+                    # deterministic receipt order before a recovery is allowed
+                    # to issue any new request. A bad newest reply therefore
+                    # cannot hide an older usable paid reply.
+                    value = None
+                    for recovered_receipt in recovered_receipts:
+                        previous_body_replay = None
+                        try:
+                            if operation == "understand":
+                                previous_body_replay = getattr(
+                                    self._base._thread_usage, "understand_receipt_replay_request", None)
+                                proof = item.get("receiptReplayProof")
+                                assert isinstance(proof, Mapping)
+                                self._base._thread_usage.understand_receipt_replay_request = proof["request"]
+                            with provider.exact_receipt_replay_context(recovered_receipt):
+                                candidate = invoke_bound_finalization()
+                                # ``invoke`` validates the provider envelope,
+                                # but the domain encoder owns the current
+                                # output contract. Check both locally before
+                                # accepting this immutable raw reply.
+                                encode(candidate)
+                        except (PipelineError, InvestigationError, ResearchContractError, TitleTriageProtocolError):
+                            continue
+                        finally:
+                            if operation == "understand":
+                                if previous_body_replay is None:
+                                    try:
+                                        del self._base._thread_usage.understand_receipt_replay_request
+                                    except AttributeError:
+                                        pass
+                                else:
+                                    self._base._thread_usage.understand_receipt_replay_request = previous_body_replay
+                        value = candidate
+                        replayed_receipt_accepted = True
+                        break
+                    if not replayed_receipt_accepted:
+                        # All exact candidates were locally rejected by the
+                        # current parser. An explicitly authorized recovery may
+                        # make one fresh correction under the frozen budget; it
+                        # never overwrites or rebills any old receipt.
+                        value = invoke_bound_finalization()
+                else:
+                    value = invoke_bound_finalization()
             except Exception as exc:
                 remember_validation(exc)
-                preserve_rejected_response(exc)
                 usage = current_usage()
                 code = getattr(exc, "code", None)
                 safe = code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code) else "model_execution_invalid"
                 if receipt_recovery_only and safe in {
                     "provider_response_receipt_missing", "provider_response_receipt_invalid",
-                    "provider_response_receipt_unreplayable",
+                    "provider_response_receipt_unreplayable", "provider_response_receipt_unverifiable",
                 }:
                     raise ModelReceiptRecoveryUnavailable(code=safe) from exc
                 if safe == "response_truncated" and operation.startswith("investigation_"):
@@ -1475,7 +2001,7 @@ class _CheckpointedDiscoveryModel:
             # metering truthful if an injected model does not expose a single record.
             if isinstance(value, LLMResult):
                 return value
-            if recovered_response is not None:
+            if recovered_receipts and replayed_receipt_accepted:
                 # The original paid attempt remains in its immutable ledger;
                 # exact-input local revalidation incurs no additional usage.
                 return ModelInvocation(value=value, input_tokens=0, output_tokens=0, total_tokens=0)
@@ -1494,11 +2020,9 @@ class _CheckpointedDiscoveryModel:
             operation=operation, stage=stage, item_key=item_key, item=item,
         )
         receipt_recovery_only = bool(
-            receipt_row is not None and receipt_row[0] == "running" and self._can_readonly_receipt_recovery()
+            (receipt_row is not None and receipt_row[0] == "running" and self._can_readonly_receipt_recovery())
+            or item.get("receiptReplayOnly") is True
         )
-        spend_stage = ({"understand": "fullText" if item.get("textMode") == "full_text" else "lightweight",
-                        "map": "map", "classify": "classify", "compare": "companyComparison"}.get(operation, stage))
-        provider = getattr(self._base, "provider", None)
         result = None
 
         def repair_invoke() -> Any:
@@ -1538,6 +2062,8 @@ class _CheckpointedDiscoveryModel:
                     item_key=f"{operation}:{item_key}:{digest}", attempt=attempt,
                     full_text=spend_stage == "fullText", receipt_only=receipt_recovery_only),
                 allow_receipt_recovery=receipt_recovery_only,
+                new_external_admission_guard=(self._new_research_external_admission_guard
+                                              if operation.startswith("investigation_") else None),
             )
             if result.status == "completed" or receipt_recovery_only:
                 # One local reconciliation is not a new network/repair attempt.
@@ -1624,10 +2150,126 @@ class _CheckpointedDiscoveryModel:
                     operation="understand", stage="understand", item_key=item_key, item=item,
                     eligible=lambda code: "json" in code or code in {
                         "execution_paused", "investigation_claims_missing", "understand_full_incomplete", "pipeline_invalid"})
-            value = self._run(operation="understand", stage="understand", item_key=item_key, item=item,
-                invoke=lambda: self._base._json(operation=operation, payload=payload,
-                                               model_options=self._base._model_options("understand")),
-                encode=validate, decode=decode)
+                original_digest = item.get("authorizedSemanticRecoveryOf")
+                if isinstance(original_digest, str):
+                    proof = self._body_receipt_replay_proof(
+                        document=document, material=material, original_digest=original_digest)
+                    # Missing B81 source input or a mismatched old wire is a
+                    # receipt-only stop. It never silently becomes a current
+                    # B82 POST merely because parser rules evolved.
+                    item = {**item, **({"receiptReplayProof": proof} if proof is not None
+                                       else {"receiptReplayUnverifiable": True})}
+            elif self._policy.get("investigationPromptContractRevision") == "k10-investigation-v1":
+                # A B81 body can be resumed only from a same-task exact local
+                # result. Reconstructing its old request proves an identity;
+                # it does not by itself prove that the raw answer still
+                # exists. Any earlier external attempt for this natural body
+                # must therefore remain receipt-only, regardless of whether
+                # the old model checkpoint is still present or marked running.
+                proof = self._body_receipt_replay_proof(document=document, material=material)
+                old_digest = proof.get("inputSha256") if isinstance(proof, Mapping) else None
+                external_item_prefix = f"understand:{item_key}:"
+                with read_connection(self._db_path) as connection:
+                    existing_attempt = connection.execute(
+                        "SELECT 1 FROM k10_external_attempts "
+                        "WHERE task_id=? AND stage IN ('fullText','lightweight') "
+                        "AND substr(item_key,1,?)=? LIMIT 1",
+                        (self._task_id, len(external_item_prefix), external_item_prefix),
+                    ).fetchone()
+                    old_checkpoint = None
+                    if isinstance(old_digest, str) and re.fullmatch(r"[0-9a-f]{64}", old_digest):
+                        old_ledger = "model:understand:" + sha256(
+                            f"understand\x1f{item_key}\x1f{old_digest}".encode("utf-8")
+                        ).hexdigest()
+                        old_checkpoint = connection.execute(
+                            "SELECT status FROM k10_execution_item_checkpoints "
+                            "WHERE task_id=? AND item_kind='document' AND item_key=? "
+                            "AND stage='model:understand' AND input_sha256=?",
+                            (self._task_id, old_ledger, old_digest),
+                        ).fetchone()
+                if existing_attempt is not None:
+                    if not isinstance(old_digest, str) or re.fullmatch(r"[0-9a-f]{64}", old_digest) is None:
+                        raise PipelineError(
+                            "原始正文理解输入无法证明，不得重新发起模型请求",
+                            code="provider_response_receipt_unverifiable",
+                        )
+                    current_body_digest = self._digest(operation="understand", stage="understand", item=item)
+                    if not (old_checkpoint is not None and old_checkpoint[0] == "completed"
+                            and current_body_digest == old_digest):
+                        # A failed, absent or differently-shaped old model
+                        # checkpoint cannot turn an already-started wire into
+                        # a new POST. Passing the exact proof through
+                        # receipt-only recovery makes a missing/raw-invalid
+                        # response fail locally.
+                        item = {**item, "receiptReplayOriginalDigest": old_digest,
+                                "receiptReplayProof": proof, "receiptReplayOnly": True}
+            if item.get("receiptReplayOnly") is not True:
+                # B82's current renderer has the same no-repost boundary. A
+                # valid completed model checkpoint is already a local result
+                # and is deliberately left to ``_run``. Otherwise a natural
+                # body with any prior provider attempt can only consume an
+                # exact raw receipt; rebuilding the current wire never
+                # authorizes another POST when that receipt has been lost.
+                current_digest = self._digest(operation="understand", stage="understand", item=item)
+                current_ledger = "model:understand:" + sha256(
+                    f"understand\x1f{item_key}\x1f{current_digest}".encode("utf-8")
+                ).hexdigest()
+                external_item_prefix = f"understand:{item_key}:"
+                with read_connection(self._db_path) as connection:
+                    current_checkpoint = connection.execute(
+                        "SELECT status FROM k10_execution_item_checkpoints "
+                        "WHERE task_id=? AND item_kind='document' AND item_key=? "
+                        "AND stage='model:understand' AND input_sha256=?",
+                        (self._task_id, current_ledger, current_digest),
+                    ).fetchone()
+                    existing_attempt = connection.execute(
+                        "SELECT 1 FROM k10_external_attempts "
+                        "WHERE task_id=? AND stage IN ('fullText','lightweight') "
+                        "AND substr(item_key,1,?)=? LIMIT 1",
+                        (self._task_id, len(external_item_prefix), external_item_prefix),
+                    ).fetchone()
+                if existing_attempt is not None and (current_checkpoint is None or current_checkpoint[0] != "completed"):
+                    original_digest = item.get("authorizedSemanticRecoveryOf")
+                    proof = item.get("receiptReplayProof")
+                    if (not isinstance(original_digest, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", original_digest) is None
+                            or not isinstance(proof, Mapping)):
+                        original_digest = current_digest
+                        proof = self._body_receipt_replay_proof(
+                            document=document, material=material, original_digest=original_digest)
+                    if not isinstance(proof, Mapping):
+                        raise PipelineError(
+                            "原始正文理解输入无法证明，不得重新发起模型请求",
+                            code="provider_response_receipt_unverifiable",
+                        )
+                    item = {**item, "receiptReplayOriginalDigest": original_digest,
+                            "receiptReplayProof": proof, "receiptReplayOnly": True}
+            prior_claim_marker = getattr(self._base._thread_usage, "preserve_frozen_claim_ids", None)
+            preserve_frozen_receipt_claim_ids = (
+                item.get("receiptReplayOnly") is True
+                and self._policy.get("investigationPromptContractRevision") == "k10-investigation-v1"
+            )
+            if preserve_frozen_receipt_claim_ids:
+                self._base._thread_usage.preserve_frozen_claim_ids = True
+            try:
+                value = self._run(operation="understand", stage="understand", item_key=item_key, item=item,
+                    invoke=lambda: self._base._json(
+                        operation=((getattr(self._base._thread_usage, "understand_receipt_replay_request", None) or {})
+                                   .get("operation", operation)),
+                        payload=((getattr(self._base._thread_usage, "understand_receipt_replay_request", None) or {})
+                                 .get("payload", payload)),
+                        model_options=((getattr(self._base._thread_usage, "understand_receipt_replay_request", None) or {})
+                                       .get("modelOptions", self._base._model_options("understand")))),
+                    encode=validate, decode=decode)
+            finally:
+                if preserve_frozen_receipt_claim_ids:
+                    if prior_claim_marker is None:
+                        try:
+                            del self._base._thread_usage.preserve_frozen_claim_ids
+                        except AttributeError:
+                            pass
+                    else:
+                        self._base._thread_usage.preserve_frozen_claim_ids = prior_claim_marker
             if cache_key is not None:
                 store.store_fact_cache(cache_key=cache_key, source_refs=[_ref_payload(document.evidence_ref)],
                     eligible_at=document.published_at or document.fetched_at,
@@ -1635,7 +2277,26 @@ class _CheckpointedDiscoveryModel:
                     model=self._binding.get("runtimeProvider", {}).get("model", self._policy["model"]),
                     prompt_input_sha256=prompt_hash, result=value, created_at=_text(_now()), db_path=self._db_path)
             return value
-        events = self._base._understand_flow(document=document, invoke=invoke)
+        # Only an explicitly authorized recovery of a B81 frozen task may use
+        # the legacy paid-receipt decoder.  The flag is thread-local because
+        # discovery can decode selected documents concurrently; it must never
+        # leak into a fresh B82 extraction in another worker thread.
+        preserve_legacy_claim_ids = (
+            self._allow_failed_research_resume
+            and self._policy.get("investigationPromptContractRevision") == "k10-investigation-v1"
+        )
+        prior_marker = getattr(self._base._thread_usage, "preserve_frozen_claim_ids", None)
+        self._base._thread_usage.preserve_frozen_claim_ids = preserve_legacy_claim_ids
+        try:
+            events = self._base._understand_flow(document=document, invoke=invoke)
+        finally:
+            if prior_marker is None:
+                try:
+                    del self._base._thread_usage.preserve_frozen_claim_ids
+                except AttributeError:
+                    pass
+            else:
+                self._base._thread_usage.preserve_frozen_claim_ids = prior_marker
         if self._base.full_text_used(document=document):
             self._full_text_used.add(document.evidence_ref)
         if self._base.full_text_requested(document=document):
@@ -2031,9 +2692,131 @@ def _event_id(canonical_key: str) -> str:
 
 
 def _research_id(*, task_id: str, event: EventDraft) -> str:
-    refs = ["%s@%s" % (ref.document_id, ref.revision) for ref in event.source_refs]
-    material = "\x1f".join((task_id, event.canonical_key, event.stage_key, event.event_state, *refs))
-    return "research_" + sha256(material.encode("utf-8")).hexdigest()[:32]
+    # Must remain byte-for-byte aligned with ``_Investigation.identity``.
+    # A delimiter string was not equivalent to that runtime's canonical JSON
+    # list, so finalization could not prove the distinct snapshot identities
+    # of a retained original/correction pair.
+    material = [task_id, event.canonical_key, event.stage_key, event.event_state,
+                [_ref_payload(ref) for ref in event.source_refs]]
+    return "research_" + sha256(json.dumps(material, ensure_ascii=False, sort_keys=True,
+                                             separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+
+
+def _research_unit_id(event: EventDraft) -> str:
+    """Identify one retained research input without changing opportunity identity.
+
+    Canonical event IDs intentionally merge the public lifecycle of an
+    announcement and its correction.  Research, gaps and report materials must
+    instead retain the exact stage/state/source input that was investigated.
+    This is the task-independent portion of ``_research_id`` and therefore
+    stays aligned with snapshot admission without making a correction look
+    like a new market opportunity.
+    """
+    material = [event.canonical_key, event.stage_key, event.event_state,
+                [_ref_payload(ref) for ref in event.source_refs]]
+    return "research_unit_" + sha256(json.dumps(material, ensure_ascii=False, sort_keys=True,
+                                                  separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+
+
+def _snapshot_admission_matches(
+    *, connection: sqlite3.Connection, snapshot: ResearchSnapshot, event: EventDraft,
+    task_id: str, stable_key: Any, headline: Any, event_kind: Any, stored_facts: Mapping[str, Any],
+    refs: Any, cutoff_at: datetime, cutoff_inclusive: bool, db_path: Path,
+) -> bool:
+    """Prove that a research snapshot still binds this exact persisted input.
+
+    B82 snapshots retain the full source-owned admission context in their
+    append-only JSON.  The event revision keeps a protected copy as well, so a
+    changed business fact cannot be hidden behind runtime stage/verification
+    bookkeeping.  B81 rows lack this field; only their frozen completed
+    understand result can reconstruct the old writer projection exactly.
+    """
+    from .research_runtime import research_context_digest, research_context_payload
+
+    expected = research_context_payload(
+        event=event, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+        strip_event_comparison=True,
+    )
+    common = (
+        snapshot.task_id == task_id
+        and snapshot.event_id == _event_id(event.canonical_key)
+        and str(stable_key) == event.canonical_key
+        and str(headline) == event.headline
+        and str(event_kind) == event.event_kind
+        and isinstance(refs, list)
+        and [_ref_payload(ref) for ref in _refs(refs)] == expected["sourceRefs"]
+        and snapshot.news_cutoff_at == expected["newsCutoffAt"]
+    )
+    if not common:
+        return False
+
+    admission = snapshot.admission_context
+    if admission is not None:
+        system = event_system_metadata(stored_facts)
+        source_facts = event_input_facts(stored_facts)
+        if not isinstance(system, Mapping) or not isinstance(source_facts, Mapping):
+            return False
+        # Keep the visible row and the protected input copy mutually bound.
+        # A source may itself use the envelope name; that value is preserved
+        # inside inputFacts and therefore never gets mistaken for metadata.
+        if (dict(admission) != expected
+                or dict(source_facts) != expected["facts"]
+                or system.get("stageKey") != expected["stageKey"]
+                or system.get("eventState") != expected["eventState"]
+                or not isinstance(system.get("verification"), Mapping)
+                or set(stored_facts) != set(source_facts) | {"_necklineSystem"}
+                or any(stored_facts.get(key) != value for key, value in source_facts.items()
+                       if key != "_necklineSystem")
+                or snapshot.context_sha256 != research_context_digest(
+                    event=event, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+                    strip_event_comparison=True,
+                )):
+            return False
+        return True
+
+    # B81 persisted no admission envelope.  It may only continue when a paid,
+    # completed understand checkpoint supplies one exact original EventDraft.
+    # Do not pop keys from the event row and guess: stage/state/verification
+    # and eventComparison were all legitimate source-fact names.
+    if snapshot.prompt_contract_revision not in {"k10-investigation-v1", RESEARCH_ROUND_CONTRACT}:
+        return False
+    # B81 can merge two supporting body results into one research input.  Use
+    # the runtime's one exact reassembler: it reads the frozen admission order
+    # rather than sorting checkpoint keys, then applies discovery's own merge.
+    from .research_runtime import _legacy_merged_understanding_events
+    candidates = _legacy_merged_understanding_events(task_id=task_id, db_path=db_path)
+    proven = 0
+    for candidate in candidates:
+        if (candidate.canonical_key != event.canonical_key or candidate.stage_key != event.stage_key
+                or candidate.event_state != event.event_state or candidate.headline != event.headline
+                or candidate.event_kind != event.event_kind
+                or [_ref_payload(ref) for ref in candidate.source_refs] != expected["sourceRefs"]):
+            continue
+        candidate_context = research_context_payload(
+            event=candidate, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+        )
+        # The old runtime overwrote only this one derived slot after research.
+        # Recreate that projection while retaining every other source fact.
+        projected = dict(candidate.facts)
+        if "eventComparison" in event.facts:
+            projected["eventComparison"] = event.facts["eventComparison"]
+        verification = stored_facts.get("verification")
+        legacy_projection = {
+            **dict(candidate.facts),
+            "stageKey": candidate.stage_key,
+            "eventState": candidate.event_state,
+            "verification": verification,
+        }
+        if (projected != dict(event.facts)
+                or not isinstance(verification, Mapping)
+                or dict(stored_facts) != legacy_projection
+                or candidate_context["newsCutoffAt"] != snapshot.news_cutoff_at
+                or snapshot.context_sha256 != research_context_digest(
+                    event=candidate, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive,
+                )):
+            continue
+        proven += 1
+    return proven == 1
 
 
 def _research_ref_payload(ref: EvidenceRef) -> dict[str, Any]:
@@ -2048,7 +2831,9 @@ def _research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDr
                       snapshot_created: Callable[[str], None] | None = None,
                       cutoff_inclusive: bool = False,
                       allow_failed_resume: bool = False,
-                      runtime_contract: Mapping[str, Any] | None = None) -> InvestigationOutcome:
+                      runtime_contract: Mapping[str, Any] | None = None,
+                      new_research_admission_guard: Callable[[], None] | None = None,
+                      new_external_admission_guard: Callable[[], None] | None = None) -> InvestigationOutcome:
     """Compatibility forwarder for the durable B39 coordinator.
 
     The coordinator owns all question/path loops and snapshot state. Keeping this
@@ -2063,6 +2848,8 @@ def _research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDr
         "execution_profile": execution_profile, "cutoff_at": cutoff_at, "db_path": db_path,
         "created_at": created_at, "leaseguard": leaseguard, "cutoff_inclusive": cutoff_inclusive,
         "snapshot_created": snapshot_created, "clock": _now, "runtime_contract": runtime_contract,
+        "new_research_admission_guard": new_research_admission_guard,
+        "new_external_admission_guard": new_external_admission_guard,
     }
     # The normal path must never revive a failed research snapshot. The one
     # controlled same-task recovery is verified by production_scan_handler
@@ -2109,7 +2896,7 @@ def _active_published_candidates(*, opportunities: Sequence[Mapping[str, Any]],
 
 
 def _failed_research_dependency_codes(*, snapshot_ids: Sequence[object], db_path: Path,
-                                      failed_event_ids: Sequence[object] = ()) -> dict[str, set[str]]:
+                                      failed_snapshot_ids: Sequence[object] = ()) -> dict[str, set[str]]:
     """Return only company codes durably named by a failed research snapshot.
 
     A failed close can still have recorded a mapping in an earlier semantic
@@ -2119,7 +2906,7 @@ def _failed_research_dependency_codes(*, snapshot_ids: Sequence[object], db_path
     """
     from .research_store import load_research_round_state, read_research_state
 
-    requested = {event_id for event_id in failed_event_ids if isinstance(event_id, str) and event_id}
+    requested = {snapshot_id for snapshot_id in failed_snapshot_ids if isinstance(snapshot_id, str) and snapshot_id}
     result: dict[str, set[str]] = {}
     for snapshot_id in snapshot_ids:
         if not isinstance(snapshot_id, str) or not snapshot_id:
@@ -2132,9 +2919,9 @@ def _failed_research_dependency_codes(*, snapshot_ids: Sequence[object], db_path
         if not isinstance(event_id, str) or not event_id:
             continue
         failed_snapshot = getattr(snapshot, "execution_status", None) != "ok"
-        if not failed_snapshot and event_id not in requested:
+        if not failed_snapshot and snapshot_id not in requested:
             continue
-        codes = result.setdefault(event_id, set())
+        codes = result.setdefault(snapshot_id, set())
         stages = state.get("stageResults")
         if isinstance(stages, list):
             for stage in stages:
@@ -2261,7 +3048,7 @@ def _b76_ranking_input_for_run(*, run, coverage: Mapping[str, Any]) -> dict[str,
         "version": "k10-priority-input-3.4.0-b76",
         "companies": rows,
         "dependencyExclusions": dict(exclusions) if isinstance(exclusions, Mapping) else {
-            "failedEventIds": [], "companyCodes": [], "companyCodesByFailedEvent": {},
+            "failedResearchUnitIds": [], "companyCodes": [], "companyCodesByResearchUnit": {},
         },
     }
 
@@ -2277,45 +3064,53 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
     """
     from .delivery import delivery_gap, delivery_manifest
 
-    by_event = {_event_id(item.canonical_key): item for item in run.events}
-    failed_event_ids: set[str] = set()
+    by_unit = {_research_unit_id(item): item for item in run.events}
+    failed_unit_ids: set[str] = set()
     gaps: list[dict[str, Any]] = []
     failed_gap_indexes: dict[str, int] = {}
     excluded_codes: set[str] = set()
     title_scope_unknown = False
     body_scope_unknown = False
 
-    def recorded_research_dependency_codes(event_id: str) -> set[str]:
+    def recorded_research_dependency_codes(unit_id: str) -> set[str]:
         recorded = coverage.get("researchDependencyExclusions")
         if not isinstance(recorded, Mapping):
             return set()
-        related = recorded.get("companyCodesByFailedEvent")
+        related = recorded.get("companyCodesByResearchUnit")
+        if not isinstance(related, Mapping):
+            # Old frozen drafts predate the research-unit projection. They can
+            # only be read when an unambiguous canonical event identity exists.
+            related = recorded.get("companyCodesByFailedEvent")
         if not isinstance(related, Mapping):
             return set()
-        raw_codes = related.get(event_id)
+        raw_codes = related.get(unit_id)
+        if raw_codes is None:
+            event = by_unit.get(unit_id)
+            if event is not None:
+                raw_codes = related.get(_event_id(event.canonical_key))
         if not isinstance(raw_codes, list):
             return set()
         return {code for code in raw_codes if isinstance(code, str) and _TS_CODE.fullmatch(code)}
 
-    def add_failed_research_gap(event_id: str) -> None:
-        if event_id in failed_event_ids:
+    def add_failed_research_gap(unit_id: str) -> None:
+        if unit_id in failed_unit_ids:
             return
-        event = by_event.get(event_id)
+        event = by_unit.get(unit_id)
         if event is None:
             raise PipelineError("研究失败范围引用未知事件", code="research_dependency_invalid")
-        failed_event_ids.add(event_id)
+        failed_unit_ids.add(unit_id)
         codes = {item.mapping.company_code for item in (*run.candidates, *run.deferred,
                  *run.metadata_pending, *run.excluded, *run.updates, *run.background)
-                 if _event_id(item.event.canonical_key) == event_id}
+                 if _research_unit_id(item.event) == unit_id}
         codes.update(known_title_scope(event))
-        codes.update(recorded_research_dependency_codes(event_id))
+        codes.update(recorded_research_dependency_codes(unit_id))
         excluded_codes.update(codes)
         refs = [_ref_payload(ref) for ref in event.source_refs]
-        failed_gap_indexes[event_id] = len(gaps)
+        failed_gap_indexes[unit_id] = len(gaps)
         gaps.append(delivery_gap(
-            stage="research", unit_kind="event", unit_id=event_id,
+            stage="research", unit_kind="event", unit_id=unit_id,
             reason_code="research_execution_failed", message="该事件的研究执行未完成，相关公司不参与本轮聚合推荐。",
-            source_refs=refs, event_ids=[event_id], company_codes=sorted(codes),
+            source_refs=refs, event_ids=[_event_id(event.canonical_key)], company_codes=sorted(codes),
             company_scope_known=bool(codes),
         ))
 
@@ -2355,23 +3150,76 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
             ))
     recorded_dependencies = coverage.get("researchDependencyExclusions")
     if isinstance(recorded_dependencies, Mapping):
-        recorded_ids = recorded_dependencies.get("failedEventIds")
-        if not isinstance(recorded_ids, list) or any(not isinstance(event_id, str) or not event_id
-                                                      for event_id in recorded_ids):
+        recorded_ids = recorded_dependencies.get("failedResearchUnitIds")
+        if recorded_ids is None:
+            recorded_ids = recorded_dependencies.get("failedEventIds")
+        if not isinstance(recorded_ids, list) or any(not isinstance(unit_id, str) or not unit_id
+                                                      for unit_id in recorded_ids):
             raise PipelineError("研究失败范围不可读取", code="research_dependency_invalid")
-        for event_id in recorded_ids:
-            add_failed_research_gap(event_id)
+        for raw_unit_id in recorded_ids:
+            unit_id = raw_unit_id
+            if unit_id not in by_unit:
+                legacy_matches = [candidate_unit for candidate_unit, event in by_unit.items()
+                                  if _event_id(event.canonical_key) == raw_unit_id]
+                if len(legacy_matches) != 1:
+                    raise PipelineError("旧研究失败范围无法唯一绑定执行单元", code="research_dependency_invalid")
+                unit_id = legacy_matches[0]
+            add_failed_research_gap(unit_id)
+    snapshot_units = ({_research_id(task_id=task_id, event=event): _research_unit_id(event)
+                       for event in run.events}
+                      if isinstance(task_id, str) and task_id else {})
     for snapshot in failed_snapshots:
-        event_id = getattr(snapshot, "event_id", None)
-        if isinstance(event_id, str) and event_id:
-            add_failed_research_gap(event_id)
-    unprocessed_event_ids: set[str] = set()
+        snapshot_id = getattr(snapshot, "snapshot_id", None)
+        unit_id = snapshot_units.get(snapshot_id) if isinstance(snapshot_id, str) else None
+        if unit_id is None:
+            raise PipelineError("研究失败快照未绑定本轮执行单元", code="research_dependency_invalid")
+        add_failed_research_gap(unit_id)
+    unprocessed_unit_ids: set[str] = set()
     for issue in run.issues:
-        event = next((item for item in run.events if item.canonical_key == issue.canonical_key), None)
+        raw_unit_id = getattr(issue, "execution_unit_id", None)
+        unit_id = raw_unit_id if isinstance(raw_unit_id, str) and raw_unit_id else None
+        event = by_unit.get(unit_id) if unit_id is not None else None
+        ambiguous_legacy_event = False
+        foreign_execution_unit = False
+        if event is None and unit_id is None:
+            # Older frozen drafts have no execution-unit field.  Retain their
+            # legacy canonical/ref projection only when it names one event;
+            # an ambiguous correction/denial is an explicit safe gap rather
+            # than a guess that would merge two research results.
+            matching_events = [item for item in run.events if item.canonical_key == issue.canonical_key
+                               and (issue.document_ref is None or issue.document_ref in item.source_refs)]
+            event = matching_events[0] if len(matching_events) == 1 else None
+            unit_id = _research_unit_id(event) if event is not None else None
+            # A legacy issue recorded only a public canonical identity.  A
+            # correction or denial may share that identity with the original
+            # event, so it cannot honestly be attached to either private
+            # research unit.  Keep both units unprocessed and block formal
+            # ranking rather than publishing a sibling by guessing which
+            # event the old failure described. Title-only/document gaps take
+            # their own paths below and stay eligible for completed subsets.
+            ambiguous_legacy_event = (
+                event is None
+                and isinstance(issue.canonical_key, str) and bool(issue.canonical_key)
+                and issue.stage not in {"title_triage", "title_selection", "understand"}
+                and bool(matching_events)
+            )
+            if ambiguous_legacy_event:
+                unprocessed_unit_ids.update(_research_unit_id(item) for item in matching_events)
+        elif event is None:
+            # A v4 issue carries an explicit research-unit identity.  Its
+            # absence from this run is a foreign/corrupt reference, not a
+            # license to fall back to a matching public canonical identity.
+            # The latter would make a tampered ID silently pass whenever this
+            # run happens to have only one event for that canonical key.
+            foreign_execution_unit = True
+            matching_events = [item for item in run.events if item.canonical_key == issue.canonical_key
+                               and (issue.document_ref is None or issue.document_ref in item.source_refs)]
+            unprocessed_unit_ids.update(_research_unit_id(item) for item in matching_events)
+            unit_id = None
         event_id = _event_id(event.canonical_key) if event is not None else None
         codes = ({item.mapping.company_code for item in (*run.candidates, *run.deferred,
                   *run.metadata_pending, *run.excluded, *run.updates, *run.background)
-                  if event_id is not None and _event_id(item.event.canonical_key) == event_id})
+                  if unit_id is not None and _research_unit_id(item.event) == unit_id})
         codes.update(known_title_scope(event))
         if issue.stage == "understand" and issue.document_ref is not None:
             body_refs = [_ref_payload(issue.document_ref)]
@@ -2386,45 +3234,65 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
                 source_refs=body_refs, company_codes=sorted(codes), company_scope_known=bool(codes),
             ))
             continue
-        if event_id is not None and event_id in failed_event_ids:
+        if unit_id is not None and unit_id in failed_unit_ids:
             # A failed snapshot and discovery's per-event issue describe one
             # execution unit.  The snapshot supplies its durable dependency
             # boundary; the issue supplies a more specific safe reason such
             # as content_policy_refused.  Publish one gap with both facts,
             # rather than a generic failure plus a spurious unknown-scope
             # duplicate that makes the event reconciliation misleading.
-            codes.update(recorded_research_dependency_codes(event_id))
-            event = by_event.get(event_id)
+            codes.update(recorded_research_dependency_codes(unit_id))
+            event = by_unit.get(unit_id)
             refs = [] if event is None else [_ref_payload(ref) for ref in event.source_refs]
-            index = failed_gap_indexes.get(event_id)
+            index = failed_gap_indexes.get(unit_id)
             if index is not None:
                 gaps[index] = delivery_gap(
-                    stage=issue.stage, unit_kind="event", unit_id=event_id,
+                    stage=issue.stage, unit_kind="event", unit_id=unit_id,
                     reason_code=issue.code,
                     message=("该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。"
                              if issue.code == "content_policy_refused"
                              else "该事件的研究执行未完成，相关公司不参与本轮聚合推荐。"),
-                    source_refs=refs, event_ids=[event_id], company_codes=sorted(codes),
+                    source_refs=refs, event_ids=[] if event is None else [_event_id(event.canonical_key)], company_codes=sorted(codes),
                     company_scope_known=bool(codes),
                 )
             continue
-        if event_id is not None and event_id not in failed_event_ids:
-            unprocessed_event_ids.add(event_id)
+        if unit_id is not None and unit_id not in failed_unit_ids:
+            unprocessed_unit_ids.add(unit_id)
             excluded_codes.update(codes)
         if issue.stage in {"title_triage", "title_selection"}:
             # The legacy issue record has no durable per-title identity.  Do
             # not invent a failed-title count from its aggregate error.
             title_scope_unknown = True
         refs = [] if issue.document_ref is None else [_ref_payload(issue.document_ref)]
+        if ambiguous_legacy_event:
+            event_id = _event_id(str(issue.canonical_key))
+            gaps.append(delivery_gap(
+                stage=issue.stage, unit_kind="event", unit_id=f"legacy_{event_id}",
+                reason_code=issue.code,
+                message="旧发现失败无法唯一绑定到更正或否认执行单元，本轮未进行正式排序。",
+                source_refs=refs, event_ids=[event_id], company_codes=[], company_scope_known=False,
+            ))
+            continue
+        if foreign_execution_unit:
+            foreign_id = str(raw_unit_id)
+            event_ids = ([_event_id(str(issue.canonical_key))]
+                         if isinstance(issue.canonical_key, str) and issue.canonical_key else [])
+            gaps.append(delivery_gap(
+                stage=issue.stage, unit_kind="event", unit_id=f"foreign_{foreign_id}",
+                reason_code=issue.code,
+                message="研究失败引用不属于本轮冻结执行单元，本轮未进行正式排序。",
+                source_refs=refs, event_ids=event_ids, company_codes=[], company_scope_known=False,
+            ))
+            continue
         gaps.append(delivery_gap(
-            stage=issue.stage, unit_kind="event" if event_id else "discovery",
-            unit_id=event_id or (issue.document_ref.document_id if issue.document_ref else issue.code),
+            stage=issue.stage, unit_kind="event" if unit_id else "discovery",
+            unit_id=unit_id or (issue.document_ref.document_id if issue.document_ref else issue.code),
             reason_code=issue.code, message="该处理单元未完成；其影响范围已在日报中保留。",
             source_refs=refs, event_ids=[] if event_id is None else [event_id], company_codes=sorted(codes),
             company_scope_known=bool(codes),
         ))
     eligible = [item for item in run.candidates
-                if _event_id(item.event.canonical_key) not in failed_event_ids
+                if _research_unit_id(item.event) not in failed_unit_ids
                 and item.mapping.company_code not in excluded_codes]
     eligible_codes = {item.mapping.company_code for item in eligible}
     title_counts = coverage.get("titleDispositionCounts")
@@ -2447,23 +3315,23 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
         title_unprocessed = title_input if title_scope_unknown else 0
         title_processed = title_input - title_unprocessed
     event_input = len(run.events)
-    known_event_ids = set(by_event)
+    known_unit_ids = set(by_unit)
     # A corrupt/foreign snapshot reference remains an explicit discovery gap,
     # but cannot be counted as one of this frozen run's events.  Otherwise a
     # retry artifact could make the public event reconciliation mathematically
     # impossible and block an otherwise valid partial report.
-    unknown_failed_event_ids = failed_event_ids - known_event_ids
-    for event_id in sorted(unknown_failed_event_ids):
+    unknown_failed_unit_ids = failed_unit_ids - known_unit_ids
+    for unit_id in sorted(unknown_failed_unit_ids):
         gaps.append(delivery_gap(
-            stage="research", unit_kind="discovery", unit_id=event_id,
+            stage="research", unit_kind="discovery", unit_id=unit_id,
             reason_code="research_snapshot_event_unbound",
             message="研究失败记录未绑定到本轮冻结事件，未参与推荐。",
             company_scope_known=False,
         ))
-    failed_event_ids.intersection_update(known_event_ids)
-    unprocessed_event_ids.intersection_update(known_event_ids)
-    event_failed = len(failed_event_ids)
-    event_unprocessed = len(unprocessed_event_ids - failed_event_ids)
+    failed_unit_ids.intersection_update(known_unit_ids)
+    unprocessed_unit_ids.intersection_update(known_unit_ids)
+    event_failed = len(failed_unit_ids)
+    event_unprocessed = len(unprocessed_unit_ids - failed_unit_ids)
     # A locally failed event with an unknown company scope can still share its
     # event evidence with a surviving candidate, so it blocks ordering.  A
     # title-only gap has no admitted event/candidate yet: it must be disclosed
@@ -2530,16 +3398,20 @@ def _safe_report_materials(*, run: DiscoveryRun, db_path: Path,
             "WHERE s.snapshot_id=?", (strategy_snapshot_id,),
         ).fetchall()
     names = {str(code): str(name) for code, name in universe}
-    failed_events = {issue.canonical_key for issue in run.issues if isinstance(issue.canonical_key, str)}
-    verified = {row.event.canonical_key: row.verification for row in run.verifications}
-    by_event: dict[str, list[Any]] = {}
+    # A canonical event can legitimately have an announcement and a denial in
+    # the same stage.  They remain one public opportunity lifecycle, while
+    # each completed research input needs its own material and source facts.
+    verified = {_research_unit_id(row.event): row.verification for row in run.verifications}
+    by_unit: dict[str, list[Any]] = {}
     for candidate in (*run.candidates, *run.deferred, *run.metadata_pending,
                       *run.excluded, *run.updates, *run.background):
-        by_event.setdefault(candidate.event.canonical_key, []).append(candidate)
+        by_unit.setdefault(_research_unit_id(candidate.event), []).append(candidate)
     materials: list[dict[str, Any]] = []
-    for event in sorted(run.events, key=lambda row: (row.canonical_key, row.stage_key)):
-        verification = verified.get(event.canonical_key)
-        if verification is None or event.canonical_key in failed_events:
+    for event in sorted(run.events, key=lambda row: (row.canonical_key, row.stage_key, row.event_state,
+                                                       tuple((ref.document_id, ref.revision) for ref in row.source_refs))):
+        unit_id = _research_unit_id(event)
+        verification = verified.get(unit_id)
+        if verification is None:
             continue
         raw_claims = event.facts.get("researchClaims", []) if isinstance(event.facts, Mapping) else []
         facts: list[dict[str, Any]] = []
@@ -2553,7 +3425,7 @@ def _safe_report_materials(*, run: DiscoveryRun, db_path: Path,
         relations: list[dict[str, Any]] = []
         uncertainties: list[str] = []
         seen_codes: set[str] = set()
-        for candidate in by_event.get(event.canonical_key, []):
+        for candidate in by_unit.get(unit_id, []):
             mapping = candidate.mapping
             if mapping.company_code in seen_codes or mapping.company_code not in names:
                 continue
@@ -2571,7 +3443,7 @@ def _safe_report_materials(*, run: DiscoveryRun, db_path: Path,
             uncertainties.append("独立核验尚未完成：" + verification.summary)
         event_refs = [_ref_payload(ref) for ref in event.source_refs]
         materials.append({
-            "materialId": "material_" + sha256((event.canonical_key + "|" + event.stage_key).encode()).hexdigest()[:32],
+            "materialId": "material_" + sha256(unit_id.encode()).hexdigest()[:32],
             "eventId": _event_id(event.canonical_key), "eventTitle": event.headline,
             "facts": facts, "companyRelations": relations,
             "uncertainties": list(dict.fromkeys(uncertainties)), "sourceRefs": event_refs, "asOf": as_of,
@@ -3267,6 +4139,16 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     morning_research_closeout_at: datetime | None = None
     morning_finalization_at: datetime | None = None
     finalization_guard: Callable[[], None] | None = None
+    def new_research_external_admission_guard() -> None:
+        """Refuse only a fresh research provider request after morning closeout.
+
+        This is deliberately separate from the lease/deadline guard.  Reads of
+        durable snapshots and exact receipts must still finish their local
+        derivation, while a new model/search/fulltext wire (including a repair)
+        cannot consume the time reserved for final ordering.
+        """
+        if morning_research_closeout_at is not None and _now() >= morning_research_closeout_at:
+            raise PipelineError("晨报保留最终排序时间，停止新的事件研究", code="morning_closeout_reserve")
     if execution_profile is not None:
         profile_payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
         status = validate_execution_config(profile_payload)
@@ -3450,7 +4332,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         model = _CheckpointedDiscoveryModel(base=model, task_id=task_id,
                                             execution_profile=execution_profile, cutoff_at=cutoff_at,
                                             db_path=db_path, leaseguard=leaseguard,
-                                            allow_failed_research_resume=allow_failed_research_resume)
+                                            allow_failed_research_resume=allow_failed_research_resume,
+                                            new_research_external_admission_guard=new_research_external_admission_guard)
     frozen_draft = coverage.get("discoveryDraft")
     if allow_failed_research_resume:
         # A failed B39 research snapshot can resume only on the same frozen task.
@@ -3604,6 +4487,21 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 if title_enabled and stage == "understand" and state in {"completed", "failed"}:
                     missing = not (document.analysis_text or document.original_text or document.excerpt or "").strip()
                     outcome = "completed" if state == "completed" else "missing" if missing else "failed"
+                    if outcome == "failed":
+                        # A resumed scan can discover that a historical model
+                        # result is no longer provable after the selected body
+                        # was already read successfully.  The new safe
+                        # recovery failure belongs to this scan/checkpoint;
+                        # it must not rewrite the immutable article-admission
+                        # outcome that records the original completed read.
+                        with read_connection(db_path) as connection:
+                            existing_outcome = connection.execute(
+                                "SELECT state FROM k10_v2_article_admissions "
+                                "WHERE task_id=? AND document_id=? AND revision=?",
+                                (task_id, document_id, revision),
+                            ).fetchone()
+                        if existing_outcome is not None and existing_outcome[0] in {"completed", "missing_body"}:
+                            return
                     store.record_article_outcome(task_id=task_id, document_id=document_id, revision=revision,
                         state=outcome, reason_code=None if outcome == "completed" else "article_body_missing" if missing else error_code,
                         updated_at=_text(_now()), db_path=db_path)
@@ -3631,7 +4529,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
 
     try:
         if title_enabled:
-            from .title_runtime import read_title_failures, select_title_documents
+            from .title_runtime import completed_title_batch_refs, read_title_failures, select_title_documents
             from .title_triage import TitleTriageProtocolError
             running_coverage.pop("titleFailure", None)
             if running_coverage.get("pipelineState") == "title_incomplete":
@@ -3651,6 +4549,43 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     progress=title_progress, known_subjects=known_subjects)
             except (TitleTriageProtocolError, PipelineError) as exc:
                 safe_code = getattr(exc, "code", "title_protocol_invalid")
+                # A global reconciliation can fail after every batch has
+                # already been durably handled. Project those real title
+                # dispositions into the failed report rather than leaving the
+                # reader-facing fallback at zero processed titles.
+                title_manifest = store.read_title_triage_manifest(task_id=task_id, db_path=db_path)
+                title_items = store.read_title_triage_items(task_id=task_id, db_path=db_path)
+                title_failures = read_title_failures(task_id=task_id, db_path=db_path)
+                # Triage rows are deliberately written only after a valid
+                # global decision. If that decision fails, reconstruct the
+                # already completed program-validated batches instead of
+                # presenting them as zero user-visible title work.
+                completed_batch_refs = completed_title_batch_refs(
+                    task_id=task_id, documents=documents, db_path=db_path,
+                )
+                input_count = title_manifest.get("inputCount") if isinstance(title_manifest, Mapping) else None
+                failed_refs = {
+                    (ref.get("documentId"), ref.get("revision"))
+                    for gap in title_failures if isinstance(gap, Mapping)
+                    for ref in gap.get("inputRefs", ()) if isinstance(ref, Mapping)
+                    and isinstance(ref.get("documentId"), str) and isinstance(ref.get("revision"), int)
+                    and not isinstance(ref.get("revision"), bool)
+                }
+                if isinstance(input_count, int) and not isinstance(input_count, bool) and input_count >= 0:
+                    processed_refs = {
+                        (item["documentId"], item["revision"]) for item in title_items
+                        if isinstance(item.get("documentId"), str) and isinstance(item.get("revision"), int)
+                    } | completed_batch_refs
+                    processed_count = len(processed_refs - failed_refs)
+                    failed_count = len(failed_refs)
+                    unprocessed_count = input_count - processed_count - failed_count
+                    if unprocessed_count >= 0:
+                        running_coverage["titleDispositionCounts"] = {
+                            "input": input_count, "processed": processed_count,
+                            "failed": failed_count, "unprocessed": unprocessed_count,
+                        }
+                        running_coverage["titleInputManifest"] = list(title_manifest["inputRefs"])
+                        running_coverage["titleFailures"] = title_failures
                 failure = {**running_coverage, "executionState": "title_incomplete", "titleFailure": safe_code}
                 finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
                     status="failed", pipeline_state="title_incomplete", coverage_extra=failure)
@@ -3703,6 +4638,13 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                      "network_max_attempts": (discovery_policy.get("networkMaxAttempts")
                                                               if isinstance(discovery_policy, Mapping) else None)})
             verifier = verification_gateway if verification_gateway is not None else TavilyEvidenceGateway(**gateway_args)
+            # A production handler constructs its gateway before execute_scan
+            # derives this task's frozen closeout.  Install the separate
+            # admission guard here so receipt/cache reads remain available but
+            # any genuinely new Tavily wire observes the same boundary as a
+            # direct model round.
+            if hasattr(verifier, "new_external_admission_guard"):
+                verifier.new_external_admission_guard = new_research_external_admission_guard
             def verify(event: EventDraft) -> Verification:
                 discovery_guard()
                 bundle = verifier.fetch(event=event, retrieved_at=_now(), cutoff_at=cutoff_at,
@@ -3732,11 +4674,45 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             document_by_ref = {document.evidence_ref: document for document in documents}
             research_progress_lock = RLock()
             research_gateway_lock = RLock()
-            researched_event_refs: dict[str, set[tuple[str, int]]] = {}
-            failed_research_event_refs: dict[str, set[tuple[str, int]]] = {}
+            researched_unit_refs: dict[str, set[tuple[str, int]]] = {}
+            failed_research_unit_refs: dict[str, set[tuple[str, int]]] = {}
+            snapshot_unit_ids: dict[str, str] = {}
+
+            def record_research_input(events: Sequence[EventDraft]) -> None:
+                """Freeze every research unit before its first external admission.
+
+                Snapshot IDs are intentionally absent for units that have not
+                started.  They therefore cannot be used as an input count if a
+                bounded SQLite continuation reaches its terminal cap.  This
+                manifest is the exact already-understood event set, written
+                before any research/Tavily/model request can begin.
+                """
+                unit_ids = [_research_unit_id(event) for event in events]
+                if len(unit_ids) != len(set(unit_ids)):
+                    raise PipelineError("研究输入执行单元重复", code="research_input_invalid")
+                with research_progress_lock:
+                    prior = running_coverage.get("researchInputUnitIds")
+                    if prior is not None and prior != unit_ids:
+                        raise PipelineError("研究输入清单不可覆盖", code="research_input_invalid")
+                    running_coverage["researchInputUnitIds"] = list(unit_ids)
+                    running_coverage["researchEventCount"] = len(unit_ids)
+                    store.update_running_scan_coverage(
+                        scan_id=scan_id, coverage=running_coverage, db_path=db_path,
+                    )
+
             class ResearchGateway:
                 # Tavily's task counters/client are shared. Serialize its short
                 # tool calls while independent model investigations overlap.
+                # The runtime compares this marker by identity before it calls
+                # its pre-wire guard.  Tavily performs the guard after exact
+                # checkpoint/receipt lookup, so exposing it here preserves
+                # replay after closeout instead of refusing too early.
+                def __init__(self) -> None:
+                    # Instance storage matters: a function kept as a class
+                    # attribute becomes a bound method and is no longer the
+                    # same callback that Tavily owns.
+                    self.new_external_admission_guard = new_research_external_admission_guard
+
                 def fetch(self, **kwargs):
                     with research_gateway_lock:
                         return verifier.fetch(**kwargs)
@@ -3758,32 +4734,41 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 # later pre-ranking check must use these exact event refs, not
                 # a transient merged-events local that is unavailable once
                 # concurrent investigation returns.
+                unit_id = _research_unit_id(event)
                 with research_progress_lock:
-                    researched_event_refs[_event_id(event.canonical_key)] = {
+                    researched_unit_refs[unit_id] = {
                         (ref.document_id, ref.revision) for ref in event.source_refs
                     }
+                    snapshot_unit_ids[_research_id(task_id=str(task_id), event=event)] = unit_id
                 try:
-                    if morning_research_closeout_at is not None and _now() >= morning_research_closeout_at:
-                        raise PipelineError("晨报保留最终排序时间，停止新的事件研究", code="morning_closeout_reserve")
                     return _research_outcome(model=model, verifier=research_gateway, task_id=str(task_id), event=event,
                         documents=document_by_ref, execution_profile=execution_profile or {}, cutoff_at=cutoff_at,
                         db_path=db_path, created_at=_now(), leaseguard=discovery_guard,
                         snapshot_created=record_snapshot, cutoff_inclusive=window.cutoff_inclusive,
-                        allow_failed_resume=allow_failed_research_resume, runtime_contract=runtime_contract)
+                        allow_failed_resume=allow_failed_research_resume, runtime_contract=runtime_contract,
+                        new_research_admission_guard=new_research_external_admission_guard,
+                        new_external_admission_guard=new_research_external_admission_guard)
                 except Exception:
                     with research_progress_lock:
-                        failed_research_event_refs[_event_id(event.canonical_key)] = {
+                        failed_research_unit_refs[unit_id] = {
                             (ref.document_id, ref.revision) for ref in event.source_refs
                         }
                     raise
             def pre_ranking_exclusions(candidates: Sequence[Any]) -> set[str]:
                 snapshot_ids = running_coverage.get("researchSnapshotIds", [])
                 dependencies = _failed_research_dependency_codes(
+                    # The store is the durable authority for an execution
+                    # status.  Passing every current snapshot as an explicit
+                    # failure candidate made an already-completed peer look
+                    # failed after a later event crossed morning closeout.
+                    # ``_failed_research_dependency_codes`` reads each
+                    # snapshot and includes only non-``ok`` revisions here.
                     snapshot_ids=snapshot_ids if isinstance(snapshot_ids, list) else (), db_path=db_path,
-                    failed_event_ids=tuple(failed_research_event_refs),
                 )
-                dependencies = {event_id: set(codes) for event_id, codes in dependencies.items()}
-                failed_events = {event_id for event_id, codes in dependencies.items() if codes is not None}
+                dependencies = {snapshot_unit_ids[snapshot_id]: set(codes)
+                                for snapshot_id, codes in dependencies.items()
+                                if snapshot_id in snapshot_unit_ids}
+                failed_units = {unit_id for unit_id, codes in dependencies.items() if codes is not None}
                 # B78 direct rounds do not write the retired stage table.  A
                 # failed direct snapshot still contributes its exact admitted
                 # title refs as a pre-ranking dependency boundary.
@@ -3795,18 +4780,21 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         snapshot = read_research_snapshot(snapshot_id=snapshot_id, db_path=db_path)
                         if snapshot is None or snapshot.execution_status == "ok":
                             continue
-                        failed_events.add(snapshot.event_id)
-                        dependencies.setdefault(snapshot.event_id, set()).update(
+                        unit_id = snapshot_unit_ids.get(snapshot_id)
+                        if unit_id is None:
+                            raise PipelineError("研究快照未绑定本轮执行单元", code="research_dependency_invalid")
+                        failed_units.add(unit_id)
+                        dependencies.setdefault(unit_id, set()).update(
                             _title_scope_for_refs(
                                 task_id=task_id,
                                 refs=[{"documentId": document_id, "revision": revision}
-                                      for document_id, revision in researched_event_refs.get(snapshot.event_id, set())],
+                                      for document_id, revision in researched_unit_refs.get(unit_id, set())],
                                 db_path=db_path,
                             )
                         )
-                for event_id, refs in failed_research_event_refs.items():
-                    failed_events.add(event_id)
-                    dependencies.setdefault(event_id, set()).update(
+                for unit_id, refs in failed_research_unit_refs.items():
+                    failed_units.add(unit_id)
+                    dependencies.setdefault(unit_id, set()).update(
                         _title_scope_for_refs(
                             task_id=task_id,
                             refs=[{"documentId": document_id, "revision": revision}
@@ -3815,11 +4803,11 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         )
                     )
                 failed_ref_keys = {
-                    event_id: refs
-                    for event_id, refs in researched_event_refs.items()
-                    if event_id in failed_events
+                    unit_id: refs
+                    for unit_id, refs in researched_unit_refs.items()
+                    if unit_id in failed_units
                 }
-                failed_ref_keys.update(failed_research_event_refs)
+                failed_ref_keys.update(failed_research_unit_refs)
                 named_codes = set().union(*dependencies.values()) if dependencies else set()
                 title_failures = running_coverage.get("titleFailures")
                 title_failed_refs = [ref for gap in title_failures if isinstance(gap, Mapping)
@@ -3839,20 +4827,20 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         failed_article_refs.append(_ref_payload(document.evidence_ref))
                 article_codes = _title_scope_for_refs(task_id=task_id, refs=failed_article_refs, db_path=db_path)
                 named_codes.update(article_codes)
-                affected_by_event = {event_id: set(codes) for event_id, codes in dependencies.items()}
+                affected_by_unit = {unit_id: set(codes) for unit_id, codes in dependencies.items()}
                 excluded: set[str] = set()
                 for candidate in candidates:
                     candidate_refs = _candidate_ref_keys(candidate)
                     direct = candidate.mapping.company_code in named_codes
-                    shared = {event_id for event_id, refs in failed_ref_keys.items() if candidate_refs & refs}
+                    shared = {unit_id for unit_id, refs in failed_ref_keys.items() if candidate_refs & refs}
                     if direct or shared:
                         excluded.add(candidate.mapping.company_code)
-                        for event_id in shared:
-                            affected_by_event[event_id].add(candidate.mapping.company_code)
+                        for unit_id in shared:
+                            affected_by_unit[unit_id].add(candidate.mapping.company_code)
                 running_coverage["researchDependencyExclusions"] = {
-                    "failedEventIds": sorted(failed_events),
+                    "failedResearchUnitIds": sorted(failed_units),
                     "companyCodes": sorted(excluded),
-                    "companyCodesByFailedEvent": {event_id: sorted(codes) for event_id, codes in sorted(affected_by_event.items())},
+                    "companyCodesByResearchUnit": {unit_id: sorted(codes) for unit_id, codes in sorted(affected_by_unit.items())},
                 }
                 running_coverage["titleDependencyExclusions"] = {
                     "companyCodes": sorted(title_codes),
@@ -3875,6 +4863,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                 investigate=investigate if title_enabled else None,
                                 investigation_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
                                                            if title_enabled else None),
+                                research_input_checkpoint=record_research_input if title_enabled else None,
                                 pre_ranking_exclusions=pre_ranking_exclusions if b76_delivery and title_enabled else None,
                                 finalization_guard=finalization_guard,
                                 finalization_pending_codes=(("morning_finalization_reserve",)
@@ -3898,7 +4887,9 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                     "discoveryState": run.state,
                                     "discoveryIssues": [{"stage": item.stage, "code": item.code,
                                                          **({"documentRef": _ref_payload(item.document_ref)} if item.document_ref else {}),
-                                                         **({"canonicalKey": item.canonical_key} if item.canonical_key else {})}
+                                                         **({"canonicalKey": item.canonical_key} if item.canonical_key else {}),
+                                                         **({"executionUnitId": item.execution_unit_id}
+                                                            if getattr(item, "execution_unit_id", None) else {})}
                                                         for item in run.issues],
                                     "documentCounts": dict(run.document_counts)}
                 if leaseguard is not None:
@@ -3982,32 +4973,40 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                       "researchEventCount": len(run.events),
                       "researchSnapshotIds": list(running_coverage.get("researchSnapshotIds", ())),}
     # A failed direct round normally leaves a durable failed snapshot: it is
-    # an execution failure, rather than permission to publish a subset.  The
-    # one exception is current-contract morning closeout.  Its reserve is
-    # checked *before* a research operation is admitted, so there is no paid
-    # request and thus no snapshot to recover.  Discovery has already recorded
-    # an exact event checkpoint and safe issue for that local refusal; demand
-    # snapshots for every other admitted event and let delivery disclose this
-    # skipped event as a gap.
+    # an execution failure, rather than permission to publish a subset.  A
+    # morning closeout is different: it can only refuse an event before a new
+    # snapshot/request is admitted.  Validate that distinction by event
+    # identity, never by subtracting two unrelated counts.  A resumed slice
+    # may legitimately carry many already-created snapshots plus a few new
+    # closeout gaps.
     research_terminal_error: str | None = None
     failed_research_snapshots: list[Any] = []
-    closeout_skipped_keys: set[str] = set()
+    closeout_skipped_unit_ids: set[str] = set()
     if (kind == "morning" and is_current_runtime_contract(runtime_contract)):
-        closeout_skipped_keys = {
-            issue.canonical_key for issue in run.issues
-            if issue.stage == "verify_or_map" and issue.code == "morning_closeout_reserve"
-            and isinstance(issue.canonical_key, str) and issue.canonical_key
-        }
-    closeout_skipped_count = sum(event.canonical_key in closeout_skipped_keys for event in run.events)
+        for issue in run.issues:
+            if issue.stage != "verify_or_map" or issue.code != "morning_closeout_reserve":
+                continue
+            unit_id = getattr(issue, "execution_unit_id", None)
+            if isinstance(unit_id, str) and unit_id:
+                closeout_skipped_unit_ids.add(unit_id)
+                continue
+            # A B81/B82-preidentity frozen issue lacks the exact retained
+            # event input.  It may retain legacy behaviour only if its
+            # canonical/document pair resolves uniquely; with an
+            # announcement+denial pair, skipping either would hide a missing
+            # snapshot, so leave both subject to the normal integrity check.
+            matches = [event for event in run.events
+                       if event.canonical_key == issue.canonical_key
+                       and (issue.document_ref is None or issue.document_ref in event.source_refs)]
+            if len(matches) == 1:
+                closeout_skipped_unit_ids.add(_research_unit_id(matches[0]))
     if research_required:
         snapshot_ids = final_coverage["researchSnapshotIds"]
-        expected_snapshot_count = len(run.events) - closeout_skipped_count
         if (not isinstance(snapshot_ids, list)
                 or len(set(snapshot_ids)) != len(snapshot_ids)
-                or len(snapshot_ids) != expected_snapshot_count
                 or any(not isinstance(snapshot_id, str) or not snapshot_id for snapshot_id in snapshot_ids)):
             research_terminal_error = "research_snapshot_missing"
-        elif snapshot_ids:
+        else:
             try:
                 from .research_store import read_research_snapshot
                 snapshots = [read_research_snapshot(snapshot_id=snapshot_id, db_path=db_path)
@@ -4017,10 +5016,69 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             else:
                 if any(snapshot is None for snapshot in snapshots):
                     research_terminal_error = "research_snapshot_missing"
-                elif any(snapshot.execution_status != "ok" for snapshot in snapshots):
-                    failed_research_snapshots = [snapshot for snapshot in snapshots if snapshot.execution_status != "ok"]
-                    if not b76_delivery:
-                        research_terminal_error = "research_execution_failed"
+                else:
+                    # One stable canonical event can legitimately retain an
+                    # original, correction, and denial as separate research
+                    # inputs.  They share ``event_id`` but have distinct event
+                    # revisions and snapshot identities.  Validate the same
+                    # task/stage/state/source identity used at research
+                    # admission, never a lossy event-id-only dictionary.
+                    task_identity_valid = isinstance(task_id, str) and bool(task_id)
+                    expected_by_snapshot = ({
+                        _research_id(task_id=task_id, event=event): event for event in run.events
+                    } if task_identity_valid else {})
+                    by_snapshot = {snapshot.snapshot_id: snapshot for snapshot in snapshots}
+                    # A closeout issue is produced both when an event could
+                    # never create a snapshot and when an already-admitted
+                    # snapshot reaches its next external round after the
+                    # boundary. Only an identity absent from durable snapshots
+                    # is a legitimate closeout gap.
+                    expected_snapshot_ids = {
+                        snapshot_id for snapshot_id, event in expected_by_snapshot.items()
+                        if _research_unit_id(event) not in closeout_skipped_unit_ids or snapshot_id in by_snapshot
+                    }
+                    snapshots_valid = (task_identity_valid and len(by_snapshot) == len(snapshots)
+                                       and set(by_snapshot) == expected_snapshot_ids)
+                    if snapshots_valid:
+                        try:
+                            with read_connection(db_path) as connection:
+                                for snapshot_id, event in expected_by_snapshot.items():
+                                    if snapshot_id not in expected_snapshot_ids:
+                                        continue
+                                    snapshot = by_snapshot[snapshot_id]
+                                    if snapshot.task_id != task_id or snapshot.event_id != _event_id(event.canonical_key):
+                                        snapshots_valid = False
+                                        break
+                                    row = connection.execute(
+                                        "SELECT e.stable_key,r.headline,r.event_kind,r.facts_json,r.source_refs_json "
+                                        "FROM k10_events e JOIN k10_event_revisions r ON r.event_id=e.event_id "
+                                        "WHERE r.event_id=? AND r.revision=?",
+                                        (snapshot.event_id, snapshot.event_revision),
+                                    ).fetchone()
+                                    if row is None:
+                                        snapshots_valid = False
+                                        break
+                                    stable_key, headline, event_kind, facts_json, refs_json = row
+                                    stored_facts, refs = json.loads(facts_json), json.loads(refs_json)
+                                    if not isinstance(stored_facts, Mapping) or not isinstance(refs, list):
+                                        snapshots_valid = False
+                                        break
+                                    if not _snapshot_admission_matches(
+                                            connection=connection, snapshot=snapshot, event=event,
+                                            task_id=task_id, stable_key=stable_key, headline=headline, event_kind=event_kind,
+                                            stored_facts=stored_facts, refs=refs, cutoff_at=cutoff_at,
+                                            cutoff_inclusive=window.cutoff_inclusive, db_path=db_path,
+                                    ):
+                                        snapshots_valid = False
+                                        break
+                        except (TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
+                            snapshots_valid = False
+                    if not snapshots_valid:
+                        research_terminal_error = "research_snapshot_missing"
+                    elif any(snapshot.execution_status != "ok" for snapshot in snapshots):
+                        failed_research_snapshots = [snapshot for snapshot in snapshots if snapshot.execution_status != "ok"]
+                        if not b76_delivery:
+                            research_terminal_error = "research_execution_failed"
     if getattr(model, '_terminal_provider_error', None) in {"insufficient_balance", "provider_authorization_failed"}:
         research_terminal_error = getattr(model, '_terminal_provider_error')
     if research_terminal_error is not None:
@@ -4348,6 +5406,47 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     from .historical_cases import make_historical_context_loader
     market_loader = lambda code: collect_market_context(company_code=code, cutoff_at=context.input_cutoff_at, parquet_dir=parquet_dir)
     policy = frozen["payload"].get("taskPolicies", {}).get("discovery", {}) if isinstance(frozen["payload"].get("taskPolicies"), Mapping) else {}
+    def sqlite_busy_checkpoint() -> Mapping[str, Any]:
+        """Keep only the durable scan progress owned by this exact task.
+
+        A bounded SQLite writer failure can occur after the handler has made
+        the scan/binding durable but before ``execute_scan`` has a chance to
+        return its normal checkpoint.  Returning the incoming task checkpoint
+        then drops ``scanId`` and makes the next worker look like a new run.
+        Read the binding and persisted coverage rather than reconstructing
+        progress from the event count or the deterministic ID alone.
+        """
+        checkpoint = dict(context.checkpoint)
+        expected_scan_id = _scan_id(kind=kind, cutoff_at=cutoff, identity=context.task.task_id)
+        try:
+            with read_connection(context.db_path) as connection:
+                require_schema(connection)
+                row = connection.execute(
+                    "SELECT s.scan_id,s.coverage_json,b.task_id "
+                    "FROM k10_scans s JOIN k10_scan_execution_bindings b ON b.scan_id=s.scan_id "
+                    "WHERE s.scan_id=?",
+                    (expected_scan_id,),
+                ).fetchone()
+        except (sqlite3.Error, SchemaUnavailable):
+            # The original write failure remains the authoritative outcome.
+            # Do not invent a scan link if its durable binding cannot be read.
+            return checkpoint
+        if row is None or row[0] != expected_scan_id or row[2] != context.task.task_id:
+            return checkpoint
+        try:
+            coverage = json.loads(row[1])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return checkpoint
+        if not isinstance(coverage, Mapping):
+            return checkpoint
+        checkpoint["scanId"] = expected_scan_id
+        snapshot_ids = coverage.get("researchSnapshotIds")
+        if (isinstance(snapshot_ids, list)
+                and all(isinstance(snapshot_id, str) and snapshot_id for snapshot_id in snapshot_ids)
+                and len(snapshot_ids) == len(set(snapshot_ids))):
+            checkpoint["researchSnapshotIds"] = list(snapshot_ids)
+        return checkpoint
+
     try:
         metadata_resolver = _metadata_resolver_from_configuration(frozen["payload"])
     except PipelineError as exc:
@@ -4384,7 +5483,20 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
         # A lost lease owns no report.  Leave the running task and scan for its rightful
         # worker instead of writing a failure artifact from this expired instance.
         raise
-    except Exception:
+    except SqliteWriteBusy:
+        delay = (execution_payload.get("discovery", {}).get("continuationDelaySeconds", 1)
+                 if isinstance(execution_payload, Mapping) else 1)
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < 1:
+            delay = 1
+        return TaskResult("failed", "storage_busy", sqlite_busy_checkpoint(),
+                          "SQLite 短暂写入争用，原任务将受控续跑",
+                          retry_at=now() + timedelta(seconds=delay),
+                          retry_kind="continuation", safe_error_code="sqlite_busy")
+    except Exception as exc:
+        # The reader-facing morning fallback stays intentionally generic, but
+        # operators need the exception class to distinguish a contract repair
+        # from a source outage.  Never log provider text, prompts or replies.
+        logging.getLogger(__name__).warning("K10 morning discovery failed: %s", type(exc).__name__)
         if kind == "morning":
             return _append_unavailable_morning_report(
                 context=context, cutoff=cutoff, frozen=frozen,

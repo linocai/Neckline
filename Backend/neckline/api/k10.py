@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from neckline.k10 import SchemaUnavailable, validate_execution_config, validate_run_config
 from neckline.k10 import research_store, store
+from neckline.k10.discovery import event_input_facts, event_system_metadata, event_verification
 from neckline.k10.delivery import runtime_contract
 from neckline.k10.market_context import MarketContextError, collect_market_context
 from neckline.k10.evaluation import EvaluationInputError, evaluate_company_window, evaluation_state
@@ -424,7 +425,11 @@ def _common_facts(value: Any) -> list[CommonFactOut]:
     """Turn variable event facts into a stable, display-first API list."""
     if not isinstance(value, Mapping):
         return []
-    verification = value.get("verification")
+    source_facts = event_input_facts(value)
+    verification = event_verification(value)
+    protected = event_system_metadata(value) is not None
+    raw_detail = ({"sourceFacts": dict(source_facts), "verification": dict(verification)}
+                  if protected and isinstance(verification, Mapping) else dict(source_facts))
     summary = verification.get("summary") if isinstance(verification, Mapping) else None
     if isinstance(summary, str) and summary.strip():
         # Production discovery facts include a verified natural-language
@@ -433,9 +438,9 @@ def _common_facts(value: Any) -> list[CommonFactOut]:
         # inspectable in rawDetail without presenting implementation keys.
         state = verification.get("state")
         label = "待核事实" if state == "needs_review" else "共同事实"
-        return [CommonFactOut(key=label, text=summary.strip(), rawDetail=dict(value))]
+        return [CommonFactOut(key=label, text=summary.strip(), rawDetail=raw_detail)]
     facts: list[CommonFactOut] = []
-    for key, raw in value.items():
+    for key, raw in source_facts.items():
         detail = dict(raw) if isinstance(raw, Mapping) else None
         if isinstance(raw, str):
             text = raw

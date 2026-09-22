@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 import threading
+from time import monotonic
 
 import pytest
 
@@ -41,13 +43,258 @@ def test_write_connection_closes_when_begin_immediate_is_rejected(tmp_path, monk
             self.closed = True
 
     connection = _BeginRejected()
-    monkeypatch.setattr(k10_schema.sqlite3, "connect", lambda _path: connection)
+    monkeypatch.setattr(k10_schema.sqlite3, "connect", lambda *_args, **_kwargs: connection)
 
     with pytest.raises(sqlite3.OperationalError, match="writer busy"):
         with k10_schema.write_connection(tmp_path / "busy.sqlite"):
             pytest.fail("BEGIN must reject before yielding a write connection")
 
     assert connection.closed is True
+
+
+def test_sqlite_busy_classification_uses_primary_error_code_before_message_text():
+    """An I/O error mentioning a lock is not a recoverable write contention."""
+    nonbusy = sqlite3.OperationalError("database is locked while reading damaged media")
+    nonbusy.sqlite_errorcode = sqlite3.SQLITE_IOERR
+    busy_extended = sqlite3.OperationalError("untranslated sqlite failure")
+    busy_extended.sqlite_errorcode = sqlite3.SQLITE_BUSY | (1 << 8)
+    assert k10_schema._is_busy_or_locked(nonbusy) is False
+    assert k10_schema._is_busy_or_locked(busy_extended) is True
+
+
+def test_real_sqlite_writer_lock_has_a_bounded_exit(tmp_path):
+    """A holder that outlives every bounded BEGIN retry produces no write body."""
+    db_path = tmp_path / "bounded-real-lock.sqlite"
+    initialize_schema(db_path)
+    acquired, release = threading.Event(), threading.Event()
+
+    def hold_writer() -> None:
+        connection = sqlite3.connect(db_path, timeout=0)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            acquired.set()
+            assert release.wait(timeout=10)
+        finally:
+            connection.rollback()
+            connection.close()
+
+    holder = threading.Thread(target=hold_writer, name="b82-bounded-lock-holder")
+    holder.start()
+    assert acquired.wait(timeout=1)
+    started = monotonic()
+    with pytest.raises(k10_schema.SqliteWriteBusy):
+        with write_connection(db_path):
+            pytest.fail("bounded lock must reject before a closure can write")
+    elapsed = monotonic() - started
+    release.set()
+    holder.join(timeout=2)
+    assert not holder.is_alive()
+    # Current settings bound BEGIN waits to roughly six seconds. Leave a small
+    # scheduling margin without permitting a hidden indefinitely blocked task.
+    assert 1 < elapsed < 8
+
+
+def _write_checkpoint_under_real_lock(original, kwargs, observations):
+    """Hold a second writer until this exact write exhausts its BEGIN retries."""
+    acquired, release = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+    started: list[float] = []
+
+    def hold_writer():
+        connection = None
+        try:
+            # Concurrent research may own a short transaction when we arrive.
+            # Wait for it, rather than treating failure to acquire as a lock test.
+            connection = sqlite3.connect(kwargs["db_path"], timeout=5)
+            connection.execute("BEGIN IMMEDIATE")
+            started.append(monotonic())
+            acquired.set()
+            if not release.wait(timeout=20):
+                raise AssertionError("checkpoint did not reach its bounded busy exit")
+        except BaseException as exc:
+            errors.append(exc)
+            acquired.set()
+        finally:
+            if connection is not None:
+                connection.rollback()
+                connection.close()
+
+    holder = threading.Thread(target=hold_writer, name="b82-real-writer-holder")
+    holder.start()
+    try:
+        assert acquired.wait(timeout=6), "second writer never acquired the lock"
+        assert not errors, errors
+        try:
+            original(**kwargs)
+        except k10_schema.SqliteWriteBusy:
+            observations.append(monotonic() - started[0])
+            raise
+        raise AssertionError("checkpoint write succeeded while the second writer held its lock")
+    finally:
+        release.set()
+        holder.join(timeout=3)
+        assert not holder.is_alive()
+        assert not errors, errors
+
+
+def test_real_writer_lock_releases_and_the_original_cli_task_completes_once(tmp_path, monkeypatch):
+    """84 concurrent events cross real sqlite_busy continuation without rebilling."""
+    from tests import v340_acceptance_fixture as fixture
+
+    original = store.record_execution_checkpoint
+    injected = False
+    observations: list[float] = []
+    gate = threading.Lock()
+    queued_counts: list[int] = []
+    original_worker = fixture.run_once
+
+    def capture_worker(**kwargs):
+        result = original_worker(**kwargs)
+        if result.status == "queued":
+            with sqlite3.connect(kwargs["db_path"]) as connection:
+                checkpoint = json.loads(connection.execute(
+                    "SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (result.task_id,),
+                ).fetchone()[0])
+            queued_counts.append(checkpoint["sqliteBusyContinuationCount"])
+            assert checkpoint["scanId"]
+        return result
+
+    def lock_one_checkpoint(**kwargs):
+        nonlocal injected
+        with gate:
+            should_lock = (not injected and kwargs.get("stage") == "model:investigation_research_round"
+                           and kwargs.get("status") == "completed")
+            if should_lock:
+                injected = True
+        if should_lock:
+            return _write_checkpoint_under_real_lock(original, kwargs, observations)
+        return original(**kwargs)
+
+    monkeypatch.setattr(store, "record_execution_checkpoint", lock_one_checkpoint)
+    monkeypatch.setattr(fixture, "run_once", capture_worker)
+    flow = run_full_scale_flow(tmp_path, monkeypatch, name="real-lock-resume",
+                               expected_continuation_codes=("sqlite_busy",))
+    assert injected and len(observations) == 1
+    assert observations[0] >= sum(k10_schema._WRITE_BEGIN_BACKOFF_SECONDS)
+    assert flow.task_status == "completed"
+    assert flow.continuation_count == 1
+    assert queued_counts == [1]
+    assert flow.calls["research:research_round"] == 84 * 2
+    with sqlite3.connect(flow.db_path) as connection:
+        assert connection.execute("SELECT count(*) FROM k10_tasks").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM k10_task_outbox WHERE task_id=?", (flow.task_id,)).fetchone()[0] <= 1
+        assert connection.execute(
+            "SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','running','unknown')"
+        ).fetchone()[0] == 0
+
+
+def test_real_research_writer_lock_reaches_the_persistent_same_task_limit(tmp_path, monkeypatch):
+    """The same paid checkpoint hits real contention in two worker slices."""
+    from tests import v340_acceptance_fixture as fixture
+
+    original = store.record_execution_checkpoint
+    target_key = None
+    target_input = None
+    injected = 0
+    observations: list[float] = []
+    gate = threading.Lock()
+    attempts_after_worker: list[int] = []
+    original_worker = fixture.run_once
+    wire_inputs: list[bytes] = []
+    original_respond = fixture.DeterministicTransport.respond
+
+    def capture_wire(transport, request):
+        if transport._packet(request).get("action") == "research_round":
+            with gate:
+                wire_inputs.append(request.content)
+        return original_respond(transport, request)
+
+    def capture_worker(**kwargs):
+        result = original_worker(**kwargs)
+        with sqlite3.connect(kwargs["db_path"]) as connection:
+            attempts_after_worker.append(connection.execute(
+                "SELECT count(*) FROM k10_external_attempts WHERE stage='investigation'"
+            ).fetchone()[0])
+        return result
+
+    def lock_each_research_completion(**kwargs):
+        nonlocal injected, target_key, target_input
+        with gate:
+            eligible = (kwargs.get("stage") == "model:investigation_research_round"
+                        and kwargs.get("status") == "completed")
+            if eligible and target_key is None:
+                target_key = kwargs["item_key"]
+                target_input = kwargs["input_sha256"]
+            should_lock = eligible and kwargs["item_key"] == target_key and injected < 2
+            if should_lock:
+                injected += 1
+        if should_lock:
+            return _write_checkpoint_under_real_lock(original, kwargs, observations)
+        return original(**kwargs)
+
+    monkeypatch.setattr(fixture, "run_once", capture_worker)
+    monkeypatch.setattr(fixture.DeterministicTransport, "respond", capture_wire)
+    monkeypatch.setattr(store, "record_execution_checkpoint", lock_each_research_completion)
+    flow = run_full_scale_flow(tmp_path, monkeypatch, name="persistent-research-lock",
+                               expect_handler_failure=True, expected_continuation_codes=("sqlite_busy",))
+    assert injected == len(observations) == 2
+    assert all(duration >= sum(k10_schema._WRITE_BEGIN_BACKOFF_SECONDS) for duration in observations)
+    assert flow.task_status == "failed"
+    assert flow.continuation_count == 1
+    # Concurrent siblings can legitimately advance new inputs in the second
+    # slice. Prove no exact wire input was billed twice, and the blocked
+    # checkpoint still has exactly its original paid attempt.
+    assert len(attempts_after_worker) == 2
+    assert attempts_after_worker[0] > 0
+    assert len(wire_inputs) == len(set(wire_inputs)) == attempts_after_worker[-1]
+    with sqlite3.connect(flow.db_path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM k10_external_attempts WHERE stage='investigation' AND item_key LIKE ?",
+            ("%:" + target_input,),
+        ).fetchone() == (1,)
+        checkpoint = json.loads(connection.execute(
+            "SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (flow.task_id,),
+        ).fetchone()[0])
+        assert checkpoint["sqliteBusyContinuationCount"] == 2
+        assert connection.execute("SELECT count(*) FROM k10_tasks").fetchone() == (1,)
+        assert connection.execute("SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?", (flow.task_id,)).fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM k10_task_outbox WHERE task_id=?", (flow.task_id,)).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','running','unknown')"
+        ).fetchone() == (0,)
+        snapshot_statuses = connection.execute(
+            "SELECT current.execution_status,current.research_status,count(*) FROM k10_research_snapshot_revisions current "
+            "WHERE current.task_id=? AND current.revision=("
+            "SELECT MAX(latest.revision) FROM k10_research_snapshot_revisions latest "
+            "WHERE latest.snapshot_id=current.snapshot_id) "
+            "GROUP BY current.execution_status,current.research_status",
+            (flow.task_id,),
+        ).fetchall()
+    expected_failed = sum(count for execution, _status, count in snapshot_statuses if execution != "ok")
+    expected_processed = sum(
+        count for execution, research_status, count in snapshot_statuses
+        if execution == "ok" and research_status != "continue_research"
+    )
+    expected_unprocessed = 84 - expected_failed - expected_processed
+
+    config_id, config_revision, execution_id, execution_revision = fixture.active_bindings(flow.db_path)
+    with fixture.actual_api(
+        flow.db_path, config_id=config_id, config_revision=config_revision,
+        execution_id=execution_id, execution_revision=execution_revision,
+    ) as client:
+        response = client.get("/api/v1/k10/v2/reports/latest?window=evening")
+    assert response.status_code == 200
+    report = response.json()["report"]
+    assert report["status"] == "failed" and report["availableAt"] is None
+    counts = report["delivery"]["counts"]
+    assert counts["eventInput"] == 84
+    assert 0 < counts["eventProcessed"] + counts["eventFailed"] < 84
+    assert counts["eventUnprocessed"] > 0
+    assert counts["eventProcessed"] == expected_processed
+    assert counts["eventFailed"] == expected_failed
+    assert counts["eventUnprocessed"] == expected_unprocessed
+    assert sum(counts[key] for key in ("eventProcessed", "eventFailed", "eventUnprocessed")) == 84
+    assert counts["publishedCompanies"] == 0
 
 
 def test_model_reservation_rechecks_live_lease_after_writer_lock_releases(tmp_path):

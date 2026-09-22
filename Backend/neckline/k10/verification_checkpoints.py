@@ -129,7 +129,8 @@ class VerificationCheckpointStore:
             raise store.K10Conflict("任务租约已失效，请等待恢复")
 
     def claim(self, *, item_key: str, input_sha256: str, network_max_attempts: int,
-              updated_at: str | None = None) -> VerificationRequestClaim:
+              updated_at: str | None = None,
+              new_external_admission_guard: Callable[[], None] | None = None) -> VerificationRequestClaim:
         if self.leaseguard is not None:
             self.leaseguard()
         with write_connection(self.db_path) as conn:
@@ -188,6 +189,11 @@ class VerificationCheckpointStore:
                     if retry_at and datetime.fromisoformat(updated_at or _now()) < datetime.fromisoformat(retry_at):
                         return VerificationRequestClaim("pending", "rate_limited", used, receipt)
                 if str(existing[1]) == "failed" and (prior_attempts < network_max_attempts or recovery_allowed):
+                    # A replay has already returned above.  This branch creates
+                    # a new paid wire, so a morning closeout may stop it before
+                    # the checkpoint consumes another attempt.
+                    if new_external_admission_guard is not None:
+                        new_external_admission_guard()
                     conn.execute(
                         "UPDATE k10_execution_item_checkpoints SET status='running',attempt_count=?,network_attempt_count=?,"
                         "safe_error_code=NULL,safe_error_ref=NULL,updated_at=? WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?",
@@ -200,6 +206,10 @@ class VerificationCheckpointStore:
                 # recovery rather than allowing duplicate live requests.
                 reason = "network_attempts_exhausted" if prior_attempts >= network_max_attempts else "tavily_request_outcome_unknown"
                 return VerificationRequestClaim("pending", reason, used)
+            # No existing exact result/receipt exists.  Run the admission
+            # guard while this transaction still has not written a reservation.
+            if new_external_admission_guard is not None:
+                new_external_admission_guard()
             conn.execute(
                 "INSERT INTO k10_execution_item_checkpoints(task_id,item_kind,item_key,stage,input_sha256,status,"
                 "attempt_count,network_attempt_count,repair_attempt_count,elapsed_ms,input_tokens,output_tokens,"

@@ -565,19 +565,34 @@ def _failed_delivery_counts(conn, *, task_id: str, coverage: Mapping[str, Any]) 
         title_unprocessed = title_input
 
     rows = conn.execute(
-        "SELECT execution_status,COUNT(*) FROM k10_research_snapshot_revisions current "
+        "SELECT execution_status,research_status,COUNT(*) FROM k10_research_snapshot_revisions current "
         "WHERE current.task_id=? AND current.revision=("
         "SELECT MAX(latest.revision) FROM k10_research_snapshot_revisions latest "
-        "WHERE latest.snapshot_id=current.snapshot_id) GROUP BY execution_status",
+        "WHERE latest.snapshot_id=current.snapshot_id) GROUP BY execution_status,research_status",
         (task_id,),
     ).fetchall()
-    terminal_snapshots = sum(int(row[1]) for row in rows)
+    admitted_snapshots = sum(int(row[2]) for row in rows)
+    # Snapshot rows are only the research units that reached admission.  A
+    # bounded storage failure can terminate while additional frozen units have
+    # completed understanding but have not created a snapshot yet.  Prefer the
+    # exact pre-admission manifest written by the pipeline; never turn those
+    # not-started units into completed work merely because no snapshot exists.
+    raw_units = coverage.get("researchInputUnitIds")
+    manifest_events = (len(raw_units) if isinstance(raw_units, list)
+                       and all(isinstance(unit_id, str) and unit_id for unit_id in raw_units)
+                       and len(raw_units) == len(set(raw_units)) else 0)
     declared_events = coverage.get("researchEventCount")
-    event_input = max(terminal_snapshots,
-                      int(declared_events) if isinstance(declared_events, int)
+    declared_count = (int(declared_events) if isinstance(declared_events, int)
                       and not isinstance(declared_events, bool) and declared_events >= 0 else 0)
-    event_failed = sum(int(row[1]) for row in rows if row[0] != "ok")
-    event_processed = sum(int(row[1]) for row in rows if row[0] == "ok")
+    event_input = max(admitted_snapshots, manifest_events, declared_count)
+    event_failed = sum(int(row[2]) for row in rows if row[0] != "ok")
+    # A direct round may have durably returned ``continue_research`` with an
+    # execution-status of ``ok``.  That says its *last* local operation was
+    # saved, not that the research unit reached a final business disposition.
+    # A terminal storage failure must disclose it as not yet processed rather
+    # than silently crediting it as completed work.
+    event_processed = sum(int(row[2]) for row in rows
+                          if row[0] == "ok" and row[1] != "continue_research")
     event_unprocessed = max(0, event_input - event_failed - event_processed)
     return {
         "titleInput": title_input, "titleProcessed": title_processed,
@@ -668,7 +683,8 @@ def _safe_failed_report_materials(
             continue
         if not isinstance(facts_payload, Mapping) or not isinstance(event_refs, list):
             continue
-        verification = facts_payload.get("verification")
+        from .discovery import event_verification
+        verification = event_verification(facts_payload)
         coverage = verification.get("coverage") if isinstance(verification, Mapping) else None
         if not isinstance(coverage, Mapping) or coverage.get("state") != "available":
             continue

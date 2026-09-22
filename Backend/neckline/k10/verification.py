@@ -84,7 +84,8 @@ class TavilyEvidenceGateway:
                  metadata_resolver: PublicationMetadataResolver | None = None, task_id: str | None = None,
                  leaseguard: Callable[[], None] | None = None,
                  checkpoint_store: VerificationCheckpointStore | None = None,
-                 network_max_attempts: int | None = None, lease_owner: str | None = None) -> None:
+                 network_max_attempts: int | None = None, lease_owner: str | None = None,
+                 new_external_admission_guard: Callable[[], None] | None = None) -> None:
         self.db_path = db_path
         self.client = client
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -98,6 +99,7 @@ class TavilyEvidenceGateway:
         if self.checkpoint_store:
             self.context_protocol = store.task_execution_input(task_id=self.checkpoint_store.task_id, db_path=db_path)['checkpoint'].get('contextProtocol')
         self.network_max_attempts = network_max_attempts
+        self.new_external_admission_guard = new_external_admission_guard
         self.requests, self.credits = self.checkpoint_store.attempt_snapshot() if self.checkpoint_store else (0, 0)
 
     def _reserve_search(self, *, item_key: str, input_sha256: str, attempt: int) -> tuple[str | None, str | None]:
@@ -395,7 +397,8 @@ class TavilyEvidenceGateway:
                 if paid is None and (existing is None or existing[0] != "completed"):
                     return self._pending("tavily_api_key_missing")
             claim = self.checkpoint_store.claim(item_key=checkpoint_key, input_sha256=checkpoint_input,
-                                                network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()))
+                                                network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()),
+                                                new_external_admission_guard=self.new_external_admission_guard)
             self.requests = claim.requests
             if claim.state == "reused":
                 return self._for_current_query_context(
@@ -761,7 +764,9 @@ class TavilyEvidenceGateway:
             if old_checkpoint is not None and old_checkpoint[0] == "running":
                 checkpoint.complete(item_key=item_key, input_sha256=digest, result=cached_result)
             return self._restore_checkpoint_bundle(cached_result)
-        claim = checkpoint.claim(item_key=item_key, input_sha256=digest, network_max_attempts=self.network_max_attempts, updated_at=_text(self.clock()))
+        claim = checkpoint.claim(item_key=item_key, input_sha256=digest, network_max_attempts=self.network_max_attempts,
+                                 updated_at=_text(self.clock()),
+                                 new_external_admission_guard=self.new_external_admission_guard)
         self.requests = claim.requests
         if claim.state == "reused":
             return self._restore_checkpoint_bundle(claim.result)

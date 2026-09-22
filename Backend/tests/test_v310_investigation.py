@@ -124,7 +124,8 @@ def test_checkpointed_investigation_reuses_same_typed_input_without_second_model
     base = _Model(result)
     binding = {"configId": "fixture", "revision": 1, "contentSha256": "c" * 64, "payload": {"discovery": {
         "networkMaxAttempts": 1, "jsonRepairMaxAttempts": 0,
-        "modelOptions": {"investigation": {"maxTokens": 128, "thinking": {"type": "disabled"}}},
+            "investigationPromptContractRevision": "k10-investigation-v1",
+            "modelOptions": {"investigation": {"maxTokens": 128, "thinking": {"type": "disabled"}}},
     }}}
     # The operation ledger only requires an immutable task binding.  This test
     # isolates checkpoint reuse from execution-profile validation, which has its
@@ -243,7 +244,11 @@ def test_one_selected_body_can_yield_multiple_typed_events_in_one_model_call():
     events = model.understand(document=document)
     assert provider.calls == 1
     assert [event.canonical_key for event in events] == ["event-a", "event-b"]
-    assert [event.facts["researchClaims"][0]["claimId"] for event in events] == ["claim-a", "claim-b"]
+    claim_ids = [event.facts["researchClaims"][0]["claimId"] for event in events]
+    # The two event views quote the same source locator/proposition/category,
+    # so the program deliberately assigns the same durable fact identity
+    # instead of trusting two provider-invented identifiers.
+    assert len(set(claim_ids)) == 1 and claim_ids[0].startswith("claim_")
 
 
 def test_b39_event_evidence_card_does_not_smuggle_source_body_through_metadata():
@@ -348,6 +353,7 @@ def _checkpointed_research_wrapper(tmp_path, base, *, allow_failed_research_resu
                          ("task-1", "fixture", 1, "c" * 64, "scheduled", now))
     binding = {"configId": "fixture", "revision": 1, "contentSha256": "c" * 64, "payload": {"discovery": {
         "networkMaxAttempts": network_max_attempts, "jsonRepairMaxAttempts": 0,
+        "investigationPromptContractRevision": "k10-investigation-v1",
         "modelOptions": {"investigation": {"maxTokens": 128, "thinking": {"type": "disabled"}}},
     }}}
     return path, _CheckpointedDiscoveryModel(

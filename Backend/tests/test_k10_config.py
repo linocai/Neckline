@@ -31,7 +31,23 @@ def test_execution_pack_is_explicit_and_ready_without_strategy_defaults():
     assert "articleLimits" not in discovery
     assert discovery["titleBatchSize"] == 64
     assert discovery["modelOptions"]["understand"]["maxTokens"] == 8192
+    assert discovery["titleReconcileContractVersion"] == "k10-title-reconcile-v2"
+    assert discovery["modelOptions"]["titleReconcile"] == {
+        "maxTokens": 32768, "thinking": {"type": "disabled"},
+    }
     payload["discovery"]["titleTriageConcurrency"] = 0
+    assert not validate_execution_config(payload).ready
+
+
+def test_b82_title_contract_does_not_reuse_its_version_for_a_different_capacity_or_thinking_mode():
+    payload = json.loads((Path(__file__).parents[1] / "neckline/config/k10-execution-v4.json").read_text())
+    payload["discovery"]["modelOptions"]["titleReconcile"] = {
+        "maxTokens": 32768, "thinking": {"type": "enabled"}, "reasoningEffort": "high",
+    }
+    assert not validate_execution_config(payload).ready
+    payload["discovery"]["modelOptions"]["titleReconcile"] = {
+        "maxTokens": 1024, "thinking": {"type": "disabled"},
+    }
     assert not validate_execution_config(payload).ready
 
 

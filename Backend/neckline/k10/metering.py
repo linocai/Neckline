@@ -132,6 +132,53 @@ class MeteredProvider(OpenAICompatProvider):
         finally:
             _SPEND_CONTEXT.reset(token)
 
+    @contextmanager
+    def exact_receipt_replay_context(self, receipt: Mapping[str, object]) -> Iterator[None]:
+        """Feed one already-verified raw receipt through the current parser.
+
+        The caller obtained it from the durable task/stage/item identity.  This
+        is intentionally separate from the broad same-wire cache in
+        ``_begin_attempt``: failed semantic recovery must not search a local
+        diagnostic file or compose a new provider request.
+        """
+        payload = receipt.get("payload") if isinstance(receipt, Mapping) else None
+        attempt_id = receipt.get("attemptId") if isinstance(receipt, Mapping) else None
+        if not isinstance(payload, Mapping) or not isinstance(attempt_id, str) or not attempt_id:
+            raise ValueError("精确模型回执无效")
+        previous = getattr(self._thread_usage, "exact_receipt_replay", None)
+        self._thread_usage.exact_receipt_replay = {"payload": dict(payload), "attemptId": attempt_id}
+        try:
+            yield
+        finally:
+            self._thread_usage.exact_receipt_replay = previous
+
+    @contextmanager
+    def receipt_replay_metadata_context(self, metadata: Mapping[str, object] | None) -> Iterator[None]:
+        """Persist only the renderer facts required to prove a future replay.
+
+        This is private receipt provenance, never prompt text, evidence body,
+        credentials or a second result store.  B82 records the frozen renderer
+        revision and (where present) the deterministic repair feedback so a
+        later parser change need not guess a repair wire.
+        """
+        clean: dict[str, object] | None = None
+        if metadata is not None:
+            revision = metadata.get("rendererRevision")
+            feedback = metadata.get("repairFeedback")
+            if not isinstance(revision, str) or not revision:
+                raise ValueError("回执 renderer 版本无效")
+            if feedback is not None and not isinstance(feedback, Mapping):
+                raise ValueError("回执 repair feedback 无效")
+            clean = {"rendererRevision": revision,
+                     "repairFeedback": None if feedback is None else json.loads(json.dumps(dict(feedback), ensure_ascii=False,
+                                                                                     sort_keys=True, separators=(",", ":")))}
+        previous = getattr(self._thread_usage, "receipt_replay_metadata", None)
+        self._thread_usage.receipt_replay_metadata = clean
+        try:
+            yield
+        finally:
+            self._thread_usage.receipt_replay_metadata = previous
+
     def _wire_request(self, args: tuple[object, ...], kwargs: Mapping[str, object]) -> dict[str, object] | None:
         """Return the exact first HTTP body plus the actual endpoint identity."""
         messages = args[0] if args else kwargs.get("messages")
@@ -369,9 +416,8 @@ class MeteredProvider(OpenAICompatProvider):
         return ((str(attempt_id), None, None) if isinstance(attempt_id, str)
                 else (None, "provider_attempt_admission_failed", None))
 
-    @staticmethod
-    def _receipt_payload(result: LLMResult) -> dict[str, object]:
-        return {
+    def _receipt_payload(self, result: LLMResult) -> dict[str, object]:
+        payload: dict[str, object] = {
             "receiptVersion": _RECEIPT_CONTRACT_VERSION, "ok": bool(result.ok), "content": result.content,
             "provider": result.provider or "", "model": result.model or "", "promptTokens": result.prompt_tokens,
             "completionTokens": result.completion_tokens, "totalTokens": result.total_tokens,
@@ -386,6 +432,10 @@ class MeteredProvider(OpenAICompatProvider):
             # protocol checks before returning it to the caller.
             "rawReceiptOnly": bool(getattr(result, "raw_receipt_only", False)),
         }
+        metadata = getattr(self._thread_usage, "receipt_replay_metadata", None)
+        if isinstance(metadata, Mapping):
+            payload["replayMetadata"] = dict(metadata)
+        return payload
 
     def _result_from_receipt(self, payload: Mapping[str, object], *, kwargs: Mapping[str, object]) -> LLMResult:
         if payload.get("rawReceiptOnly") is True:
@@ -575,6 +625,21 @@ class MeteredProvider(OpenAICompatProvider):
         if not self.model.lower().startswith("deepseek") and isinstance(effective_kwargs.get("model_options"), Mapping):
             effective_kwargs["model_options"] = {key: value for key, value in effective_kwargs["model_options"].items()
                                        if key not in {"thinking", "reasoningEffort"}}
+        replay = getattr(self._thread_usage, "exact_receipt_replay", None)
+        if isinstance(replay, Mapping):
+            payload, receipt_attempt_id = replay.get("payload"), replay.get("attemptId")
+            if not isinstance(payload, Mapping) or not isinstance(receipt_attempt_id, str) or not receipt_attempt_id:
+                return LLMResult(ok=False, reason="K10 response receipt is invalid", provider=self.name, model=self.model,
+                                 error_code="provider_response_receipt_invalid", usage_unavailable=True)
+            try:
+                result = self._result_from_receipt(payload, kwargs=effective_kwargs)
+            except ValueError:
+                return LLMResult(ok=False, reason="K10 response receipt is invalid", provider=self.name, model=self.model,
+                                 error_code="provider_response_receipt_invalid", usage_unavailable=True)
+            result.reused_attempt_id = receipt_attempt_id
+            self._thread_usage.last_external_attempt_id = None
+            self._thread_usage.last_model_receipt_attempt_id = receipt_attempt_id
+            return result
         request_sha256 = self._request_input_sha256(args, effective_kwargs)
         context = _SPEND_CONTEXT.get()
         reuse_scope_sha256 = (self._reuse_scope_sha256(context=context, args=args, kwargs=effective_kwargs,

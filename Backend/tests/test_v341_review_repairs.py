@@ -6,6 +6,7 @@ none may contact a provider, APNs, or a production database.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import sqlite3
 
 import httpx
@@ -22,7 +23,7 @@ from neckline.k10.providers import resolve_deepseek_v4_pro
 from neckline.k10.investigation import decode_stage_result
 from neckline.k10.research_contracts import QueryPath, Question, ResearchSnapshot, ResearchStageResult
 from neckline.k10.research_store import (advance_research_snapshot, create_research_snapshot,
-                                         read_research_state)
+                                         mark_research_round_failed, read_research_state)
 from neckline.k10.schema import initialize_schema
 from neckline.llm.base import ChatMessage, LLMResult
 from neckline.settings_store import ProviderRecord
@@ -73,6 +74,9 @@ def _research_adapter(tmp_path, monkeypatch):
         cutoff_at=datetime(2026, 9, 20, 4, 10, tzinfo=timezone.utc), db_path=db_path,
         leaseguard=None, allow_failed_research_resume=True,
     )
+    store.append_event_revision(event_id="event-recovery", stable_key="fixture:event-recovery",
+                                headline="receipt recovery", event_kind="fixture", facts={}, source_refs=[],
+                                supersedes_revision=None, created_at=_NOW, db_path=db_path)
     snapshot = ResearchSnapshot("snapshot-recovery", "receipt-recovery", "event-recovery", 1,
                                 _NOW, _NOW, "a" * 64,
                                 profile["payload"]["discovery"]["investigationPromptContractRevision"],
@@ -515,3 +519,82 @@ def test_direct_route_identity_collapses_same_body_from_different_document_ids(t
     assert runtime._b78_path_identity(original_path, original_question) == runtime._b78_path_identity(
         syndicated_path, syndicated_question,
     )
+
+
+@pytest.mark.parametrize("receipt_scope", ["valid", "wrong"])
+def test_failed_research_contract_shape_replays_original_db_receipt_without_post(tmp_path, monkeypatch, receipt_scope):
+    """A B82 prompt-shape change recovers the exact old paid reply locally.
+
+    The first operation is a real ``MeteredProvider`` request.  We then mark
+    that completed derivative as the explicitly authorised semantic failure
+    that a recovery producer would have frozen.  Changing the request payload
+    proves recovery cannot find it by rebuilding the new wire: it must locate
+    the old task/stage/natural-item receipt and feed its raw response through
+    the current parser.  No diagnostics sidecar participates.
+    """
+    db_path, adapter, snapshot, packet, calls = _research_adapter(tmp_path, monkeypatch)
+    create_research_snapshot(snapshot=snapshot, db_path=db_path)
+    original = adapter.advance_research_round(snapshot=snapshot, evidence_packet=packet)
+    assert original.action == "research_round" and calls == ["/chat"]
+
+    operation, item_key, _item, old_digest, ledger_key, _row = adapter._research_operation_target(
+        snapshot=snapshot, action="research_round", evidence_packet=packet,
+    )
+    assert adapter.reject_research_result(
+        snapshot=snapshot, action="research_round", evidence_packet=packet,
+        safe_error_code="investigation_result_invalid",
+    )
+    failed_snapshot = mark_research_round_failed(
+        snapshot_id=snapshot.snapshot_id, expected_revision=snapshot.revision,
+        input_packet=packet, safe_error_code="investigation_result_invalid",
+        updated_at=_NOW, db_path=db_path,
+    )
+    with sqlite3.connect(db_path) as connection:
+        checkpoint = json.loads(connection.execute(
+            "SELECT checkpoint_json FROM k10_tasks WHERE task_id='receipt-recovery'"
+        ).fetchone()[0])
+        checkpoint["recoveryAuthorized"] = {"failedModelInputSha256": [old_digest]}
+        connection.execute(
+            "UPDATE k10_tasks SET checkpoint_json=? WHERE task_id='receipt-recovery'",
+            (json.dumps(checkpoint, ensure_ascii=False, sort_keys=True, separators=(",", ":")),),
+        )
+        # The receipt is tied to the original identity; a neighbouring natural
+        # item remains ineligible even before a current shape is constructed.
+        assert store.load_model_response_receipts_for_operation(
+            task_id="receipt-recovery", stage="investigation",
+            item_key=f"{operation}:{item_key}-similar:{old_digest}", db_path=db_path,
+        ) == ()
+        if receipt_scope == "wrong":
+            connection.execute("UPDATE k10_model_response_receipts SET reuse_scope_sha256=?", ("0" * 64,))
+
+    # The failed-round packet and B81 frozen renderer reconstruct the old
+    # wire/scope before the current local decoder is called.  The derived
+    # recovery checkpoint has a different digest; socket use remains denied.
+    if receipt_scope == "wrong":
+        with pytest.raises(Exception) as rejected:
+            adapter.advance_research_round(snapshot=failed_snapshot, evidence_packet=packet)
+        assert getattr(rejected.value, "code", None) == "provider_response_receipt_unverifiable"
+    else:
+        recovered = adapter.advance_research_round(snapshot=failed_snapshot, evidence_packet=packet)
+        assert recovered.action == "research_round"
+    assert calls == ["/chat"]
+    with sqlite3.connect(db_path) as connection:
+        receipt_payload = json.loads(connection.execute(
+            "SELECT payload_json FROM k10_model_response_receipts"
+        ).fetchone()[0])
+        assert receipt_payload["replayMetadata"] == {
+            "rendererRevision": "k10-investigation-v1", "repairFeedback": None,
+        }
+        rows = connection.execute(
+            "SELECT status,input_sha256,safe_error_ref FROM k10_execution_item_checkpoints "
+            "WHERE task_id='receipt-recovery' AND stage='model:investigation_research_round' ORDER BY updated_at"
+        ).fetchall()
+        assert len(rows) == (1 if receipt_scope == "wrong" else 2)
+        old_row = next(row for row in rows if row[1] == old_digest)
+        assert old_row == ("failed", old_digest, ledger_key)
+        if receipt_scope == "valid":
+            current_row = next(row for row in rows if row[1] != old_digest)
+            assert current_row[0] == "completed" and current_row[2] is None
+        assert connection.execute(
+            "SELECT state,count(*) FROM k10_external_attempts GROUP BY state"
+        ).fetchall() == [("succeeded", 1)]

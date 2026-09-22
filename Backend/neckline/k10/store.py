@@ -685,7 +685,8 @@ def _receipt_payload(payload: Mapping[str, Any]) -> tuple[str, str]:
         "totalTokens", "usageUnavailable", "errorCode", "retryAfterSeconds", "finishReason", "rawResponses", "responseReceived",
         "rawReceiptOnly",
     }
-    if not isinstance(payload, Mapping) or set(payload) != required:
+    optional = {"replayMetadata"}
+    if not isinstance(payload, Mapping) or (set(payload) != required and set(payload) != required | optional):
         raise ValueError("模型响应回执字段不完整")
     if (not isinstance(payload["receiptVersion"], str) or not payload["receiptVersion"]
             or not isinstance(payload["ok"], bool) or not isinstance(payload["content"], str)
@@ -704,6 +705,12 @@ def _receipt_payload(payload: Mapping[str, Any]) -> tuple[str, str]:
     retry = payload["retryAfterSeconds"]
     if retry is not None and (isinstance(retry, bool) or not isinstance(retry, (int, float)) or retry < 0):
         raise ValueError("模型响应回执 retry 无效")
+    metadata = payload.get("replayMetadata")
+    if metadata is not None:
+        if (not isinstance(metadata, Mapping) or set(metadata) != {"rendererRevision", "repairFeedback"}
+                or not isinstance(metadata.get("rendererRevision"), str) or not metadata["rendererRevision"]
+                or (metadata.get("repairFeedback") is not None and not isinstance(metadata.get("repairFeedback"), Mapping))):
+            raise ValueError("模型响应回执重放元数据无效")
     canonical = _json(dict(payload))
     return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -738,20 +745,28 @@ def _model_attempt_admission(conn, *, task_id: str, stage: str, item_key: str, a
         if sibling_terminal is not None:
             return {"state": "terminal", "reason": sibling_terminal[1], "attemptId": sibling_terminal[0]}
 
-    # Receipt lookup is deliberately keyed by the same task and exact wire,
-    # not by the parser contract that happened to consume the first response.
-    # A later local parser/checkpoint revision must revalidate the immutable
-    # raw provider body, never open a second paid request for the same wire.
+    # Receipt lookup is always keyed by the same task, stage and *exact wire
+    # hash*, not by the parser contract that happened to consume the first
+    # response. ``reuse_scope_sha256`` remains immutable receipt provenance;
+    # it must not make a current parser rebuild and rebill the exact old wire.
+    # A normal new checkpoint may deduplicate that same paid wire within its
+    # task. A running/failed recovery is stricter: it must also prove the
+    # original item identity before current parsing sees the immutable raw body.
+    item_clause = " AND a.item_key=?" if receipt_only else ""
+    receipt_values: tuple[str, ...] = (task_id, stage, input_sha256)
+    if receipt_only:
+        receipt_values += (item_key,)
     receipts = conn.execute(
         "SELECT r.attempt_id,r.payload_json,r.payload_sha256,r.receipt_version,r.received_at "
         "FROM k10_model_response_receipts r JOIN k10_external_attempts a ON a.attempt_id=r.attempt_id "
-        "WHERE r.task_id=? AND r.request_sha256=? "
-        "AND a.task_id=r.task_id AND a.stage=r.stage AND a.input_sha256=r.request_sha256 AND a.state=r.provider_result_state "
+        "WHERE r.task_id=? AND r.stage=? AND r.request_sha256=? "
+        "AND a.task_id=r.task_id AND a.stage=r.stage" + item_clause +
+        " AND a.input_sha256=r.request_sha256 AND a.state=r.provider_result_state "
         # Timestamps have second precision; UUIDs and restored insertion
         # order cannot establish which row actually contains a paid reply.
         # Inspect all exact-wire receipts so a refusal cannot shadow a reply.
         "ORDER BY r.rowid DESC",
-        (task_id, input_sha256),
+        receipt_values,
     ).fetchall()
     for receipt in receipts:
         try:
@@ -918,11 +933,54 @@ def load_model_response_receipt(*, task_id: str, attempt_id: str, db_path: Path)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise K10Conflict("模型响应回执损坏") from exc
     if (canonical != row[3] or digest != row[4] or row[8] != task_id or row[9] != row[1]
-            or row[10] != row[0] or row[11] != row[5]):
+            or row[10] != row[0] or row[11] != row[5]
+            or not isinstance(row[2], str) or re.fullmatch(r"[0-9a-f]{64}", row[2]) is None):
         raise K10Conflict("模型响应回执哈希或归属不匹配")
     return {"attemptId": attempt_id, "taskId": task_id, "stage": row[0], "requestSha256": row[1],
             "reuseScopeSha256": row[2], "payload": payload, "payloadSha256": row[4],
             "providerResultState": row[5], "receiptVersion": row[6], "receivedAt": row[7]}
+
+
+def load_model_response_receipts_for_operation(
+    *, task_id: str, stage: str, item_key: str, db_path: Path,
+    expected_request_sha256: str | None = None,
+    expected_reuse_scope_sha256: str | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Return verified raw receipts for one original frozen provider operation.
+
+    ``item_key`` is the immutable operation/item/input-digest identity used by
+    the provider spending context.  This deliberately does not consult a
+    parser derivative, an adjacent checkpoint, or a filesystem sidecar: a
+    semantic recovery may revalidate only replies that the original task,
+    provider stage and frozen wire operation actually produced.
+    """
+    if not all(isinstance(value, str) and value for value in (task_id, stage, item_key)):
+        raise ValueError("模型回执原始操作身份无效")
+    if ((expected_request_sha256 is None) != (expected_reuse_scope_sha256 is None)
+            or any(value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None
+                   for value in (expected_request_sha256, expected_reuse_scope_sha256))):
+        raise ValueError("模型回执精确 wire 或 scope 身份无效")
+    exact_clause = ""
+    values: tuple[str, ...] = (task_id, stage, item_key)
+    if expected_request_sha256 is not None:
+        exact_clause = " AND r.request_sha256=? AND r.reuse_scope_sha256=?"
+        values += (expected_request_sha256, expected_reuse_scope_sha256)  # type: ignore[arg-type]
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            "SELECT r.attempt_id FROM k10_model_response_receipts r "
+            "JOIN k10_external_attempts a ON a.attempt_id=r.attempt_id "
+            "WHERE r.task_id=? AND r.stage=? AND a.task_id=r.task_id AND a.stage=r.stage "
+            "AND a.item_key=? AND a.input_sha256=r.request_sha256 "
+            "AND a.state=r.provider_result_state" + exact_clause + " ORDER BY r.rowid DESC",
+            values,
+        ).fetchall()
+    receipts: list[dict[str, Any]] = []
+    for (attempt_id,) in rows:
+        receipt = load_model_response_receipt(task_id=task_id, attempt_id=str(attempt_id), db_path=db_path)
+        if receipt is not None:
+            receipts.append(receipt)
+    return tuple(receipts)
 
 
 def record_external_result_failure(*, task_id: str, attempt_id: str | None, db_path: Path) -> None:
@@ -2708,7 +2766,8 @@ def _frozen_evidence_refs(
     """Stable evidence union for a single candidate, using only its stored revisions."""
     groups: list[Any] = [event_source_refs]
     if isinstance(event_facts, Mapping):
-        verification = event_facts.get("verification")
+        from .discovery import event_verification
+        verification = event_verification(event_facts)
         if isinstance(verification, Mapping):
             groups.append(verification.get("evidenceRefs"))
     if isinstance(comparison, Mapping):
@@ -4788,7 +4847,7 @@ __all__ = [
     "list_company_windows", "list_company_window_evaluations", "list_market_day_facts", "list_observations", "list_opportunities", "market_day_fact_id",
     "list_opportunity_lifecycle_events", "list_publication_batches", "list_publication_samples", "list_scans", "list_source_document_versions",
     "load_analysis_revision", "load_candidate_context", "load_document_versions", "load_observation_context",
-    "external_attempt_summary", "freeze_title_selection_manifest", "freeze_title_triage_manifest", "load_model_response_receipt",
+    "external_attempt_summary", "freeze_title_selection_manifest", "freeze_title_triage_manifest", "load_model_response_receipt", "load_model_response_receipts_for_operation",
     "is_discovery_retired", "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities",
     "read_execution_config", "read_fact_cache", "read_run_config", "read_title_selection_manifest",
     "read_title_triage_items", "read_title_triage_manifest", "read_title_triage_policy",

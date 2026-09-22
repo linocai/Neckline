@@ -70,6 +70,8 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 
 ## Verification
 
+- Environment-gated native acceptance must verify the actual XCTest result counts and skip reasons. A successful xcodebuild exit is not acceptance when the intended tests were skipped; pass required inputs through the test runner configuration and require positive passed counts with zero skipped target cases.
+
 ```bash
 cd Backend
 .venv/bin/python -m pytest -q

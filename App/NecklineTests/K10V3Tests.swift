@@ -699,8 +699,10 @@ final class K10V3Tests: XCTestCase {
 
     func testV302RealProducerContractDecodesMorningLifecycleAnalysisHistoryAndMarket() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let raw = environment["NK_V304_API_URL"] ?? environment["NK_V303_API_URL"] ?? environment["NK_V302_API_URL"], let baseURL = URL(string: raw) else {
-            throw XCTSkip("set NK_V303_API_URL (or NK_V302_API_URL) to run the producer-to-Swift contract test")
+        guard let raw = environment["NK_V304_API_URL"] ?? environment["NK_V303_API_URL"] ?? environment["NK_V302_API_URL"],
+              let baseURL = URL(string: raw),
+              environment["NK_V304_EXPECTED_AS_OF"] == "2026-09-08T14:59:00+08:00" else {
+            throw XCTSkip("set NK_V304_API_URL and NK_V304_EXPECTED_AS_OF=2026-09-08T14:59:00+08:00 for the frozen producer-to-Swift contract test")
         }
         let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
         let latestReport = try await client.latestMorningReport()
@@ -762,8 +764,11 @@ final class K10V3Tests: XCTestCase {
     }
 
     func testBuild35RealProducerPreservesCoverageConfigurationOverlapAndWithdrawnEvidence() async throws {
-        guard let raw = ProcessInfo.processInfo.environment["NK_V304_API_URL"], let baseURL = URL(string: raw) else {
-            throw XCTSkip("set NK_V304_API_URL to run Build 35 real producer acceptance")
+        let environment = ProcessInfo.processInfo.environment
+        guard let raw = environment["NK_V304_API_URL"],
+              let baseURL = URL(string: raw),
+              environment["NK_V304_EXPECTED_AS_OF"] == "2026-09-08T14:59:00+08:00" else {
+            throw XCTSkip("set NK_V304_API_URL and NK_V304_EXPECTED_AS_OF=2026-09-08T14:59:00+08:00 to run frozen Build 35 producer acceptance")
         }
         let client = K10APIClient(baseURL: baseURL, token: "temporary-test-token")
         let scan = try await client.latestScan(window: "evening")
@@ -1061,6 +1066,76 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(materials.reportId, reportWithMaterials.reportId)
         XCTAssertFalse(materials.items.isEmpty)
         XCTAssertTrue(materials.items.allSatisfy { !$0.eventTitle.isEmpty && !$0.materialId.isEmpty })
+    }
+
+    /// B82 runs this once for each actual isolated FastAPI database.  It keeps the
+    /// three user-visible delivery states separate: a formal complete report, a
+    /// formal partial report with disclosed gaps, and read-only materials after a
+    /// failed delivery.  The server creates every payload through the CLI/worker;
+    /// this test must never substitute a client fixture.
+    func testB82IsolatedFastAPIReportDeliveryStateDecodesWithoutChangingMeaning() async throws {
+        guard let rawPort = ProcessInfo.processInfo.environment["NK_B78_API_PORT"],
+              let port = Int(rawPort), (1...65535).contains(port),
+              let expected = ProcessInfo.processInfo.environment["NK_B82_API_EXPECTED_DELIVERY"],
+              let window = ProcessInfo.processInfo.environment["NK_B82_API_WINDOW"],
+              ["complete", "partial", "materials"].contains(expected),
+              ["evening", "morning"].contains(window) else {
+            throw XCTSkip("set NK_B78_API_PORT, NK_B82_API_EXPECTED_DELIVERY=complete|partial|materials and NK_B82_API_WINDOW=evening|morning for B82 FastAPI-to-Swift verification")
+        }
+        var components = URLComponents(); components.scheme = "http"; components.host = "127.0.0.1"; components.port = port
+        let client = K10APIClient(
+            baseURL: try XCTUnwrap(components.url),
+            token: ProcessInfo.processInfo.environment["NK_B78_API_TOKEN"] ?? "temporary-test-token"
+        )
+        let response = try await client.latestDailyReport(window: window)
+        XCTAssertEqual(response.schemaVersion, 9)
+        let report = try XCTUnwrap(response.report)
+        let delivery = try XCTUnwrap(report.delivery)
+        XCTAssertTrue(delivery.isReadableByCurrentApp)
+        XCTAssertEqual(report.windowKind, window)
+        let formalCards = window == "morning" ? report.updatedCards + report.addedCards : report.eveningCards
+
+        switch expected {
+        case "complete":
+            XCTAssertEqual(delivery.outcome, "complete")
+            XCTAssertNotNil(report.availableAt)
+            XCTAssertFalse(formalCards.isEmpty, "complete delivery must include formal cards")
+        case "partial":
+            XCTAssertEqual(delivery.outcome, "partial")
+            XCTAssertNotNil(report.availableAt)
+            XCTAssertFalse(formalCards.isEmpty, "partial delivery must retain the comparable formal cards")
+            XCTAssertFalse(delivery.gaps.isEmpty, "partial delivery must disclose its excluded work")
+            XCTAssertGreaterThan(delivery.counts.eventInput, 0)
+            XCTAssertGreaterThan(delivery.counts.eventProcessed, 0)
+            if window == "morning" {
+                XCTAssertNotNil(report.deliveryDeadlineAt)
+                XCTAssertNotNil(report.resultAvailableAt)
+                XCTAssertNotNil(report.availableAt)
+                let expectsParent = ProcessInfo.processInfo.environment["NK_B82_API_EXPECTS_PARENT"] == "1"
+                if expectsParent {
+                    XCTAssertNotNil(report.parentReportId, "a morning report derived from an evening delivery must retain that parent identity")
+                    XCTAssertFalse(report.updatedCards.isEmpty && report.addedCards.isEmpty)
+                } else {
+                    XCTAssertNil(report.parentReportId, "the no-evening-prerequisite scenario must remain an independent morning delivery")
+                    XCTAssertFalse(report.addedCards.isEmpty, "an independent morning delivery must disclose its formal additions")
+                }
+            }
+        case "materials":
+            XCTAssertEqual(delivery.outcome, "failed")
+            XCTAssertNil(report.availableAt, "materials must never become a formal publication")
+            XCTAssertTrue(formalCards.isEmpty)
+            XCTAssertTrue(report.updatedCards.isEmpty)
+            XCTAssertTrue(report.addedCards.isEmpty)
+            XCTAssertEqual(report.materials?.state, "available")
+            XCTAssertGreaterThan(report.materials?.count ?? 0, 0)
+            let materials = try await client.reportMaterials(id: report.reportId, cursor: nil)
+            XCTAssertEqual(materials.schemaVersion, 9)
+            XCTAssertEqual(materials.reportId, report.reportId)
+            XCTAssertFalse(materials.items.isEmpty)
+            XCTAssertTrue(materials.items.allSatisfy { !$0.eventTitle.isEmpty && !$0.materialId.isEmpty })
+        default:
+            XCTFail("unsupported B82 delivery expectation: \(expected)")
+        }
     }
 
     /// The empty state is a real FastAPI envelope too: it must be readable without turning a

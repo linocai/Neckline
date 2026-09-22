@@ -30,6 +30,7 @@ _V3_MODEL_STAGES = (
     "titleBatch", "titleReconcile", "understand", "verify", "companyComparison", "prioritize",
     "morning", "analysisPro", "analysisCon", "investigation",
 )
+_B82_TITLE_RECONCILE_CONTRACT = "k10-title-reconcile-v2"
 
 
 def _present(value: Any) -> bool:
@@ -235,14 +236,27 @@ def validate_execution_config(payload: Mapping[str, Any] | None) -> Configuratio
         "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions",
         "investigationPromptContractRevision",
     }
-    if not isinstance(discovery, Mapping) or set(discovery) != expected:
+    allowed_discovery_fields = {frozenset(expected), frozenset({*expected, "titleReconcileContractVersion"})}
+    if not isinstance(discovery, Mapping) or frozenset(discovery) not in allowed_discovery_fields:
         errors.append("discovery 必须精确声明标题 policy 和单请求执行边界")
         return ConfigurationStatus("not_configured", missing, tuple(errors))
     if discovery.get("model") != _DEEPSEEK_V4_PRO:
         errors.append("discovery.model 必须精确为 deepseek-v4-pro")
     revision = discovery.get("investigationPromptContractRevision")
-    if not isinstance(revision, str) or not revision.strip():
-        errors.append("discovery.investigationPromptContractRevision 必须显式声明")
+    if revision not in {"k10-investigation-v1", "k10-investigation-v2"}:
+        errors.append("discovery.investigationPromptContractRevision 必须显式为已支持提示词契约")
+    reconcile_contract = discovery.get("titleReconcileContractVersion")
+    if reconcile_contract is not None and reconcile_contract != _B82_TITLE_RECONCILE_CONTRACT:
+        errors.append("discovery.titleReconcileContractVersion 无效")
+    elif reconcile_contract == _B82_TITLE_RECONCILE_CONTRACT:
+        # This version names a deliberately smaller global-title reply, not a
+        # new provider budget.  Make the three bound transport choices explicit
+        # at configuration time so a later execution cannot silently enable
+        # reasoning or change the approved capacity under the same contract.
+        reconcile_options = (discovery.get("modelOptions", {}).get("titleReconcile")
+                             if isinstance(discovery.get("modelOptions"), Mapping) else None)
+        if reconcile_options != {"maxTokens": 32768, "thinking": {"type": "disabled"}}:
+            errors.append("B82 标题归并契约必须保持 disabled thinking 与 32768 maxTokens")
     policy = discovery.get("titleTriagePolicy")
     policy_expected = {"policyId", "revision", "contentSha256", "approvalState", "content"}
     if not isinstance(policy, Mapping) or set(policy) != policy_expected:

@@ -334,6 +334,7 @@ def execute_model_operation(
     spend_context_factory: Callable[[int, bool], Any] | None = None,
     now: Callable[[], datetime] | None = None, monotonic_clock: Callable[[], float] = monotonic,
     allow_receipt_recovery: bool = False,
+    new_external_admission_guard: Callable[[], None] | None = None,
 ) -> ModelOperationResult:
     """Execute at most one provider call and durably account for it first.
 
@@ -345,7 +346,8 @@ def execute_model_operation(
     if operation not in _OPERATIONS or not item_key or not isinstance(input_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", input_sha256):
         raise ValueError("模型执行需要受支持 operation、itemKey 与 SHA-256 输入指纹")
     if (not callable(operation_call) or not callable(validate) or (repair_call is not None and not callable(repair_call))
-            or (spend_context_factory is not None and not callable(spend_context_factory))):
+            or (spend_context_factory is not None and not callable(spend_context_factory))
+            or (new_external_admission_guard is not None and not callable(new_external_admission_guard))):
         raise ValueError("模型执行回调无效")
     network_limit, repair_limit = _policy_limits(policy)
     timestamp = (now or (lambda: datetime.now(timezone.utc)))()
@@ -372,6 +374,12 @@ def execute_model_operation(
     started = monotonic_clock()
     provider_input = provider_output = provider_total = None
     try:
+        # Reserve/lookup happens before this boundary.  Completed checkpoints
+        # and exact paid-receipt replay returned above remain readable after a
+        # morning research closeout; only a new provider POST (including a
+        # repair) is refused here.
+        if reservation.state == "reserved" and new_external_admission_guard is not None:
+            new_external_admission_guard()
         is_repair = reservation.repair_attempt_count > 0 and repair_call is not None
         call = repair_call if is_repair else operation_call
         manager = (spend_context_factory(reservation.network_attempt_count, is_repair)

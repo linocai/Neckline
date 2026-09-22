@@ -98,7 +98,8 @@ def test_current_question_or_claim_read_cannot_create_a_new_paid_direct_round(tm
                 rounds.append(payload)
                 request_row = ({"kind": "question", "id": "q-1", "questionId": "q-1", "purpose": "读取当前缺口"}
                                if kind == "question" else
-                               {"kind": "claim", "id": "article-claim-1", "purpose": "读取当前判断依据"})
+                               {"kind": "claim", "id": payload["evidencePacket"]["claims"][0]["claimId"],
+                                "purpose": "读取当前判断依据"})
                 return _reply({"action": "research_round", "contextRequests": [request_row]})
             return handler(request)
         return transport(respond)

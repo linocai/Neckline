@@ -26,8 +26,11 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _APP_PY = _REPO_ROOT / "neckline" / "api" / "app.py"
+_PACKAGE_INIT = _REPO_ROOT / "neckline" / "__init__.py"
+_PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _PROJECT_YML = _REPO_ROOT.parent / "App" / "project.yml"
 _PBXPROJ = _REPO_ROOT.parent / "App" / "Neckline.xcodeproj" / "project.pbxproj"
+_ASSETS = _REPO_ROOT.parent / "App" / "Neckline" / "Resources" / "Assets.xcassets"
 
 
 def _server_version() -> str:
@@ -42,6 +45,35 @@ def _project_yml_version() -> str:
     v = (data.get("settings") or {}).get("base", {}).get("MARKETING_VERSION")
     assert v, f"{_PROJECT_YML} 缺 settings.base.MARKETING_VERSION"
     return str(v)
+
+
+def _package_version() -> str:
+    text = _PACKAGE_INIT.read_text(encoding="utf-8")
+    m = re.search(r'^__version__\s*=\s*"([\d.]+)"', text, re.MULTILINE)
+    assert m, f'未能在 {_PACKAGE_INIT} 中找到形如 __version__ = "X.Y.Z" 的声明'
+    return m.group(1)
+
+
+def _pyproject_version() -> str:
+    text = _PYPROJECT.read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([\d.]+)"', text, re.MULTILINE)
+    assert m, f'未能在 {_PYPROJECT} 中找到形如 version = "X.Y.Z" 的声明'
+    return m.group(1)
+
+
+def _project_yml_build() -> str:
+    data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
+    value = (data.get("settings") or {}).get("base", {}).get("CURRENT_PROJECT_VERSION")
+    assert value is not None, f"{_PROJECT_YML} 缺 settings.base.CURRENT_PROJECT_VERSION"
+    return str(value)
+
+
+def _project_yml_icon() -> str:
+    data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
+    target = ((data.get("targets") or {}).get("Neckline") or {})
+    value = (((target.get("settings") or {}).get("base") or {}).get("ASSETCATALOG_COMPILER_APPICON_NAME"))
+    assert isinstance(value, str) and value, f"{_PROJECT_YML} 缺 Neckline AppIcon 设置"
+    return value
 
 
 def _pbxproj_app_target_versions() -> List[str]:
@@ -63,10 +95,14 @@ def _pbxproj_app_target_versions() -> List[str]:
 def test_client_and_server_marketing_version_all_equal():
     server = _server_version()
     yml_version = _project_yml_version()
+    package = _package_version()
+    pyproject = _pyproject_version()
     pbx_versions = _pbxproj_app_target_versions()
 
     actual = {
         "app.py::VERSION(去v前缀)": server,
+        "neckline.__version__": package,
+        "pyproject.toml::project.version": pyproject,
         "project.yml::settings.base.MARKETING_VERSION": yml_version,
         "pbxproj Neckline app target(Debug/Release)": pbx_versions,
     }
@@ -74,7 +110,28 @@ def test_client_and_server_marketing_version_all_equal():
         "预期 pbxproj 里 Neckline app target(Debug + Release)各一处 MARKETING_VERSION,"
         f"实际抓到 {len(pbx_versions)} 处。各方实际值:{actual}"
     )
-    assert server == yml_version, f"服务端 VERSION 与 project.yml 版本号不一致。各方实际值:{actual}"
+    assert {server, package, pyproject} == {yml_version}, f"服务端包版本与 project.yml 版本号不一致。各方实际值:{actual}"
     assert set(pbx_versions) == {yml_version}, (
         f"pbxproj Neckline app target 版本号与 project.yml 不一致。各方实际值:{actual}"
     )
+
+
+def test_release_icon_is_new_for_the_exact_marketing_version_and_build():
+    version = _project_yml_version()
+    build = _project_yml_build()
+    icon = _project_yml_icon()
+    expected = f"AppIconV{version.replace('.', '')}B{build}"
+    assert icon == expected, f"AppIcon 必须随精确版本/build更名: {icon=} {expected=}"
+    assert (_ASSETS / f"{icon}.appiconset").is_dir(), f"缺少发布图标资产 {_ASSETS / f'{icon}.appiconset'}"
+    pbx_text = _PBXPROJ.read_text(encoding="utf-8")
+    assert pbx_text.count(f"ASSETCATALOG_COMPILER_APPICON_NAME = {icon};") == 2
+
+
+def test_generated_application_product_preserves_explicit_file_type():
+    text = _PBXPROJ.read_text(encoding="utf-8")
+    expected = (
+        r"/\* Neckline\.app \*/ = \{isa = PBXFileReference; "
+        r"explicitFileType = wrapper\.application; includeInIndex = 0; "
+        r"path = Neckline\.app; sourceTree = BUILT_PRODUCTS_DIR; \};"
+    )
+    assert re.search(expected, text), "xcodegen 后处理必须保留 Neckline.app 的 explicitFileType"

@@ -697,6 +697,52 @@ def test_receipt_contract_change_revalidates_exact_raw_wire_without_reposting(tm
     assert store.external_attempt_summary(task_id="receipt-task", db_path=db)["succeeded"] == 1
 
 
+def test_running_receipt_recovery_requires_the_original_operation_identity(tmp_path) -> None:
+    """A frozen recovery may replay only its own task/stage/item receipt.
+
+    Ordinary completed checkpoints may share an identical paid wire inside one
+    task.  A running checkpoint is different: it is restoring an interrupted
+    operation, so another item with the same prompt must not borrow the reply
+    and quietly become completed under a newly changed parser.
+    """
+    db, provider = _receipt_provider(tmp_path)
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={
+        "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }))
+    messages = [ChatMessage(role="user", content="frozen recovery wire")]
+    with provider_spend_context(provider=provider, task_id="receipt-task", stage="understand",
+                                item_key="original-document", attempt=1):
+        assert provider.chat(messages, enable_search=False, model_options={"maxTokens": 128}, transport=transport).ok
+    with sqlite3.connect(db) as conn:
+        stage, item_key, request_hash = conn.execute(
+            "SELECT stage,item_key,input_sha256 FROM k10_external_attempts WHERE task_id=?", ("receipt-task",)
+        ).fetchone()
+        reuse_scope = conn.execute(
+            "SELECT reuse_scope_sha256 FROM k10_model_response_receipts"
+        ).fetchone()[0]
+
+    recovered = store.begin_model_external_attempt(
+        task_id="receipt-task", stage=stage, item_key=item_key, attempt_key="resume-original",
+        input_sha256=request_hash, reuse_scope_sha256=reuse_scope, started_at="2026-09-20T04:10:00+00:00",
+        db_path=db, receipt_only=True,
+    )
+    wrong_item = store.begin_model_external_attempt(
+        task_id="receipt-task", stage=stage, item_key="other-document", attempt_key="resume-other",
+        input_sha256=request_hash, reuse_scope_sha256=reuse_scope, started_at="2026-09-20T04:10:00+00:00",
+        db_path=db, receipt_only=True,
+    )
+    similar_wire = store.begin_model_external_attempt(
+        task_id="receipt-task", stage=stage, item_key=item_key, attempt_key="resume-similar",
+        input_sha256="f" * 64, reuse_scope_sha256=reuse_scope, started_at="2026-09-20T04:10:00+00:00",
+        db_path=db, receipt_only=True,
+    )
+    assert recovered["state"] == "receipt_reused"
+    assert wrong_item["state"] == similar_wire["state"] == "receipt_missing"
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT count(*) FROM k10_external_attempts").fetchone()[0] == 1
+
+
 def test_contract_changed_semantic_receipt_without_raw_body_blocks_repost(tmp_path, monkeypatch) -> None:
     """An old semantic-only receipt cannot become current-parser success or a new wire."""
     db, provider = _receipt_provider(tmp_path)

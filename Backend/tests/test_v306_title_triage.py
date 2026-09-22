@@ -317,8 +317,9 @@ def test_raw_decoders_and_global_request_keep_only_schema_fields():
     assert "references" not in payload
     assert all(set(row) == {"i", "sourceKey", "publishedAt", "title", "status", "matterKey", "stageKey"}
                for row in payload["items"])
-    assert "selectionComplete=true" in instruction
-    assert set(payload["output"]) == {"selectionComplete", "reviewedCount", "selected", "merged"}
+    assert "selectionComplete=true" not in instruction
+    assert set(payload["output"]) == {"selected", "merged"}
+    assert set(payload["output"]["selected"][0]) == {"i", "reason"}
     assert payload["output"]["merged"][0]["into"] == 0
     assert "originalText" not in str(payload) and "excerpt" not in str(payload)
     selection = validate_reconcile_result({"selected": [{"i": 0, "selectedRank": 1, "reason": "保留"}],
@@ -348,10 +349,7 @@ def test_compact_global_declaration_generates_the_full_not_selected_complement_w
 
 
 @pytest.mark.parametrize("raw, message", [
-    ({"reviewedCount": 2, "selected": [], "merged": []}, "字段无效"),
     ({"selectionComplete": False, "reviewedCount": 2, "selected": [], "merged": []}, "未明确完成"),
-    ({"selectionComplete": True, "reviewedCount": True, "selected": [], "merged": []}, "reviewedCount"),
-    ({"selectionComplete": True, "reviewedCount": 1, "selected": [], "merged": []}, "reviewedCount"),
     ({"selectionComplete": True, "reviewedCount": 2,
       "selected": [{"i": 7, "selectedRank": 1, "reason": "越界"}], "merged": []}, "陌生"),
     ({"selectionComplete": True, "reviewedCount": 2,

@@ -78,14 +78,34 @@ def assert_failed_round_without_search(connection):
     assert json.loads(rows[0][1]) == [] and rows[0][2] == 'failed'
 
 
-def edit_mixed_plan(value):
+def capture_research_packets(packets):
+    """Record the exact B78 evidence packet that produced each edited reply."""
+    def observe(request):
+        wire = json.loads(request.content)
+        message = wire['messages'][-1]['content']
+        payload = json.loads(message.split('<untrusted-k10-evidence>\n', 1)[1].split('\n</untrusted-k10-evidence>', 1)[0])
+        if payload.get('action') == 'research_round':
+            packets.append(payload['evidencePacket'])
+    return observe
+
+
+def next_packet_claim_id(packets):
+    """Use the identity the current research request actually exposed."""
+    packet = packets.pop(0)
+    claim_ids = [row.get('claimId') for row in packet.get('claims', [])
+                 if isinstance(row, dict) and isinstance(row.get('claimId'), str)]
+    assert len(claim_ids) == 1 and claim_ids[0].startswith('claim_')
+    return claim_ids[0]
+
+
+def edit_mixed_plan(value, *, claim_id):
     if value.get('action')!='research_round': return
     ref=value['conclusion']['companyMappings'][0]['relationEvidence'][0]
-    questions=[{'questionId':qid,'claimIds':['article-claim-1'],'companyCodes':[code],
+    questions=[{'questionId':qid,'claimIds':[claim_id],'companyCodes':[code],
         'question':'Confirm current event '+qid,'knownEvidence':[ref],'missingEvidence':['Company notice'],
         'supportCondition':'Confirmed','refuteCondition':'Refuted','decisionImpact':'Changes comparison',
         'state':'open','resumeCondition':'New company notice'} for qid,code in [('q-1','300002.SZ'),('q-2','300004.SZ')]]
-    first=path('path-1','q-1',[{'kind':'claim','claimId':'article-claim-1'}])
+    first=path('path-1','q-1',[{'kind':'claim','claimId':claim_id}])
     other=path('path-1-other','q-2',[{'kind':'company','companyCode':'300004.SZ'}])
     mixed=path('path-1-mixed','q-1',[{'kind':'company','companyCode':'300002.SZ'},{'kind':'company','companyCode':'300004.SZ'}])
     value.clear(); value.update(action='research_round',questions=questions,queryPaths=[first,other,mixed],
@@ -96,9 +116,10 @@ def edit_mixed_plan(value):
 @pytest.mark.parametrize('force_invalid',[False,True])
 def test_real_cli_worker_prunes_mixed_routes_and_isolates_a_paid_invalid_plan(tmp_path,monkeypatch,force_invalid):
     serial=[0]
+    packets=[]
     def edit(value):
-        edit_mixed_plan(value)
         if value.get('action')=='research_round':
+            edit_mixed_plan(value,claim_id=next_packet_claim_id(packets))
             serial[0]+=1
             for row in value['queryPaths']:
                 row['pathId']+=f'-reply-{serial[0]}'
@@ -106,7 +127,8 @@ def test_real_cli_worker_prunes_mixed_routes_and_isolates_a_paid_invalid_plan(tm
             if force_invalid:
                 value['queryPaths'][-1]['targetRefs']=[{'kind':'claim','claimId':'unknown-claim'}]
     edit_responses(monkeypatch,edit)
-    db,tid,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
+    db,tid,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True,
+        request_observer=capture_research_packets(packets))
     if force_invalid:
         # B76 turns an event-local contract refusal into an honest partial
         # delivery. The paid typed reply stays intact; its invalid scope is
@@ -145,11 +167,16 @@ def test_real_cli_worker_prunes_mixed_routes_and_isolates_a_paid_invalid_plan(tm
 
 def test_real_cli_local_scope_refusal_is_not_a_search_result(tmp_path, monkeypatch):
     from neckline.k10.research_runtime import _Investigation
+    packets=[]
     def denied(*args, **kwargs):
         raise investigation.InvestigationError('scope changed',code='investigation_path_scope_invalid')
     monkeypatch.setattr(_Investigation,'_b78_bound_query_path',denied)
-    edit_responses(monkeypatch,edit_mixed_plan)
-    db,tid,task,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
+    def edit(value):
+        if value.get('action') == 'research_round':
+            edit_mixed_plan(value,claim_id=next_packet_claim_id(packets))
+    edit_responses(monkeypatch,edit)
+    db,tid,task,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True,
+        request_observer=capture_research_packets(packets))
     assert task.status=='completed' and gateway.search_paths==[]
     report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
     assert report['status']=='partial' and report['availableAt'] and report['coverageGaps']

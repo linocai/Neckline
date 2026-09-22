@@ -53,7 +53,9 @@ def test_missing_claim_reference_derives_only_duplicate_source_without_mutating_
         claim.pop("sourceRef")
     before = copy.deepcopy(raw)
     events, _ = pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
-    assert events[0].facts["researchClaims"] == expected
+    actual = events[0].facts["researchClaims"]
+    assert actual == [{**expected[0], "claimId": actual[0]["claimId"], "verificationStatus": "unverified"}]
+    assert actual[0]["claimId"].startswith("claim_")
     assert raw == before
 
 
@@ -94,7 +96,10 @@ def test_material_gap_preserves_original_claims_and_does_not_mutate_reply():
     before = copy.deepcopy(raw)
     events, flag = pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
     assert raw == before and flag is True
-    assert events[0].facts["researchClaims"] == raw["events"][0]["claims"]
+    actual = events[0].facts["researchClaims"]
+    original = raw["events"][0]["claims"]
+    assert actual == [{**original[0], "claimId": actual[0]["claimId"], "verificationStatus": "unverified"}]
+    assert actual[0]["claimId"].startswith("claim_")
     assert events[0].facts["sourceMaterialCoverage"]["state"] == "additional_material_unresolved"
 
 
