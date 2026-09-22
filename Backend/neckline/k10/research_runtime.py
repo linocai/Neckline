@@ -36,6 +36,7 @@ from .research_contracts import (Claim, FullTextRequest, Question, QueryPath,
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_material import admit_material
 from .research_store import (append_research_round, create_research_snapshot, load_prior_research_evidence,
+                             freeze_research_input_boundary,
                              load_research_round_state, mark_research_round_failed, read_research_state)
 from .schema import SqliteWriteBusy
 
@@ -1101,7 +1102,8 @@ class _Investigation:
             merged["candidateCompanyCodes"] = list(dict.fromkeys(candidates))
         return merged
 
-    def _b78_direct_shared_source_evidence(self) -> dict[str, list[dict[str, Any]]]:
+    def _b78_direct_shared_source_evidence(self, *, as_of: str | None = None,
+                                         max_rowid: int | None = None) -> dict[str, list[dict[str, Any]]]:
         """Read same-task peer facts from committed B78 rounds only.
 
         Direct rounds deliberately do not project results into the retired
@@ -1133,9 +1135,10 @@ class _Investigation:
                 "JOIN k10_research_round_results rr ON rr.snapshot_id=r.snapshot_id AND rr.revision=r.revision "
                 "JOIN k10_event_revisions er ON er.event_id=r.event_id AND er.revision=r.event_revision "
                 "WHERE r.task_id=? AND r.snapshot_id<>? AND r.prompt_contract_revision=? "
-                "AND r.model_parameters_sha256=? ORDER BY r.updated_at,r.snapshot_id,r.revision",
+                "AND r.model_parameters_sha256=? AND (? IS NULL OR julianday(r.updated_at)<=julianday(?)) "
+                "AND (? IS NULL OR r.rowid<=?) ORDER BY r.updated_at,r.snapshot_id,r.revision",
                 (task_id, self.identity, self.snapshot.prompt_contract_revision,
-                 self.snapshot.model_parameters_sha256),
+                 self.snapshot.model_parameters_sha256, as_of, as_of, max_rowid, max_rowid),
             ).fetchall()
 
             claims: list[dict[str, Any]] = []
@@ -1211,7 +1214,8 @@ class _Investigation:
                     })
         return {"claims": claims, "isolated": isolated}
 
-    def _b78_reusable_source_evidence(self) -> dict[str, Any]:
+    def _b78_reusable_source_evidence(self, *, as_of: str | None = None,
+                                    max_rowid: int | None = None) -> dict[str, Any]:
         """Combine readable historical facts with B78's direct peer facts."""
         # Unit-level direct packet construction is storage-free by design.
         # Production always has the snapshot database, while an absent local
@@ -1226,9 +1230,10 @@ class _Investigation:
             prompt_contract_revision=self.snapshot.prompt_contract_revision,
             model_parameters_sha256=self.snapshot.model_parameters_sha256,
             db_path=self.db_path, canonical_key=self.event.canonical_key,
-            exclude_snapshot_id=self.identity,
+            exclude_snapshot_id=self.identity, shared_evidence_as_of=as_of,
+            shared_evidence_max_rowid=max_rowid,
         )
-        direct = self._b78_direct_shared_source_evidence()
+        direct = self._b78_direct_shared_source_evidence(as_of=as_of, max_rowid=max_rowid)
         combined: list[dict[str, Any]] = []
         seen: set[tuple[str, str, int]] = set()
         for raw in [*legacy.get("claims", ()), *direct["claims"]]:
@@ -1339,6 +1344,13 @@ class _Investigation:
         context = comparison_context or {}
         packet_context = self._b78_packet_context(context)
         scope = self._b78_merge_scope(company_scope or self._company_scope(), context)
+        shared_as_of = None
+        shared_max_rowid = None
+        if getattr(self, 'b78_research', False):
+            shared_as_of, shared_max_rowid = freeze_research_input_boundary(
+                snapshot=self.snapshot,
+                as_of=_text(max(self.clock(), datetime.fromisoformat(self.snapshot.updated_at))),
+                db_path=self.db_path, lease_guard=self.guard)
         return build_research_round_packet({
             "event": {key: self.context[key] for key in ("canonicalKey", "stageKey", "eventState", "headline", "eventKind")},
             "companyScope": scope,
@@ -1356,7 +1368,7 @@ class _Investigation:
             "evidenceCards": cards, "fullTextDocuments": fulltext_cards,
             "contextResults": [dict(item) for item in context_results],
             "newEvidenceRefs": [_ref(ref) for ref in fulltext_refs if ref in self.allowed],
-            "reusableSourceEvidence": self._b78_reusable_source_evidence(),
+            "reusableSourceEvidence": self._b78_reusable_source_evidence(as_of=shared_as_of, max_rowid=shared_max_rowid),
             "availableArticlePolicy": {"fullTextQuota": None, "eventShared": True},
         })
 
@@ -1926,7 +1938,10 @@ class _Investigation:
             first_packet = restored["firstPacket"]
             if isinstance(first_packet, Mapping):
                 first_scope = first_packet.get("companyScope")
-                company_scope = dict(first_scope) if isinstance(first_scope, Mapping) else company_scope
+                if isinstance(first_scope, Mapping):
+                    # The wire projection omits the fixed pool. Restore its
+                    # local filtering identity from the frozen profile binding.
+                    company_scope = {**first_scope, "fixedPool": company_scope.get("fixedPool", [])}
                 initial_context = {key: first_packet.get(key, fallback) for key, fallback in (
                     ("marketContext", {}), ("historicalCases", []), ("historicalCoverage", {}),
                 )}

@@ -864,7 +864,8 @@ def test_b78_resume_rebuilds_next_packet_after_durable_round_without_reposting_p
         assert conn.execute("SELECT COUNT(*) FROM k10_research_stage_results").fetchone()[0] == 0
 
 
-def test_b78_committed_peer_round_refreshes_same_task_shared_source_facts(tmp_path):
+@pytest.mark.parametrize('frozen_before_peer', [False, True])
+def test_b78_committed_peer_round_refreshes_same_task_shared_source_facts(tmp_path, frozen_before_peer):
     """A later same-task event sees accepted peer facts, never peer mappings or raw bodies."""
     database = tmp_path / "shared-direct-round.sqlite"
     initialize_schema(database)
@@ -898,6 +899,12 @@ def test_b78_committed_peer_round_refreshes_same_task_shared_source_facts(tmp_pa
                                  event_id=receiving_event.event_id, event_revision=receiving_event.revision)
     create_research_snapshot(snapshot=peer_snapshot, db_path=database)
     create_research_snapshot(snapshot=receiving_snapshot, db_path=database)
+    from datetime import datetime, timedelta
+    from neckline.k10.research_store import freeze_research_input_boundary
+    original_time = datetime.fromisoformat(receiving_snapshot.updated_at)
+    if frozen_before_peer:
+        freeze_research_input_boundary(snapshot=receiving_snapshot, as_of=receiving_snapshot.updated_at,
+                                       db_path=database)
     shared_claim = {**_packet()["claims"][0], "claimId": "peer-source-fact", "text": "供应商确认仍在送样",
                     "sourceRef": source_ref, "location": "excerpt"}
     peer_result = _complete_round(source_ref)
@@ -906,7 +913,9 @@ def test_b78_committed_peer_round_refreshes_same_task_shared_source_facts(tmp_pa
         input_packet={**_packet(), "claims": [shared_claim], "allowedEvidenceRefs": [source_ref],
                       "evidenceCards": [{**source_ref, "excerpt": "供应商确认仍在送样"}]},
         result=ResearchRoundResult.from_dict(peer_result), research_status="ready_for_comparison",
-        updated_at=peer_snapshot.updated_at, db_path=database)
+        # A peer can commit later in the same clock second. The durable row
+        # watermark, not a wall-clock comparison alone, freezes visibility.
+        updated_at=original_time.isoformat(), db_path=database)
 
     document = _document("shared-source", text="同源公告正文，不进入共享事实包。", excerpt="供应商确认仍在送样")
     current_claim = Claim.from_dict({**_packet()["claims"][0], "claimId": "receiving-claim",
@@ -922,9 +931,19 @@ def test_b78_committed_peer_round_refreshes_same_task_shared_source_facts(tmp_pa
                        "eventState": runtime.event.event_state, "headline": runtime.event.headline,
                        "eventKind": runtime.event.event_kind}
     runtime._company_scope = lambda: {}
+    if frozen_before_peer:
+        runtime.b78_research = True
+        runtime.guard = None
+        runtime.clock = lambda: original_time + timedelta(seconds=2)
 
     packet = runtime._b78_packet(claims=(current_claim,))
     shared = packet["reusableSourceEvidence"]
+
+    if frozen_before_peer:
+        assert shared['claims'] == []
+        runtime.clock = lambda: original_time + timedelta(seconds=20)
+        assert runtime._b78_packet(claims=(current_claim,)) == packet
+        return
 
     assert [row["text"] for row in shared["claims"]] == ["供应商确认仍在送样"]
     assert shared["claims"][0]["provenance"]["snapshotId"] == peer_snapshot.snapshot_id

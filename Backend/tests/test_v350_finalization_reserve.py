@@ -119,7 +119,7 @@ def test_morning_reserves_final_order_after_closing_new_research(tmp_path, monke
     with sqlite3.connect(db) as conn:
         event = conn.execute(
             "SELECT status,safe_error_code FROM k10_execution_item_checkpoints "
-            "WHERE task_id=? AND item_kind='event' ORDER BY item_key", (task_id,),
+            "WHERE task_id=? AND item_kind='event' AND stage<>'research_input_boundary' ORDER BY item_key", (task_id,),
         ).fetchall()
         assert sorted(event) == [("completed", None), ("failed", "morning_closeout_reserve")]
         assert conn.execute("SELECT COUNT(*) FROM k10_publication_samples").fetchone()[0] == 1

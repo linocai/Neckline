@@ -19,6 +19,49 @@ from .store import K10Conflict, _json
 
 LeaseGuard = Callable[[], None]
 
+
+def freeze_research_input_boundary(*, snapshot: ResearchSnapshot, as_of: str,
+                                   db_path: Path, lease_guard: LeaseGuard | None = None) -> tuple[str, int]:
+    """Freeze a peer-read boundary for one pending round, not its prompt/body."""
+    boundary = _aware_instant(as_of, 'shared evidence boundary')
+    if boundary < _aware_instant(snapshot.created_at, 'snapshot created_at'):
+        raise K10Conflict('Shared evidence boundary predates its research identity')
+    key = f'research-input:{snapshot.snapshot_id}:{snapshot.revision}'
+    stage = 'research_input_boundary'
+    if lease_guard is not None:
+        lease_guard()
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        if lease_guard is not None:
+            lease_guard()
+        row = conn.execute('SELECT task_id,revision FROM k10_research_snapshot_revisions '
+            'WHERE snapshot_id=? ORDER BY revision DESC LIMIT 1', (snapshot.snapshot_id,)).fetchone()
+        if row is None or tuple(row) != (snapshot.task_id, snapshot.revision):
+            raise K10Conflict('Research input boundary revision changed')
+        saved = conn.execute('SELECT input_sha256,status,result_json FROM k10_execution_item_checkpoints '
+            'WHERE task_id=? AND item_kind=? AND item_key=? AND stage=?',
+            (snapshot.task_id, 'event', key, stage)).fetchone()
+        if saved is not None:
+            value = json.loads(saved[2])
+            if (saved[1] != 'completed' or sha256(_json(value).encode()).hexdigest() != saved[0]
+                    or value.get('snapshotId') != snapshot.snapshot_id
+                    or value.get('snapshotRevision') != snapshot.revision):
+                raise K10Conflict('Research input boundary is invalid')
+            _aware_instant(value['sharedEvidenceAsOf'], 'saved shared evidence boundary')
+            ceiling = value.get('sharedEvidenceMaxRowid')
+            if type(ceiling) is not int or ceiling < 1:
+                raise K10Conflict('Research input boundary row watermark is invalid')
+            return value['sharedEvidenceAsOf'], ceiling
+        ceiling = conn.execute('SELECT MAX(rowid) FROM k10_research_snapshot_revisions').fetchone()[0]
+        value = {'snapshotId': snapshot.snapshot_id, 'snapshotRevision': snapshot.revision,
+                 'sharedEvidenceAsOf': as_of, 'sharedEvidenceMaxRowid': ceiling}
+        raw = _json(value)
+        conn.execute('INSERT INTO k10_execution_item_checkpoints(task_id,item_kind,item_key,stage,'
+            'input_sha256,status,attempt_count,network_attempt_count,repair_attempt_count,elapsed_ms,'
+            'result_json,updated_at) VALUES(?,?,?,?,?,\'completed\',0,0,0,0,?,?)',
+            (snapshot.task_id, 'event', key, stage, sha256(raw.encode()).hexdigest(), raw, as_of))
+    return as_of, ceiling
+
 _ROUND_UNSAFE_KEYS = frozenset({"originalText", "original_text", "rawResponse", "raw_response", "prompt"})
 
 
@@ -805,6 +848,8 @@ def load_prior_research_evidence(
     verification_cutoff_at: str, prompt_contract_revision: str, model_parameters_sha256: str,
     db_path: Path, canonical_key: str | None = None, event_id: str | None = None,
     include_historical_sources: bool = False, exclude_snapshot_id: str | None = None,
+    shared_evidence_as_of: str | None = None,
+    shared_evidence_max_rowid: int | None = None,
 ) -> dict[str, Any]:
     """Load time-applicable evidence from prior and related task snapshots.
 
@@ -853,11 +898,15 @@ def load_prior_research_evidence(
             "SELECT r.snapshot_id,r.revision,r.task_id,r.event_id,r.event_revision,r.news_cutoff_at,r.verification_cutoff_at "
             "FROM k10_research_snapshot_revisions r JOIN ("
             "SELECT snapshot_id,MAX(revision) revision FROM k10_research_snapshot_revisions "
-            "WHERE (event_id=? AND task_id<>?) OR (? IS NOT NULL AND task_id=? AND snapshot_id<>?) GROUP BY snapshot_id"
+            "WHERE ((event_id=? AND task_id<>?) OR (? IS NOT NULL AND task_id=? AND snapshot_id<>?)) "
+            "AND (? IS NULL OR julianday(updated_at)<=julianday(?)) "
+            "AND (? IS NULL OR rowid<=?) GROUP BY snapshot_id"
             ") latest ON latest.snapshot_id=r.snapshot_id AND latest.revision=r.revision "
             "WHERE r.prompt_contract_revision=? AND r.model_parameters_sha256=? "
             "ORDER BY r.updated_at DESC,r.snapshot_id DESC",
-            (source_event_id, task_id, exclude_snapshot_id, task_id, exclude_snapshot_id, prompt_contract_revision, model_parameters_sha256),
+            (source_event_id, task_id, exclude_snapshot_id, task_id, exclude_snapshot_id,
+             shared_evidence_as_of, shared_evidence_as_of, shared_evidence_max_rowid,
+             shared_evidence_max_rowid, prompt_contract_revision, model_parameters_sha256),
         ).fetchall()
         claims: list[dict[str, Any]] = []
         relations: list[dict[str, Any]] = []

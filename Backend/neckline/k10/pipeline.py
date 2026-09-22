@@ -4190,13 +4190,14 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     morning_finalization_at: datetime | None = None
     finalization_guard: Callable[[], None] | None = None
     def new_research_external_admission_guard() -> None:
-        """Refuse only a fresh research provider request after morning closeout.
+        """Stop fresh research at slice/closeout; finish already paid results.
 
         This is deliberately separate from the lease/deadline guard.  Reads of
         durable snapshots and exact receipts must still finish their local
         derivation, while a new model/search/fulltext wire (including a repair)
         cannot consume the time reserved for final ordering.
         """
+        discovery_guard()
         if morning_research_closeout_at is not None and _now() >= morning_research_closeout_at:
             raise PipelineError("晨报保留最终排序时间，停止新的事件研究", code="morning_closeout_reserve")
     if execution_profile is not None:
@@ -4793,7 +4794,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 try:
                     return _research_outcome(model=model, verifier=research_gateway, task_id=str(task_id), event=event,
                         documents=document_by_ref, execution_profile=execution_profile or {}, cutoff_at=cutoff_at,
-                        db_path=db_path, created_at=_now(), leaseguard=discovery_guard,
+                        db_path=db_path, created_at=_now(), leaseguard=leaseguard,
                         snapshot_created=record_snapshot, cutoff_inclusive=window.cutoff_inclusive,
                         allow_failed_resume=allow_failed_research_resume, runtime_contract=runtime_contract,
                         new_research_admission_guard=new_research_external_admission_guard,

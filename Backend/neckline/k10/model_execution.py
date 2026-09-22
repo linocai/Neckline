@@ -232,6 +232,7 @@ def _reserve(
     *, task_id: str, operation: str, item_key: str, input_sha256: str, network_limit: int,
     repair_limit: int, db_path, leaseguard: Callable[[], None] | None, updated_at: str,
     allow_receipt_recovery: bool = False,
+    new_external_admission_guard: Callable[[], None] | None = None,
 ) -> _Reservation:
     if leaseguard is not None:
         leaseguard()
@@ -291,6 +292,12 @@ def _reserve(
         if is_json_retry and prior_repairs >= repair_limit:
             return _Reservation("failed", prior_attempts, prior_network, prior_repairs, prior_elapsed, prior_input, prior_output,
                                 "model_json_repair_exhausted")
+        # A slice/closeout refusal is not a provider attempt. Check only after
+        # the exact cache/recovery lookup, before changing its durable state.
+        # The read-only callback runs under this reservation transaction; a
+        # refusal leaves prior counters and paid checkpoints unchanged.
+        if new_external_admission_guard is not None:
+            new_external_admission_guard()
         attempt_count, network_count = prior_attempts + 1, prior_network + 1
         repair_count = prior_repairs + (1 if is_json_retry else 0)
         if row is None:
@@ -357,7 +364,8 @@ def execute_model_operation(
     reservation = _reserve(task_id=task_id, operation=operation, item_key=item_key, input_sha256=input_sha256,
                            network_limit=network_limit, repair_limit=repair_limit, db_path=db_path,
                            leaseguard=leaseguard, updated_at=updated_at,
-                           allow_receipt_recovery=allow_receipt_recovery)
+                           allow_receipt_recovery=allow_receipt_recovery,
+                           new_external_admission_guard=new_external_admission_guard)
     if reservation.state == "completed":
         return ModelOperationResult("completed", reservation.value, True, None, reservation.attempt_count,
                                     reservation.network_attempt_count, reservation.repair_attempt_count,
@@ -378,8 +386,6 @@ def execute_model_operation(
         # and exact paid-receipt replay returned above remain readable after a
         # morning research closeout; only a new provider POST (including a
         # repair) is refused here.
-        if reservation.state == "reserved" and new_external_admission_guard is not None:
-            new_external_admission_guard()
         is_repair = reservation.repair_attempt_count > 0 and repair_call is not None
         call = repair_call if is_repair else operation_call
         manager = (spend_context_factory(reservation.network_attempt_count, is_repair)
