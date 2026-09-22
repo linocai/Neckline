@@ -1,12 +1,12 @@
 # Neckline
 
-**当前发布为3.5.1（82）**：K10-v2，后端及macOS已部署并启动，iOS签名归档就绪，由用户通过Xcode安装，不生成IPA。[发布下载与校验值](https://github.com/linocai/Neckline/releases/tag/v3.5.1-b82)；源码`60f4822b2a13dff873b2fa4d545ecace1235c420`。
+**当前发布为3.5.1（83）**：K10-v2，后端已上线；Mac已替换，锁屏导致启动/界面复核待完成。iOS签名归档就绪，由用户通过Xcode安装，不生成IPA。[发布下载与校验值](https://github.com/linocai/Neckline/releases/tag/v3.5.1-b83)；源码`a49f6776e3d89dd5fed4a6523d6ce3c46c8bddb1`。
 
-本版修复标题输出噪声、研究跨轮续跑、重复命题、精确付费回执恢复、晨报收口和瞬时存储争用等报告阻碍。选股规则、固定公司池和报告时刻不变：晚报 **21:00** 启动、不设整报业务截止；晨报交易日 **08:30** 启动、**09:20** 前提供可读结果。四个定时器保持active/enabled，资讯处理开放，推送就绪；未补跑历史任务或额外调用真实provider。
+B83修复归并回复夹带空占位/多余说明导致有效标题选择整份失败的问题；真实错引、错误合并和缺失有效判断仍拦截。9月22日晚报原任务21:22受控续跑，标题原付费回执复用、47篇正文候选恢复；正式报告及对应APNs仍待核验。选股规则、模型和时刻不变：晚报 **21:00**，晨报交易日 **08:30**、**09:20** 前可读；四正式timer保持active/enabled。
 
-内部 **Schema10 / 新报告Schema9 / 历史Schema8** 不变，本次无DDL。生产策略`k10-v2-production@2`、执行`k10-v2-execution-production@2`，绑定`k10-v2-b82-20260922`；策略仅变更快照身份，原参数与1,089公司资料不变。资料仍为`local_draft_awaiting_user`。发布前后91张表的原业务/付费行保留，5份历史报告及今晨18条安全材料可读；历史失败仍为失败，不冒充新正式报告。
+内部 **Schema10 / 新报告Schema9 / 历史Schema8** 不变，无DDL或新配置。生产策略`k10-v2-production@2`、执行`k10-v2-execution-production@2`，继续绑定`k10-v2-b82-20260922`；原冻结策略、模型、输入和账本保留。资料仍为`local_draft_awaiting_user`。没有补跑其他旧失败/删除报告，没有额外provider探测。
 
-双端正式归档、严格签名、三项Apple构建、真实FastAPI→Swift三态与历史读取、双端画面及生产副本/回退验证通过。macOS采用既有未公证Developer ID方式；两部OS27手机开发服务和符号已按9月22日更新指令核验，18Pro旧符号告警为已修复误报。真实模型质量、耗时与首份正式报告交付需正常任务验证，不能由离线通过替代。恢复和清理已完成，详见[本版记录第8节](archive/v3.5.1-b82_execution.md#8-一条龙发布2026-09-22)。
+相关84项回归通过、1项历史输入缺失跳过；真实数据库副本经现有恢复入口及精确wire回执重验，新POST=0。B83双端OS27签名归档、模拟器build-for-testing、真实CLI/worker/API回归及生产副本/回退验证通过；无Swift变更。macOS沿用未公证Developer ID方式。当前两机离线，不代表已修复的旧符号误报复发。临时物已清理，隐藏旧Mac副本等解锁后启动核验再去重；详见[本版记录第10节](archive/v3.5.1-b82_execution.md#10-今晚首轮快修-b83进行中)。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
