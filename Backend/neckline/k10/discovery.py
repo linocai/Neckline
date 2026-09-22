@@ -1450,6 +1450,20 @@ def run_discovery(
                         tuple(issues), counts)
 
 
+def _same_candidate_comparison(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    def market_without_collection_clock(value):
+        if isinstance(value, Mapping):
+            return {key: market_without_collection_clock(item) for key, item in value.items() if key != "collectedAt"}
+        if isinstance(value, (list, tuple)):
+            return [market_without_collection_clock(item) for item in value]
+        return value
+    def canonical(value):
+        return ({**value, "marketContext": market_without_collection_clock(value["marketContext"])}
+                if "marketContext" in value else dict(value))
+    return (json.dumps(canonical(left), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+            == json.dumps(canonical(right), sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+
+
 class SqliteDiscoveryWriter:
     """将已验证发现结果追加到现有 K10 store；不调用来源或模型。"""
 
@@ -1532,6 +1546,16 @@ class SqliteDiscoveryWriter:
         if candidate.comparison.research_snapshot_id is not None:
             comparison["researchSnapshotId"] = candidate.comparison.research_snapshot_id
             comparison["researchRevision"] = candidate.comparison.research_revision
+        # A retry can reload the same cutoff-bound market facts at a later
+        # wall-clock instant. Reuse the original private candidate only when
+        # every business/evidence field agrees; its collection clock is retained.
+        from .schema import read_connection
+        with read_connection(self._db_path) as conn:
+            prior = conn.execute("SELECT comparison_json FROM k10_candidates WHERE candidate_id=?", (identity,)).fetchone()
+        if prior is not None:
+            previous = json.loads(prior[0])
+            if _same_candidate_comparison(previous, comparison):
+                comparison = previous
         create_candidate(
             candidate_id=identity, scan_id=self._scan_id, event_id=event.event_id, event_revision=event.revision,
             company_code=candidate.mapping.company_code, comparison=comparison,

@@ -149,6 +149,18 @@ class FixedCompanyPool:
         raise RuntimeError('固定池资格不得回退动态元数据')
 
 
+_UNPUBLISHED_FAILURE_MESSAGE = "本次报告在公开前终止，未生成新的排序或机会卡。"
+
+
+def _formal_coverage_gaps(gaps, delivery):
+    # This single runtime-owned diagnostic describes absence of publication,
+    # never missing evidence. Retain every genuine legacy/data gap.
+    if (isinstance(gaps, list) and isinstance(delivery, Mapping)
+            and delivery.get("outcome") in {"complete", "partial"}):
+        return [gap for gap in gaps if gap != _UNPUBLISHED_FAILURE_MESSAGE]
+    return gaps
+
+
 def _write_report_delivery(
     conn, *, report_id: str, delivery: dict[str, Any],
     replace_unpublished_failed_delivery: bool = False,
@@ -188,7 +200,7 @@ def _write_report_delivery(
     delivery_gaps = delivery.get('gaps') if isinstance(delivery.get('gaps'), list) else []
     derived_gaps = [item.get('message') for item in delivery_gaps if isinstance(item, Mapping)
                     and isinstance(item.get('message'), str) and item['message']]
-    coverage['coverageGaps'] = list(dict.fromkeys([*legacy_gaps, *derived_gaps]))
+    coverage['coverageGaps'] = list(dict.fromkeys([*_formal_coverage_gaps(legacy_gaps, delivery), *derived_gaps]))
     if not isinstance(coverage.get('incompleteReviews'), list):
         coverage['incompleteReviews'] = []
     conn.execute('INSERT INTO k10_v2_report_coverage VALUES (?,?) ON CONFLICT(report_id) DO UPDATE SET content_json=excluded.content_json',
@@ -391,6 +403,8 @@ def read_report(*, db_path: Path, report_id: str | None = None, window: str = 'e
                 report['status'] = active[0]
         coverage=conn.execute('SELECT content_json FROM k10_v2_report_coverage WHERE report_id=?',(row['report_id'],)).fetchone()
         report.update(json.loads(coverage[0]) if coverage else {'coverageGaps':[], 'incompleteReviews':[]})
+        if row['available_at'] is not None and row['status'] in {'completed', 'partial'}:
+            report['coverageGaps'] = _formal_coverage_gaps(report.get('coverageGaps', []), report.get('delivery'))
         metadata = conn.execute(
             'SELECT result_available_at,delivery_deadline_at,materials_state,materials_reason_json FROM k10_v2_report_delivery_metadata WHERE report_id=?',
             (row['report_id'],),
@@ -634,7 +648,7 @@ def _b76_failed_delivery(conn, *, task_id: str, scan_id: str, coverage: Mapping[
         counts=_failed_delivery_counts(conn, task_id=task_id, coverage=coverage),
         gaps=[delivery_gap(
             stage=stage, unit_kind="report", unit_id=scan_id, reason_code=code,
-            message="本次报告在公开前终止，未生成新的排序或机会卡。",
+            message=_UNPUBLISHED_FAILURE_MESSAGE,
             company_scope_known=False,
         )],
         input_manifest=title_manifest if isinstance(title_manifest, list) else [],
