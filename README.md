@@ -6,7 +6,7 @@
 
 内部 **Schema10 / 新报告Schema9 / 历史Schema8** 不变，本次无DDL。生产策略`k10-v2-production@2`、执行`k10-v2-execution-production@2`，绑定`k10-v2-b82-20260922`；策略仅变更快照身份，原参数与1,089公司资料不变。资料仍为`local_draft_awaiting_user`。发布前后91张表的原业务/付费行保留，5份历史报告及今晨18条安全材料可读；历史失败仍为失败，不冒充新正式报告。
 
-双端正式归档、严格签名、三项Apple构建、真实FastAPI→Swift三态与历史读取、双端画面及生产副本/回退验证通过。macOS采用既有未公证Developer ID方式；iPhone18Pro开发符号仍待就绪。真实模型质量、耗时与首份正式报告交付需正常任务验证，不能由离线通过替代。恢复和清理已完成，详见[本版记录第8节](archive/v3.5.1-b82_execution.md#8-一条龙发布2026-09-22)。
+双端正式归档、严格签名、三项Apple构建、真实FastAPI→Swift三态与历史读取、双端画面及生产副本/回退验证通过。macOS采用既有未公证Developer ID方式；两部OS27手机开发服务和符号已按9月22日更新指令核验，18Pro旧符号告警为已修复误报。真实模型质量、耗时与首份正式报告交付需正常任务验证，不能由离线通过替代。恢复和清理已完成，详见[本版记录第8节](archive/v3.5.1-b82_execution.md#8-一条龙发布2026-09-22)。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
