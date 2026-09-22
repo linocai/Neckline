@@ -1468,7 +1468,7 @@ class _CheckpointedDiscoveryModel:
 
         def recovered_item(*, current_item: Mapping[str, Any], original_digest: str,
                            original_code: str) -> dict[str, Any]:
-            if (original_code == "execution_paused"
+            if (grant.get("receiptOnly") is not True and original_code == "execution_paused"
                     and paused_before_external_attempt(input_sha256=original_digest)):
                 # This derived local identity lets the controlled recovery
                 # leave its earlier failed checkpoint immutable while making
@@ -1477,6 +1477,7 @@ class _CheckpointedDiscoveryModel:
                 return {**current_item,
                         "authorizedPausedBeforeExternalAttemptOf": original_digest}
             return {**current_item, "authorizedSemanticRecoveryOf": original_digest,
+                    **({"receiptReplayOnly": True} if grant.get("receiptOnly") is True else {}),
                     "authorizedRecoveryFeedback": {"errorCode": original_code, "requiredCorrection":
                         "已保存上次付费回复，但该回复未满足本阶段契约。请根据当前明确列出的字段、类型、枚举和可见引用修正输出；"
                         "不要重复上次无效结构，不要新增事实、公司或超出当前问题的调查。"}}
@@ -1566,7 +1567,7 @@ class _CheckpointedDiscoveryModel:
             self._reject_unknown_research_checkpoint(row)
         if self._allow_failed_research_resume and row is not None and row[0] == "failed" and row[1] == "provider_http_400":
             grant = store.task_execution_input(task_id=self._task_id, db_path=self._db_path)["checkpoint"].get("recoveryAuthorized", {})
-            if digest in set(grant.get("failedModelInputSha256", [])):
+            if grant.get("receiptOnly") is not True and digest in set(grant.get("failedModelInputSha256", [])):
                 # Exactly one derived checkpoint per explicitly authorized
                 # frozen input. Do not alter the wire, renew this group after
                 # another refusal, or touch the original failed/paid rows.
@@ -2013,7 +2014,7 @@ class _CheckpointedDiscoveryModel:
                         replayed_receipt_accepted = True
                         break
                     if not replayed_receipt_accepted:
-                        if operation == "understand" and receipt_recovery_only and last_replay_error is not None:
+                        if receipt_recovery_only and last_replay_error is not None:
                             # Preserve the actual content failure after local
                             # revalidation. Receipt-only recovery cannot POST,
                             # and a missing receipt error must not mask it.

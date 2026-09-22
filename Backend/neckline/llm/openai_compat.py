@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 _RESPONSE_DEADLINE: ContextVar[float | None] = ContextVar("provider_response_deadline", default=None)
 
 
+def _decode_json_content(content: str) -> tuple[Any, bool]:
+    """Preserve a complete object's values across two unambiguous wire errors.
+
+    Literal text whitespace can be escaped without inventing content. One
+    redundant closing brace after a complete object contains no extra field.
+    Multiple objects, trailing fields/prose, other controls and truncated
+    objects remain invalid. Raw provider receipts are never rewritten.
+    """
+    try:
+        return json.loads(content), False
+    except json.JSONDecodeError as original:
+        if any(ord(char) < 32 and char not in "\t\r\n" for char in content):
+            raise original
+        stripped = content.lstrip()
+        parsed, end = json.JSONDecoder(strict=False).raw_decode(stripped)
+        if not isinstance(parsed, dict) or stripped[end:].strip() not in ("", "}"):
+            raise original
+        return parsed, True
+
+
 def can_bound_response_wait() -> bool:
     # CLI tasks run on the main thread; lease heartbeats remain separate.
     # Never replace another component's process timer.
@@ -468,7 +488,10 @@ class OpenAICompatProvider(LLMProvider):
             diagnostics = {"contentLength": len(content), "contentSha256": sha256(content.encode()).hexdigest(),
                            "finishReason": finish_reason}
             try:
-                parsed = json.loads(content)
+                parsed, normalized = _decode_json_content(content)
+                if normalized:
+                    content = json.dumps(parsed, ensure_ascii=False)
+                    diagnostics["normalization"] = "complete_object_syntax"
                 diagnostics["rootType"] = type(parsed).__name__
                 if isinstance(parsed, list) and json_array_key is not None:
                     parsed = {json_array_key: parsed}
@@ -614,7 +637,10 @@ class OpenAICompatProvider(LLMProvider):
                 diagnostics = {"contentLength": len(content), "contentSha256": sha256(content.encode()).hexdigest(),
                                "finishReason": finish_reason}
                 try:
-                    parsed = json.loads(content)
+                    parsed, normalized = _decode_json_content(content)
+                    if normalized:
+                        content = json.dumps(parsed, ensure_ascii=False)
+                        diagnostics["normalization"] = "complete_object_syntax"
                     diagnostics["rootType"] = type(parsed).__name__
                     # A caller may declare exactly one array-valued output field.
                     # Restore only that omitted envelope; never infer row fields,

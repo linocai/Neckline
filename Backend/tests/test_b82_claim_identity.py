@@ -269,7 +269,7 @@ def test_b82_exact_b81_understand_receipt_preserves_existing_snapshot_claim_iden
 
 
 @pytest.mark.parametrize("checkpoint_state", ["running", "missing"])
-@pytest.mark.parametrize("paid_repair", [False, True, "both_invalid", "tampered_feedback"])
+@pytest.mark.parametrize("paid_repair", [False, True, "both_invalid", "tampered_feedback", "truncation"])
 def test_b82_running_understand_receipt_restarts_with_program_claim_identity_and_no_post(
         tmp_path, monkeypatch, checkpoint_state, paid_repair):
     """A B82 raw receipt is decoded as B82 after a crash before checkpoint commit.
@@ -322,7 +322,7 @@ def test_b82_running_understand_receipt_restarts_with_program_claim_identity_and
         if paid_repair == "both_invalid" and len(calls) == 2:
             del reply["events"][0]["claims"]
         return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": json.dumps(reply)}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": json.dumps(reply)}, "finish_reason": "length" if paid_repair == "truncation" and len(calls) == 1 else "stop"}],
             "usage": {"prompt_tokens": 13, "completion_tokens": 8, "total_tokens": 21},
         })
 

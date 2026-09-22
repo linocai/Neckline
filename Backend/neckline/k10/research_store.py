@@ -170,6 +170,28 @@ def append_research_round(
                     and current.research_status == research_status and current.execution_status == "ok"):
                 return current
             raise K10Conflict("研究快照已被其他执行者推进")
+        # A failed round is a program-owned placeholder, not a paid business
+        # result. Replace that placeholder atomically when its exact packet
+        # finally validates; the immutable failed snapshot, original model
+        # checkpoint and raw provider receipts remain as failure evidence.
+        # The unique input hash still prohibits two successful results for one
+        # packet, and any error below rolls this deletion back with the append.
+        if current.execution_status == "failed":
+            prior_round = conn.execute(
+                "SELECT revision,input_packet_json,result_json,context_results_json,tool_evidence_json "
+                "FROM k10_research_round_results WHERE snapshot_id=? AND input_sha256=?",
+                (snapshot_id, input_sha256),
+            ).fetchone()
+            if prior_round is not None:
+                prior_result = json.loads(prior_round[2])
+                code = prior_result.get("safeErrorCode") if isinstance(prior_result, Mapping) else None
+                if (prior_round[0] != current.revision or prior_round[1] != _json(packet)
+                        or not isinstance(code, str)
+                        or prior_result != ResearchRoundResult(safe_error_code=code).to_dict()
+                        or prior_round[3] != "[]" or prior_round[4] != "[]"):
+                    raise K10Conflict("不能替换已有的研究业务结果")
+                conn.execute("DELETE FROM k10_research_round_results WHERE snapshot_id=? AND revision=?",
+                             (snapshot_id, current.revision))
         next_snapshot = ResearchSnapshot(
             snapshot_id=current.snapshot_id, task_id=current.task_id, event_id=current.event_id,
             event_revision=current.event_revision, news_cutoff_at=current.news_cutoff_at,

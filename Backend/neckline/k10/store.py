@@ -3979,7 +3979,8 @@ def authorize_discovery_recovery(
         row = conn.execute(
             "SELECT s.status,s.coverage_json,b.task_id,b.execution_config_id,b.execution_config_revision,"
             "b.execution_content_sha256,t.status,t.attempt_count,t.checkpoint_json,t.input_cutoff_at,"
-            "tb.execution_config_id,tb.execution_config_revision,tb.execution_content_sha256,t.stage "
+            "tb.execution_config_id,tb.execution_config_revision,tb.execution_content_sha256,t.stage,"
+            "t.lease_owner,t.lease_until,t.error_text "
             "FROM k10_scans s JOIN k10_scan_execution_bindings b ON b.scan_id=s.scan_id "
             "JOIN k10_tasks t ON t.task_id=b.task_id "
             "JOIN k10_task_execution_bindings tb ON tb.task_id=t.task_id WHERE s.scan_id=?",
@@ -3989,19 +3990,36 @@ def authorize_discovery_recovery(
             raise K10Conflict("扫描没有可复用的原任务执行绑定")
         (scan_status, coverage_raw, task_id, bound_id, bound_revision, bound_hash,
          task_status, attempt_count, checkpoint_raw, _cutoff, task_bound_id,
-         task_bound_revision, task_bound_hash, task_stage) = row
+         task_bound_revision, task_bound_hash, task_stage, lease_owner, lease_until, task_error) = row
         try:
             coverage = json.loads(coverage_raw)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise K10Conflict("扫描覆盖记录无效") from exc
         title_partial = is_failed_title_scan({"status": scan_status, "coverage": coverage})
         paused_running = scan_status == "running" and task_status == "failed" and task_stage == "paused"
-        if (scan_status not in {"failed", "not_configured"} and not title_partial and not paused_running) or task_status not in {"failed", "not_configured"}:
+        # A drained normal slice may contain failed paid work even though the
+        # whole report is still running. Explicit recovery can revalidate only
+        # those receipts before publication, without manufacturing task failure
+        # or opening a new paid retry budget.
+        queued_receipts = (
+            scan_status == "running" and task_status == "queued" and task_stage == "retry_scheduled"
+            and task_error == "DISCOVERY_SLICE" and lease_owner is None and lease_until is None
+            and conn.execute("SELECT 1 FROM k10_task_retry_schedules WHERE task_id=? "
+                             "AND retry_kind='continuation' AND safe_error_code='DISCOVERY_SLICE'", (task_id,)).fetchone() is not None
+            and conn.execute("SELECT 1 FROM k10_execution_item_checkpoints WHERE task_id=? "
+                             "AND stage LIKE 'model:%' AND status='failed'", (task_id,)).fetchone() is not None
+        )
+        if not queued_receipts and ((scan_status not in {"failed", "not_configured"} and not title_partial and not paused_running) or task_status not in {"failed", "not_configured"}):
             raise K10Conflict("只有当前失败的冻结扫描及原任务可受控恢复")
-        if conn.execute("SELECT 1 FROM k10_external_attempts WHERE task_id=? AND state IN ('started','unknown')", (task_id,)).fetchone() is not None:
+        if queued_receipts and any(value is not None for value in (research_max_tokens, completion_deadline_seconds, finalization_max_tokens)):
+            raise K10Conflict("分片间恢复只允许原始付费回执重验，不可变更执行参数")
+        if conn.execute("SELECT 1 FROM k10_external_attempts WHERE task_id=? AND state IN ('started','running','unknown')", (task_id,)).fetchone() is not None:
             raise K10Conflict("仍有未结算的外部调用，拒绝恢复")
         if conn.execute("SELECT 1 FROM k10_publication_batches WHERE scan_id=?", (scan_id,)).fetchone() is not None:
             raise K10Conflict("已有正式发布批次不能受控恢复")
+        if conn.execute("SELECT 1 FROM k10_v2_report_runs WHERE scan_id=? "
+                        "AND status IN ('complete','partial') AND available_at IS NOT NULL", (scan_id,)).fetchone() is not None:
+            raise K10Conflict("已有正式报告不能受控恢复")
         profile = conn.execute(
             "SELECT content_sha256 FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
             (execution_config_id, execution_config_revision),
@@ -4028,20 +4046,22 @@ def authorize_discovery_recovery(
             raise K10Conflict("任务 checkpoint 无效") from exc
         if not isinstance(checkpoint, Mapping):
             raise K10Conflict("任务 checkpoint 无效")
-        updated_checkpoint = _authorize_known_external_failures(conn, task_id=task_id, checkpoint=checkpoint)
+        updated_checkpoint = (dict(checkpoint) if queued_receipts else
+                              _authorize_known_external_failures(conn, task_id=task_id, checkpoint=checkpoint))
         # An explicit frozen-task recovery may retry each definitively rejected
         # verification request once. Preserve all historical counts and receipts;
         # normal worker restarts cannot renew this count-bound authorization.
-        updated_checkpoint["verificationRecoveryAttempts"] = {
-            key: {"inputSha256": digest, "networkAttemptCount": count}
-            for key, digest, count in conn.execute(
-                "SELECT c.item_key,c.input_sha256,c.network_attempt_count "
-                "FROM k10_execution_item_checkpoints c WHERE c.task_id=? "
-                "AND c.stage='tavily_evidence' AND c.status='failed' "
-                "AND c.safe_error_code IN ('provider_retry_authorized','tavily_response_unavailable') "
-                "AND EXISTS (SELECT 1 FROM k10_external_attempts a WHERE a.task_id=c.task_id "
-                "AND a.item_key=c.item_key AND a.stage='search' AND a.input_sha256=c.input_sha256 "
-                "AND a.state='failed' AND a.settled_at IS NOT NULL)", (task_id,))}
+        if not queued_receipts:
+            updated_checkpoint["verificationRecoveryAttempts"] = {
+                key: {"inputSha256": digest, "networkAttemptCount": count}
+                for key, digest, count in conn.execute(
+                    "SELECT c.item_key,c.input_sha256,c.network_attempt_count "
+                    "FROM k10_execution_item_checkpoints c WHERE c.task_id=? "
+                    "AND c.stage='tavily_evidence' AND c.status='failed' "
+                    "AND c.safe_error_code IN ('provider_retry_authorized','tavily_response_unavailable') "
+                    "AND EXISTS (SELECT 1 FROM k10_external_attempts a WHERE a.task_id=c.task_id "
+                    "AND a.item_key=c.item_key AND a.stage='search' AND a.input_sha256=c.input_sha256 "
+                    "AND a.state='failed' AND a.settled_at IS NOT NULL)", (task_id,))}
         if research_max_tokens is not None or completion_deadline_seconds is not None or finalization_max_tokens is not None:
             original = json.loads(conn.execute(
                 "SELECT payload_json FROM k10_execution_config_revisions WHERE config_id=? AND revision=?",
@@ -4112,6 +4132,7 @@ def authorize_discovery_recovery(
             "scanId": scan_id, "frozenInputSha256": confirmed_input_sha256, "authorizedAt": authorized_at,
             "previousAttemptCount": int(attempt_count), "previousStage": updated_checkpoint.get("stage"),
             "previousScanStatus": scan_status,
+            **({"receiptOnly": True} if queued_receipts else {}),
             "failedModelInputSha256": [r[0] for r in conn.execute(
                 "SELECT DISTINCT input_sha256 FROM k10_execution_item_checkpoints "
                 "WHERE task_id=? AND stage LIKE 'model:%' AND status='failed' ORDER BY input_sha256", (task_id,))],
@@ -4123,8 +4144,8 @@ def authorize_discovery_recovery(
         changed = conn.execute(
             "UPDATE k10_tasks SET status='queued',stage='recovery_authorized',checkpoint_json=?,error_text=NULL,"
             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND attempt_count=? "
-            "AND status IN ('failed','not_configured')",
-            (_json(updated_checkpoint), authorized_at, task_id, int(attempt_count)),
+            "AND status=?",
+            (_json(updated_checkpoint), authorized_at, task_id, int(attempt_count), task_status),
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务不是可恢复的当前失败版本")

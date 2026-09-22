@@ -1737,6 +1737,7 @@ class _Investigation:
         last_packet: Mapping[str, Any] | None = None
         last_contexts: Sequence[Mapping[str, Any]] = ()
         last_tools: Sequence[Mapping[str, Any]] = ()
+        failed_packet: Mapping[str, Any] | None = None
         for round_state in rounds:
             if not isinstance(round_state, Mapping):
                 raise InvestigationError("研究轮次状态不可读取", code="investigation_round_state_invalid")
@@ -1746,6 +1747,19 @@ class _Investigation:
             saved_tools = round_state.get("toolEvidence", ())
             if not isinstance(packet, Mapping) or not isinstance(raw_result, Mapping):
                 raise InvestigationError("研究轮次状态不可读取", code="investigation_round_state_invalid")
+            if raw_result.get("safeErrorCode") is not None:
+                # A durable failure marker is not a business conclusion. Its
+                # failed snapshot remains history; do not validate it as a round or
+                # rebuild its paid input from today's expanded local state.
+                marker = ResearchRoundResult(safe_error_code=raw_result["safeErrorCode"])
+                if raw_result != marker.to_dict() or saved_contexts or saved_tools:
+                    raise InvestigationError("研究失败记录含业务结果", code="investigation_round_state_invalid")
+                first_packet = packet if first_packet is None else first_packet
+                if round_state is rounds[-1]:
+                    if snapshot.execution_status != "failed" or not self.allow_failed_resume:
+                        raise InvestigationError("调查执行失败，等待任务恢复", code="investigation_previously_failed")
+                    failed_packet = packet
+                continue
             try:
                 result = normalize_research_round_result(
                     result=ResearchRoundResult.from_dict(raw_result), evidence_packet=packet,
@@ -1847,7 +1861,8 @@ class _Investigation:
             "evidenceUpdates": updates, "contextResults": contexts, "fulltextRefs": fulltext_refs,
             "seenPaths": seen_paths, "seenFulltexts": seen_fulltexts, "seenContext": seen_context,
             "toolEvidence": tool_evidence, "firstPacket": first_packet, "lastResult": last_result,
-            "lastRoundNoVisibleIncrement": bool(last_result is not None
+            "failedPacket": failed_packet,
+            "lastRoundNoVisibleIncrement": bool(failed_packet is None and last_result is not None
                 and (last_result.context_requests or last_result.query_paths or last_result.fulltext_requests
                      or (isinstance(last_result.conclusion, Mapping)
                          and last_result.conclusion.get("researchStatus") == "continue_research"))
@@ -1920,6 +1935,8 @@ class _Investigation:
                                       fulltext_requests=tuple(fulltexts.values()), context_results=context_results,
                                       fulltext_refs=fulltext_refs, company_scope=company_scope,
                                       comparison_context=initial_context)
+            if restored["failedPacket"] is not None:
+                packet = restored["failedPacket"]
             claims.update({claim.claim_id: claim for claim in _b78_visible_shared_claims(packet)
                            if claim.claim_id not in claims})
             result = restored["lastResult"] if self.snapshot.research_status != "continue_research" else None
