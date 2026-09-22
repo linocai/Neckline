@@ -12,7 +12,7 @@ import pytest
 from neckline.k10 import metering, store
 from neckline.k10.discovery import DiscoveryDocument, freeze_event_drafts
 from neckline.k10.metering import MeteredProvider
-from neckline.k10.pipeline import (DeepSeekDiscoveryModel, _CheckpointedDiscoveryModel,
+from neckline.k10.pipeline import (DeepSeekDiscoveryModel, PipelineError, _CheckpointedDiscoveryModel,
                                    _document_checkpoint_key, _research_id)
 from neckline.k10.research_contracts import ResearchContractError, ResearchSnapshot
 from neckline.k10.research_runtime import _Investigation, _hash, normalize_body_claims
@@ -269,8 +269,9 @@ def test_b82_exact_b81_understand_receipt_preserves_existing_snapshot_claim_iden
 
 
 @pytest.mark.parametrize("checkpoint_state", ["running", "missing"])
+@pytest.mark.parametrize("paid_repair", [False, True, "both_invalid", "tampered_feedback"])
 def test_b82_running_understand_receipt_restarts_with_program_claim_identity_and_no_post(
-        tmp_path, monkeypatch, checkpoint_state):
+        tmp_path, monkeypatch, checkpoint_state, paid_repair):
     """A B82 raw receipt is decoded as B82 after a crash before checkpoint commit.
 
     This uses the metered adapter with a real persisted running checkpoint or
@@ -315,8 +316,13 @@ def test_b82_running_understand_receipt_restarts_with_program_claim_identity_and
 
     def respond(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
+        reply = copy.deepcopy(raw)
+        if paid_repair and len(calls) == 1:
+            del reply["events"][0]["claims"][0]["novelty"]
+        if paid_repair == "both_invalid" and len(calls) == 2:
+            del reply["events"][0]["claims"]
         return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": json.dumps(raw)}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": json.dumps(reply)}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 13, "completion_tokens": 8, "total_tokens": 21},
         })
 
@@ -341,10 +347,35 @@ def test_b82_running_understand_receipt_restarts_with_program_claim_identity_and
             leaseguard=None, allow_failed_research_resume=False,
         )
 
-    original = adapter().understand(document=document)
-    original_claim_id = original[0].facts["researchClaims"][0]["claimId"]
-    assert calls == ["/chat"]
-    assert original_claim_id.startswith("claim_")
+    # Structural reads must reconstruct the complete original instruction too,
+    # including the locator request contract appended by the material renderer.
+    from hashlib import sha256
+    from neckline.k10.research_material import source_material_for_understand
+    check = adapter()
+    structural = source_material_for_understand(document, max_characters=0)
+    operation, payload = check._base._material_request(document, structural)
+    prompt_hash = sha256(json.dumps({"operation": operation, "payload": payload,
+        "modelOptions": check._base._model_options("understand")}, ensure_ascii=False,
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    digest = check._digest(operation="understand", stage="understand", item={
+        "sourceContentSha256": structural["sourceContentSha256"], "requestSha256": prompt_hash,
+        "textMode": structural["textMode"], "material": structural})
+    proof = check._body_receipt_replay_proof(document=document, material=structural, original_digest=digest)
+    assert proof is not None and proof["request"]["operation"] == operation
+    assert proof["request"]["payload"] == payload
+
+    # Exercise the receipt boundary, before the optional fact cache is written.
+    monkeypatch.setattr(store, "store_fact_cache", lambda **_kwargs: None)
+    if paid_repair == "both_invalid":
+        with pytest.raises(PipelineError):
+            adapter().understand(document=document)
+        original_claim_id = None
+    else:
+        original = adapter().understand(document=document)
+        original_claim_id = original[0].facts["researchClaims"][0]["claimId"]
+    assert calls == ["/chat"] * (2 if paid_repair else 1)
+    if original_claim_id is not None:
+        assert original_claim_id.startswith("claim_")
     assert original_claim_id != "provider-b82-claim"
     with sqlite3.connect(db_path) as conn:
         (ledger,) = conn.execute(
@@ -363,14 +394,31 @@ def test_b82_running_understand_receipt_restarts_with_program_claim_identity_and
                 "WHERE task_id=? AND item_key=? AND stage='model:understand'", (task_id, ledger),
             )
 
+    if paid_repair == "tampered_feedback":
+        with sqlite3.connect(db_path) as conn:
+            for attempt, encoded in conn.execute("SELECT attempt_id,payload_json FROM k10_model_response_receipts"):
+                receipt = json.loads(encoded)
+                feedback = receipt["replayMetadata"]["repairFeedback"]
+                if feedback is not None:
+                    feedback["requiredCorrection"] = "This was not the paid wire."
+                    changed = json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    conn.execute("UPDATE k10_model_response_receipts SET payload_json=?,payload_sha256=? WHERE attempt_id=?",
+                                 (changed, sha256(changed.encode()).hexdigest(), attempt))
+
     monkeypatch.setattr(httpx, "Client", lambda **_kwargs: pytest.fail("B82 receipt replay opened a new provider request"))
-    recovered = adapter().understand(document=document)
-    recovered_claim_id = recovered[0].facts["researchClaims"][0]["claimId"]
-    assert calls == ["/chat"]
-    assert recovered_claim_id == original_claim_id
-    assert recovered_claim_id.startswith("claim_")
+    if paid_repair in {"both_invalid", "tampered_feedback"}:
+        with pytest.raises(PipelineError) as error:
+            adapter().understand(document=document)
+        assert error.value.code == ("provider_response_receipt_unverifiable"
+                                    if paid_repair == "tampered_feedback" else "understand_json_contract_invalid")
+    else:
+        recovered = adapter().understand(document=document)
+        recovered_claim_id = recovered[0].facts["researchClaims"][0]["claimId"]
+        assert recovered_claim_id == original_claim_id
+        assert recovered_claim_id.startswith("claim_")
+    assert calls == ["/chat"] * (2 if paid_repair else 1)
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM k10_external_attempts WHERE task_id=? AND stage IN ('fullText','lightweight')",
             (task_id,),
-        ).fetchone() == (1,)
+        ).fetchone() == (2 if paid_repair else 1,)

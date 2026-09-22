@@ -732,9 +732,10 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                 field_name="events/needsFullText", expected="available_facts_or_explicit_no_new_event")
         return tuple(out), needs_full
 
-    def _material_request(self, document, material):
+    def _material_request(self, document, material, *, legacy_claim_identity_contract=False):
         operation, payload = self._understand_request_spec(document=document, text=material.get("text", ""),
-            text_mode=material["textMode"], is_excerpt=material["isExcerpt"], paragraph_indexes=[])
+            text_mode=material["textMode"], is_excerpt=material["isExcerpt"], paragraph_indexes=[],
+            legacy_claim_identity_contract=legacy_claim_identity_contract)
         payload = {**payload, "sourceMaterial": {key: value for key, value in material.items() if key != "text"}}
         if material["textMode"] != "full_text":
             operation += ("目前只给出目录或已明确读取的结构片段。目录预览仅供选段，不能作为事实。"
@@ -1332,7 +1333,7 @@ class _CheckpointedDiscoveryModel:
 
     def _body_receipt_replay_proof(self, *, document: DiscoveryDocument, material: Mapping[str, Any],
                                    original_digest: str | None = None) -> dict[str, Any] | None:
-        """Rebuild one versioned understand wire from its frozen source input.
+        """Rebuild each versioned understand wire from its frozen source input.
 
         A paid body reply is reusable only when its frozen document, material
         route, contract shape and provider scope reproduce the receipt
@@ -1352,12 +1353,10 @@ class _CheckpointedDiscoveryModel:
         if any(key not in material for key in required) or not isinstance(material.get("sourceContentSha256"), str):
             return None
         try:
-            instruction, payload = self._base._understand_request_spec(
-                document=document, text=material["text"], text_mode=material["textMode"],
-                is_excerpt=material["isExcerpt"], paragraph_indexes=(),
+            instruction, payload = self._base._material_request(
+                document, material,
                 legacy_claim_identity_contract=contract_revision == "k10-investigation-v1",
             )
-            payload = {**payload, "sourceMaterial": {key: value for key, value in material.items() if key != "text"}}
             options = self._base._model_options("understand")
             prompt_hash = sha256(json.dumps({"operation": instruction, "payload": payload,
                 "modelOptions": options}, ensure_ascii=False, sort_keys=True,
@@ -1376,10 +1375,50 @@ class _CheckpointedDiscoveryModel:
         if request_sha is None:
             return None
         spend_stage = "fullText" if material.get("textMode") == "full_text" else "lightweight"
+        suffix = "full" if material["textMode"] == "full_text" else "structural:" + prompt_hash
+        receipt_item_key = f"understand:{document.document_id}@{document.revision}:{suffix}:{reconstructed_digest}"
+        receipts = store.load_model_response_receipts_for_operation(
+            task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path)
+        proofs: list[dict[str, str]] = []
+        unverifiable = not receipts
+        for receipt in receipts:
+            raw = receipt.get("payload")
+            metadata = raw.get("replayMetadata") if isinstance(raw, Mapping) else None
+            feedback = None
+            if metadata is not None:
+                if (not isinstance(metadata, Mapping)
+                        or metadata.get("rendererRevision") != "k10-understand-v1"
+                        or (metadata.get("repairFeedback") is not None
+                            and not isinstance(metadata["repairFeedback"], Mapping))):
+                    unverifiable = True
+                    continue
+                feedback = metadata.get("repairFeedback")
+            previous_feedback = getattr(self._base._thread_usage, "repair_feedback", None)
+            try:
+                self._base._thread_usage.repair_feedback = feedback
+                messages, receipt_kwargs, _ = self._base._request_parts(
+                    operation=instruction, payload=payload, model_options=options)
+                receipt_sha = provider._request_input_sha256((messages,), receipt_kwargs)
+                receipt_scope = {"receiptContract": "k10-model-response-receipt-v1",
+                    "requestSha256": receipt_sha, "stage": spend_stage,
+                    "jsonArrayKey": receipt_kwargs.get("json_array_key")}
+                scope_sha = sha256(json.dumps(receipt_scope, ensure_ascii=False, sort_keys=True,
+                                              separators=(",", ":")).encode()).hexdigest()
+            finally:
+                self._base._thread_usage.repair_feedback = previous_feedback
+            if (receipt_sha is None or receipt.get("requestSha256") != receipt_sha
+                    or receipt.get("reuseScopeSha256") != scope_sha):
+                unverifiable = True
+                continue
+            proof = {"requestSha256": receipt_sha, "reuseScopeSha256": scope_sha}
+            if proof not in proofs:
+                proofs.append(proof)
         scope = {"receiptContract": "k10-model-response-receipt-v1", "requestSha256": request_sha,
                  "stage": spend_stage, "jsonArrayKey": kwargs.get("json_array_key")}
         return {
             "inputSha256": reconstructed_digest,
+            "proofs": proofs,
+            "unverifiable": unverifiable,
             "requestSha256": request_sha,
             "reuseScopeSha256": sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True,
                                                      separators=(",", ":")).encode("utf-8")).hexdigest(),
@@ -1857,6 +1896,18 @@ class _CheckpointedDiscoveryModel:
                         or not isinstance(replay_request.get("payload"), Mapping)
                         or not isinstance(replay_request.get("modelOptions"), Mapping)):
                     raise PipelineError("原始付费正文回执证明无效", code="provider_response_receipt_unverifiable")
+                proof_rows = proof.get("proofs")
+                if proof.get("unverifiable") is True or not isinstance(proof_rows, list) or not proof_rows:
+                    raise PipelineError("原始付费正文回执证明无效", code="provider_response_receipt_unverifiable")
+                expected_proofs = []
+                for row in proof_rows:
+                    request_sha = row.get("requestSha256") if isinstance(row, Mapping) else None
+                    scope_sha = row.get("reuseScopeSha256") if isinstance(row, Mapping) else None
+                    if (not isinstance(request_sha, str) or not isinstance(scope_sha, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", request_sha) is None
+                            or re.fullmatch(r"[0-9a-f]{64}", scope_sha) is None):
+                        raise PipelineError("原始付费正文回执证明无效", code="provider_response_receipt_unverifiable")
+                    expected_proofs.append((request_sha, scope_sha))
             # ``previous`` is the original frozen semantic input digest, not
             # the B82-derived recovery digest.  The store then proves the raw
             # reply belongs to that exact original task/stage/item wire before
@@ -1866,7 +1917,7 @@ class _CheckpointedDiscoveryModel:
             if not isinstance(receipt_digest, str):
                 raise PipelineError("原始付费回执身份无效", code="provider_response_receipt_unverifiable")
             receipt_item_key = f"{operation}:{item_key}:{receipt_digest}"
-            if is_research or is_title:
+            if is_research or is_title or is_body:
                 # Read candidates once in their durable newest-first order,
                 # then retain only rows independently re-read through an
                 # exact reconstructed request/scope proof.  Any raw receipt
@@ -1887,18 +1938,9 @@ class _CheckpointedDiscoveryModel:
                                  and str(row["attemptId"]) in exact_by_attempt)
                 if len(receipts) != len(raw_receipts):
                     raise PipelineError(
-                        "原始付费研究回执无法证明 wire 身份" if is_research else "原始付费标题回执无法证明 wire 身份",
+                        "原始付费回执无法证明 wire 身份",
                         code="provider_response_receipt_unverifiable",
                     )
-            else:
-                raw_receipts = store.load_model_response_receipts_for_operation(
-                    task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path,
-                )
-                receipts = store.load_model_response_receipts_for_operation(
-                    task_id=self._task_id, stage=spend_stage, item_key=receipt_item_key, db_path=self._db_path,
-                    expected_request_sha256=expected_request, expected_reuse_scope_sha256=expected_scope)
-                if len(receipts) != len(raw_receipts):
-                    raise PipelineError("原始付费正文回执无法证明 wire 身份", code="provider_response_receipt_unverifiable")
             if not receipts:
                 raise PipelineError("授权恢复缺少可证明的原始模型回执", code="provider_response_receipt_unverifiable")
             return receipts
@@ -1938,6 +1980,7 @@ class _CheckpointedDiscoveryModel:
                     # to issue any new request. A bad newest reply therefore
                     # cannot hide an older usable paid reply.
                     value = None
+                    last_replay_error = None
                     for recovered_receipt in recovered_receipts:
                         previous_body_replay = None
                         try:
@@ -1954,7 +1997,8 @@ class _CheckpointedDiscoveryModel:
                                 # output contract. Check both locally before
                                 # accepting this immutable raw reply.
                                 encode(candidate)
-                        except (PipelineError, InvestigationError, ResearchContractError, TitleTriageProtocolError):
+                        except (PipelineError, InvestigationError, ResearchContractError, TitleTriageProtocolError) as exc:
+                            last_replay_error = exc
                             continue
                         finally:
                             if operation == "understand":
@@ -1969,6 +2013,11 @@ class _CheckpointedDiscoveryModel:
                         replayed_receipt_accepted = True
                         break
                     if not replayed_receipt_accepted:
+                        if operation == "understand" and receipt_recovery_only and last_replay_error is not None:
+                            # Preserve the actual content failure after local
+                            # revalidation. Receipt-only recovery cannot POST,
+                            # and a missing receipt error must not mask it.
+                            raise last_replay_error
                         # All exact candidates were locally rejected by the
                         # current parser. An explicitly authorized recovery may
                         # make one fresh correction under the frozen budget; it
