@@ -663,6 +663,19 @@ class ResearchRoundResult:
         permitted = {"action", "safeErrorCode", "claims", "questions", "queryPaths",
                      "evidenceUpdates", "fulltextRequests", "conclusion", "companyAssessments",
                      "comparison", "contextRequests"}
+        if model_reply:
+            conclusion = value.get("conclusion")
+            repeated_conclusion_fields = {"companyMappings", "companyDispositions", "eventDisposition",
+                                          "materialGaps", "researchStatus", "resumeCondition", "stopReason"}
+            def harmless_extension(key: str, item: Any) -> bool:
+                empty = (item is None or (isinstance(item, str) and not item.strip())
+                         or (isinstance(item, (list, dict)) and not item))
+                repeated = (key in repeated_conclusion_fields and isinstance(conclusion, Mapping)
+                            and key in conclusion and item == conclusion[key])
+                return key not in permitted and (empty or repeated)
+            # These carry no distinct model judgment. Canonical stored rows
+            # remain strict, and conflicting/nonempty unknown fields still fail.
+            value = {key: item for key, item in value.items() if not harmless_extension(key, item)}
         if set(value) - permitted:
             raise ResearchContractError("研究轮次含有未声明字段", field_name="researchRound",
                                         expected="declared_round_fields")
