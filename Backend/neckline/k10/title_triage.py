@@ -423,6 +423,11 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
     legacy_choice_keys = {"selectionComplete", "reviewedCount", "selected", "merged"}
     if not isinstance(raw, Mapping):
         raise TitleTriageProtocolError("全局标题 JSON 必须是对象")
+    # Some providers echo a top-level explanation from the schema example.
+    # It is not a selection, source reference or completion declaration.
+    # Keep persisted canonical checkpoints strict; only normalize wire choices.
+    if "notSelected" not in raw and isinstance(raw.get("reason"), str):
+        raw = {key: value for key, value in raw.items() if key != "reason"}
     if set(raw) == canonical_keys:
         if any(not isinstance(raw.get(key), list) for key in canonical_keys):
             raise TitleTriageProtocolError("旧全局标题 checkpoint 数组无效")
@@ -470,6 +475,19 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
         selected_rows: list[dict[str, object]] = []
         invalid_selected_indices: set[int] = set()
         for row in selected:
+            if isinstance(row, Mapping) and row.get("reason_placeholder") == "":
+                row = {key: value for key, value in row.items() if key != "reason_placeholder"}
+            # A blank placeholder for a real, batch-excluded title asserts no
+            # judgement. Leave its no_value audit intact. Never discard an
+            # unknown reference, a meaningful claim about an unseen title, or
+            # an unusable decision about an actual reconciliation participant.
+            if isinstance(row, Mapping) and set(row) in selected_keys:
+                index = row.get("i")
+                reason = row.get("reason")
+                if (isinstance(index, int) and not isinstance(index, bool)
+                        and 0 <= index < len(frozen) and index not in by_index
+                        and isinstance(reason, str) and not reason.strip()):
+                    continue
             index = indexed(row, selected_keys)
             if index in covered:
                 # A repeated source adds no decision. Preserve the first valid

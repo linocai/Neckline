@@ -1,4 +1,4 @@
-# Neckline · 目标 3.5.1 / Build82 · K10-v2
+# Neckline · 目标 3.5.1 / Build83 · K10-v2
 
 本文件是唯一工程控制面。2026-09-22用户明确进入工作流，授权修复报告生成审查的全部R1–R9，目标 **3.5.1（82）**。本轮实施与复查已完成；用户随后明确授权“一条龙发布”，已完成B82完整发布与资源收尾。旧报告重跑或额外真实provider试跑不在授权范围。契约和证据统一放在 [archive/v3.5.1-b82_execution.md](archive/v3.5.1-b82_execution.md)。
 
@@ -24,6 +24,7 @@
 
 ## 当前状态
 
+- **今晚原任务快修中，目标B83**：21:04标题归并失败；已定位原付费回复的无内容schema附带项触发整份拒绝，修复及隔离恢复验证进行中。原task/scan/report、rev2配置与账本不变，见本版第10节。未部署、未续跑、未交付正式报告。
 - **生产已发布3.5.1（82）**：runtime `60f4822b2a13dff873b2fa4d545ecace1235c420` / immutable tag `v3.5.1-b82`；后端部署、Mac替换启动、GitHub六制品校验及资源收尾完成。iOS签名归档就绪，用户通过Xcode安装。详见 [本版第8节](archive/v3.5.1-b82_execution.md#8-一条龙发布2026-09-22)。
 - 生产run/execution均revision2，明确绑定`k10-v2-b82-20260922`；内部Schema10无DDL，原策略参数与91表旧记录不变，旧任务不重跑。
 - 9月22日19:52核验：API/worker active，四timer active/enabled，control open、推送ready，37任务全终态、无未决外呼；晚报下一次21:00、晨报次日08:30。
