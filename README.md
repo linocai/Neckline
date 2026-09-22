@@ -1,12 +1,12 @@
 # Neckline
 
-**当前发布为3.5.1（83）**：K10-v2，后端已上线；Mac已替换，锁屏导致启动/界面复核待完成。iOS签名归档就绪，由用户通过Xcode安装，不生成IPA。[发布下载与校验值](https://github.com/linocai/Neckline/releases/tag/v3.5.1-b83)；源码`a49f6776e3d89dd5fed4a6523d6ce3c46c8bddb1`。
+**当前发布为3.5.1（85）**：K10-v2，后端已上线；Mac已替换，锁屏导致启动验收待完成。iOS签名归档就绪，由用户Xcode安装，无IPA。[发布下载与校验值](https://github.com/linocai/Neckline/releases/tag/v3.5.1-b85)，源码`07f3bd1349af26eacbb49c8978caf2a58030099c`。
 
-B83修复归并回复夹带空占位/多余说明导致有效标题选择整份失败的问题；真实错引、错误合并和缺失有效判断仍拦截。9月22日晚报原任务21:22受控续跑，标题原付费回执复用、47篇正文候选恢复；正式报告及对应APNs仍待核验。选股规则、模型和时刻不变：晚报 **21:00**，晨报交易日 **08:30**、**09:20** 前可读；四正式timer保持active/enabled。
+B85累计修复正文付费回执、研究JSON表面语法、失败占位恢复及持久化障碍。今晚原任务22:16继续，失败研究22:17复用原付费回复恢复可比较，未重复付费。正式报告及完成APNs仍待验收。策略、模型和冻结配置不变；晚报21:00、晨报08:30且09:20前可读，四正式timer保持开启。
 
 内部 **Schema10 / 新报告Schema9 / 历史Schema8** 不变，无DDL或新配置。生产策略`k10-v2-production@2`、执行`k10-v2-execution-production@2`，继续绑定`k10-v2-b82-20260922`；原冻结策略、模型、输入和账本保留。资料仍为`local_draft_awaiting_user`。没有补跑其他旧失败/删除报告，没有额外provider探测。
 
-相关84项回归通过、1项历史输入缺失跳过；真实数据库副本经现有恢复入口及精确wire回执重验，新POST=0。B83双端OS27签名归档、模拟器build-for-testing、真实CLI/worker/API回归及生产副本/回退验证通过；无Swift变更。macOS沿用未公证Developer ID方式。当前两机离线，不代表已修复的旧符号误报复发。临时物已清理，隐藏旧Mac副本等解锁后启动核验再去重；详见[本版记录第10节](archive/v3.5.1-b82_execution.md#10-今晚首轮快修-b83进行中)。
+恢复与存储125项回归、追加门禁17项通过，JSON/provider套件113通过（有重叠）。双端OS27签名归档、模拟器build-for-testing、新旧同绑定API演练通过，无Swift变更。Mac沿用未公证Developer ID方式。当前两机离线，支持缓存未动。本地/远端测试、重验、演练及构建临时物已核验回收；Mac启动核验与隐藏旧包去重待解锁。见[本版第12节](archive/v3.5.1-b82_execution.md#12-今晚第三轮快修-b85进行中)。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
