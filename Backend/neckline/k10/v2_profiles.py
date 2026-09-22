@@ -143,13 +143,27 @@ def semantic_text(value: Any) -> str:
         return ' '.join(semantic_text(item) for item in value)
     return ''
 
+_LATIN_TOKEN_CHARACTERS = frozenset('abcdefghijklmnopqrstuvwxyz0123456789_')
+
+
 def matches_term(term: str, text: str) -> bool:
     if not isinstance(term, str) or not term:
         return False
     term, text = term.casefold(), text.casefold()
-    left = r'(?<![a-z0-9_])' if re.match(r'[a-z0-9_]', term) else ''
-    right = r'(?![a-z0-9_])' if re.search(r'[a-z0-9_]$', term) else ''
-    return re.search(left + re.escape(term) + right, text) is not None
+    # Literal terms need no per-company compiled regular expression. Preserve
+    # the exact ASCII token boundaries, including later valid occurrences.
+    left = term[0] in _LATIN_TOKEN_CHARACTERS
+    # The former `$` endpoint check also matched before one final newline.
+    right = (term[-1] in _LATIN_TOKEN_CHARACTERS or
+             (term.endswith('\n') and len(term) > 1 and term[-2] in _LATIN_TOKEN_CHARACTERS))
+    start = text.find(term)
+    while start >= 0:
+        end = start + len(term)
+        if ((not left or start == 0 or text[start - 1] not in _LATIN_TOKEN_CHARACTERS)
+                and (not right or end == len(text) or text[end] not in _LATIN_TOKEN_CHARACTERS)):
+            return True
+        start = text.find(term, start + 1)
+    return False
 
 
 def company_index_matches(index, query):
