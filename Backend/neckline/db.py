@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Iterator, Optional, Set
 
 from neckline.config import settings
+from neckline.fresh_start import initialize_empty_identity, require_current_database
 
 _SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS trade_cal (
@@ -184,10 +185,20 @@ def _columns_of(conn: sqlite3.Connection, table: str) -> Set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def get_connection(db_path: Optional[Path] = None, *, _initialize: bool = False) -> sqlite3.Connection:
     path = Path(db_path or settings.db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
+    try:
+        if _initialize:
+            conn.execute("BEGIN IMMEDIATE")
+            initialize_empty_identity(conn)
+            conn.commit()
+        else:
+            require_current_database(conn)
+    except BaseException:
+        conn.close()
+        raise
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -211,6 +222,7 @@ def readonly_connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Conn
         raise FileNotFoundError(path)
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
+        require_current_database(conn)
         yield conn
     finally:
         conn.close()
@@ -241,11 +253,15 @@ def readonly_tables(
 
 def init_schema(db_path: Optional[Path] = None) -> None:
     """Explicit write entry point for shared infrastructure tables only."""
-    with connection(db_path) as conn:
+    conn = get_connection(db_path, _initialize=True)
+    try:
         conn.execute("BEGIN IMMEDIATE")
         for statement in _SCHEMA.split(";"):
             if statement.strip():
                 conn.execute(statement)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 __all__ = ["get_connection", "connection", "readonly_connection", "readonly_tables", "init_schema"]

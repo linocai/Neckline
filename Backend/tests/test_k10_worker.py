@@ -112,15 +112,18 @@ def test_unregistered_task_is_visible_as_unconfigured(task_db):
 
 def test_pause_after_claim_never_enters_the_handler(task_db, monkeypatch):
     enqueue(task_db, budget={"maxAttempts": 1})
-    original = store.run_control_status
-    checks = 0
+    original_claim = store.claim_tasks
 
-    def control(**kwargs):
-        nonlocal checks
-        checks += 1
-        return original(**kwargs) if checks == 1 else {"state": "closed", "reasonCode": "operator_pause"}
+    def claim_then_pause(**kwargs):
+        claimed = original_claim(**kwargs)
+        assert len(claimed) == 1
+        store.set_run_control(
+            state="closed", reason_code="operator_pause", changed_at=NOW.isoformat(),
+            changed_by="test", db_path=task_db,
+        )
+        return claimed
 
-    monkeypatch.setattr(store, "run_control_status", control)
+    monkeypatch.setattr(store, "claim_tasks", claim_then_pause)
     task = run_once(
         db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
         handlers={"analysis": lambda _: pytest.fail("paused task entered handler")}, clock=lambda: NOW,
@@ -130,23 +133,22 @@ def test_pause_after_claim_never_enters_the_handler(task_db, monkeypatch):
         assert conn.execute("SELECT stage FROM k10_tasks WHERE task_id=?", (task.task_id,)).fetchone()[0] == "paused"
 
 
-def test_pause_after_handler_prevents_retry_scheduling(task_db, monkeypatch):
+def test_pause_after_handler_prevents_retry_scheduling(task_db):
     enqueue(task_db, budget={"maxAttempts": 2})
-    original = store.run_control_status
-    checks = 0
 
-    def control(**kwargs):
-        nonlocal checks
-        checks += 1
-        return original(**kwargs) if checks < 3 else {"state": "closed", "reasonCode": "operator_pause"}
-
-    monkeypatch.setattr(store, "run_control_status", control)
-    task = run_once(
-        db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
-        handlers={"analysis": lambda _: TaskResult(
+    def handler(_context):
+        store.set_run_control(
+            state="closed", reason_code="operator_pause", changed_at=NOW.isoformat(),
+            changed_by="test", db_path=task_db,
+        )
+        return TaskResult(
             "failed", "continuation", retry_at=NOW + timedelta(minutes=1),
             retry_kind="continuation", safe_error_code="DISCOVERY_SLICE",
-        )}, clock=lambda: NOW,
+        )
+
+    task = run_once(
+        db_path=task_db, worker_id="worker-a", lease_for=timedelta(seconds=30),
+        handlers={"analysis": handler}, clock=lambda: NOW,
     )
     assert task is not None and task.status == "failed"
     with read_connection(task_db) as conn:

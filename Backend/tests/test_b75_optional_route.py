@@ -22,6 +22,8 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
     from types import SimpleNamespace
     from neckline.k10 import pipeline
     from neckline.k10.discovery import DiscoveryDocument
+    from neckline.k10.ingestion import SqliteIngestionWriter
+    from neckline.k10.sources import SourceDocumentInput
     from neckline.k10.verification import VerificationEvidenceBundle
     from neckline.k10.worker import run_once
     from neckline.k10.v2_store import read_report
@@ -29,6 +31,10 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
     from tests import test_b72_query_path_resilience as old
     edited=[]
     request_packets=[]
+    wire_packets=[]
+    def observe_request(request):
+        old.capture_research_packets(request_packets)(request)
+        old.capture_research_packets(wire_packets)(request)
     def edit(value):
         if value.get('action')!='research_round' or edited: return
         edited.append(True)
@@ -41,14 +47,25 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
     from tests.test_b60_pool_filtering import edit_responses
     edit_responses(monkeypatch,edit)
 
+    visible_ids = set()
     class VisibleGateway(e2e._Gateway):
         """A second direct round is justified only by real visible material."""
         def fetch(self, **kwargs):
             path = kwargs["query_path"]
             self.search_paths.append(path.path_id)
             self.search_routes.append(path.to_dict())
+            # A gateway result is durable source material in production.
+            # Persist it here too, so the resumed local-read boundary verifies
+            # an actual version rather than an invented in-memory reference.
+            stored = SqliteIngestionWriter(db_path=tmp_path / "b39-e2e.sqlite").append_document_version(
+                source_key="tavily-search", document=SourceDocumentInput(
+                    "optional-route-confirmation", "https://fixture.invalid/optional-route-confirmation",
+                    "独立公告：订单状态仍待公司确认。", "独立公告：订单状态仍待公司确认。",
+                    datetime.fromisoformat("2026-09-08T12:30:00+00:00"), "exact",
+                    datetime.fromisoformat("2026-09-08T12:35:00+00:00"), "offline-gateway", {}))
+            visible_ids.add(stored.version.document_id)
             document = DiscoveryDocument(
-                "optional-route-confirmation", 1,
+                stored.version.document_id, stored.version.revision,
                 "2026-09-08T12:30:00+00:00", "2026-09-08T12:35:00+00:00",
                 "独立公告：订单状态仍待公司确认。", "独立公告：订单状态仍待公司确认。", {},
             )
@@ -62,9 +79,16 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
     advance=pipeline._CheckpointedDiscoveryModel.advance_research_round
     interrupted=[]
     packets=[]
+    round_failures=[]
     def pause_after_durable_plan(self,**kwargs):
         packets.append(kwargs['evidence_packet'])
-        result=advance(self,**kwargs)
+        try:
+            result=advance(self,**kwargs)
+        except pipeline.DiscoverySliceYield:
+            raise
+        except Exception as exc:
+            round_failures.append(f"{type(exc).__name__}: {exc}")
+            raise
         if not interrupted:
             interrupted.append(True)
             tick[0]=10_000.0
@@ -72,7 +96,7 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
     monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel,'advance_research_round',pause_after_durable_plan)
 
     db,task_id,first,calls,gateway=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True,
-        request_observer=old.capture_research_packets(request_packets))
+        request_observer=observe_request)
     assert first.status=='queued' and interrupted
     assert calls.count('research:research_round')==1
     with sqlite3.connect(db) as conn:
@@ -82,11 +106,17 @@ def test_real_cli_resumes_paid_plan_without_rebilling_redundant_company_route(tm
             'SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0])
     tick[0]=0.0
     done=run_once(db_path=db,task_id=task_id,worker_id='b75-optional-route',lease_for=timedelta(minutes=5),
-        handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),
+        handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet',now=lambda:e2e.RUN_AT),
         clock=lambda:retry_at+timedelta(seconds=1))
     assert done.status=='completed'
-    assert len(packets) == 3 and packets[0] == packets[1]
-    assert any(ref["documentId"] == "optional-route-confirmation" for ref in packets[2]["allowedEvidenceRefs"])
+    assert not round_failures, round_failures
+    # A slice can interrupt admission of the next round after tools settle.
+    # Inspect actual paid wire inputs, not local wrapper invocations that may
+    # yield before payment or carry refreshed local bookkeeping.
+    assert len(wire_packets) == 2 and wire_packets[0] != wire_packets[1]
+    assert not any(ref["documentId"] in visible_ids for ref in wire_packets[0]["allowedEvidenceRefs"])
+    assert any(ref["documentId"] in visible_ids for ref in wire_packets[1]["allowedEvidenceRefs"])
+    assert any(ref["documentId"] in visible_ids for ref in packets[-1]["allowedEvidenceRefs"])
     # The paid request survives interruption; a second, distinct round compares the new search evidence.
     assert calls.count('research:research_round')==2
     with sqlite3.connect(db) as conn:

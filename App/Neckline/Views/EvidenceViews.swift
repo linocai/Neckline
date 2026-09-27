@@ -318,7 +318,6 @@ struct SourceReferenceLine: View {
     @State private var loading = false
 
     private var isMarketSnapshot: Bool { source.sourceKey == "market_snapshot" }
-    private var isTavily: Bool { (source.sourceKey ?? "").lowercased().contains("tavily") }
     private var canonicalURL: URL? {
         guard let raw = source.url,
               let components = URLComponents(string: raw),
@@ -341,11 +340,6 @@ struct SourceReferenceLine: View {
                 Text(secondaryLine)
                     .font(NKFont.caption)
                     .foregroundStyle(NK.textSecondary)
-                if isTavily, source.excerpt != nil {
-                    Text("该来源保存的是搜索摘录。")
-                        .font(NKFont.caption)
-                        .foregroundStyle(NK.textSecondary)
-                }
             }
             .layoutPriority(1)
             Spacer(minLength: 4)
@@ -379,7 +373,8 @@ struct SourceReferenceLine: View {
         if isMarketSnapshot {
             return "行情快照 · \(source.companyCode ?? "公司待核") · \(source.tradeDate.map(k10DisplayTime) ?? "交易日待核")"
         }
-        return source.title ?? k10SourceText(source.sourceKey ?? "来源待标识")
+        if source.sourceKind == "flash" { return source.originalTitle ?? "无标题快讯" }
+        return source.originalTitle ?? source.title ?? k10SourceText(source.sourceKey ?? "来源待标识")
     }
 
     private var secondaryLine: String {
@@ -391,7 +386,8 @@ struct SourceReferenceLine: View {
         let revision = source.revision.map { "资料修订 \($0)" } ?? "资料修订待核"
         let published = source.publishedAt.map { "发布 \(k10DisplayTime($0))" } ?? "发布时间待核"
         let fetched = source.fetchedAt.map { "取得 \(k10DisplayTime($0))" } ?? "取得时间待核"
-        return "\(revision) · \(published) · \(fetched) · \(k10PublishedPrecisionText(source.publishedPrecision))"
+        let event = source.eventTime.map { " · 事项时间 \(k10DisplayTime($0.value))（\(k10PublishedPrecisionText($0.precision))）" } ?? ""
+        return "\(revision) · \(published) · \(fetched) · \(k10PublishedPrecisionText(source.publishedPrecision))\(event)"
     }
 }
 
@@ -401,7 +397,33 @@ struct SourceDocumentSheet: View {
     @State private var loading = false
     @Environment(\.dismiss) private var dismiss
 
-    private var isExcerptOnly: Bool { document.body == nil && document.excerpt != nil }
+    private var contentKind: String {
+        if let value = document.contentKind, ["original", "excerpt", "unavailable"].contains(value) { return value }
+        return "legacy"
+    }
+    private var isExcerptOnly: Bool { contentKind == "excerpt" }
+    private var contentKindTitle: String {
+        switch contentKind {
+        case "original": return document.sourceKind == "flash" ? "快讯原文" : "原件正文"
+        case "excerpt": return "搜索摘录"
+        case "unavailable": return "原件暂不可用"
+        default: return "历史已保存资料"
+        }
+    }
+    private var sourceTypeText: String {
+        if document.sourceKey == "jin10-flash" && document.sourceKind == "flash" { return "金十快讯" }
+        if document.sourceKey == "jin10-news" && document.sourceKind == "article" { return "金十文章" }
+        if document.sourceKey == "tushare-major-news" { return "TuShare 重要资讯" }
+        return k10SourceText(document.sourceKey)
+    }
+    private var savedText: String {
+        switch contentKind {
+        case "original": return document.body ?? "该版本未保存原件正文。"
+        case "excerpt": return document.excerpt ?? "该版本未保存搜索摘录。"
+        case "unavailable": return "该版本原件不可用。"
+        default: return document.body ?? document.excerpt ?? "该版本未保存正文。"
+        }
+    }
     private var canonicalURL: URL? {
         guard let raw = document.canonicalUrl,
               let components = URLComponents(string: raw),
@@ -415,7 +437,7 @@ struct SourceDocumentSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                    V3PageHeader(title: document.title ?? document.sourceKey, subtitle: isExcerptOnly ? "搜索摘录" : "原始全文")
+                    V3PageHeader(title: document.sourceKind == "flash" ? (document.originalTitle ?? "无标题快讯") : (document.originalTitle ?? document.title ?? sourceTypeText), subtitle: "\(sourceTypeText) · \(contentKindTitle)")
                     V3Card {
                         VStack(alignment: .leading, spacing: 7) {
                             Text("资料修订 \(document.revision) · \(k10PublishedPrecisionText(document.publishedPrecision))")
@@ -424,10 +446,33 @@ struct SourceDocumentSheet: View {
                             Text("发布 \(document.publishedAt.map(k10DisplayTime) ?? "时间待核") · 取得 \(k10DisplayTime(document.fetchedAt))")
                                 .font(NKFont.caption)
                                 .foregroundStyle(NK.textSecondary)
+                            if let originalPublishedText = document.originalPublishedText, !originalPublishedText.isEmpty {
+                                Text("来源原始时间文字：\(originalPublishedText)")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            }
+                            if let eventTime = document.eventTime {
+                                Text("可确认事项时间 \(k10DisplayTime(eventTime.value)) · \(k10PublishedPrecisionText(eventTime.precision))")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            } else {
+                                Text("事项发生时间尚无可确认依据")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            }
+                            if ["jin10-flash", "jin10-news", "tushare-major-news"].contains(document.sourceKey) {
+                                Text("这份资料属于资讯原件，不等同于上市公司正式公告。")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            }
                             if isExcerptOnly {
                                 Label("该来源没有保存完整正文，以下内容是搜索摘录。", systemImage: "text.quote")
                                     .font(NKFont.callout)
                                     .foregroundStyle(NK.amber)
+                            } else if contentKind == "unavailable" {
+                                Label("该来源的原件当前不可读取；页面不会用摘要冒充原件。", systemImage: "exclamationmark.circle")
+                                    .font(NKFont.callout)
+                                    .foregroundStyle(NK.amber)
+                            } else if contentKind == "legacy" {
+                                Label("这份历史资料未记录原件类型；以下仅显示当时保存的内容。", systemImage: "clock.arrow.circlepath")
+                                    .font(NKFont.callout)
+                                    .foregroundStyle(NK.textSecondary)
                             }
                             if let canonicalURL {
                                 Link(destination: canonicalURL) {
@@ -439,7 +484,7 @@ struct SourceDocumentSheet: View {
                         }
                     }
                     V3Card {
-                        K10MarkdownText(markdown: document.body ?? document.excerpt ?? "该版本未保存原始正文。", sourceRefs: []) { _ in }
+                        K10MarkdownText(markdown: savedText, sourceRefs: []) { _ in }
                     }
                     if document.page.nextCursor != nil {
                         Button(loading ? "加载中" : "加载后续正文") {
@@ -458,7 +503,7 @@ struct SourceDocumentSheet: View {
                 .padding(.bottom, NKSpace.pagePadBottom)
             }
             .background(NK.pageBg)
-            .navigationTitle(isExcerptOnly ? "来源摘录" : "原始全文")
+                    .navigationTitle(contentKindTitle)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }

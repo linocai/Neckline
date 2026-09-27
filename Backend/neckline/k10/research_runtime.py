@@ -31,7 +31,9 @@ from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError
 from .opportunity_discovery import validate_event_comparison
 from .research_contracts import (Claim, FullTextRequest, Question, QueryPath,
-    RESEARCH_ROUND_ACTION, RESEARCH_ROUND_CONTRACT, ResearchContractError, ResearchRoundResult, ResearchSnapshot,
+    B78_RESEARCH_ROUND_CONTRACT, RESEARCH_ROUND_ACTION, RESEARCH_ROUND_CONTRACT,
+    B92_RESEARCH_ROUND_CONTRACT,
+    ResearchContractError, ResearchRoundResult, ResearchSnapshot,
     validate_company_assessment, validate_company_mapping)
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_material import admit_material
@@ -173,7 +175,7 @@ def _legacy_snapshot_event(*, snapshot: ResearchSnapshot, current: EventDraft,
     identity and remaining facts must still be exact.
     """
     if (snapshot.task_id != task_id
-            or snapshot.prompt_contract_revision not in {"k10-investigation-v1", RESEARCH_ROUND_CONTRACT}):
+            or snapshot.prompt_contract_revision not in {"k10-investigation-v1", B78_RESEARCH_ROUND_CONTRACT}):
         return None
     matches: list[EventDraft] = []
     current_refs = [_ref(ref) for ref in current.source_refs]
@@ -474,7 +476,7 @@ def _b78_normalize_company_assessments(*, result: ResearchRoundResult,
         clean = validate_company_assessment(assessment)
         if clean["companyCode"] in mapping_codes:
             retained.append(clean)
-        elif clean["role"] == "excluded" and _assessment_origin_ref_is_allowed(clean, allowed):
+        elif (clean.get("recommendation") == "exclude" or clean.get("role") == "excluded") and _assessment_origin_ref_is_allowed(clean, allowed):
             discarded += 1
         else:
             # Leave the row for the common business validator so it produces
@@ -868,9 +870,19 @@ class _Investigation:
             "questions": [item for item in open_questions
                           if isinstance(item, Mapping) and item.get("state") == "open"],
         }
-        return retrieve_company_context(
+        scope = retrieve_company_context(
             db_path=binding[0], profiles_id=binding[1], query=query, hinted_codes=sorted(hints),
         )
+        # Identity is a consequence of this research conclusion, not a later
+        # per-company approval prompt.  Give the round only the compact,
+        # already-published predecessor identities it may legally reference.
+        prior = []
+        for row in store.list_opportunities(db_path=self.db_path):
+            if isinstance(row, Mapping):
+                prior.append({key: row.get(key) for key in (
+                    "opportunityId", "opportunityKey", "companyCode", "catalystStage", "state",
+                )})
+        return {**scope, "existingOpportunities": prior}
 
     def _mappings(self, conclusion: Mapping[str, Any]) -> tuple[CompanyMappingDraft, ...]:
         rows = conclusion.get("companyMappings", [])
@@ -899,9 +911,30 @@ class _Investigation:
         mapping_by_code = {item.company_code: item for item in mappings}
         for row in rows:
             mapping = mapping_by_code[row["companyCode"]]
-            differences = {key: row[key] for key in ("role", "priorityReason", "gap", "rankChangeConditions", "twoDayReason", "evidenceDisclosure")}
-            candidates[row["companyCode"]] = CandidateComparison(row["summary"], differences,
-                tuple(dict.fromkeys((*mapping.relation_evidence, *event_refs))), row["rank"],
+            b90 = "recommendation" in row
+            if b90:
+                assessment_refs = tuple(
+                    EvidenceRef(str(ref["documentId"]), int(ref["revision"]))
+                    for ref in row.get("sourceRefs", ())
+                )
+                if not assessment_refs or not set(assessment_refs) <= self.allowed:
+                    raise InvestigationError("公司结论引用未输入资料", code="investigation_reference_invalid")
+                differences = {
+                    "recommendation": row["recommendation"],
+                    "analysisText": row["analysisText"],
+                    "sourceRefs": [dict(ref) for ref in row["sourceRefs"]],
+                    "evidenceDisclosure": row["evidenceDisclosure"],
+                    **({"identity": dict(row["identity"])} if isinstance(row.get("identity"), Mapping) else {}),
+                }
+                candidate_refs = tuple(dict.fromkeys((*mapping.relation_evidence, *assessment_refs, *event_refs)))
+            else:
+                differences = {key: row[key] for key in ("role", "priorityReason", "gap", "rankChangeConditions", "twoDayReason", "evidenceDisclosure")}
+                candidate_refs = tuple(dict.fromkeys((*mapping.relation_evidence, *event_refs)))
+            # CandidateComparison retains the event's shared fact summary for
+            # old internal bookkeeping.  The B90 company conclusion remains
+            # only in `analysisText`; it is never copied into retired fields.
+            candidates[row["companyCode"]] = CandidateComparison(common if b90 else row["summary"], differences,
+                candidate_refs, None if b90 else row["rank"],
                 market_context=context.get("marketContext"), historical_cases=tuple(context.get("historicalCases", [])),
                 historical_coverage=context.get("historicalCoverage", {}),
                 research_snapshot_id=self.identity, research_revision=self.snapshot.revision)
@@ -1312,6 +1345,11 @@ class _Investigation:
                 "excerpt": excerpt,
                 "sourceStatements": [claim.to_dict() for claim in claims if _key(claim.source_ref) == ref],
             }
+            if self.snapshot.prompt_contract_revision == B92_RESEARCH_ROUND_CONTRACT:
+                card["sourceKind"] = document.metadata.get("sourceKind")
+                card["originalTitle"] = document.metadata.get("originalTitle")
+                event_time = document.metadata.get("eventTime")
+                card["eventTime"] = dict(event_time) if isinstance(event_time, Mapping) else None
             # The navigation projection is a hash/range manifest.  Preserve
             # it even when an event-source card deliberately omits its body,
             # so a restored stale local read cannot smuggle a publisher widget

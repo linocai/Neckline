@@ -45,6 +45,8 @@ struct K10CacheContext: Hashable {
     var resultsStrategyVersion = "K10-v2"
     var configuration: K10Configuration?
     var operationsReadiness: K10OperationsReadiness?
+    var collectionStatus: K10CollectionStatus?
+    var collectionControlInFlight = false
     var usage: K10UsageSummary?
     var providers: [K10Provider] = []
     var tavilyKeySet = false
@@ -98,12 +100,12 @@ struct K10CacheContext: Hashable {
             guard let config else { return nil }
             return K10CacheContext(baseURL: config.resolvedBaseURL, scope: K10CacheScope.value())
         }
-        K10Cache.clearLegacy()
+        K10Cache.clearBeforeFreshStart()
     }
     func resetForConnectionChange() {
         advanceConnectionGeneration()
         dailyEvening = nil; dailyMorning = nil; dailyReportErrors = [:]; auxiliaryLoadErrors = [:]; loadingMoreDailyCards = false; selectedMaterialsReport = nil; reportMaterials = nil; reportMaterialsError = nil; loadingMoreReportMaterials = false
-        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; researchAssessments = [:]; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; usage = nil; providers = []; tavilyKeySet = false; discoveryPauseInFlight = false
+        publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; researchAssessments = [:]; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; collectionStatus = nil; collectionControlInFlight = false; usage = nil; providers = []; tavilyKeySet = false; discoveryPauseInFlight = false
         selectedOpportunity = nil; selectedWindow = nil; lastAvailableAt = nil; offline = false; state = .idle; cacheClearer()
     }
     func refresh() async {
@@ -153,7 +155,8 @@ struct K10CacheContext: Hashable {
             state = hasLoadedContent ? (wasOffline ? .offline("离线快照仍可只读") : .ready) : .idle
         } catch let error as K10APIError {
             guard isCurrentRefresh(generation, refresh) else { return }
-            if error.permitsOfflineCache, let cacheContext, let cached = cacheLoader(cacheContext) {
+            if error.permitsOfflineCache, let cacheContext, let cached = cacheLoader(cacheContext),
+               cached.isReadableByCurrentApp {
                 dailyEvening = cached.dailyEvening; dailyMorning = cached.dailyMorning
                 publications = cached.publications; companyWindows = cached.companyWindows; selectionDetails = cached.selections; results = cached.results; lastAvailableAt = cached.availableAt; offline = true; state = .offline("离线快照截至 \(cached.availableAt)，不能提交选择动作")
             } else { state = .failed(error.localizedDescription) }
@@ -165,7 +168,7 @@ struct K10CacheContext: Hashable {
     private func readDailyReport(_ service: any K10Servicing, window: String, previous: K10DailyReportResponse?) async throws -> (K10DailyReportResponse?, String?) {
         do {
             var response = try await service.latestDailyReport(window: window)
-            guard [8, 9].contains(response.schemaVersion) else {
+            guard response.isReadableByCurrentApp else {
                 throw K10APIError.incompatibleVersion("服务端报告协议不受当前版本支持")
             }
             // Refresh all pages the user already loaded, using this report's immutable ID.
@@ -180,8 +183,14 @@ struct K10CacheContext: Hashable {
                     guard cursors.insert(cursor).inserted else {
                         throw K10APIError.decoding("晨间新增分页无法继续，已保留当前内容")
                     }
-                    let page = try await service.dailyReport(id: report.reportId, cursor: cursor)
-                    guard let next = page.report, next.reportId == report.reportId, next.nextCursor != cursor else {
+                    let page: K10DailyReportResponse
+                    do {
+                        page = try await service.dailyReport(id: report.reportId, cursor: cursor)
+                    } catch let error as K10APIError where error.permitsOfflineCache {
+                        return (previous, error.localizedDescription)
+                    }
+                    guard page.isReadableByCurrentApp, let next = page.report,
+                          next.reportId == report.reportId, next.nextCursor != cursor else {
                         throw K10APIError.decoding("晨间新增分页无法继续，已保留当前内容")
                     }
                     let additions = next.addedCards.filter { seen.insert($0.cardId).inserted }
@@ -199,6 +208,7 @@ struct K10CacheContext: Hashable {
         catch let error as K10APIError {
             if case .unauthorized = error { throw error }
             if error.permitsOfflineCache { throw error }
+            if case .incompatibleVersion = error { return (nil, error.localizedDescription) }
             return (previous, error.localizedDescription)
         }
         catch { return (previous, error.localizedDescription) }
@@ -273,7 +283,8 @@ struct K10CacheContext: Hashable {
             let response = try await service.dailyReport(id: current.reportId, cursor: cursor)
             let activeReportID = (window == "morning" ? dailyMorning : dailyEvening)?.report?.reportId
             guard isCurrentRefresh(generation, refresh), activeReportID == current.reportId else { return }
-            guard let next = response.report, next.reportId == current.reportId, next.nextCursor != cursor else {
+            guard response.isReadableByCurrentApp, let next = response.report,
+                  next.reportId == current.reportId, next.nextCursor != cursor else {
                 throw K10APIError.decoding("晨间新增分页无法继续，已保留当前内容")
             }
             if window == "morning" {
@@ -302,7 +313,7 @@ struct K10CacheContext: Hashable {
         }
         do {
             let page = try await service.reportMaterials(id: report.reportId, cursor: nil)
-            guard page.reportId == report.reportId else {
+            guard page.isReadableByCurrentApp, page.reportId == report.reportId else {
                 throw K10APIError.decoding("服务返回的材料不属于当前报告")
             }
             guard isCurrent(generation), selectedMaterialsReport?.reportId == report.reportId else { return }
@@ -323,7 +334,8 @@ struct K10CacheContext: Hashable {
         defer { if isCurrent(generation) { loadingMoreReportMaterials = false } }
         do {
             let next = try await service.reportMaterials(id: current.reportId, cursor: cursor)
-            guard isCurrent(generation), reportMaterials?.reportId == current.reportId, next.reportId == current.reportId,
+            guard isCurrent(generation), reportMaterials?.reportId == current.reportId,
+                  next.isReadableByCurrentApp, next.reportId == current.reportId,
                   next.page.nextCursor != cursor else {
                 if isCurrent(generation), next.reportId != current.reportId {
                     reportMaterialsError = "服务返回的材料不属于当前报告"
@@ -436,6 +448,7 @@ struct K10CacheContext: Hashable {
             guard isCurrent(generation) else { return }
             auxiliaryLoadErrors["readiness"] = error.localizedDescription
         }
+        await loadCollectionStatus(service: service, generation: generation)
         do {
             let newUsage = try await service.usageSummary()
             guard isCurrent(generation) else { return }
@@ -528,7 +541,7 @@ struct K10CacheContext: Hashable {
         state = hasLoadedContent ? .ready : .loading
         do {
             let response = try await service.dailyReport(id: reportID, cursor: nil)
-            guard [8, 9].contains(response.schemaVersion), let report = response.report, report.reportId == reportID else {
+            guard response.isReadableByCurrentApp, let report = response.report, report.reportId == reportID else {
                 throw K10APIError.decoding("通知关联的报告身份无法核验")
             }
             if let expectedWindow = route.reportWindowKind, expectedWindow != report.windowKind {
@@ -579,8 +592,9 @@ struct K10CacheContext: Hashable {
 
     private func restoreNotificationCache(reportID: String, window: String?) -> Bool {
         guard let context = cacheContextFactory(), let cached = cacheLoader(context),
+              cached.isReadableByCurrentApp,
               let response = [cached.dailyEvening, cached.dailyMorning].compactMap({ $0 }).first(where: {
-                  [8, 9].contains($0.schemaVersion) && $0.report?.reportId == reportID &&
+                  $0.isReadableByCurrentApp && $0.report?.reportId == reportID &&
                   (window == nil || $0.report?.windowKind == window)
               }), let report = response.report, ["evening", "morning"].contains(report.windowKind) else { return false }
         if report.windowKind == "morning" { dailyMorning = response } else { dailyEvening = response }
@@ -594,7 +608,27 @@ struct K10CacheContext: Hashable {
     }
 
     func openDocument(_ source: K10SourceReference) async -> K10DocumentPage? { guard !offline, let id = source.documentId, let service = serviceFactory() else { toast = offline ? "离线快照未缓存原文，请恢复连接后查看。" : "该来源没有可读取的原文版本。"; return nil }; do { return try await service.document(id: id, revision: source.revision, offset: 0, limit: 6000) } catch is CancellationError { return nil } catch { toast = error.localizedDescription; return nil } }
-    func loadMoreDocument(_ current: K10DocumentPage) async -> K10DocumentPage? { guard !offline, let cursor = current.page.nextCursor, let offset = Int(cursor), let service = serviceFactory() else { return nil }; do { let next = try await service.document(id: current.documentId, revision: current.revision, offset: offset, limit: 6000); return K10DocumentPage(schemaVersion: current.schemaVersion, documentId: current.documentId, revision: current.revision, sourceKey: current.sourceKey, externalId: current.externalId, canonicalUrl: current.canonicalUrl, title: current.title, publishedAt: current.publishedAt, publishedPrecision: current.publishedPrecision, fetchedAt: current.fetchedAt, excerpt: current.excerpt, body: (current.body ?? "") + (next.body ?? ""), page: next.page) } catch is CancellationError { return nil } catch { toast = error.localizedDescription; return nil } }
+    func loadMoreDocument(_ current: K10DocumentPage) async -> K10DocumentPage? {
+        guard !offline, let cursor = current.page.nextCursor, let offset = Int(cursor),
+              let service = serviceFactory() else { return nil }
+        do {
+            let next = try await service.document(id: current.documentId, revision: current.revision, offset: offset, limit: 6000)
+            return K10DocumentPage(
+                schemaVersion: current.schemaVersion, documentId: current.documentId,
+                revision: current.revision, sourceKey: current.sourceKey,
+                externalId: current.externalId, canonicalUrl: current.canonicalUrl,
+                title: current.title, publishedAt: current.publishedAt,
+                publishedPrecision: current.publishedPrecision, fetchedAt: current.fetchedAt,
+                excerpt: current.excerpt, body: (current.body ?? "") + (next.body ?? ""),
+                page: next.page, contentKind: current.contentKind ?? next.contentKind,
+                sourceKind: current.sourceKind ?? next.sourceKind,
+                originalTitle: current.originalTitle ?? next.originalTitle,
+                originalPublishedText: current.originalPublishedText ?? next.originalPublishedText,
+                eventTime: current.eventTime ?? next.eventTime
+            )
+        } catch is CancellationError { return nil }
+        catch { toast = error.localizedDescription; return nil }
+    }
     func act(_ action: String, window: K10CompanyWindow) async {
         guard case .ready = state else { toast = "连接切换后请先刷新，不能提交旧上下文动作"; return }
         guard !offline, let service = serviceFactory() else { toast = "离线快照不能提交选择"; return }
@@ -693,8 +727,43 @@ struct K10CacheContext: Hashable {
                 readiness.runControl = result.runControl
                 operationsReadiness = readiness
             }
-            toast = "后续资讯处理已暂停；不会自动恢复"
+            toast = "后续报告处理已暂停；采集开关不受影响"
             await refresh()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrent(generation) else { return }
+            toast = error.localizedDescription
+        }
+    }
+    private func loadCollectionStatus(service: any K10Servicing, generation: Int) async {
+        do {
+            let status = try await service.collectionStatus()
+            guard isCurrent(generation) else { return }
+            collectionStatus = status
+            auxiliaryLoadErrors["collection"] = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrent(generation) else { return }
+            collectionStatus = nil
+            auxiliaryLoadErrors["collection"] = error.localizedDescription
+        }
+    }
+    func setCollectionControl(state desiredState: String) async {
+        guard ["open", "closed"].contains(desiredState), !offline,
+              !collectionControlInFlight, let service = serviceFactory() else { return }
+        let generation = connectionGeneration
+        collectionControlInFlight = true
+        defer { if isCurrent(generation) { collectionControlInFlight = false } }
+        do {
+            let updated = try await service.setCollectionControl(state: desiredState)
+            guard isCurrent(generation) else { return }
+            collectionStatus = updated
+            auxiliaryLoadErrors["collection"] = nil
+            toast = updated.control.state == desiredState
+                ? (desiredState == "open" ? "采集已打开；报告开关未改变" : "采集已关闭；已保存资料仍可供报告读取")
+                : "采集控制状态未按请求更新，请核对服务端状态"
         } catch is CancellationError {
             return
         } catch {

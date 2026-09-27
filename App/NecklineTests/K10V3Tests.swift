@@ -8,56 +8,22 @@ import UIKit
 #endif
 @testable import Neckline
 
-/// A locally maintained decoder matching the public B69 report shape.
-/// It only checks that B76's delivery field is additive for this decoder; it
-/// does not re-verify an immutable B69 application source tree.
-private struct B69DailyReportResponse: Decodable {
-    let schemaVersion: Int
-    let state: String
-    let reason: K10Failure?
-    let report: B69DailyReport?
+private struct B92ActualDocumentRef: Decodable {
+    let documentId: String
+    let revision: Int
 }
 
-private struct B69DailyReport: Decodable {
-    let reportId: String
-    let strategyVersion: String
-    let strategySnapshotId: String
-    let windowKind: String
-    let parentReportId: String?
-    let cutoffAt: String
-    let verificationCutoffAt: String?
-    let availableAt: String?
-    let status: String
-    let eveningCards: [K10DailyCard]
-    let updatedCards: [K10DailyCard]
-    let addedCards: [K10DailyCard]
-    let nextCursor: String?
-    let lifecycleUpdates: [K10DailyLifecycleUpdate]?
-    let coverageGaps: [String]?
-    let incompleteReviews: [K10IncompleteReview]?
+private struct B92ActualManifest: Decodable {
+    let dbPath: String
+    let eveningReportId: String
+    let morningReportId: String
+    let flashDocumentRef: B92ActualDocumentRef
+    let collectionDocumentRef: B92ActualDocumentRef
+    let expectedSourceCoverageState: String
+    let expectedReasonCount: Int
 }
 
 final class K10V3Tests: XCTestCase {
-    private static func actualAPIResourceURL(_ name: String) throws -> URL {
-        let bundle = Bundle(for: K10V3Tests.self)
-        // Xcode preserves source groups in some test products and flattens
-        // copied file resources in others.  Both paths remain inside the
-        // same test bundle; neither consults a user release directory.
-        guard let url = bundle.url(forResource: name, withExtension: "json", subdirectory: "ActualAPI")
-            ?? bundle.url(forResource: name, withExtension: "json") else {
-            throw K10APIError.decoding("Missing pinned FastAPI DTO test resource: \(name).json")
-        }
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 > 0 else {
-            throw K10APIError.decoding("Pinned FastAPI DTO test resource is empty: \(name).json")
-        }
-        return url
-    }
-
-    private static func actualAPIResourceData(_ name: String) throws -> Data {
-        try Data(contentsOf: actualAPIResourceURL(name))
-    }
-
     func testReviewOnlyPartialPresentationDoesNotClaimWholeReportIsComplete() {
         let display = k10DeliveryPresentation(
             outcome: "complete",
@@ -107,43 +73,6 @@ final class K10V3Tests: XCTestCase {
         )
     }
 
-    func testPinnedLegacyFailedFastAPIReportKeepsTerminalReasonInEmptyPresentation() throws {
-        let response = try JSONDecoder().decode(
-            K10DailyReportResponse.self,
-            from: Self.actualAPIResourceData("b69-legacy-failed-report")
-        )
-        let report = try XCTUnwrap(response.report)
-        XCTAssertEqual(response.state, "available")
-        XCTAssertEqual(report.status, "failed")
-        XCTAssertNil(report.delivery, "The pinned B69 response predates B76 delivery metadata.")
-        XCTAssertEqual(response.reason?.reason, "insufficient_balance")
-        XCTAssertEqual(response.reason?.message, "余额不足，已停止本次任务")
-
-        let presentation = k10OpportunityEmptyPresentation(
-            responseState: response.state,
-            hasReportLoadError: false,
-            reportStatus: report.status,
-            deliveryOutcome: report.delivery?.outcome,
-            segment: "evening",
-            currentMorningUpdateCount: 0,
-            hasEndedRecommendations: false,
-            responseReason: response.reason?.message
-        )
-        XCTAssertEqual(presentation.title, "今天没跑成")
-        XCTAssertEqual(presentation.message, "余额不足，已停止本次任务")
-    }
-
-    func testPinnedActualContentPolicyRefusalMapsToChineseGapReason() throws {
-        let response = try JSONDecoder().decode(
-            K10DailyReportResponse.self,
-            from: Self.actualAPIResourceData("b76-partial-report")
-        )
-        let gap = try XCTUnwrap(response.report?.delivery?.gaps.first)
-        XCTAssertEqual(gap.reasonCode, "content_policy_refused")
-        XCTAssertEqual(k10DeliveryGapReasonText(gap.reasonCode), "内容被供应商拒绝")
-        XCTAssertEqual(k10DeliveryGapReasonText("provider_content_policy_refused"), "内容被供应商拒绝")
-    }
-
     func testPartialDeliveryGapReasonsRemainClearChineseWithoutImplyingWholeReportStopped() {
         let expected = [
             "insufficient_balance": "模型服务余额不足",
@@ -159,287 +88,6 @@ final class K10V3Tests: XCTestCase {
             XCTAssertFalse(text.contains(reasonCode))
         }
         XCTAssertFalse(k10DeliveryGapReasonText("insufficient_balance").contains("停止"))
-    }
-
-    func testB69ActualCLIWorkerReportsPreserveCompletionAndFailure() throws {
-        guard let root = ProcessInfo.processInfo.environment["NK_B69_DTO_DIR"] else {
-            throw XCTSkip("Set NK_B69_DTO_DIR to the actual B69 CLI/worker FastAPI exports")
-        }
-        struct Expected: Decodable {
-            let completedTaskId: String
-            let completedScanId: String
-            let failedTaskId: String
-            let failedScanId: String
-        }
-        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
-            let url = URL(fileURLWithPath: root).appendingPathComponent(name + ".json")
-            return try JSONDecoder().decode(type, from: Data(contentsOf: url))
-        }
-        let expected = try read("b69-expected", as: Expected.self)
-        let completed = try read("b69-completed-report", as: K10DailyReportResponse.self)
-        let completedScan = try read("b69-completed-scan", as: K10Scan.self)
-        let report = try XCTUnwrap(completed.report)
-        XCTAssertEqual(completed.schemaVersion, 8)
-        XCTAssertEqual(completed.state, "available")
-        XCTAssertNil(completed.reason)
-        XCTAssertEqual(report.status, "completed")
-        XCTAssertNotNil(report.availableAt)
-        XCTAssertEqual(report.strategyVersion, "K10-v2")
-        XCTAssertEqual(completedScan.scanId, expected.completedScanId)
-        XCTAssertEqual(completedScan.status, "completed")
-        let research = try XCTUnwrap(completedScan.researchSummary)
-        XCTAssertEqual(research.taskId, expected.completedTaskId)
-        XCTAssertFalse(research.executionFailed)
-        XCTAssertTrue(research.comparisonComplete)
-        let cards = report.eveningCards + report.updatedCards + report.addedCards
-        XCTAssertFalse(cards.isEmpty)
-        for card in cards {
-            XCTAssertFalse(card.companyWindowId.isEmpty)
-            XCTAssertFalse(card.sourceRefs.isEmpty)
-            XCTAssertTrue(["kept", "skipped", "unhandled"].contains(card.currentSelectionState))
-        }
-
-        let failed = try read("b69-failed-report", as: K10DailyReportResponse.self)
-        let failedScan = try read("b69-failed-scan", as: K10Scan.self)
-        let failedReport = try XCTUnwrap(failed.report)
-        XCTAssertEqual(failedScan.scanId, expected.failedScanId)
-        XCTAssertEqual(failedScan.status, "failed")
-        XCTAssertEqual(failedReport.status, "failed")
-        XCTAssertNil(failedReport.availableAt)
-        XCTAssertNotNil(failed.reason)
-        XCTAssertTrue(failedReport.eveningCards.isEmpty)
-        XCTAssertTrue(failedReport.updatedCards.isEmpty)
-        XCTAssertTrue(failedReport.addedCards.isEmpty)
-        let failedResearch = try XCTUnwrap(failedScan.researchSummary)
-        XCTAssertEqual(failedResearch.taskId, expected.failedTaskId)
-        XCTAssertTrue(failedResearch.executionFailed)
-    }
-
-    func testPinnedActualFastAPIReportsDecodeDeliveryAndPreserveAdditiveCompatibilityShape() throws {
-        func read<T: Decodable>(_ name: String, as type: T.Type) throws -> (Data, T) {
-            let data = try Self.actualAPIResourceData(name)
-            return (data, try JSONDecoder().decode(T.self, from: data))
-        }
-        func cards(_ report: K10DailyReport) -> [K10DailyCard] {
-            report.eveningCards + report.updatedCards + report.addedCards
-        }
-        func assertReconciled(_ delivery: K10ReportDelivery, file: StaticString = #filePath, line: UInt = #line) {
-            XCTAssertEqual(delivery.counts.titleProcessed + delivery.counts.titleFailed + delivery.counts.titleUnprocessed, delivery.counts.titleInput, file: file, line: line)
-            XCTAssertEqual(delivery.counts.eventProcessed + delivery.counts.eventFailed + delivery.counts.eventUnprocessed, delivery.counts.eventInput, file: file, line: line)
-            let counts = [
-                delivery.counts.titleInput, delivery.counts.titleProcessed, delivery.counts.titleFailed, delivery.counts.titleUnprocessed,
-                delivery.counts.eventInput, delivery.counts.eventProcessed, delivery.counts.eventFailed, delivery.counts.eventUnprocessed,
-                delivery.counts.comparableCompanies, delivery.counts.publishedCompanies,
-            ]
-            XCTAssertTrue(counts.allSatisfy { $0 >= 0 }, file: file, line: line)
-            let hashPattern = try! NSRegularExpression(pattern: "^[a-f0-9]{64}$")
-            func isSHA256(_ value: String?) -> Bool {
-                guard let value else { return false }
-                let range = NSRange(value.startIndex..., in: value)
-                return hashPattern.firstMatch(in: value, range: range) != nil
-            }
-            XCTAssertTrue(isSHA256(delivery.inputManifestSha256), file: file, line: line)
-            XCTAssertTrue(isSHA256(delivery.eligibleSetSha256), file: file, line: line)
-            XCTAssertTrue(delivery.rankingInputSha256 == nil || isSHA256(delivery.rankingInputSha256), file: file, line: line)
-            XCTAssertTrue(delivery.gaps.allSatisfy { !$0.gapId.isEmpty && !$0.message.isEmpty && !$0.reasonCode.isEmpty }, file: file, line: line)
-        }
-
-        let (completeData, complete): (Data, K10DailyReportResponse) = try read("b76-complete-report", as: K10DailyReportResponse.self)
-        let completeReport = try XCTUnwrap(complete.report)
-        let completeDelivery = try XCTUnwrap(completeReport.delivery)
-        XCTAssertEqual(complete.schemaVersion, 8)
-        XCTAssertEqual(complete.state, "available")
-        XCTAssertEqual(completeReport.status, "completed")
-        XCTAssertEqual(completeDelivery.contractVersion, "k10-report-delivery-3.4.0-b76")
-        XCTAssertEqual(completeDelivery.outcome, "complete")
-        XCTAssertEqual(completeDelivery.rankingScope, "all_processed")
-        XCTAssertNotNil(completeReport.availableAt)
-        XCTAssertFalse(cards(completeReport).isEmpty)
-        assertReconciled(completeDelivery)
-
-        let (partialData, partial): (Data, K10DailyReportResponse) = try read("b76-partial-report", as: K10DailyReportResponse.self)
-        let partialReport = try XCTUnwrap(partial.report)
-        let partialDelivery = try XCTUnwrap(partialReport.delivery)
-        XCTAssertEqual(partial.state, "available")
-        XCTAssertEqual(partialReport.status, "partial")
-        XCTAssertEqual(partialDelivery.contractVersion, completeDelivery.contractVersion)
-        XCTAssertEqual(partialDelivery.outcome, "partial")
-        XCTAssertTrue(["completed_subset", "none"].contains(partialDelivery.rankingScope))
-        XCTAssertNotNil(partialReport.availableAt)
-        XCTAssertFalse(partialDelivery.gaps.isEmpty)
-        XCTAssertEqual(partial.reason?.reason, "partial_delivery")
-        XCTAssertFalse(partial.reason?.message.isEmpty ?? true)
-        XCTAssertFalse(partialReport.coverageGaps?.isEmpty ?? true)
-        assertReconciled(partialDelivery)
-
-        let (_, failed): (Data, K10DailyReportResponse) = try read("b76-failed-report", as: K10DailyReportResponse.self)
-        let failedReport = try XCTUnwrap(failed.report)
-        let failedDelivery = try XCTUnwrap(failedReport.delivery)
-        XCTAssertEqual(failedReport.status, "failed")
-        XCTAssertEqual(failedDelivery.outcome, "failed")
-        XCTAssertEqual(failedDelivery.rankingScope, "none")
-        XCTAssertNil(failedReport.availableAt)
-        XCTAssertTrue(cards(failedReport).isEmpty)
-        XCTAssertFalse(failedDelivery.gaps.isEmpty)
-        assertReconciled(failedDelivery)
-
-        let (_, empty): (Data, K10DailyReportResponse) = try read("b76-empty-report", as: K10DailyReportResponse.self)
-        XCTAssertEqual(empty.state, "empty")
-        XCTAssertNil(empty.report)
-        if let reason = empty.reason {
-            XCTAssertEqual(reason.reason, "no_report")
-            XCTAssertFalse(reason.message.isEmpty)
-        }
-
-        let (_, completeZero): (Data, K10DailyReportResponse) = try read("b76-complete-zero-cards-report", as: K10DailyReportResponse.self)
-        let completeZeroReport = try XCTUnwrap(completeZero.report)
-        XCTAssertEqual(completeZeroReport.delivery?.outcome, "complete")
-        XCTAssertEqual(completeZeroReport.delivery?.rankingScope, "all_processed")
-        XCTAssertTrue(cards(completeZeroReport).isEmpty)
-        XCTAssertNotNil(completeZeroReport.availableAt)
-
-        let (_, partialZero): (Data, K10DailyReportResponse) = try read("b76-partial-zero-cards-report", as: K10DailyReportResponse.self)
-        let partialZeroReport = try XCTUnwrap(partialZero.report)
-        XCTAssertEqual(partialZeroReport.delivery?.outcome, "partial")
-        XCTAssertEqual(partialZeroReport.delivery?.rankingScope, "none")
-        XCTAssertTrue(cards(partialZeroReport).isEmpty)
-        XCTAssertFalse(partialZeroReport.delivery?.gaps.isEmpty ?? true)
-        XCTAssertNotNil(partialZeroReport.availableAt)
-
-        let (_, operations): (Data, K10OperationsReadiness) = try read("b76-operations-readiness", as: K10OperationsReadiness.self)
-        let control = operations.runControl
-        XCTAssertNotNil(control.executionState)
-        XCTAssertTrue(["accepting", "draining", "paused", "blocked"].contains(control.executionState ?? ""))
-        XCTAssertNotNil(control.inFlightCount)
-        XCTAssertNotNil(control.unknownCount)
-        XCTAssertNotNil(control.activeTasks)
-        XCTAssertGreaterThanOrEqual(control.inFlightCount ?? -1, 0)
-        XCTAssertGreaterThanOrEqual(control.unknownCount ?? -1, 0)
-        XCTAssertTrue((control.activeTasks ?? []).allSatisfy { ["queued", "running", "retry_pending", "paused"].contains($0.status) })
-
-        let legacy = try JSONDecoder().decode(B69DailyReportResponse.self, from: completeData)
-        XCTAssertEqual(legacy.schemaVersion, 8)
-        XCTAssertEqual(legacy.state, "available")
-        XCTAssertEqual(legacy.report?.reportId, completeReport.reportId)
-        XCTAssertEqual(legacy.report?.status, "completed")
-        XCTAssertEqual(legacy.report?.eveningCards.map(\.cardId), completeReport.eveningCards.map(\.cardId))
-        let legacyPartial = try JSONDecoder().decode(B69DailyReportResponse.self, from: partialData)
-        XCTAssertEqual(legacyPartial.schemaVersion, 8)
-        XCTAssertEqual(legacyPartial.state, "available")
-        XCTAssertEqual(legacyPartial.report?.status, "partial")
-        XCTAssertFalse(legacyPartial.report?.coverageGaps?.isEmpty ?? true)
-
-        let snapshot = K10CacheSnapshot(
-            availableAt: try XCTUnwrap(partialReport.availableAt), savedAt: Date(), publications: [], companyWindows: [], selections: [], results: nil,
-            dailyEvening: partial, dailyMorning: partialZero
-        )
-        let restored = try JSONDecoder().decode(K10CacheSnapshot.self, from: JSONEncoder().encode(snapshot))
-        XCTAssertEqual(restored.dailyEvening?.report?.delivery, partialDelivery)
-        XCTAssertEqual(restored.dailyMorning?.report?.delivery?.outcome, "partial")
-    }
-
-    func testB76ActualMorningPartialKeepsDiscoveryAndReviewGapsVisible() throws {
-        let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Self.actualAPIResourceData("b76-morning-partial-report"))
-        let report = try XCTUnwrap(response.report)
-        let delivery = try XCTUnwrap(report.delivery)
-        XCTAssertEqual(response.schemaVersion, 8)
-        XCTAssertEqual(response.state, "available")
-        XCTAssertEqual(report.windowKind, "morning")
-        XCTAssertEqual(report.status, "partial")
-        XCTAssertEqual(delivery.outcome, "partial")
-        XCTAssertFalse(delivery.gaps.isEmpty, "发现阶段的执行缺口必须保留")
-        XCTAssertFalse(report.coverageGaps?.isEmpty ?? true, "发现资料缺口的兼容范围摘要必须可读")
-        XCTAssertFalse(report.incompleteReviews?.isEmpty ?? true, "晨报复核缺口不能被发现资料缺口遮住")
-    }
-
-    func testB76ActualMorningReviewPartialPreservesCompleteDiscovery() throws {
-        let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Self.actualAPIResourceData("b76-morning-review-partial-report"))
-        let report = try XCTUnwrap(response.report)
-        let delivery = try XCTUnwrap(report.delivery)
-        XCTAssertEqual(response.schemaVersion, 8)
-        XCTAssertEqual(response.state, "available")
-        XCTAssertEqual(report.windowKind, "morning")
-        XCTAssertEqual(report.status, "partial")
-        XCTAssertEqual(delivery.outcome, "complete", "发现消息已完整处理，不能被复核失败改写")
-        XCTAssertEqual(delivery.rankingScope, "all_processed")
-        XCTAssertTrue(report.addedCards.isEmpty, "此场景只验证已有公司的晨间复核，不产生新增卡片")
-        XCTAssertFalse(report.updatedCards.isEmpty, "已有公司的晨间更新不能被新增卡片为空掩盖")
-        XCTAssertFalse(report.incompleteReviews?.isEmpty ?? true, "整份报告的复核缺口必须可读")
-    }
-
-    @MainActor
-    func testB76ActualMorningExpiredCardsUseHistoryPresentation() throws {
-        func expiredProjection(_ name: String) throws -> (K10DailyReportResponse, K10DailyReport) {
-            var response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Self.actualAPIResourceData(name))
-            var report = try XCTUnwrap(response.report)
-            // Reuse the actual API body and apply only the server-owned Sep 20
-            // lifecycle projection: D2 has closed, so no card remains selectable.
-            report.addedCards = report.addedCards.map { card in
-                var expired = card; expired.canSelect = false; return expired
-            }
-            report.updatedCards = report.updatedCards.map { card in
-                var expired = card; expired.canSelect = false; return expired
-            }
-            response.report = report
-            return (response, report)
-        }
-        func assertHistoryPresentation(_ name: String) throws {
-            let (response, report) = try expiredProjection(name)
-            let model = AppModel()
-            model.dailyWindow = "morning"
-            model.dailyMorning = response
-            XCTAssertTrue(model.currentMorningCards.isEmpty, "D2-projected added cards must not remain on the current home screen")
-            XCTAssertTrue(model.currentMorningUpdates.isEmpty, "D2-projected updated cards must not remain on the current home screen")
-            XCTAssertTrue(k10ShowsOpportunityEmptyState(segment: "morning", currentMorningUpdateCount: model.currentMorningUpdates.count))
-            let published = report.addedCards + report.updatedCards
-            XCTAssertFalse(published.isEmpty)
-            let presentation = k10OpportunityEmptyPresentation(
-                responseState: response.state,
-                hasReportLoadError: false,
-                reportStatus: report.status,
-                deliveryOutcome: report.delivery?.outcome,
-                segment: "morning",
-                currentMorningUpdateCount: model.currentMorningUpdates.count,
-                hasEndedRecommendations: model.currentMorningCards.isEmpty && !published.isEmpty,
-                responseReason: response.reason?.message
-            )
-            XCTAssertEqual(presentation.title, "暂无进行中的机会")
-            XCTAssertEqual(presentation.message, "本轮已发布的公司已撤回或结束观察，可在下方历史记录中查看原报告与两日窗口。")
-        }
-
-        try assertHistoryPresentation("b76-morning-partial-report")
-        try assertHistoryPresentation("b76-morning-review-partial-report")
-
-        let activeReview = try JSONDecoder().decode(
-            K10DailyReportResponse.self,
-            from: Self.actualAPIResourceData("b76-morning-review-partial-report")
-        )
-        XCTAssertFalse(activeReview.report?.updatedCards.isEmpty ?? true)
-        XCTAssertFalse(
-            k10ShowsOpportunityEmptyState(
-                segment: "morning",
-                currentMorningUpdateCount: activeReview.report?.updatedCards.filter(\.allowsSelection).count ?? 0
-            ),
-            "A current morning update replaces the large no-card empty state."
-        )
-
-        let zero = try JSONDecoder().decode(
-            K10DailyReportResponse.self,
-            from: Self.actualAPIResourceData("b76-partial-zero-cards-report")
-        )
-        let zeroReport = try XCTUnwrap(zero.report)
-        XCTAssertTrue(zeroReport.addedCards.isEmpty && zeroReport.updatedCards.isEmpty)
-        let zeroPresentation = k10OpportunityEmptyPresentation(
-            responseState: zero.state,
-            hasReportLoadError: false,
-            reportStatus: zeroReport.status,
-            deliveryOutcome: zeroReport.delivery?.outcome,
-            segment: "morning",
-            currentMorningUpdateCount: 0,
-            hasEndedRecommendations: false,
-            responseReason: zero.reason?.message
-        )
-        XCTAssertEqual(zeroPresentation.title, "本轮未完成，不能判断是否没有机会")
     }
 
     func testSyntheticWindowActionsAreIndependentAndWithdrawalKeepsAnalysisHistory() async throws {
@@ -875,24 +523,311 @@ final class K10V3Tests: XCTestCase {
         XCTAssertEqual(model.auxiliaryLoadErrors["publications"], "网络不可用：历史接口暂不可达")
     }
 
-    @MainActor func testSchema9MaterialsStayOutsideCardsAndObservationWindows() async throws {
+    @MainActor func testSchema10DiscoveryAndMorningReviewStayOutsideCardsAndObservationWindows() async throws {
         let service = K10SyntheticUIService()
         let model = AppModel(serviceFactory: { service })
         await model.refresh()
         let report = try XCTUnwrap(model.dailyMorning?.report)
-        XCTAssertEqual(model.dailyMorning?.schemaVersion, 9)
+        XCTAssertEqual(model.dailyMorning?.schemaVersion, 10)
         XCTAssertEqual(report.materials?.state, "available")
         XCTAssertEqual(report.deliveryDeadlineAt, "2026-09-07T09:20:00+08:00")
         XCTAssertNotNil(report.resultAvailableAt)
         XCTAssertEqual(model.currentMorningCards.map(\.cardId).sorted(), (report.updatedCards + report.addedCards).filter(\.allowsSelection).map(\.cardId).sorted())
+        XCTAssertEqual(report.discovery?.state, "complete")
+        XCTAssertEqual(report.discovery?.outcome, "recommendations")
+        XCTAssertEqual(report.discovery?.companyCount, model.currentMorningCards.count)
+        XCTAssertEqual(report.delivery?.contractVersion, "k10-report-delivery-3.6.1-b92")
+        XCTAssertEqual(report.delivery?.outcome, "partial")
+        XCTAssertTrue(report.delivery?.isReadableByCurrentApp ?? false)
+        let review = try XCTUnwrap(report.morningReview)
+        XCTAssertEqual(review.parentReportId, "daily-evening")
+        XCTAssertEqual(review.targetCompanyCount, 1)
+        XCTAssertEqual(review.targetReasonCount, 2)
+        XCTAssertEqual(review.items.count, review.targetCompanyCount)
+        let item = try XCTUnwrap(review.items.first)
+        XCTAssertEqual(item.companyCode, "300001.SZ")
+        XCTAssertEqual(item.opportunityIds.count, review.targetReasonCount)
+        XCTAssertEqual(item.unreviewedOpportunityIds, ["synthetic-opportunity-2"])
+        XCTAssertEqual(item.status, "partial")
+        XCTAssertEqual(item.outcome, "changed")
+        XCTAssertFalse(item.sourceRefs.isEmpty)
+        let eveningCard = try XCTUnwrap(model.dailyEvening?.report?.eveningCards.first)
+        let catalyst = try XCTUnwrap(eveningCard.catalysts.first)
+        XCTAssertFalse(catalyst.analysisText?.isEmpty ?? true)
+        XCTAssertFalse(catalyst.sourceRefs?.isEmpty ?? true)
+        XCTAssertTrue(k10UsesNaturalCatalystDelivery(eveningCard))
 
         await model.openMaterials(for: report)
         let materials = try XCTUnwrap(model.reportMaterials)
-        XCTAssertEqual(materials.schemaVersion, 9)
+        XCTAssertEqual(materials.schemaVersion, 10)
         XCTAssertEqual(materials.reportId, report.reportId)
         XCTAssertFalse(materials.items.isEmpty)
         XCTAssertTrue(materials.items.allSatisfy { !$0.materialId.isEmpty && !$0.eventId.isEmpty })
         XCTAssertNil(model.reportMaterialsError)
+    }
+
+    @MainActor func testB93FreshStartRejectsPreB92ReportAndOfflineCache() async throws {
+        let current = try await K10SyntheticUIService().latestDailyReport(window: "evening")
+        XCTAssertTrue(current.isReadableByCurrentApp)
+        var retiredSchema = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        retiredSchema["schemaVersion"] = 9
+        let schema9 = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: retiredSchema))
+        XCTAssertFalse(schema9.isReadableByCurrentApp)
+
+        var retiredContract = try XCTUnwrap(retiredSchema["report"] as? [String: Any])
+        var oldDelivery = try XCTUnwrap(retiredContract["delivery"] as? [String: Any])
+        oldDelivery["contractVersion"] = "k10-report-delivery-3.6.0-b90"
+        retiredContract["delivery"] = oldDelivery
+        retiredSchema["schemaVersion"] = 10
+        retiredSchema["report"] = retiredContract
+        let old = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: retiredSchema))
+        XCTAssertFalse(old.isReadableByCurrentApp)
+        XCTAssertTrue(current.isReadableByCurrentApp, "old publication timestamps alone do not retire fresh data")
+
+        var failedPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        var failedReport = try XCTUnwrap(failedPayload["report"] as? [String: Any])
+        failedPayload["state"] = "failed"
+        failedPayload["reason"] = ["reason": "task_failed", "message": "本轮未完成", "missing": []]
+        failedReport["status"] = "failed"
+        failedReport["windowKind"] = "morning"
+        failedReport["reportId"] = "failed-fresh-morning"
+        failedReport["delivery"] = NSNull()
+        failedReport["eveningCards"] = []
+        failedReport["updatedCards"] = []
+        failedReport["addedCards"] = []
+        failedPayload["report"] = failedReport
+        let failed = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: failedPayload))
+        XCTAssertTrue(failed.isReadableByCurrentApp, "a new failed run can expose its actual failure before delivery exists")
+        XCTAssertEqual(k10OpportunityEmptyPresentation(responseState: failed.state, hasReportLoadError: false,
+                                                        reportStatus: failed.report?.status, deliveryOutcome: nil,
+                                                        segment: "evening", currentMorningUpdateCount: 0,
+                                                        hasEndedRecommendations: false,
+                                                        responseReason: failed.reason?.message).title, "今天没跑成")
+        let failedService = ControlledK10Service(batchID: "fresh-failure")
+        await failedService.setDailyPages(first: failed, next: failed)
+        let failedModel = AppModel(serviceFactory: { failedService })
+        failedModel.dailyWindow = "morning"
+        await failedModel.refresh()
+        XCTAssertEqual(failedModel.dailyMorning?.state, "failed")
+        XCTAssertEqual(failedModel.dailyMorning?.reason?.message, "本轮未完成")
+        XCTAssertEqual(failedModel.dailyMorning?.report?.reportId, "failed-fresh-morning")
+        failedReport["eveningCards"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current.report?.eveningCards ?? []))
+        failedPayload["report"] = failedReport
+        XCTAssertFalse(try JSONDecoder().decode(K10DailyReportResponse.self,
+                                                 from: JSONSerialization.data(withJSONObject: failedPayload)).isReadableByCurrentApp,
+                       "a delivery-free failure cannot carry formal cards")
+
+        failedReport["eveningCards"] = []
+        failedReport["status"] = "running"
+        failedPayload["state"] = "processing"
+        failedPayload["reason"] = ["reason": "report_processing", "message": "本轮仍在处理", "missing": []]
+        failedPayload["report"] = failedReport
+        let processing = try JSONDecoder().decode(K10DailyReportResponse.self,
+                                                  from: JSONSerialization.data(withJSONObject: failedPayload))
+        XCTAssertTrue(processing.isReadableByCurrentApp)
+        XCTAssertEqual(k10OpportunityEmptyPresentation(responseState: processing.state, hasReportLoadError: false,
+                                                        reportStatus: processing.report?.status, deliveryOutcome: nil,
+                                                        segment: "evening", currentMorningUpdateCount: 0,
+                                                        hasEndedRecommendations: false,
+                                                        responseReason: processing.reason?.message,
+                                                        discoveryState: "complete", discoveryOutcome: "no_recommendation").title,
+                       "报告尚未完成", "an in-flight run must not look like zero recommendation")
+        failedReport["delivery"] = oldDelivery
+        failedPayload["report"] = failedReport
+        XCTAssertFalse(try JSONDecoder().decode(K10DailyReportResponse.self,
+                                                 from: JSONSerialization.data(withJSONObject: failedPayload)).isReadableByCurrentApp,
+                       "a retired formal delivery cannot hide behind processing state")
+
+        let cache = K10CacheSnapshot(availableAt: "2026-09-26T21:00:00+08:00", savedAt: Date(),
+                                     publications: [], companyWindows: [], selections: [], results: nil, dailyEvening: old)
+        XCTAssertFalse(cache.isReadableByCurrentApp)
+        let service = ControlledK10Service(batchID: "fresh-start-cache")
+        await service.setDailyFailure(.networkUnavailable("offline"))
+        await service.setDailyPageFailure(.networkUnavailable("offline"))
+        let context = K10CacheContext(baseURL: URL(string: "https://fixture.invalid")!, scope: "b93")
+        let model = AppModel(serviceFactory: { service }, cacheContextFactory: { context }, cacheLoader: { _ in cache })
+        await model.refresh()
+        XCTAssertNil(model.dailyEvening)
+        XCTAssertNil(model.dailyMorning)
+        XCTAssertFalse(model.offline)
+        await model.openNotification(try XCTUnwrap(K10PushRoute(userInfo: ["schemaVersion": 2,
+            "reportId": "daily-evening", "windowKind": "evening"])))
+        XCTAssertNil(model.dailyEvening)
+        XCTAssertFalse(model.offline)
+    }
+
+    func testB93FreshStartDeletesOldCacheKeysAndKeepsCurrentCache() throws {
+        let suite = "top.linotsai.neckline.test.fresh-start.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let oldKey = "neckline.k10.v14.cache.retired"
+        let currentKey = "neckline.k10.v15.cache.current"
+        defaults.set(Data("retired business history".utf8), forKey: oldKey)
+        defaults.set(Data("current fresh history".utf8), forKey: currentKey)
+        K10Cache.clearBeforeFreshStart(defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: oldKey))
+        XCTAssertNotNil(defaults.object(forKey: currentKey))
+    }
+
+    func testB93APIClientRejectsRetiredReportSchema() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FreshStartReportProtocol.self]
+        let client = K10APIClient(baseURL: URL(string: "https://fresh-start-report.example")!,
+                                  token: "synthetic-token", session: URLSession(configuration: configuration))
+        do {
+            _ = try await client.latestDailyReport(window: "morning")
+            XCTFail("retired Schema 9 must not reach the UI")
+        } catch let error as K10APIError {
+            guard case .incompatibleVersion = error else { return XCTFail("unexpected error: \(error)") }
+        }
+        let current = try await client.latestDailyReport(window: "evening")
+        XCTAssertEqual(current.schemaVersion, 10)
+        XCTAssertEqual(current.state, "empty")
+    }
+
+    func testB93ActualFailedAPIResponseRemainsReadableWithoutDelivery() throws {
+        guard let path = ProcessInfo.processInfo.environment["NK_B93_FAILED_API_JSON"] else {
+            if ProcessInfo.processInfo.environment["NK_B93_REQUIRE_FAILED_API"] == "1" {
+                XCTFail("missing isolated fresh-start FastAPI failure response")
+                return
+            }
+            throw XCTSkip("set NK_B93_FAILED_API_JSON from isolated fresh-start FastAPI")
+        }
+        let response = try JSONDecoder().decode(K10DailyReportResponse.self,
+                                                from: Data(contentsOf: URL(fileURLWithPath: path)))
+        XCTAssertEqual(response.schemaVersion, 10)
+        XCTAssertEqual(response.state, "failed")
+        XCTAssertTrue(response.isReadableByCurrentApp)
+        XCTAssertEqual(response.reason?.reason, "fixture_execution_failed")
+        let report = try XCTUnwrap(response.report)
+        XCTAssertEqual(report.status, "failed")
+        XCTAssertNil(report.delivery)
+        XCTAssertTrue(report.eveningCards.isEmpty && report.updatedCards.isEmpty && report.addedCards.isEmpty)
+        let presentation = k10OpportunityEmptyPresentation(responseState: response.state, hasReportLoadError: false,
+                                                            reportStatus: report.status, deliveryOutcome: nil,
+                                                            segment: report.windowKind, currentMorningUpdateCount: 0,
+                                                            hasEndedRecommendations: false,
+                                                            responseReason: response.reason?.message)
+        XCTAssertEqual(presentation.title, "今天没跑成")
+        XCTAssertEqual(presentation.message, response.reason?.message)
+    }
+
+    func testB93ActualProcessingAPIResponseRemainsReadOnlyWithoutDelivery() throws {
+        guard let path = ProcessInfo.processInfo.environment["NK_B93_PROCESSING_API_JSON"] else {
+            if ProcessInfo.processInfo.environment["NK_B93_REQUIRE_PROCESSING_API"] == "1" {
+                XCTFail("missing isolated fresh-start FastAPI processing response")
+                return
+            }
+            throw XCTSkip("set NK_B93_PROCESSING_API_JSON from isolated fresh-start FastAPI")
+        }
+        let response = try JSONDecoder().decode(K10DailyReportResponse.self,
+                                                from: Data(contentsOf: URL(fileURLWithPath: path)))
+        XCTAssertEqual(response.schemaVersion, 10)
+        XCTAssertEqual(response.state, "processing")
+        XCTAssertTrue(response.isReadableByCurrentApp)
+        XCTAssertEqual(response.reason?.reason, "report_processing")
+        let report = try XCTUnwrap(response.report)
+        XCTAssertTrue(["running", "queued"].contains(report.status))
+        XCTAssertNil(report.delivery)
+        XCTAssertTrue(report.eveningCards.isEmpty && report.updatedCards.isEmpty && report.addedCards.isEmpty)
+        let presentation = k10OpportunityEmptyPresentation(responseState: response.state, hasReportLoadError: false,
+                                                            reportStatus: report.status, deliveryOutcome: nil,
+                                                            segment: report.windowKind, currentMorningUpdateCount: 0,
+                                                            hasEndedRecommendations: false,
+                                                            responseReason: response.reason?.message)
+        XCTAssertEqual(presentation.title, "报告尚未完成")
+    }
+
+    func testSchema10EmptyCardsUseExplicitDiscoveryOutcome() {
+        let noRecommendation = k10OpportunityEmptyPresentation(
+            responseState: "available", hasReportLoadError: false, reportStatus: "completed",
+            deliveryOutcome: "complete", segment: "evening", currentMorningUpdateCount: 0,
+            hasEndedRecommendations: false, responseReason: nil,
+            discoveryState: "complete", discoveryOutcome: "no_recommendation"
+        )
+        XCTAssertEqual(noRecommendation.title, "本轮未推荐公司")
+
+        let incomplete = k10OpportunityEmptyPresentation(
+            responseState: "available", hasReportLoadError: false, reportStatus: "completed",
+            deliveryOutcome: "complete", segment: "evening", currentMorningUpdateCount: 0,
+            hasEndedRecommendations: false, responseReason: nil,
+            discoveryState: "partial", discoveryOutcome: "not_completed"
+        )
+        XCTAssertEqual(incomplete.title, "本轮未完成，不能判断是否没有机会")
+
+        let inconsistent = k10OpportunityEmptyPresentation(
+            responseState: "available", hasReportLoadError: false, reportStatus: "completed",
+            deliveryOutcome: "complete", segment: "evening", currentMorningUpdateCount: 0,
+            hasEndedRecommendations: false, responseReason: nil,
+            discoveryState: "complete", discoveryOutcome: "recommendations"
+        )
+        XCTAssertEqual(inconsistent.title, "发现结果待读取")
+    }
+
+    func testDocumentKindsDoNotPromoteUnspecifiedContentToOriginal() throws {
+        func document(_ contentKind: String?, body: String?, excerpt: String?) throws -> K10DocumentPage {
+            var object: [String: Any] = [
+                "schemaVersion": "k10-api-v2", "documentId": "document", "revision": 1,
+                "sourceKey": "source", "externalId": "external", "canonicalUrl": NSNull(),
+                "title": "资料", "publishedAt": NSNull(), "publishedPrecision": "unknown",
+                "fetchedAt": "2026-09-23T20:00:00+08:00", "excerpt": excerpt ?? NSNull(),
+                "body": body ?? NSNull(), "page": ["nextCursor": NSNull()]
+            ]
+            if let contentKind { object["contentKind"] = contentKind }
+            return try JSONDecoder().decode(K10DocumentPage.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+
+        let original = try document("original", body: "原始正文", excerpt: "摘要")
+        let excerpt = try document("excerpt", body: nil, excerpt: "搜索摘录")
+        let unavailable = try document("unavailable", body: nil, excerpt: nil)
+        let unspecified = try document(nil, body: "未分类保存内容", excerpt: "摘要")
+        XCTAssertEqual(original.contentKind, "original")
+        XCTAssertEqual(excerpt.contentKind, "excerpt")
+        XCTAssertNil(excerpt.body)
+        XCTAssertEqual(unavailable.contentKind, "unavailable")
+        XCTAssertNil(unavailable.body)
+        XCTAssertNil(unspecified.contentKind, "unknown provenance must not be presented as an original")
+    }
+
+    func testB92CollectionCoverageAndOriginalTimeRemainDistinct() async throws {
+        let collectionJSON = #"{"schemaVersion":"10","configuration":{"state":"configured","configId":"isolated","revision":2,"missing":[]},"control":{"state":"closed","reasonCode":"user_paused","changedAt":"2026-09-26T08:00:00+08:00"},"sources":[{"sourceKey":"jin10-flash","state":"partial","lastSuccessAt":"2026-09-26T08:01:00+08:00","coverageThrough":null,"limitations":["cursor_truncated"],"credentialConfigured":true}],"activeTasks":[],"latestRuns":[]}"#
+        let collection = try JSONDecoder().decode(K10CollectionStatus.self, from: Data(collectionJSON.utf8))
+        XCTAssertEqual(collection.control.state, "closed")
+        XCTAssertEqual(collection.sources.first?.sourceKey, "jin10-flash")
+        XCTAssertNil(collection.sources.first?.coverageThrough, "a partial source cannot acquire a made-up watermark")
+
+        let documentJSON = #"{"schemaVersion":"k10-api-v2","documentId":"flash-1","revision":3,"sourceKey":"jin10-flash","externalId":"1","canonicalUrl":null,"title":null,"originalTitle":null,"sourceKind":"flash","publishedAt":"2026-09-25T20:00:00+08:00","originalPublishedText":"9月25日20:00","publishedPrecision":"exact","fetchedAt":"2026-09-26T08:01:00+08:00","eventTime":null,"excerpt":"引用摘要","body":"完整快讯正文","contentKind":"original","page":{"nextCursor":null}}"#
+        let document = try JSONDecoder().decode(K10DocumentPage.self, from: Data(documentJSON.utf8))
+        XCTAssertEqual(document.sourceKind, "flash")
+        XCTAssertNil(document.title, "an untitled flash must not gain a synthetic article headline")
+        XCTAssertNil(document.eventTime, "fetch and publication timestamps cannot invent an event time")
+        XCTAssertEqual(document.contentKind, "original")
+        XCTAssertEqual(document.originalPublishedText, "9月25日20:00")
+        XCTAssertEqual(document.body, "完整快讯正文")
+
+        let freshReport = try await K10SyntheticUIService().latestDailyReport(window: "evening")
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(freshReport)
+        ) as? [String: Any])
+        var report = try XCTUnwrap(payload["report"] as? [String: Any])
+        report["sourceCoverage"] = [
+            "inputFrozenAt": "2026-09-26T08:30:00+08:00", "collectionTaskIds": ["collection-1"],
+            "sources": [["sourceKey": "jin10-flash", "state": "partial",
+                         "requestedStartAt": "2026-09-25T20:00:00+08:00", "requestedEndAt": "2026-09-26T08:00:00+08:00",
+                         "coverageThrough": NSNull(), "observedStartAt": NSNull(), "observedEndAt": NSNull(),
+                         "gaps": [["startAt": "2026-09-26T08:00:00+08:00", "endAt": "2026-09-26T08:30:00+08:00", "reasonCode": "not_collected"]],
+                         "limitations": ["partial_page"]]]
+        ]
+        payload["report"] = report
+        let decoded = try JSONDecoder().decode(K10DailyReportResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertTrue(decoded.isReadableByCurrentApp)
+        XCTAssertEqual(decoded.report?.sourceCoverage?.sources.first?.state, "partial")
+        XCTAssertNil(decoded.report?.sourceCoverage?.sources.first?.coverageThrough)
+        XCTAssertEqual(decoded.report?.sourceCoverage?.sources.first?.gaps.first?.reasonCode, "not_collected")
+        XCTAssertEqual(k10ReasonText("collection_not_current"), "采集未覆盖到本期报告截止时点")
+        XCTAssertEqual(k10DeliveryGapReasonText("source_collection_partial"), "该来源采集不完整，详见采集范围")
+        XCTAssertEqual(k10ReasonText("credential_missing"), "该来源凭据未配置")
+        XCTAssertEqual(k10ReasonText("history_unavailable"), "来源列表无法覆盖更早时段")
     }
 
     @MainActor func testB79SelectedReportDoesNotWaitForOtherWindowOrHealth() async {
@@ -1039,135 +974,103 @@ final class K10V3Tests: XCTestCase {
     /// The backend builder starts this only against an isolated loopback FastAPI process.
     /// It proves the Swift types consume a real Schema 9 response rather than a hand-written
     /// client fixture, including the separate report-scoped materials route.
-    func testB78IsolatedFastAPIReportAndMaterialsDecode() async throws {
-        guard let rawPort = ProcessInfo.processInfo.environment["NK_B78_API_PORT"],
-              let port = Int(rawPort), (1...65535).contains(port) else {
-            throw XCTSkip("set NK_B78_API_PORT for isolated Schema 9 FastAPI-to-Swift verification")
-        }
-        var components = URLComponents(); components.scheme = "http"; components.host = "127.0.0.1"; components.port = port
-        let baseURL = try XCTUnwrap(components.url)
-        let token = ProcessInfo.processInfo.environment["NK_B78_API_TOKEN"] ?? "temporary-test-token"
-        let client = K10APIClient(baseURL: baseURL, token: token)
-        async let eveningResponse = client.latestDailyReport(window: "evening")
-        async let morningResponse = client.latestDailyReport(window: "morning")
-        let responses = try await [eveningResponse, morningResponse]
-        XCTAssertTrue(responses.allSatisfy { $0.schemaVersion == 9 })
-        let reports = responses.compactMap(\.report)
-        XCTAssertFalse(reports.isEmpty, "the isolated producer must expose at least one readable report")
-        XCTAssertTrue(reports.allSatisfy { $0.delivery?.isReadableByCurrentApp == true }, "the current B78 delivery contract must not be downgraded to unknown")
-        XCTAssertTrue(reports.allSatisfy { $0.materials != nil })
-        if let morning = reports.first(where: { $0.windowKind == "morning" }) {
-            XCTAssertNotNil(morning.deliveryDeadlineAt)
-            XCTAssertNotNil(morning.resultAvailableAt)
-        }
-        let reportWithMaterials = try XCTUnwrap(reports.first(where: { $0.materials?.state == "available" && ($0.materials?.count ?? 0) > 0 }))
-        let materials = try await client.reportMaterials(id: reportWithMaterials.reportId, cursor: nil)
-        XCTAssertEqual(materials.schemaVersion, 9)
-        XCTAssertEqual(materials.reportId, reportWithMaterials.reportId)
-        XCTAssertFalse(materials.items.isEmpty)
-        XCTAssertTrue(materials.items.allSatisfy { !$0.eventTitle.isEmpty && !$0.materialId.isEmpty })
-    }
-
-    /// B82 runs this once for each actual isolated FastAPI database.  It keeps the
-    /// three user-visible delivery states separate: a formal complete report, a
-    /// formal partial report with disclosed gaps, and read-only materials after a
-    /// failed delivery.  The server creates every payload through the CLI/worker;
-    /// this test must never substitute a client fixture.
-    func testB82IsolatedFastAPIReportDeliveryStateDecodesWithoutChangingMeaning() async throws {
-        guard let rawPort = ProcessInfo.processInfo.environment["NK_B78_API_PORT"],
-              let port = Int(rawPort), (1...65535).contains(port),
-              let expected = ProcessInfo.processInfo.environment["NK_B82_API_EXPECTED_DELIVERY"],
-              let window = ProcessInfo.processInfo.environment["NK_B82_API_WINDOW"],
-              ["complete", "partial", "materials"].contains(expected),
-              ["evening", "morning"].contains(window) else {
-            throw XCTSkip("set NK_B78_API_PORT, NK_B82_API_EXPECTED_DELIVERY=complete|partial|materials and NK_B82_API_WINDOW=evening|morning for B82 FastAPI-to-Swift verification")
-        }
-        var components = URLComponents(); components.scheme = "http"; components.host = "127.0.0.1"; components.port = port
-        let client = K10APIClient(
-            baseURL: try XCTUnwrap(components.url),
-            token: ProcessInfo.processInfo.environment["NK_B78_API_TOKEN"] ?? "temporary-test-token"
-        )
-        let response = try await client.latestDailyReport(window: window)
-        XCTAssertEqual(response.schemaVersion, 9)
-        let report = try XCTUnwrap(response.report)
-        let delivery = try XCTUnwrap(report.delivery)
-        XCTAssertTrue(delivery.isReadableByCurrentApp)
-        XCTAssertEqual(report.windowKind, window)
-        let formalCards = window == "morning" ? report.updatedCards + report.addedCards : report.eveningCards
-
-        switch expected {
-        case "complete":
-            XCTAssertEqual(delivery.outcome, "complete")
-            XCTAssertNotNil(report.availableAt)
-            XCTAssertFalse(formalCards.isEmpty, "complete delivery must include formal cards")
-        case "partial":
-            XCTAssertEqual(delivery.outcome, "partial")
-            XCTAssertNotNil(report.availableAt)
-            XCTAssertFalse(formalCards.isEmpty, "partial delivery must retain the comparable formal cards")
-            XCTAssertFalse(delivery.gaps.isEmpty, "partial delivery must disclose its excluded work")
-            XCTAssertGreaterThan(delivery.counts.eventInput, 0)
-            XCTAssertGreaterThan(delivery.counts.eventProcessed, 0)
-            if window == "morning" {
-                XCTAssertNotNil(report.deliveryDeadlineAt)
-                XCTAssertNotNil(report.resultAvailableAt)
-                XCTAssertNotNil(report.availableAt)
-                let expectsParent = ProcessInfo.processInfo.environment["NK_B82_API_EXPECTS_PARENT"] == "1"
-                if expectsParent {
-                    XCTAssertNotNil(report.parentReportId, "a morning report derived from an evening delivery must retain that parent identity")
-                    XCTAssertFalse(report.updatedCards.isEmpty && report.addedCards.isEmpty)
-                } else {
-                    XCTAssertNil(report.parentReportId, "the no-evening-prerequisite scenario must remain an independent morning delivery")
-                    XCTAssertFalse(report.addedCards.isEmpty, "an independent morning delivery must disclose its formal additions")
-                }
+    func testB92ActualCollectionReportAndOriginalDecode() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let base = environment["NK_B92_API_BASE_URL"],
+              let baseURL = URL(string: base),
+              let manifestPath = environment["NK_B92_MANIFEST_PATH"] else {
+            if environment["NK_B92_REQUIRE_ACTUAL_API"] == "1" {
+                XCTFail("B92 actual API verification requires NK_B92_API_BASE_URL and NK_B92_MANIFEST_PATH")
+                return
             }
-        case "materials":
-            XCTAssertEqual(delivery.outcome, "failed")
-            XCTAssertNil(report.availableAt, "materials must never become a formal publication")
-            XCTAssertTrue(formalCards.isEmpty)
-            XCTAssertTrue(report.updatedCards.isEmpty)
-            XCTAssertTrue(report.addedCards.isEmpty)
-            XCTAssertEqual(report.materials?.state, "available")
-            XCTAssertGreaterThan(report.materials?.count ?? 0, 0)
-            let materials = try await client.reportMaterials(id: report.reportId, cursor: nil)
-            XCTAssertEqual(materials.schemaVersion, 9)
-            XCTAssertEqual(materials.reportId, report.reportId)
-            XCTAssertFalse(materials.items.isEmpty)
-            XCTAssertTrue(materials.items.allSatisfy { !$0.eventTitle.isEmpty && !$0.materialId.isEmpty })
-        default:
-            XCTFail("unsupported B82 delivery expectation: \(expected)")
+            throw XCTSkip("set B92 isolated FastAPI and manifest inputs")
         }
+        try K10NetworkIsolation.validate(baseURL)
+        let manifest = try JSONDecoder().decode(B92ActualManifest.self, from: Data(contentsOf: URL(fileURLWithPath: manifestPath)))
+        XCTAssertFalse(manifest.dbPath.isEmpty)
+        let client = K10APIClient(baseURL: baseURL, token: environment["NK_B92_API_TOKEN"] ?? "temporary-test-token")
+        let collection = try await client.collectionStatus()
+        XCTAssertEqual(collection.schemaVersion, "10")
+        XCTAssertTrue(["open", "closed"].contains(collection.control.state))
+        XCTAssertTrue(collection.sources.contains { $0.sourceKey == "jin10-flash" })
+        XCTAssertTrue(collection.sources.contains { $0.sourceKey == "jin10-news" })
+
+        let eveningResponse = try await client.dailyReport(id: manifest.eveningReportId, cursor: nil)
+        let morningResponse = try await client.dailyReport(id: manifest.morningReportId, cursor: nil)
+        XCTAssertEqual(eveningResponse.schemaVersion, 10)
+        XCTAssertEqual(morningResponse.schemaVersion, 10)
+        let evening = try XCTUnwrap(eveningResponse.report)
+        let morning = try XCTUnwrap(morningResponse.report)
+        XCTAssertEqual(evening.windowKind, "evening")
+        XCTAssertEqual(morning.windowKind, "morning")
+        XCTAssertEqual(evening.delivery?.contractVersion, "k10-report-delivery-3.6.1-b92")
+        XCTAssertEqual(morning.delivery?.contractVersion, "k10-report-delivery-3.6.1-b92")
+        XCTAssertTrue(evening.delivery?.isReadableByCurrentApp == true)
+        XCTAssertTrue(morning.delivery?.isReadableByCurrentApp == true)
+        let coverage = try XCTUnwrap(evening.sourceCoverage)
+        XCTAssertFalse(coverage.inputFrozenAt?.isEmpty ?? true)
+        XCTAssertTrue(coverage.sources.contains { $0.state == manifest.expectedSourceCoverageState })
+        XCTAssertTrue(coverage.sources.contains { $0.sourceKey == "jin10-flash" })
+        XCTAssertTrue(coverage.sources.contains { $0.gaps.contains { $0.reasonCode == "collection_not_current" } },
+                      "the 20:00–21:00 collection-to-evening tail must remain visible")
+        let morningCoverage = try XCTUnwrap(morning.sourceCoverage)
+        XCTAssertTrue(morningCoverage.sources.contains { $0.gaps.contains { $0.reasonCode == "collection_not_current" } },
+                      "the 08:00–08:30 collection-to-morning tail must remain visible")
+        let reasons = evening.eveningCards.flatMap(\.catalysts)
+        XCTAssertEqual(reasons.count, manifest.expectedReasonCount)
+        XCTAssertTrue(reasons.allSatisfy { !($0.analysisText?.isEmpty ?? true) && !($0.sourceRefs?.isEmpty ?? true) })
+        let review = try XCTUnwrap(morning.morningReview)
+        XCTAssertEqual(review.items.count, review.targetCompanyCount)
+        XCTAssertFalse(review.items.isEmpty)
+        XCTAssertTrue(review.items.allSatisfy { $0.status == "completed" && $0.outcome == "uncertain" },
+                      "the completed local review must disclose unresolved source coverage without claiming a changed event")
+        XCTAssertTrue(review.items.allSatisfy { $0.checkedScope?.contains("无需额外外搜") == true },
+                      "the actual review must explain why it did not start an independent web search")
+        let morningDelivery = try XCTUnwrap(morning.delivery)
+        XCTAssertEqual(morningDelivery.gaps.count, 3)
+        XCTAssertTrue(morningDelivery.gaps.allSatisfy { $0.reasonCode == "source_collection_partial" },
+                      "a partial collection cannot invent an independent-verification gap")
+        XCTAssertFalse(morning.lifecycleUpdates?.contains(where: { $0.kind == "risk" }) ?? false,
+                       "no new event fact may not create a risk lifecycle update")
+
+        let flash = try await client.document(id: manifest.flashDocumentRef.documentId, revision: manifest.flashDocumentRef.revision, offset: 0, limit: 6000)
+        XCTAssertEqual(flash.sourceKey, "jin10-flash")
+        XCTAssertEqual(flash.sourceKind, "flash")
+        XCTAssertNil(flash.originalTitle, "the untitled original flash must remain untitled")
+        XCTAssertEqual(flash.contentKind, "original")
+        XCTAssertFalse(flash.body?.isEmpty ?? true)
+        XCTAssertNotNil(flash.publishedAt)
+        XCTAssertFalse(flash.fetchedAt.isEmpty)
+        XCTAssertNil(flash.eventTime, "publication time cannot be promoted to an unproven event time")
+        XCTAssertNotEqual(flash.sourceKind, flash.contentKind, "source type and saved content type have different meanings")
+        let collectionDocument = try await client.document(id: manifest.collectionDocumentRef.documentId, revision: manifest.collectionDocumentRef.revision, offset: 0, limit: 6000)
+        XCTAssertEqual(collectionDocument.sourceKind, "article")
+        XCTAssertEqual(collectionDocument.contentKind, "original")
+        XCTAssertFalse(collectionDocument.body?.isEmpty ?? true)
     }
 
-    /// The empty state is a real FastAPI envelope too: it must be readable without turning a
-    /// missing delivery into a guessed older report, and exact IDs must retain a true 404.
-    @MainActor
-    func testB78IsolatedFastAPIEmptyReportRemainsReadable() async throws {
-        guard let rawPort = ProcessInfo.processInfo.environment["NK_B78_API_PORT"],
-              let port = Int(rawPort), (1...65535).contains(port) else {
-            throw XCTSkip("set NK_B78_API_PORT for isolated Schema 9 FastAPI empty-state verification")
+    func testB92CollectionConfigurationBeforeAnyScan() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let rawURL = environment["NK_B92_EMPTY_API_BASE_URL"], let baseURL = URL(string: rawURL) else {
+            if environment["NK_B92_REQUIRE_ACTUAL_API"] == "1" {
+                XCTFail("B92 pre-scan configuration test requires NK_B92_EMPTY_API_BASE_URL")
+                return
+            }
+            throw XCTSkip("set the isolated B92 no-scan FastAPI URL")
         }
-        var components = URLComponents(); components.scheme = "http"; components.host = "127.0.0.1"; components.port = port
-        let baseURL = try XCTUnwrap(components.url)
-        XCTAssertEqual(baseURL.host, "127.0.0.1")
         try K10NetworkIsolation.validate(baseURL)
-        var healthURL = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        healthURL.path = "/api/v1/health"
-        XCTAssertEqual(healthURL.url?.host, "127.0.0.1")
-        try K10NetworkIsolation.validate(try XCTUnwrap(healthURL.url))
-        let token = ProcessInfo.processInfo.environment["NK_B78_API_TOKEN"] ?? "temporary-test-token"
-        let client = K10APIClient(baseURL: baseURL, token: token)
-        let model = AppModel(serviceFactory: { client })
-        await model.refresh()
-        XCTAssertEqual(model.state, .ready)
-        XCTAssertEqual(model.dailyEvening?.schemaVersion, 9)
-        XCTAssertEqual(model.dailyMorning?.schemaVersion, 9)
-        XCTAssertNil(model.dailyEvening?.report)
-        XCTAssertNil(model.dailyMorning?.report)
+        let client = K10APIClient(baseURL: baseURL, token: environment["NK_B92_API_TOKEN"] ?? "temporary-test-token")
+        let status = try await client.collectionStatus()
+        XCTAssertEqual(status.schemaVersion, "10")
+        XCTAssertTrue(["open", "closed"].contains(status.control.state))
+        XCTAssertFalse(status.sources.isEmpty, "configuration must be visible before any scan has run")
+        XCTAssertTrue(status.activeTasks.isEmpty)
+        XCTAssertTrue(status.latestRuns.isEmpty)
         do {
-            _ = try await client.dailyReport(id: "does-not-exist", cursor: nil)
-            XCTFail("an absent report ID must be a true 404")
+            _ = try await client.latestScan(window: "evening")
+            XCTFail("the pre-scan database unexpectedly contains a report scan")
         } catch let error as K10APIError {
-            guard case .notFound = error else { return XCTFail("unexpected error: \(error)") }
+            guard case .notFound = error else { throw error }
         }
     }
 
@@ -1607,6 +1510,27 @@ private final class RecordingTokenStore: APIAccessTokenStore {
     func save(_ token: String) -> Bool { saveCount += 1; return true }
 }
 
+private final class FreshStartReportProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "fresh-start-report.example"
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, let client else { return }
+        let window = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "window" })?.value
+        let schema = window == "morning" ? 9 : 10
+        let body = "{\"schemaVersion\":\(schema),\"state\":\"empty\",\"reason\":null,\"report\":null}"
+        client.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200,
+                                                             httpVersion: nil,
+                                                             headerFields: ["Content-Type": "application/json"])!,
+                           cacheStoragePolicy: .notAllowed)
+        client.urlProtocol(self, didLoad: Data(body.utf8))
+        client.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 private final class PagingProtocol: URLProtocol {
     private static let lock = NSLock(); private static var urls: [URL] = []
     static func reset() { lock.lock(); urls = []; lock.unlock() }
@@ -1757,7 +1681,7 @@ private actor ControlledK10Service: K10Servicing {
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
         if let gate = dailyGates[window] { await gate.wait() }
         if let dailyFailure { throw dailyFailure }
-        if empty || dailyEmpty { return .init(schemaVersion: 8, state: "empty", reason: nil, report: nil) }
+        if empty || dailyEmpty { return .init(schemaVersion: 10, state: "empty", reason: nil, report: nil) }
         if window == "morning", let dailyMorningOverride { return try applyingDailySelections(dailyMorningOverride) }
         return try await fixture.latestDailyReport(window: window)
     }

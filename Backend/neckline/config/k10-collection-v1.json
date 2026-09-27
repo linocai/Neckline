@@ -1,0 +1,38 @@
+{
+  "collectionVersion": "k10-collection-3.6.1-b92",
+  "timezone": "Asia/Shanghai",
+  "slots": ["08:00", "20:00"],
+  "sources": [
+    {
+      "sourceKey": "tushare-major-news",
+      "bootstrapStartAt": "2026-09-26T00:00:00+08:00",
+      "lookbackSeconds": 3600,
+      "maxPages": 128,
+      "timeoutSeconds": 30,
+      "maxAttempts": 3,
+      "credentialEnv": "TUSHARE_TOKEN"
+    },
+    {
+      "sourceKey": "jin10-flash",
+      "bootstrapStartAt": "2026-09-26T00:00:00+08:00",
+      "lookbackSeconds": 3600,
+      "maxPages": 128,
+      "timeoutSeconds": 30,
+      "maxAttempts": 3,
+      "credentialEnv": "JIN10_MCP_TOKEN"
+    },
+    {
+      "sourceKey": "jin10-news",
+      "bootstrapStartAt": "2026-09-26T00:00:00+08:00",
+      "lookbackSeconds": 3600,
+      "maxPages": 32,
+      "timeoutSeconds": 30,
+      "maxAttempts": 3,
+      "credentialEnv": "JIN10_MCP_TOKEN"
+    }
+  ],
+  "mcp": {
+    "endpoint": "https://mcp.jin10.com/mcp",
+    "protocolVersion": "2025-11-25"
+  }
+}

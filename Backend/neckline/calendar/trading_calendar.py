@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from neckline.fresh_start import require_current_database, require_current_market_directory
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -99,6 +100,7 @@ def _load_cache(force: bool = False) -> None:
         try:
             conn = sqlite3.connect(str(db_path))
             try:
+                require_current_database(conn)
                 bounds = conn.execute(
                     "SELECT MIN(cal_date), MAX(cal_date) FROM trade_cal WHERE exchange='SSE'"
                 ).fetchone()
@@ -167,6 +169,7 @@ def _target_calendar(db_path: Optional[Path]) -> tuple[dict[date, bool], date, d
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
+            require_current_database(conn)
             rows = conn.execute(
                 "SELECT cal_date,is_open FROM trade_cal WHERE exchange='SSE' ORDER BY cal_date"
             ).fetchall()
@@ -218,6 +221,7 @@ def official_is_trading_day(d: DateLike, *, db_path: Optional[Path] = None) -> O
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
+            require_current_database(conn)
             row = conn.execute(
                 "SELECT is_open FROM trade_cal WHERE exchange='SSE' AND cal_date=?",
                 (dt.strftime("%Y%m%d"),),

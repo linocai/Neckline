@@ -33,7 +33,8 @@ def test_morning_reserves_final_order_after_closing_new_research(tmp_path, monke
     execution_payload = dict(store.read_execution_config(
         config_id=execution_id, revision=execution_revision, db_path=db,
     )["payload"])
-    execution_payload["discovery"] = {**execution_payload["discovery"], "deepReadConcurrency": 1}
+    execution_payload["discovery"] = {**execution_payload["discovery"], "deepReadConcurrency": 1,
+        "investigationPromptContractRevision": "k10-investigation-v2"}
     execution_revision = store.append_execution_config(
         config_id=execution_id, payload=execution_payload, created_at=(cutoff - timedelta(minutes=2)).isoformat(), db_path=db,
     )
@@ -60,6 +61,12 @@ def test_morning_reserves_final_order_after_closing_new_research(tmp_path, monke
 
         def respond(self, request):
             payload = self._packet(request)
+            if "candidates" in payload and "choices" in payload.get("output", {}):
+                self._record("prioritize")
+                return self._ok({"choices": [
+                    {"canonicalKey": row["canonicalKey"], "companyCode": row["companyCode"]}
+                    for row in payload["candidates"]
+                ]})
             # The second event is denied at the derived closeout boundary.  It
             # must name a different, known title-level company so its honest
             # exclusion cannot erase the first admitted company's final order.

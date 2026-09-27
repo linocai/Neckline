@@ -50,6 +50,16 @@ def can_bound_response_wait() -> bool:
             and hasattr(signal, "setitimer") and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0))
 
 
+def can_enforce_response_deadline() -> bool:
+    """Whether this thread can bound an HTTP response without a process signal.
+
+    The main worker keeps the existing SIGALRM guard.  Parent-owned morning
+    work items can also run in bounded helper threads; httpx supports a
+    per-request timeout there, whereas process signals intentionally do not.
+    """
+    return True
+
+
 @contextmanager
 def bounded_response_wait(seconds: float):
     """Bind a total response deadline, without interrupting durable DB writes."""
@@ -67,11 +77,16 @@ def _response_wait_guard():
         yield
         return
     import httpx
-    if not can_bound_response_wait():
-        raise httpx.ReadTimeout("bounded provider wait unavailable")
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise httpx.ReadTimeout("provider response deadline")
+    if not can_bound_response_wait():
+        # `_attempt_post` applies the same remaining deadline as an explicit
+        # httpx request timeout.  Do not install a process-wide signal in a
+        # review helper thread: another company or discovery request could be
+        # interrupted instead.
+        yield
+        return
     previous = signal.getsignal(signal.SIGALRM)
     def expire(_signum, _frame):
         raise httpx.ReadTimeout("provider response deadline")
@@ -82,6 +97,25 @@ def _response_wait_guard():
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+
+
+def _response_wait_timeout(default_timeout):
+    """Narrow one HTTP request to the active bounded-response envelope."""
+    deadline = _RESPONSE_DEADLINE.get()
+    if deadline is None:
+        return default_timeout
+    import httpx
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise httpx.ReadTimeout("provider response deadline")
+    # The parent deadline may narrow a frozen transport timeout, never extend
+    # it.  A configured unlimited phase is still bounded by the parent.  These
+    # are per-phase inactivity limits; the morning parent separately seals its
+    # report at the absolute deadline even if a response keeps sending data.
+    def narrowed(value: float | None) -> float:
+        return remaining if value is None else min(value, remaining)
+    return httpx.Timeout(**{phase: narrowed(getattr(default_timeout, phase))
+                            for phase in ("connect", "read", "write", "pool")})
 
 
 class _RetryableUpstreamStatus(RuntimeError):
@@ -744,7 +778,8 @@ class OpenAICompatProvider(LLMProvider):
             # Interrupt HTTP waiting only. Receipt/usage persistence happens
             # after this guard restores the original process signal state.
             with _response_wait_guard():
-                resp = client.post(self.api_url, json=payload, headers=self._headers())
+                resp = client.post(self.api_url, json=payload, headers=self._headers(),
+                                   timeout=_response_wait_timeout(client.timeout))
         except httpx.HTTPError as exc:
             # These are the narrow pre-dispatch failures that httpx can prove
             # did not establish a provider connection.  Preserve their legacy

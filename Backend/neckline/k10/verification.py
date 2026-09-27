@@ -7,6 +7,7 @@ from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping, Protocol
 
 from neckline.search.tavily import TavilySearchClient, TavilySearchResponse, TavilyExtractResponse
@@ -14,12 +15,15 @@ from neckline.settings_store import get_tavily_api_key
 from neckline.llm.usage import record as record_usage
 from neckline.llm.base import SearchHit
 
-from .discovery import DiscoveryDocument, EventDraft, ProviderThrottleYield
+from .discovery import DiscoveryDocument, DiscoverySliceYield, EventDraft, ProviderThrottleYield
 from .source_metadata import PublicationMetadataResolver
 from .research_material import admit_material
 from .types import DocumentVersion
-from .schema import read_connection, require_schema
+from .schema import SqliteWriteBusy, read_connection, require_schema
 from . import store
+from .collection_gateway import call_question_tool
+from .jin10_mcp import Jin10Client, Jin10Error
+from .jin10_normalize import persist_question_tool_result
 from .verification_checkpoints import VerificationCheckpointError, VerificationCheckpointStore
 
 
@@ -33,6 +37,198 @@ class VerificationEvidenceBundle:
 
 class SearchClient(Protocol):
     def search(self, query: str) -> TavilySearchResponse: ...
+
+
+class Jin10QuestionGateway:
+    """Question-bound Jin10 evidence using the collection owner's paid ledger."""
+
+    def __init__(self, *, db_path: Path, task_id: str,
+                 client_factory: Callable[[], Jin10Client | None],
+                 leaseguard: Callable[[], None] | None = None,
+                 new_external_admission_guard: Callable[[], None] | None = None,
+                 clock: Callable[[], datetime] | None = None) -> None:
+        self.db_path, self.task_id = db_path, task_id
+        self.client_factory, self.leaseguard = client_factory, leaseguard
+        self.new_external_admission_guard = new_external_admission_guard
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def _article_id(self, parent_ref: Mapping[str, Any]) -> str | None:
+        rows = store.load_document_versions(refs=[parent_ref], db_path=self.db_path,
+                                            source_keys=("jin10-news",))
+        if len(rows) != 1:
+            return None
+        identifier = rows[0]["metadata"].get("providerId")
+        return identifier if isinstance(identifier, str) and identifier.strip() else None
+
+    def _call(self, *, tool_name: str, arguments: Mapping[str, str],
+              question: str, target: str, purpose: str,
+              parent_ref: Mapping[str, Any] | None, cutoff_at: datetime) -> VerificationEvidenceBundle:
+        client = self.client_factory()
+        if client is None:
+            return VerificationEvidenceBundle("unavailable", (), (),
+                {"state": "partial", "reason": "jin10_not_configured", "absenceProven": False})
+        refs: list[Mapping[str, Any]] = []
+        pages = 0
+        seen_cursors: set[str] = set()
+        seen_page_refs: set[tuple[tuple[str, int], ...]] = set()
+        page_arguments = dict(arguments)
+        coverage: dict[str, Any] = {}
+        interrupted: Jin10Error | None = None
+
+        def require_next_request() -> None:
+            if self.leaseguard is not None:
+                self.leaseguard()
+            if self.new_external_admission_guard is not None:
+                self.new_external_admission_guard()
+            task = store.get_task(task_id=self.task_id, db_path=self.db_path)
+            if task is None or store.task_control_status(kind=task.kind, db_path=self.db_path)["state"] != "open":
+                raise Jin10Error("collection_paused", pre_send=True)
+
+        try:
+            with client:
+                while True:
+                    obtained = self.clock()
+                    structured = call_question_tool(
+                        task_id=self.task_id, question=question, target=target, purpose=purpose,
+                        tool_name=tool_name, arguments=page_arguments, db_path=self.db_path,
+                        client=client, clock=self.clock, leaseguard=self.leaseguard,
+                        new_external_admission_guard=self.new_external_admission_guard,
+                    )
+                    persisted = persist_question_tool_result(
+                        task_id=self.task_id, tool_name=tool_name, structured=structured,
+                        obtained_at=obtained, question=question, target=target,
+                        db_path=self.db_path, parent_ref=parent_ref, leaseguard=self.leaseguard,
+                    )
+                    page_refs = persisted["documentRefs"]
+                    refs.extend(page_refs)
+                    pages += 1
+                    coverage = dict(persisted["coverage"])
+                    if tool_name != "search_news" or not coverage["hasMore"]:
+                        break
+                    page_key = tuple((str(ref["documentId"]), int(ref["revision"])) for ref in page_refs)
+                    if not page_key or page_key in seen_page_refs:
+                        coverage.update(state="partial", reason="page_repeated_or_empty")
+                        break
+                    seen_page_refs.add(page_key)
+                    cursor = coverage["nextCursor"]
+                    try:
+                        require_next_request()
+                        parameter = (client.pagination_argument(tool_name, admission_guard=require_next_request)
+                                     if isinstance(client, Jin10Client) else client.pagination_argument(tool_name))
+                    except DiscoverySliceYield:
+                        # The first page is already paid and persisted. Stop
+                        # before the next wire while keeping its evidence and
+                        # recording the still-open search coverage.
+                        coverage.update(state="partial", reason="research_slice_closed")
+                        break
+                    except Exception as exc:
+                        if getattr(exc, "code", None) != "morning_closeout_reserve":
+                            # Lease loss, hard deadline and invalid execution
+                            # policy still propagate to the task owner.
+                            raise
+                        coverage.update(state="partial", reason="morning_closeout_reserve")
+                        break
+                    if parameter not in {"cursor", "offset"}:
+                        coverage.update(state="partial", reason="pagination_parameter_unavailable")
+                        break
+                    if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                        coverage.update(state="partial", reason="cursor_loop")
+                        break
+                    seen_cursors.add(cursor)
+                    page_arguments = {"keyword": str(arguments["keyword"]), parameter: cursor}
+        except Jin10Error as exc:
+            interrupted = exc
+        if interrupted is not None and not refs:
+            if interrupted.unknown:
+                return VerificationEvidenceBundle("pending", (), (),
+                    {"state": "pending", "requestState": "pending", "reason": "jin10_outcome_unknown"})
+            return VerificationEvidenceBundle("unavailable", (), (),
+                {"state": "partial", "reason": interrupted.code, "absenceProven": False})
+        refs = list({(str(ref["documentId"]), int(ref["revision"])): ref for ref in refs}.values())
+        rows = store.load_document_versions(refs=refs, db_path=self.db_path)
+        documents = tuple(DiscoveryDocument(
+            row["documentId"], int(row["revision"]), row.get("publishedAt"), row.get("fetchedAt"),
+            row.get("originalText"), row.get("excerpt"), {**row.get("metadata", {}), "sourceKey": row["sourceKey"]},
+        ) for row in rows)
+        eligible: list[DiscoveryDocument] = []
+        for document in documents:
+            try:
+                published = datetime.fromisoformat(str(document.published_at))
+            except ValueError:
+                published = None
+            if published is not None and published.tzinfo is not None and published <= cutoff_at:
+                eligible.append(document)
+        if interrupted is not None:
+            coverage.update(state="pending" if interrupted.unknown else "partial",
+                            reason="jin10_outcome_unknown" if interrupted.unknown else interrupted.code)
+        coverage = {**coverage,
+                    "requestState": "pending" if interrupted is not None and interrupted.unknown else "completed",
+                    "reason": coverage.get("reason") or ("visible_results" if eligible else "no_cutoff_eligible_result"),
+                    "documentRefs": refs, "resultCount": len(refs), "pagesFetched": pages,
+                    "absenceProven": False}
+        return VerificationEvidenceBundle("pending" if interrupted is not None and interrupted.unknown
+                                          else "available" if eligible else "empty",
+                                          documents, tuple(eligible), coverage)
+
+    def fetch(self, *, event: EventDraft, retrieved_at: datetime, cutoff_at: datetime,
+              cutoff_inclusive: bool = False, question: Any, query_path: Any) -> VerificationEvidenceBundle:
+        source = str(getattr(query_path, "target_source", "")).casefold()
+        question_text = str(getattr(question, "question", ""))
+        target = f"{event.canonical_key}:{getattr(question, 'question_id', '')}"
+        purpose = str(getattr(query_path, "intent", ""))
+        if source == "jin10-get-news":
+            locator = getattr(query_path, "source_locator", None)
+            if not isinstance(locator, Mapping):
+                raise ValueError("金十原文路径缺少已知文章 ref")
+            parent = {"documentId": locator.get("documentId"), "revision": locator.get("revision")}
+            identifier = self._article_id(parent)
+            if identifier is None or locator.get("locator") != "jin10:id:" + identifier:
+                raise ValueError("金十原文路径未绑定真实文章 id")
+            return self._call(tool_name="get_news", arguments={"id": identifier},
+                              question=question_text, target=target, purpose=purpose,
+                              parent_ref=parent, cutoff_at=cutoff_at)
+        if source not in {"jin10-flash", "jin10-news"}:
+            raise ValueError("金十问题来源无效")
+        keyword = str(getattr(query_path, "query", "")).strip()
+        if not keyword or len(keyword) > 80 or "\n" in keyword:
+            raise ValueError("金十关键词必须是公司名称、别名或具体事项词")
+        return self._call(tool_name="search_flash" if source == "jin10-flash" else "search_news",
+                          arguments={"keyword": keyword}, question=question_text,
+                          target=target, purpose=purpose, parent_ref=None, cutoff_at=cutoff_at)
+
+    def fetch_fulltext(self, *, event: EventDraft, document: DiscoveryDocument,
+                       question: Any, request: Any, cutoff_at: datetime) -> VerificationEvidenceBundle:
+        if document.metadata.get("sourceKey") != "jin10-news":
+            raise ValueError("仅金十文章可由金十读取正文")
+        parent = {"documentId": document.document_id, "revision": document.revision}
+        if document.original_text:
+            return VerificationEvidenceBundle("available", (document,), (document,),
+                                              {"state": "completed", "requestState": "completed",
+                                               "reason": "stored_original", "absenceProven": False})
+        identifier = self._article_id(parent)
+        if identifier is None:
+            return VerificationEvidenceBundle("unavailable", (), (),
+                                              {"state": "partial", "reason": "jin10_id_missing",
+                                               "absenceProven": False})
+        return self._call(tool_name="get_news", arguments={"id": identifier},
+                          question=str(getattr(question, "question", "")),
+                          target=f"{event.canonical_key}:{getattr(question, 'question_id', '')}",
+                          purpose=str(getattr(request, "reason_excerpt_insufficient", "读取已知文章正文")),
+                          parent_ref=parent, cutoff_at=cutoff_at)
+
+    def selected_body(self, *, document: DiscoveryDocument,
+                      cutoff_at: datetime) -> VerificationEvidenceBundle:
+        """Read one title-selected Jin10 article by its real provider ID."""
+        parent = {"documentId": document.document_id, "revision": document.revision}
+        identifier = self._article_id(parent)
+        if identifier is None:
+            return VerificationEvidenceBundle("unavailable", (), (),
+                {"state": "partial", "reason": "jin10_id_missing", "absenceProven": False})
+        return self._call(tool_name="get_news", arguments={"id": identifier},
+                          question="已入选文章的完整正文是什么，目录摘要遗漏哪些限定条件或子事项？",
+                          target=f"selected-article:{document.document_id}@{document.revision}",
+                          purpose="标题入选后读取已知文章原文", parent_ref=parent,
+                          cutoff_at=cutoff_at)
 
 
 def _text(value: datetime) -> str:
@@ -85,7 +281,9 @@ class TavilyEvidenceGateway:
                  leaseguard: Callable[[], None] | None = None,
                  checkpoint_store: VerificationCheckpointStore | None = None,
                  network_max_attempts: int | None = None, lease_owner: str | None = None,
-                 new_external_admission_guard: Callable[[], None] | None = None) -> None:
+                 new_external_admission_guard: Callable[[], None] | None = None,
+                 checkpoint_namespace: str = "shared",
+                 lease_clock: Callable[[], datetime] | None = None) -> None:
         self.db_path = db_path
         self.client = client
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -93,14 +291,38 @@ class TavilyEvidenceGateway:
         if checkpoint_store is not None and task_id is not None and checkpoint_store.task_id != task_id:
             raise ValueError("Tavily 核验 task_id 与检查点不一致")
         self.checkpoint_store = checkpoint_store or (
-            VerificationCheckpointStore(db_path=db_path, task_id=task_id, leaseguard=leaseguard, lease_owner=lease_owner) if task_id else None
+            VerificationCheckpointStore(db_path=db_path, task_id=task_id, leaseguard=leaseguard,
+                                        lease_owner=lease_owner, lease_clock=lease_clock) if task_id else None
         )
         self.context_protocol = None
         if self.checkpoint_store:
             self.context_protocol = store.task_execution_input(task_id=self.checkpoint_store.task_id, db_path=db_path)['checkpoint'].get('contextProtocol')
         self.network_max_attempts = network_max_attempts
         self.new_external_admission_guard = new_external_admission_guard
+        if not isinstance(checkpoint_namespace, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", checkpoint_namespace):
+            raise ValueError("核验检查点命名空间无效")
+        # The normal discovery path retains ``shared`` so existing paid-wire
+        # receipts stay byte-for-byte reusable.  A parent-owned morning review
+        # gets its own namespace: a late review search is a dependency of that
+        # review, never a discovery request that the deadline fence may hide.
+        self.checkpoint_namespace = checkpoint_namespace
         self.requests, self.credits = self.checkpoint_store.attempt_snapshot() if self.checkpoint_store else (0, 0)
+
+    def for_checkpoint_namespace(self, checkpoint_namespace: str) -> "TavilyEvidenceGateway":
+        """Share the frozen gateway binding under one explicit child identity.
+
+        Parent-owned B90 review work items use this only to make a paid search
+        recoverable and publishable as that exact work-item gap.  The same
+        checkpoint store, task, client and admission guard are retained; this
+        method changes no provider policy or source selection.
+        """
+        return TavilyEvidenceGateway(
+            db_path=self.db_path, client=self.client, clock=self.clock,
+            metadata_resolver=self.metadata_resolver, checkpoint_store=self.checkpoint_store,
+            network_max_attempts=self.network_max_attempts, lease_owner=None,
+            new_external_admission_guard=self.new_external_admission_guard,
+            checkpoint_namespace=checkpoint_namespace,
+        )
 
     def _reserve_search(self, *, item_key: str, input_sha256: str, attempt: int) -> tuple[str | None, str | None]:
         """Start one external attempt after the event checkpoint claim."""
@@ -123,6 +345,24 @@ class TavilyEvidenceGateway:
 
     def _settle_search(self, *, attempt_id: str, response: TavilySearchResponse | TavilyExtractResponse | None,
                        obtained_at: datetime | None = None) -> None:
+        # The provider has already returned. A sibling SQLite writer can win
+        # the first bounded settlement transaction; retry the same immutable
+        # response locally without another billable request. If both writes
+        # are blocked, the started attempt remains an explicit unknown that
+        # exact-input admission will refuse to send again.
+        received_at = obtained_at or self.clock()
+        for local_attempt in range(2):
+            try:
+                self._settle_search_once(attempt_id=attempt_id, response=response,
+                                         obtained_at=received_at)
+                return
+            except SqliteWriteBusy:
+                if local_attempt:
+                    raise
+
+    def _settle_search_once(self, *, attempt_id: str,
+                            response: TavilySearchResponse | TavilyExtractResponse | None,
+                            obtained_at: datetime) -> None:
         # Preserve account/authorization terminal causes from the provider's
         # raw response before an older compatibility mapper can collapse them
         # into a local coverage gap. The durable ledger must retain this
@@ -135,7 +375,7 @@ class TavilyEvidenceGateway:
             "searchRequests": 1, "searchCredits": response.credits if isinstance(response.credits, int) else None,
         }
         if response is not None and (response.ok or response.reason == "tavily_fulltext_unavailable"):
-            received_at = _text(obtained_at or self.clock())
+            received_at = _text(obtained_at)
             with read_connection(self.db_path) as conn:
                 row = conn.execute("SELECT input_sha256 FROM k10_external_attempts WHERE attempt_id=?",
                                    (attempt_id,)).fetchone()
@@ -182,7 +422,7 @@ class TavilyEvidenceGateway:
         store.settle_external_attempt(attempt_id=attempt_id, outcome=outcome, usage=usage,
                                       error_code=None if response is None or response.ok else code,
                                       verification_failure=receipt,
-                                      settled_at=_text(self.clock()), db_path=self.db_path)
+                                      settled_at=_text(obtained_at), db_path=self.db_path)
 
     @staticmethod
     def _response_from_receipt(receipt: Mapping[str, Any], *, operation: str):
@@ -384,7 +624,7 @@ class TavilyEvidenceGateway:
                     'cutoffInclusive': cutoff_inclusive,
                 }
                 checkpoint_input = digest(physical_wire)
-                checkpoint_key = 'tavily:shared:' + checkpoint_input
+                checkpoint_key = 'tavily:' + self.checkpoint_namespace + ':' + checkpoint_input
             if client is None:
                 with read_connection(self.db_path) as conn:
                     existing = conn.execute(
@@ -701,12 +941,35 @@ class TavilyEvidenceGateway:
             cutoff_inclusive=cutoff_inclusive, investigation_path=context)
         if self.context_protocol:
             from .research_context import digest as context_digest
-            item_key = 'tavily:shared:extract:' + context_digest([self.context_protocol, ref])
+            # Context-protocol discovery used one shared physical extract key
+            # so identical bodies are never purchased twice.  A B90 morning
+            # review is a different publication dependency: its late or
+            # unknown extract must remain attributable to the exact frozen
+            # review work item, rather than being mistaken for a cancellable
+            # discovery call at 09:20.  The digest still keeps the paid wire
+            # identity exact within that review namespace.
+            extract_identity = context_digest([self.context_protocol, ref])
+            item_key = (
+                'tavily:shared:extract:' + extract_identity
+                if self.checkpoint_namespace == "shared"
+                else 'tavily:' + self.checkpoint_namespace + ':extract:' + extract_identity
+            )
             digest = context_digest({'protocol': self.context_protocol, 'sourceRef': ref,
                 'sourceContent': source.get('contentSha256'), 'url': url, 'operation': 'extract',
                 'cutoffAt': cutoff_at.astimezone(timezone.utc).isoformat(), 'cutoffInclusive': cutoff_inclusive})
-        admission = store.admit_article(task_id=checkpoint.task_id, document_id=document.document_id,
-            revision=document.revision, admission_kind="tavily_full_article", created_at=_text(self.clock()), db_path=self.db_path)
+        morning_review_extract = self.checkpoint_namespace.startswith("morning-review-")
+        # A morning review has no discovery title manifest.  Its source has
+        # already been admitted by the exact work-item's question-bound search
+        # and this fulltext wire is checkpointed/ledgered under the same review
+        # namespace.  Do not force that different product path through the
+        # discovery article-selection table (whose schema deliberately only
+        # accepts selected discovery bodies).
+        admission = ({"state": "admitted", "reason": None,
+                      "admissionKind": "morning_review_independent", "articleState": "admitted"}
+                     if morning_review_extract else store.admit_article(
+                         task_id=checkpoint.task_id, document_id=document.document_id, revision=document.revision,
+                         admission_kind="tavily_full_article", created_at=_text(self.clock()), db_path=self.db_path,
+                     ))
         admission_ref = {"taskId": checkpoint.task_id, **ref}
         if admission.get("state") not in {"admitted", "reused"}:
             pending = self._pending(str(admission.get("reason") or "fulltext_admission_failed"))
@@ -759,8 +1022,9 @@ class TavilyEvidenceGateway:
                     existing=old_checkpoint, event=event, ref=ref, context=context,
                     cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive):
                 return self._pending("checkpoint_input_mismatch")
-            store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
-                revision=document.revision, state="completed", reason_code=None, updated_at=_text(self.clock()), db_path=self.db_path)
+            if not morning_review_extract:
+                store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
+                    revision=document.revision, state="completed", reason_code=None, updated_at=_text(self.clock()), db_path=self.db_path)
             if old_checkpoint is not None and old_checkpoint[0] == "running":
                 checkpoint.complete(item_key=item_key, input_sha256=digest, result=cached_result)
             return self._restore_checkpoint_bundle(cached_result)
@@ -802,10 +1066,18 @@ class TavilyEvidenceGateway:
         if response is None or (not response.ok and response.reason != "tavily_fulltext_unavailable"):
             code = ("tavily_extract_outcome_unknown" if response is None
                     else self._terminal_response_code(response) or self._response_code(response))
+            # A timed-out Extract has an admitted external attempt whose
+            # outcome is deliberately still unknown.  Do not turn that
+            # durable uncertainty into a generic local availability gap (and
+            # do not settle or retry it here).  The morning work item uses the
+            # precise coverage code to publish only its sibling reviews.
+            if code in {"tavily_request_outcome_unknown", "tavily_extract_outcome_unknown"}:
+                return self._pending(code)
             if response is None:
                 checkpoint.fail_retryable(item_key=item_key, input_sha256=digest, safe_error_code=code)
-            store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
-                revision=document.revision, state="failed", reason_code=code, updated_at=_text(self.clock()), db_path=self.db_path)
+            if not morning_review_extract:
+                store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
+                    revision=document.revision, state="failed", reason_code=code, updated_at=_text(self.clock()), db_path=self.db_path)
             return self._failed_response(item_key=item_key, input_sha256=digest)
         obtained_text = _text(obtained_at)
         if response.credits is not None:
@@ -864,9 +1136,10 @@ class TavilyEvidenceGateway:
                 **({"admissionState": "rejected"} if material_admission.state == "excluded" else {}),
                 **({"materialExclusions": {material_admission.reason: 1}}
                    if material_admission.state == "excluded" else {})})
-        store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
-            revision=document.revision, state="completed" if documents else "missing_body",
-            reason_code=None if documents else "tavily_fulltext_unavailable", updated_at=obtained_text, db_path=self.db_path)
+        if not morning_review_extract:
+            store.record_article_outcome(task_id=checkpoint.task_id, document_id=document.document_id,
+                revision=document.revision, state="completed" if documents else "missing_body",
+                reason_code=None if documents else "tavily_fulltext_unavailable", updated_at=obtained_text, db_path=self.db_path)
         coverage.update({"documents": len(documents), "eligibleDocuments": len(eligible)})
         checkpoint.complete(item_key=item_key, input_sha256=digest, result={
             "state": coverage["state"], "documentRefs": [self._document_ref(item) for item in documents],

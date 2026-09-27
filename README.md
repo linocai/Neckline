@@ -2,6 +2,8 @@
 
 **当前发布为3.5.1（89）**：K10-v2，后端已上线；Mac已替换，锁屏导致启动验收待完成。iOS签名归档就绪，由用户Xcode安装，无IPA。[发布下载与校验值](https://github.com/linocai/Neckline/releases/tag/v3.5.1-b89)，源码`c9f1bb98ba4fd4edda627a422ce8534d38a5bb3c`。
 
+**本地3.6.1（93）已完成B92审查后的快修与独立复查。** 本版从全新空库开始，B92前的报告、任务、原件、回执、行情和客户端缓存全部退役，运行时禁止读取、导入或恢复。采集与报告仍独立，生产暂停状态不变；当前代码尚未发布，不启用采集、不恢复报告。进度及证据见[主Plan](PROJECT_PLAN.md)。
+
 9月22日晚报已于23:53:11正式partial发布：814标题、58事件全部处理，30家公司正式推荐；一篇正文缺必要事实字段，相关5家公司排除并显示缺口。完成通知23:53:27/29分别获两设备APNs接受，设备是否显示尚未确认。B89修复恢复后旧失败提示残留及采集时钟漂移导致的重复候选冲突；已发布推荐、身份和观察窗口不变。
 
 内部 **Schema10 / 新报告Schema9 / 历史Schema8** 不变，无DDL或新配置。生产策略`k10-v2-production@2`、执行`k10-v2-execution-production@2`，继续绑定`k10-v2-b82-20260922`；原冻结策略、模型、输入和账本保留。资料仍为`local_draft_awaiting_user`。没有补跑其他旧失败/删除报告，没有额外provider探测。
@@ -12,7 +14,9 @@ B89相关82项回归及3项严格类型复核通过；双端OS27签名归档、�
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
 运行时不读取或导入研究仓。根目录仅保留 App、Backend、archive、AGENTS.md、PROJECT_PLAN.md 和本文件。
 
-## V3 功能
+B93新库准备入口：在 `Backend/` 运行 `.venv/bin/python -m neckline.k10.cli initialize-fresh --db <明确的新文件路径>`。命令只创建不存在的新空库，不接收旧库、不自动配置策略或打开开关。后续发布须停写、核清旧存储范围后清空退役业务数据；`DB_PATH`与`K10_DB_PATH`必须同时绑定同一个新库，`PARQUET_DIR`与`K10_PARQUET_DIR`必须同时绑定同一个新空目录，重新显式登记配置和固定公司池。新库交易日历为空，必须先用 `scripts/init_calendar.py` 在新库重新取得并落库官方日历，再读回核对SSE覆盖起止及接下来晨晚报/行情所需交易日；启动依赖日历的正式入口前完成，不能用旧库复制或工作日近似代替。两份环境文件（`.env`与`/etc/neckline/k10.env`）合并后，API使用前一组变量，worker/晨晚报/采集/行情unit使用后一组；发布readiness必须逐项核对实际unit展开后的环境与命令，任一不一致不得启动切换。当前Schema10只是存储结构号，不能用同号旧库继续运行。旧库迁移入口已退役；恢复工具只接受新起点内的备份，旧恢复集不再具有业务恢复授权。此轮没有执行生产清空或切换。
+
+## 当前线上功能（3.5.1）
 
 入口为 **机会 / 关注 / 选股表现 / 设置**。事件共同事实只讲一次，系统先给出主推、备选或并列，说明
 优先理由、差距和改变排序的条件。同公司同批次多催化共用公司卡与一次选择；晚间最多 30 家不同公司，旧催化仍可在每日重选后展示，但不重开两日窗口。
@@ -44,7 +48,11 @@ D1 开盘前最后一次明确操作冻结为留下、明确略过或未处理�
 
 ## 配置与数据
 
-当前生产策略参数源为 [k10-v2.json](Backend/neckline/config/k10-v2.json)（生产revision2仅将strategySnapshotId改为`k10-v2-b82-20260922`），执行包为 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)（生产revision2）；用户当前生产连接为 `deepseek-flash`，可在 BYOK 显式切换实际端点和模型。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
+仓库的 [k10-v2.json](Backend/neckline/config/k10-v2.json) 和 [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json) 用于本地3.6.1施工；后者已明确B92采集资料研究契约，不能当作线上配置。生产仍使用B89的策略/执行revision2与`k10-v2-b82-20260922`冻结绑定；用户当前生产连接为 `deepseek-flash`，可在 BYOK 显式切换实际端点和模型。两个配置包均须显式登记修订并与策略快照绑定；缺任何一项都报“今天没跑成 · 参数未配置”，不从扫描历史或任意最新修订猜选。
+
+本地B92另有独立的 [采集配置](Backend/neckline/config/k10-collection-v1.json)。先通过 `configure-collection --db <已核对数据库> --config-id <采集配置ID> --file neckline/config/k10-collection-v1.json` 登记并使用实际返回的修订；服务环境显式绑定 `K10_COLLECTION_CONFIG_ID`／`K10_COLLECTION_CONFIG_REVISION`，凭据分别使用受保护环境中的 `TUSHARE_TOKEN` 和 `JIN10_MCP_TOKEN`。登记后采集仍关闭，只有 `collection-control --state open` 配合同一配置ID／修订才打开；它不改变报告开关。App只显示凭据是否配置，不回显或编辑金十Token。
+
+新增 `neckline-k10-collection.timer/service` 每个北京时间自然日08:00／20:00入队，worker复用现有服务；安装材料不自动启用。报告读取已保存的冻结资料，逐源说明实际覆盖和未采到的尾段；不例行补采。已选金十文章按需读正文，关键疑问才查询金十或Tavily，资料足够可零搜索；搜索空结果不代表安全。本轮只做离线验证，未部署这些配置、启用采集或恢复报告。
 
 **B59起支持双端 BYOK**：设置 → 模型配置，可保存多组 HTTPS Chat Completions 连接、修改端点和模型 ID、替换或清除 Key，启用一组即切换新任务的连接。API 基础地址自动补 `/chat/completions`；密钥留空保留，跨服务商地址更新须同时换 Key 或清除旧 Key。iOS 通过 Xcode 安装，实际发布状态以本页顶部和 PROJECT_PLAN 为准。
 
@@ -103,16 +111,12 @@ macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能
 
 ## 生产运行与恢复
 
-发布源码`626c902097a91481513ac9792257309858c9e031`，不可变标签`v3.5.0-b81`；后续文档提交不移动标签。服务器`ser657204219523`（`114.66.2.205`），数据库`/opt/neckline/data/neckline.db`，公网`https://nk.linotsai.top`。2026-09-21 15:49 CST核验125份runtime文件与发布manifest一致，数据库完整性正常，API/worker active，发布时四timer关闭；同日15:59按用户新指令恢复active/enabled，晚报下一次21:00、晨报次日08:30。行情18:30更新、19:30/20:30有限重试。
+现役版本、源码和绑定以本页顶部及[主Plan](PROJECT_PLAN.md)为准。服务器`ser657204219523`（`114.66.2.205`），数据库`/opt/neckline/data/neckline.db`，公网`https://nk.linotsai.top`。
 
-`/etc/neckline/k10.env`显式绑定策略`k10-v2-production`第1修订、执行`k10-v2-execution-production`第1修订及`k10-v2-20260909`快照。无扫描的独立配置检查和线上DTO检查通过，原开关保持open。禁止自动恢复、延期或替代旧过期任务，已删报告不重放；旧事故证据保留在3.3.0归档。
+2026-09-23 20:19 CST按用户指令暂停早晚报：两报告timer为inactive/disabled，discovery control为closed/user_paused，检查心跳`neckline`为PAUSED，核验时在途任务与未知外呼均0。API/worker及两行情timer继续active/enabled。晚报21:00、晨报08:30是既定计划时间，不表示当前已启用；恢复须用户明确指示。
 
-Mac `/Applications/Neckline.app`已换装3.5.0（81），Developer ID严格验签、arm64/x86_64；实际页面确认版本、线上历史报告与配置正常。Mac未公证，网络下载后的Gatekeeper体验未验收。iOS签名归档及工程Build81就绪，实际真机安装仍由用户在Xcode完成。
+`/etc/neckline/k10.env`仍绑定策略`k10-v2-production@2`、执行`k10-v2-execution-production@2`与`k10-v2-b82-20260922`。B90至B92只在隔离库验证，不改生产绑定，也不恢复、延期或替代旧失败/过期/已删除任务。
 
-本地发布根`/Users/linotsai/Lino/releases/Neckline/v3.5.0-b81-release-20260921/`保留双端xcarchive、六份发布资产、B69 Mac回退副本（`recovery/Neckline-3.3.0-b69.app`）与必要证据。服务器正式包位于`/opt/neckline/releases/v3.5.0-b81/`；GitHub六资产大小及SHA256均匹配。
+现役恢复集为B81/B82/B89，分别保留B75/B81/B88代码。恢复前必须核对真实部署manifest、目标、绑定与新写；不得用旧整库覆盖发布后业务数据。Schema9历史回退仅在原归档条件成立时适用。根目录`root:root /0755`、数据库`neckline:neckline /0600`保持。
 
-恢复集仅留`/opt/neckline/data/backups/v3.3.0-b75-predeploy`和`v3.5.0-b81-predeploy`，分别保留B74/B75代码；压缩快照已解压核验哈希。B81回退B75须先停机核验旧数据未变、Schema10五张新表为空，再执行已演练的受控10→9与代码回退；已有新写则前向修复，禁止旧整库覆盖。根目录`root:root /0755`、数据库`neckline:neckline /0600`保持。
-
-清报告专用`/opt/neckline/data/archive/report-cleanup-20260913/pre-cleanup.db.gz`继续保留，首份新正式报告完成且可读后回收。此次本地临时目录及远端上传/演练副本已按归属、内容和打开句柄核验回收；详细证据、测试限制及恢复条件见[3.5.0执行记录第12节](archive/v3.5.0-b78_execution.md)。
-
-9月21日下午恢复时的行情补采发现daily_basic两项字段尚未就绪，保留原分区；晚间更新/重试及20:55报告前检查已安排。今晚心跳跟踪至报告实际可读和通知结果确认，完成后只暂停心跳，四个正式定时器继续运行；详见本版记录第13节。
+首份新正式报告及APNs交付核验后，清报告专用快照已于9月23日回收；不得再把它列为现存恢复点。当前发布与清理证据见[B82记录第16节](archive/v3.5.1-b82_execution.md#16-今晚第七轮快修-b89已上线)，B81历史发布证据见[B78记录](archive/v3.5.0-b78_execution.md)。

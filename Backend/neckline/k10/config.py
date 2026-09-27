@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping
 
 
@@ -88,8 +89,8 @@ def validate_run_config(payload: Mapping[str, Any] | None, *, scope: str) -> Con
                     errors.append("sourceAdapters.key 必须是非空来源键")
                 else:
                     keys.append(key)
-                if not _positive_int(replay):
-                    errors.append("sourceAdapters.lateArrivalReplaySeconds 必须是正整数")
+                if not _nonnegative_int(replay):
+                    errors.append("sourceAdapters.lateArrivalReplaySeconds 必须是非负整数")
             if len(keys) != len(set(keys)):
                 errors.append("sourceAdapters.key 不能重复")
     routes = payload.get("modelRoutes")
@@ -236,15 +237,30 @@ def validate_execution_config(payload: Mapping[str, Any] | None) -> Configuratio
         "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds", "modelOptions",
         "investigationPromptContractRevision",
     }
-    allowed_discovery_fields = {frozenset(expected), frozenset({*expected, "titleReconcileContractVersion"})}
+    b92_fields = {"reportInputContract", "collectionSourceKeys", "collectedInputBootstrapAt"}
+    allowed_discovery_fields = {frozenset(expected), frozenset({*expected, "titleReconcileContractVersion"}),
+                                frozenset({*expected, "titleReconcileContractVersion", *b92_fields})}
     if not isinstance(discovery, Mapping) or frozenset(discovery) not in allowed_discovery_fields:
         errors.append("discovery 必须精确声明标题 policy 和单请求执行边界")
         return ConfigurationStatus("not_configured", missing, tuple(errors))
     if discovery.get("model") != _DEEPSEEK_V4_PRO:
         errors.append("discovery.model 必须精确为 deepseek-v4-pro")
     revision = discovery.get("investigationPromptContractRevision")
-    if revision not in {"k10-investigation-v1", "k10-investigation-v2"}:
+    if revision not in {"k10-investigation-v1", "k10-investigation-v2", "k10-research-3.6.0-b90",
+                        "k10-research-3.6.1-b92"}:
         errors.append("discovery.investigationPromptContractRevision 必须显式为已支持提示词契约")
+    if b92_fields & set(discovery):
+        if discovery.get("reportInputContract") != "k10-collected-input-3.6.1-b92":
+            errors.append("B92 reportInputContract 无效")
+        if discovery.get("collectionSourceKeys") != ["tushare-major-news", "jin10-flash", "jin10-news"]:
+            errors.append("B92 collectionSourceKeys 必须精确声明三来源")
+        bootstrap = discovery.get("collectedInputBootstrapAt")
+        try:
+            parsed_bootstrap = datetime.fromisoformat(bootstrap.replace("Z", "+00:00"))
+            if parsed_bootstrap.tzinfo is None:
+                raise ValueError
+        except (AttributeError, ValueError):
+            errors.append("B92 collectedInputBootstrapAt 必须是带时区 ISO 时间")
     reconcile_contract = discovery.get("titleReconcileContractVersion")
     if reconcile_contract is not None and reconcile_contract != _B82_TITLE_RECONCILE_CONTRACT:
         errors.append("discovery.titleReconcileContractVersion 无效")
@@ -276,6 +292,10 @@ def validate_execution_config(payload: Mapping[str, Any] | None) -> Configuratio
     for name in ("titleBatchSize", "titleTriageConcurrency", "deepReadConcurrency", "networkMaxAttempts", "taskSliceSeconds", "completionDeadlineSeconds", "continuationDelaySeconds"):
         if not _positive_int(discovery.get(name)):
             errors.append(f"discovery.{name} 必须是正整数")
+    if (revision == "k10-research-3.6.0-b90"
+            and _positive_int(discovery.get("deepReadConcurrency"))
+            and discovery["deepReadConcurrency"] < 2):
+        errors.append("B90 晨报双通道要求显式 deepReadConcurrency 至少为 2")
     if not _nonnegative_int(discovery.get("jsonRepairMaxAttempts")):
         errors.append("discovery.jsonRepairMaxAttempts 必须是非负整数")
     backoff = discovery.get("retryBackoffSeconds")

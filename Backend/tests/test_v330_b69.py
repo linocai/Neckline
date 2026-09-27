@@ -103,7 +103,7 @@ def test_verification_search_and_cached_bundle_keep_prospectus_local_before_any_
     runtime.context = {"canonicalKey": "prospectus-event", "stageKey": "initial", "eventState": "reported",
                        "headline": "招股书", "eventKind": "disclosure"}
     runtime.db_path, runtime.identity = db, "prospectus-round"
-    runtime._b78_reusable_source_evidence = lambda: {"claims": [], "companyRelations": [], "isolated": []}
+    runtime._b78_reusable_source_evidence = lambda *, as_of=None, max_rowid=None: {"claims": [], "companyRelations": [], "isolated": []}
     packet = runtime._b78_packet(claims=(), company_scope={}, comparison_context={
         "marketContext": {}, "historicalCases": [], "historicalCoverage": {},
     })

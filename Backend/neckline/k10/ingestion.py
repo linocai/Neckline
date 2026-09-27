@@ -128,7 +128,14 @@ class SqliteIngestionWriter:
             "excerpt": document.excerpt,
             "publishedAt": _utc_text(document.published_at) if document.published_at else None,
             "publishedPrecision": document.published_precision,
-            "metadata": document.metadata,
+            # Exact/date publication instants are already canonicalized above.
+            # Keep the provider's original spelling in the saved version and
+            # paid receipt, but do not mint a new revision for an equivalent
+            # timezone spelling of the same source content. Unknown time text
+            # has no canonical instant and remains part of source identity.
+            "metadata": ({key: value for key, value in document.metadata.items()
+                          if key not in {"originalPublishedText", "rawPubTime"}}
+                         if document.published_precision != "unknown" else document.metadata),
             "fetchVersion": document.fetch_version,
         }
         content_sha256 = sha256(
@@ -356,7 +363,7 @@ class IngestionOrchestrator:
                 failed_count += 1
                 continue
 
-            stored, duplicates, late, uncertain, new_refs, uncertain_refs = self._append_documents(coverage, result, window)
+            stored, duplicates, late, uncertain, document_refs, new_refs, uncertain_refs = self._append_documents(coverage, result, window)
             state = _outcome_state(result)
             self._writer.record_source_outcome(
                 scan_id=scan_id, coverage=coverage, result=result, state=state, error=None
@@ -382,6 +389,7 @@ class IngestionOrchestrator:
                         "lateDocumentCount": late,
                         "unknownPublicationTimeCount": uncertain,
                         "timeCoverage": "partial" if uncertain else "complete",
+                        "documentRefs": document_refs,
                         "newDocumentRefs": new_refs,
                         "uncertainTimeDocumentRefs": uncertain_refs,
                     },
@@ -406,9 +414,14 @@ class IngestionOrchestrator:
 
     def _append_documents(
         self, coverage: SourceCoverage, result: SourceFetchResult, window: ScanWindow
-    ) -> tuple[int, int, int, int, list[dict[str, object]], list[dict[str, object]]]:
+    ) -> tuple[int, int, int, int, list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
         seen: set[str] = set()
         stored = duplicates = late = uncertain = 0
+        # ``new_refs`` is an append accounting fact.  ``document_refs`` is the
+        # source request's immutable visible input, including a version another
+        # concurrent channel appended first.  Conflating them turns a harmless
+        # dedupe race into an empty discovery packet.
+        document_refs: list[dict[str, object]] = []
         new_refs: list[dict[str, object]] = []
         uncertain_refs: list[dict[str, object]] = []
         for document in result.documents:
@@ -427,6 +440,7 @@ class IngestionOrchestrator:
                 # concrete new/duplicate result.
                 version, is_new = saved, True
             ref = {"documentId": version.document_id, "revision": version.revision}
+            document_refs.append(ref)
             if is_new:
                 new_refs.append(ref)
             if document.published_precision != "exact":
@@ -441,7 +455,7 @@ class IngestionOrchestrator:
                 late += 1
         return (stored, duplicates, max(late, result.late_document_count), max(
             uncertain, result.unknown_publication_time_count
-        ), new_refs, uncertain_refs)
+        ), document_refs, new_refs, uncertain_refs)
 
 
 def _failed_coverage(coverage: SourceCoverage) -> dict[str, object]:

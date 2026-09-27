@@ -164,6 +164,14 @@ struct SettingsView: View {
                 V3SectionTitle(title: "运行状态", icon: "clock")
                 V3Card {
                     VStack(spacing: 0) {
+                        CollectionStatusRows(
+                            status: model.collectionStatus,
+                            error: model.auxiliaryLoadErrors["collection"],
+                            isChanging: model.collectionControlInFlight,
+                            isOffline: model.offline,
+                            change: { state in Task { await model.setCollectionControl(state: state) } }
+                        )
+                        SettingsDivider()
                         SettingsStatusRow(title: "晚间扫描", scan: model.scanSummaries.first { $0.window == "evening" })
                         SettingsDivider()
                         SettingsStatusRow(title: "晨间扫描", scan: model.scanSummaries.first { $0.window == "morning" })
@@ -385,7 +393,7 @@ private struct DiscoveryControlRow: View {
                 .foregroundStyle(control?.state == "paused" ? NK.amber : NK.accent)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
-                Text("资讯处理").font(NKFont.callout.weight(.semibold))
+                Text("报告处理").font(NKFont.callout.weight(.semibold))
                 Text(detail).font(NKFont.caption).foregroundStyle(control?.state == "paused" ? NK.amber : NK.textSecondary)
                 if let tasks = control?.activeTasks, !tasks.isEmpty {
                     DisclosureGroup("活动任务（\(tasks.count)）") {
@@ -407,24 +415,118 @@ private struct DiscoveryControlRow: View {
                     .buttonStyle(.bordered)
                     .tint(NK.accent)
                     .disabled(isPausing)
-                    .accessibilityLabel("暂停后续资讯处理")
+                    .accessibilityLabel("暂停后续报告处理")
             }
         }
         .padding(.vertical, 10)
     }
 
     private var detail: String {
-        guard let control else { return "运行控制状态尚未读取" }
+        guard let control else { return "报告控制状态尚未读取" }
         if let executionState = control.executionState {
             var text = k10ExecutionStateText(executionState)
             if let inFlight = control.inFlightCount, let unknown = control.unknownCount {
                 text += " · 在途 \(inFlight) · 结果待确认 \(unknown)"
             }
-            if executionState == "paused" { text += "；不会自动恢复" }
+            if executionState == "paused" { text += "；不会自动恢复。采集开关不受影响" }
             return text
         }
-        if control.state == "paused" { return "后续自动处理已暂停；不会自动恢复" }
-        return "开关已打开；仍须通过配置检查"
+        if control.state == "paused" { return "后续报告已暂停；采集仍按独立开关运行" }
+        return "报告开关已打开；采集仍按独立开关运行"
+    }
+}
+
+private struct CollectionStatusRows: View {
+    let status: K10CollectionStatus?
+    let error: String?
+    let isChanging: Bool
+    let isOffline: Bool
+    let change: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "tray.and.arrow.down.fill").foregroundStyle(NK.accent).frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("独立采集").font(NKFont.callout.weight(.semibold))
+                    if let status {
+                        Text("\(status.control.state == "open" ? "已打开" : "已关闭") · \(status.configuration.state == "configured" ? "配置就绪" : "配置未完成")")
+                            .font(NKFont.caption).foregroundStyle(status.control.state == "open" ? NK.textSecondary : NK.amber)
+                        Text("此开关只控制新资料采集；报告仍可读取已保存资料。")
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        if !status.configuration.missing.isEmpty {
+                            Text("采集配置缺少：\(status.configuration.missing.joined(separator: "、"))")
+                                .font(NKFont.caption).foregroundStyle(NK.amber)
+                        }
+                        if let reason = status.control.reasonCode, !reason.isEmpty {
+                            Text("控制原因：\(controlReasonText(reason))").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        }
+                    } else {
+                        Text(error.map { "采集状态读取失败：\($0)" } ?? "采集状态尚未读取")
+                            .font(NKFont.caption).foregroundStyle(NK.amber)
+                    }
+                }
+                Spacer()
+                if let status {
+                    Button(isOffline ? "离线" : (isChanging ? "处理中" : (status.control.state == "open" ? "关闭" : "打开"))) {
+                        change(status.control.state == "open" ? "closed" : "open")
+                    }
+                    .font(NKFont.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(NK.accent)
+                    .disabled(isOffline || isChanging || (status.control.state != "open" && status.configuration.state != "configured"))
+                    .accessibilityLabel(status.control.state == "open" ? "关闭后续资料采集" : "打开后续资料采集")
+                }
+            }
+            if let status {
+                ForEach(status.sources) { source in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(k10SourceText(source.sourceKey)).font(NKFont.caption.weight(.semibold))
+                            Spacer()
+                            Text(k10StatusText(source.state)).font(NKFont.caption)
+                        }
+                        Text("凭据\(source.credentialConfigured ? "已配置" : "未配置") · 最近成功\(source.lastSuccessAt.map(k10DisplayTime) ?? "待记录") · 覆盖至\(source.coverageThrough.map(k10DisplayTime) ?? "待核")")
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        if source.observedStartAt != nil || source.observedEndAt != nil {
+                            Text("实际观察：\(source.observedStartAt.map(k10DisplayTime) ?? "起点待核") — \(source.observedEndAt.map(k10DisplayTime) ?? "终点待核")")
+                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        }
+                        ForEach(source.limitations, id: \.self) { limitation in
+                            Text(k10ReasonText(limitation)).font(NKFont.caption).foregroundStyle(NK.amber)
+                        }
+                    }
+                    .padding(8)
+                    .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                }
+                if !status.activeTasks.isEmpty || !status.latestRuns.isEmpty {
+                    DisclosureGroup("采集任务 · 运行中 \(status.activeTasks.count) · 最近 \(status.latestRuns.count)") {
+                        ForEach(status.activeTasks + status.latestRuns) { run in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(run.slotAt.map(k10DisplayTime) ?? "时段待核") · \(k10StatusText(run.status)) · \(run.stage.map(k10ExecutionStageText) ?? "阶段待核")")
+                                    .font(NKFont.caption.weight(.medium))
+                                ForEach(run.sourceOutcomes) { outcome in
+                                    Text("\(k10SourceText(outcome.sourceKey))：\(k10StatusText(outcome.state)) · 覆盖至\(outcome.coverageThrough.map(k10DisplayTime) ?? "待核")")
+                                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .font(NKFont.caption)
+                }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func controlReasonText(_ code: String) -> String {
+        switch code {
+        case "configured_closed": return "配置已保存，采集尚未开启"
+        case "user_opened": return "手动开启采集"
+        case "user_paused": return "手动暂停采集"
+        default: return k10ReasonText(code)
+        }
     }
 }
 

@@ -4,15 +4,17 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
 from contextlib import contextmanager, nullcontext
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, wait
 from hashlib import sha256
 import json
 import logging
 import math
+import os
 import sqlite3
 from pathlib import Path
 import re
 import time
-from threading import local, RLock
+from threading import Event, local, RLock
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -25,6 +27,7 @@ from neckline.data.limit_derived import is_st_name
 from neckline.data.market_data import load_namechange, load_stock_basic
 from neckline.data.sw_industry import load_l2_map
 from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
+from neckline.llm.openai_compat import bounded_response_wait, can_bound_response_wait
 
 from . import store
 from .config import validate_execution_config, validate_run_config
@@ -34,25 +37,30 @@ from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocum
                         DiscoveryDeadlineExceeded, DiscoverySliceYield, DiscoveryUnderstandingIncomplete, ProviderThrottleYield, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
                         thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows,
                         event_input_facts, event_system_metadata)
-from .ingestion import IngestionRun, finalize_ingestion_scan, ingest_to_sqlite, ingestion_coverage
+from .ingestion import (IngestionRun, SqliteIngestionWriter, finalize_ingestion_scan,
+                        ingest_to_sqlite, ingestion_coverage)
 from .historical_cases import apply_historical_assessments
 from .investigation import InvestigationError
 from .investigation_prompts import request_spec as investigation_request_spec
 from .research_contracts import (Claim, ResearchRoundResult, ResearchSnapshot,
-                                 RESEARCH_ROUND_ACTION, RESEARCH_ROUND_CONTRACT, ResearchContractError)
+                                 B78_RESEARCH_ROUND_CONTRACT, RESEARCH_ROUND_ACTION,
+                                 RESEARCH_ROUND_CONTRACT, B92_RESEARCH_ROUND_CONTRACT,
+                                 ResearchContractError)
 from .research_material import admit_material, source_material_for_understand, read_locator, resize_catalogue
 from .model_execution import (
     JsonRepairError, ModelInvocation, ModelNetworkError, ModelReceiptRecoveryUnavailable,
     SemanticValidationError, execute_model_operation,
 )
-from .metering import bind_provider_execution_spending, provider_spend_context
+from .metering import MeteredProvider, bind_provider_execution_spending, execution_model_options, provider_spend_context
 from .opportunity_discovery import (ComparisonValidationError, validate_classification,
                                     validate_event_comparison, validate_evidence_disclosure)
 from .providers import resolve_deepseek_v4_pro, runtime_execution_profile
 from .tushare_news import TuShareMajorNewsAdapter
 from .universe import CHINEXT, CompanyMetadata, CompanyMetadataProvider
-from .verification import TavilyEvidenceGateway
+from .verification import TavilyEvidenceGateway, Jin10QuestionGateway
+from .jin10_mcp import Jin10Client
 from .source_metadata import PublicationMetadataResolver, TransportResponse
+from .sources import SourceAdapter, SourceFetchRequest, SourceCoverage
 from .windows import ScanWindow, evening_window, morning_window, scan_calendar_day
 from .schema import SchemaUnavailable, SqliteWriteBusy, read_connection, require_schema
 from .worker import TaskContext, TaskResult
@@ -70,6 +78,175 @@ class PipelineError(RuntimeError):
     def __init__(self, message: str, *, code: str = "pipeline_invalid") -> None:
         super().__init__(message)
         self.code = code
+
+
+def _uses_b90_research_contract(*, runtime: Mapping[str, Any] | None,
+                                execution_profile: Mapping[str, Any] | None) -> bool:
+    """Select B90 semantics only when both frozen bindings name B90.
+
+    The runtime marker identifies the report family, while the immutable execution
+    profile owns the model wire contract.  Older frozen jobs can share the current
+    worker but must retain their original window and final-editor payload.
+    """
+    from .delivery import B90_RESEARCH_CONTRACT, RESEARCH_CONTRACT
+    if (not isinstance(runtime, Mapping)
+            or runtime.get("research") not in {B90_RESEARCH_CONTRACT, RESEARCH_CONTRACT}):
+        return False
+    if not isinstance(execution_profile, Mapping):
+        return False
+    payload = execution_profile.get("payload")
+    discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+    return (isinstance(discovery, Mapping)
+            and discovery.get("investigationPromptContractRevision") in {
+                RESEARCH_ROUND_CONTRACT, B92_RESEARCH_ROUND_CONTRACT})
+
+
+def _uses_b92_collected_input(*, runtime: Mapping[str, Any] | None,
+                              execution_profile: Mapping[str, Any] | None) -> bool:
+    from .delivery import RESEARCH_CONTRACT
+    payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
+    discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+    return (isinstance(runtime, Mapping) and runtime.get("research") == RESEARCH_CONTRACT
+            and isinstance(discovery, Mapping)
+            and discovery.get("reportInputContract") == "k10-collected-input-3.6.1-b92")
+
+
+def _b90_isolated_morning_unsettled_dependencies(*, task_id: str, db_path: Path,
+                                                  review_work_item_ids: Sequence[str],
+                                                  delivery: Mapping[str, Any],
+                                                  scan_id: str,
+                                                  discovery_deadline_declared: bool,
+                                                  ) -> tuple[bool, list[str]] | None:
+    """Classify every unsettled morning attempt against its own public dependency.
+
+    A fixed-clock discovery timeout and a named review timeout can happen in
+    the same parent task.  The old pair of ``only`` checks treated that honest
+    combination as an all-or-nothing failure even though each ledger row was
+    already attributable.  This routine deliberately does *not* make a broad
+    stage waiver: each review wire must name a frozen work item with its own
+    report gap, and every remaining wire must be covered by the one declared
+    discovery deadline gap.  ``None`` means an unidentified or undisclosed
+    charge remains and publication must stay blocked.
+    """
+    allowed = {value for value in review_work_item_ids if isinstance(value, str) and value}
+    gaps = delivery.get("gaps") if isinstance(delivery, Mapping) else None
+    disclosed = {
+        gap.get("unitId") for gap in gaps if isinstance(gap, Mapping)
+        and gap.get("stage") == "morning_review" and gap.get("unitKind") == "work_item"
+        and isinstance(gap.get("unitId"), str)
+    } if isinstance(gaps, list) else set()
+    has_discovery_gap = isinstance(gaps, list) and any(
+        isinstance(gap, Mapping)
+        and gap.get("stage") == "discovery"
+        and gap.get("unitKind") == "scan"
+        and gap.get("unitId") == scan_id
+        and gap.get("reasonCode") == "morning_discovery_deadline"
+        for gap in gaps
+    )
+    with read_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT stage,item_key FROM k10_external_attempts WHERE task_id=? "
+            "AND state IN ('started','unknown')", (task_id,)
+        ).fetchall()
+    if not rows:
+        return False, []
+    if not allowed or not disclosed:
+        # There can still be a declared discovery-only partial.  Do not demand
+        # a review identity merely because there are no review attempts.
+        if discovery_deadline_declared and has_discovery_gap and all(
+                isinstance(stage, str) and stage != "morning"
+                and not (isinstance(item_key, str) and item_key.startswith("tavily:morning-review"))
+                for stage, item_key in rows):
+            return True, []
+        return None
+    isolated: list[str] = []
+    has_discovery_unknown = False
+    for stage, item_key in rows:
+        if not isinstance(stage, str) or not isinstance(item_key, str):
+            return None
+        review_id = next((value for value in allowed if (
+            (stage == "morning" and item_key.startswith(value + ":review-round:"))
+            or (stage == "search" and item_key.startswith("tavily:morning-review-" + value + ":"))
+        )), None)
+        if review_id is not None:
+            if review_id not in disclosed:
+                return None
+            if review_id not in isolated:
+                isolated.append(review_id)
+            continue
+        # An older/unscoped review search is deliberately *not* a discovery
+        # attempt.  It must retain the historical atomic boundary.
+        if stage == "morning" or item_key.startswith("tavily:morning-review"):
+            return None
+        has_discovery_unknown = True
+    if has_discovery_unknown and not (discovery_deadline_declared and has_discovery_gap):
+        return None
+    return has_discovery_unknown, sorted(isolated)
+
+
+def _b90_discovery_deadline_result(*, context: TaskContext, scan_id: str,
+                                   configuration: Mapping[str, Any],
+                                   cutoff_at: datetime, generated_at: datetime) -> TaskResult:
+    """Freeze an honest no-new-discovery partial while completed reviews remain usable.
+
+    This is intentionally narrower than a generic cancellation: it has no
+    candidates, no final ordering input and no claim that the timed-out source
+    or model returned safely.  The caller has already fenced the sibling thread
+    so a late reply can settle its private receipt but cannot append discovery
+    facts or rewrite this report.
+    """
+    scan = store.get_scan(scan_id=scan_id, db_path=context.db_path)
+    if not isinstance(scan, Mapping) or scan.get("status") != "running":
+        raise store.K10Conflict("晨报发现截止时缺少运行中的冻结扫描")
+    coverage = dict(scan.get("coverage", {})) if isinstance(scan.get("coverage"), Mapping) else {}
+    refs = _morning_refs(coverage.get("inputDocumentRefs"))
+    title_input = len(refs)
+    from .delivery import delivery_gap, delivery_manifest
+    gap = delivery_gap(
+        stage="discovery", unit_kind="scan", unit_id=scan_id,
+        reason_code="morning_discovery_deadline",
+        message="隔夜新机会发现未在晨报截止前完成；已完成的昨晚理由复核仍可读取。",
+        source_refs=refs, company_scope_known=False,
+    )
+    delivery = delivery_manifest(
+        outcome="partial", ranking_scope="none",
+        counts={
+            "titleInput": title_input, "titleProcessed": 0, "titleFailed": 0,
+            "titleUnprocessed": title_input,
+            "eventInput": 0, "eventProcessed": 0, "eventFailed": 0,
+            "eventUnprocessed": 0, "comparableCompanies": 0,
+            "publishedCompanies": 0,
+        },
+        gaps=[gap],
+        input_manifest={"scanId": scan_id, "window": coverage.get("window"),
+                        "inputDocumentRefs": refs},
+        eligible_set=[], ranking_input=None,
+    )
+    terminal_coverage = {
+        **coverage,
+        "pipelineState": "morning_discovery_deadline",
+        "ingestionState": "partial",
+        "discoveryState": "partial",
+        "discoveryIssues": [{"stage": "discovery", "code": "morning_discovery_deadline"}],
+        "delivery": delivery,
+    }
+    empty_run = DiscoveryRun(
+        "partial", validate_run_config(configuration, scope="discovery"), (), (), (), (), (), (), 0,
+    )
+    checkpoint = {
+        "scanId": scan_id, "ingestionState": "partial", "discoveryState": "partial",
+        "candidateCount": 0, "deferredCount": 0,
+        # This opt-in is revalidated by the durable store against both the
+        # current B90 task contract and every unsettled ledger stage.
+        "allowDiscoveryUnknownPublication": True,
+        "_b76DeferredPublication": {
+            "run": empty_run, "scanId": scan_id, "createdAt": str(scan.get("createdAt") or _text(generated_at)),
+            "updatedAt": _text(generated_at), "delivery": delivery,
+            "includedCompanyCodes": set(), "terminalCoverage": terminal_coverage,
+            "finalStatus": "partial",
+        },
+    }
+    return TaskResult("completed", "delivery_ready", checkpoint)
 
 
 _B76_GLOBAL_RESEARCH_FAILURE_CODES = frozenset({
@@ -111,9 +288,10 @@ class VerificationGateway(Protocol):
 
 
 class _FrozenDiscoverySource:
-    """Coverage identity for a recovery that must never touch TuShare again."""
+    """Coverage identity for a recovery that must never fetch a live source."""
 
-    coverage = TuShareMajorNewsAdapter.coverage
+    def __init__(self, coverage: SourceCoverage) -> None:
+        self.coverage = coverage
 
     def fetch_incremental(self, _request):
         raise PipelineError("冻结恢复不得重新采集来源", code="resume_source_forbidden")
@@ -276,7 +454,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         a trusted content channel: passing it through wholesale would let an
         adapter put a second copy of the article under a harmless-looking key.
         """
-        allowed = ("title", "canonicalUrl", "url", "sourceUrl", "source", "publisher", "provider")
+        allowed = ("title", "originalTitle", "contentKind", "sourceKind", "canonicalUrl",
+                   "url", "sourceUrl", "source", "publisher", "provider")
         card: dict[str, str] = {}
         for key in allowed:
             value = metadata.get(key)
@@ -407,10 +586,31 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     for value in node: collect(value)
             collect(payload)
             profile_text = json.dumps(profiles, ensure_ascii=False, sort_keys=True)
+            content_sha256 = sha256(content.encode()).hexdigest()
+            profile_sha256 = sha256(profile_text.encode()).hexdigest()
             record.update(inputCharacters=len(content), profileCharacters=len(profile_text), profileCount=len(profiles))
             with write_connection(binding[0]) as conn:
-                attempt = conn.execute("SELECT coalesce(max(attempt),0)+1 FROM k10_v2_stage_input_usage WHERE task_id=? AND operation=? AND item_key=?", audit).fetchone()[0]
-                conn.execute("INSERT INTO k10_v2_stage_input_usage VALUES (?,?,?,?,?,?,?,?,?)", (*audit, attempt, len(content), len(profile_text), len(profiles), sha256(content.encode()).hexdigest(), sha256(profile_text.encode()).hexdigest()))
+                # A local receipt replay has no new provider request. If its
+                # original input audit committed before a later checkpoint
+                # write met SQLite contention, retain that single audit row;
+                # if the audit was the contended write, this replay supplies
+                # the missing row. Fresh provider calls still receive their
+                # own attempt row even when their rendered input matches.
+                existing_replay_audit = (conn.execute(
+                    "SELECT 1 FROM k10_v2_stage_input_usage WHERE task_id=? AND operation=? AND item_key=? "
+                    "AND input_sha256=? AND profile_sha256=? LIMIT 1",
+                    (*audit, content_sha256, profile_sha256),
+                ).fetchone() is not None) if getattr(result, "local_reuse", False) else False
+                if not existing_replay_audit:
+                    attempt = conn.execute(
+                        "SELECT coalesce(max(attempt),0)+1 FROM k10_v2_stage_input_usage "
+                        "WHERE task_id=? AND operation=? AND item_key=?", audit,
+                    ).fetchone()[0]
+                    conn.execute(
+                        "INSERT INTO k10_v2_stage_input_usage VALUES (?,?,?,?,?,?,?,?,?)",
+                        (*audit, attempt, len(content), len(profile_text), len(profiles),
+                         content_sha256, profile_sha256),
+                    )
         self.usage_records.append(record)
         self._thread_usage.last = record
         return result
@@ -464,11 +664,14 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             # It has no task execution policy because it cannot create work;
             # use only the explicit frozen snapshot contract, never a default.
             revision = snapshot.prompt_contract_revision if isinstance(snapshot, ResearchSnapshot) else None
-            if revision in {"k10-investigation-v1", "k10-investigation-v2", RESEARCH_ROUND_CONTRACT}:
+            if revision in {"k10-investigation-v1", "k10-investigation-v2",
+                            B78_RESEARCH_ROUND_CONTRACT, RESEARCH_ROUND_CONTRACT,
+                            B92_RESEARCH_ROUND_CONTRACT}:
                 return revision
             raise PipelineError("发现执行包未绑定", code="execution_policy_missing")
         revision = policy.get("investigationPromptContractRevision") if isinstance(policy, Mapping) else None
-        if revision not in {"k10-investigation-v1", "k10-investigation-v2"}:
+        if revision not in {"k10-investigation-v1", "k10-investigation-v2", RESEARCH_ROUND_CONTRACT,
+                            B92_RESEARCH_ROUND_CONTRACT}:
             raise PipelineError("发现执行包研究提示词契约无效", code="execution_policy_invalid")
         return revision
 
@@ -615,6 +818,18 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                              "不要输出 claimId；枚举只能从示意所列值中选一个。"))
             operation += ("每个事件必须包含 canonicalKey、stageKey、eventState、headline、eventKind 非空字符串及 facts 对象。"
                           "facts 放该事件的当前事实和背景，不能为 null，不能因 claims 已列事实而省略 facts；没有额外事实时可用空对象。")
+        if (isinstance(self._execution_policy, Mapping)
+                and self._execution_policy.get("reportInputContract") == "k10-collected-input-3.6.1-b92"):
+            event_time = document.metadata.get("eventTime")
+            if isinstance(event_time, Mapping):
+                payload["publicationContext"]["eventTime"] = {
+                    key: event_time[key] for key in ("value", "precision", "basisRef") if key in event_time
+                }
+            operation += ("无标题快讯的 text 是原始完整正文，不补造来源标题；事件 headline 仅是本次理解的概括。"
+                          "合集、公告精选、快讯汇总须逐段识别独立子事项，不能因主标题无池内公司而整篇丢弃。"
+                          "每个子事项引用当前父文档的真实 revision 与正文位置；转载只算一份事实，"
+                          "不同阶段/条件/增量事实须保留为不同事件输入。发布时间、取得时间、事项时间不得互换；"
+                          "历史事实只作背景/反证，晨报新发现必须有隔夜真实时间依据。")
         binding = getattr(self, "_company_profiles_binding", None)
         if binding is not None:
             from .v2_profiles import retrieve_company_context
@@ -1048,24 +1263,65 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             model_options=self._model_options("companyComparison"),
         )
 
-    def prioritize(self, *, candidates: Sequence) -> Sequence[tuple[str, str]]:
-        rows = []
+    def prioritize(self, *, candidates: Sequence) -> Sequence[object]:
+        # A model instance is used for both live B90 work and exact replay of
+        # older frozen execution packs.  The latter's paid priority input and
+        # reply shape are part of its receipt identity: do not silently turn
+        # ``candidates`` into the B90 grouped-editor wire merely because the
+        # current source tree knows about B90.
+        policy = self._execution_policy
+        if (not isinstance(policy, Mapping)
+                or policy.get("investigationPromptContractRevision") not in {
+                    RESEARCH_ROUND_CONTRACT, B92_RESEARCH_ROUND_CONTRACT}):
+            rows = []
+            for candidate in candidates:
+                rows.append({"canonicalKey": candidate.event.canonical_key,
+                             "companyCode": candidate.mapping.company_code,
+                             "headline": candidate.event.headline,
+                             "eventState": candidate.event.event_state,
+                             "comparison": candidate.comparison.summary,
+                             "sourceRefs": [_ref_payload(ref) for ref in candidate.comparison.evidence_refs]})
+            raw = self._json(
+                operation="基于已有证据比较不同事件的公司注意力顺序；每家公司返回一个主导事件作为排序锚点，其他催化仍将保留；不输出分数或概率",
+                payload={"candidates": rows,
+                         "output": {"choices": [{"canonicalKey": "string", "companyCode": "string"}]}},
+                model_options=self._model_options("prioritize"),
+            )
+            choices = raw.get("choices")
+            if not isinstance(choices, list):
+                raise PipelineError("跨事件公司比较缺少 choices")
+            result: list[tuple[str, str]] = []
+            for choice in choices:
+                if (not isinstance(choice, Mapping) or not isinstance(choice.get("canonicalKey"), str)
+                        or not isinstance(choice.get("companyCode"), str)):
+                    raise PipelineError("跨事件公司比较结构不完整")
+                result.append((choice["canonicalKey"], choice["companyCode"]))
+            return tuple(result)
+
+        groups: dict[str, list[dict[str, Any]]] = {}
         for candidate in candidates:
-            rows.append({"canonicalKey": candidate.event.canonical_key, "companyCode": candidate.mapping.company_code,
-                         "headline": candidate.event.headline, "eventState": candidate.event.event_state,
-                         "comparison": candidate.comparison.summary,
-                         "sourceRefs": [_ref_payload(ref) for ref in candidate.comparison.evidence_refs]})
-        raw = self._json(operation="基于已有证据比较不同事件的公司注意力顺序；每家公司返回一个主导事件作为排序锚点，其他催化仍将保留；不输出分数或概率",
-                         payload={"candidates": rows, "output":{"choices":[{"canonicalKey":"string","companyCode":"string"}]}},
+            differences = candidate.comparison.differences
+            groups.setdefault(candidate.mapping.company_code, []).append({
+                "canonicalKey": candidate.event.canonical_key, "stageKey": candidate.event.stage_key,
+                "headline": candidate.event.headline, "eventState": candidate.event.event_state,
+                "analysisText": differences.get("analysisText", candidate.comparison.summary),
+                "evidenceDisclosure": differences.get("evidenceDisclosure"),
+                "sourceRefs": differences.get("sourceRefs", [_ref_payload(ref) for ref in candidate.comparison.evidence_refs]),
+            })
+        rows = [{"companyCode": company, "catalysts": catalysts}
+                for company, catalysts in sorted(groups.items())]
+        raw = self._json(operation="基于已有证据整理值得交付的公司与催化。输入中每家公司包含全部可考虑催化；只返回真正值得正式呈现的公司及每家公司保留的催化子集。可以省略公司、淘汰弱催化，也可以 choices=[] 表示今天没有推荐；不按覆盖率、分数或概率凑结果。不得引用不存在的 canonicalKey/stageKey。",
+                         payload={"companies": rows, "output":{"choices":[{"companyCode":"string","catalystKeys":[{"canonicalKey":"string","stageKey":"string"}]}]}},
                          model_options=self._model_options("prioritize"))
         choices = raw.get("choices")
         if not isinstance(choices, list):
             raise PipelineError("跨事件公司比较缺少 choices")
-        result = []
+        result: list[Mapping[str, Any]] = []
         for choice in choices:
-            if not isinstance(choice, Mapping) or not isinstance(choice.get("canonicalKey"), str) or not isinstance(choice.get("companyCode"), str):
+            if (not isinstance(choice, Mapping) or not isinstance(choice.get("companyCode"), str)
+                    or not isinstance(choice.get("catalystKeys"), list)):
                 raise PipelineError("跨事件公司比较结构不完整")
-            result.append((choice["canonicalKey"], choice["companyCode"]))
+            result.append({"companyCode": choice["companyCode"], "catalystKeys": list(choice["catalystKeys"])})
         return tuple(result)
 
 
@@ -1129,7 +1385,8 @@ class _CheckpointedDiscoveryModel:
 
     def _frozen_investigation_contract(self, snapshot: ResearchSnapshot) -> str:
         revision = self._policy.get("investigationPromptContractRevision") if isinstance(self._policy, Mapping) else None
-        if revision not in {"k10-investigation-v1", "k10-investigation-v2"}:
+        if revision not in {"k10-investigation-v1", "k10-investigation-v2", RESEARCH_ROUND_CONTRACT,
+                            B92_RESEARCH_ROUND_CONTRACT}:
             raise PipelineError("冻结研究提示词契约无效", code="execution_policy_invalid")
         if snapshot.prompt_contract_revision != revision:
             raise PipelineError("研究快照与冻结提示词契约不匹配", code="investigation_prompt_contract_mismatch")
@@ -1170,7 +1427,11 @@ class _CheckpointedDiscoveryModel:
             return None
         if (not isinstance(packet, Mapping) or saved_snapshot.task_id != self._task_id
                 or saved_snapshot.snapshot_id != snapshot.snapshot_id
-                or saved_snapshot.prompt_contract_revision not in {"k10-investigation-v1", "k10-investigation-v2"}):
+                or saved_snapshot.prompt_contract_revision not in {
+                    "k10-investigation-v1", "k10-investigation-v2",
+                    B78_RESEARCH_ROUND_CONTRACT, RESEARCH_ROUND_CONTRACT,
+                    B92_RESEARCH_ROUND_CONTRACT,
+                }):
             return None
         options_value = self._policy.get("modelOptions") if isinstance(self._policy, Mapping) else None
         base_options = options_value.get("investigation") if isinstance(options_value, Mapping) else None
@@ -1342,7 +1603,11 @@ class _CheckpointedDiscoveryModel:
         """
         contract_revision = self._policy.get("investigationPromptContractRevision")
         if (not isinstance(self._base, DeepSeekDiscoveryModel)
-                or contract_revision not in {"k10-investigation-v1", "k10-investigation-v2"}
+                or contract_revision not in {
+                    "k10-investigation-v1", "k10-investigation-v2",
+                    B78_RESEARCH_ROUND_CONTRACT, RESEARCH_ROUND_CONTRACT,
+                    B92_RESEARCH_ROUND_CONTRACT,
+                }
                 or (original_digest is not None and not re.fullmatch(r"[0-9a-f]{64}", original_digest))):
             return None
         from .metering import MeteredProvider
@@ -2026,6 +2291,14 @@ class _CheckpointedDiscoveryModel:
                         value = invoke_bound_finalization()
                 else:
                     value = invoke_bound_finalization()
+            except SqliteWriteBusy:
+                # A received provider reply may still be followed by this
+                # operation's durable input-usage audit.  SQLite contention at
+                # that local write is neither a rejected reply nor a semantic
+                # model failure: let the worker keep the same task identity,
+                # then replay the settled receipt and finish its missing audit
+                # without issuing another provider request.
+                raise
             except Exception as exc:
                 remember_validation(exc)
                 usage = current_usage()
@@ -2452,16 +2725,63 @@ class _CheckpointedDiscoveryModel:
                          invoke=lambda: self._base.classify_opportunity(event=event, verification=verification, mapping=mapping,
                                                                           comparison=comparison, previous=previous), encode=encode, decode=decode)
 
-    def prioritize(self, *, candidates: Sequence) -> Sequence[tuple[str, str]]:
-        item = {"candidates": [{"canonicalKey": row.event.canonical_key, "stageKey": row.event.stage_key,
-                                  "companyCode": row.mapping.company_code, "comparison": row.comparison.summary,
-                                  "evidenceRefs": self._refs(row.comparison.evidence_refs)} for row in candidates]}
-        def encode(value: Sequence[tuple[str, str]]) -> list[Any]:
-            return [{"canonicalKey": key, "companyCode": code} for key, code in value]
-        def decode(value: Mapping[str, Any] | list[Any]) -> tuple[tuple[str, str], ...]:
-            if not isinstance(value, list) or any(not isinstance(row, Mapping) or not isinstance(row.get("canonicalKey"), str) or not isinstance(row.get("companyCode"), str) for row in value):
+    def prioritize(self, *, candidates: Sequence) -> Sequence[object]:
+        # The priority checkpoint is a paid-operation recovery boundary.  B90
+        # must retain every catalyst the editor actually saw, rather than the
+        # old one-representative-per-company summary.  Historical B76/B78
+        # checkpoints keep their original immutable shape for receipt reuse.
+        if self._policy.get("investigationPromptContractRevision") in {
+                RESEARCH_ROUND_CONTRACT, B92_RESEARCH_ROUND_CONTRACT}:
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for row in candidates:
+                differences = row.comparison.differences
+                analysis_text = differences.get("analysisText")
+                source_refs = differences.get("sourceRefs")
+                if not isinstance(analysis_text, str) or not analysis_text.strip() or not isinstance(source_refs, list):
+                    raise PipelineError("B90 排序输入缺少已验证催化正文或来源", code="prioritize_input_invalid")
+                grouped.setdefault(row.mapping.company_code, []).append({
+                    "canonicalKey": row.event.canonical_key,
+                    "stageKey": row.event.stage_key,
+                    "headline": row.event.headline,
+                    "eventState": row.event.event_state,
+                    "analysisText": analysis_text,
+                    "sourceRefs": list(source_refs),
+                    "evidenceDisclosure": differences.get("evidenceDisclosure"),
+                })
+            item = {"companies": [
+                {"companyCode": company_code, "catalysts": catalysts}
+                for company_code, catalysts in sorted(grouped.items())
+            ]}
+        else:
+            item = {"candidates": [{"canonicalKey": row.event.canonical_key, "stageKey": row.event.stage_key,
+                                      "companyCode": row.mapping.company_code, "comparison": row.comparison.summary,
+                                      "evidenceRefs": self._refs(row.comparison.evidence_refs)} for row in candidates]}
+        def encode(value: Sequence[object]) -> list[Any]:
+            rows: list[dict[str, Any]] = []
+            for row in value:
+                if isinstance(row, Mapping):
+                    rows.append({"companyCode": row.get("companyCode"), "catalystKeys": list(row.get("catalystKeys", ()))})
+                elif isinstance(row, tuple) and len(row) == 2:
+                    # Historical checkpoint shape; recovery code interprets
+                    # it as its original all-catalyst anchor selection.
+                    rows.append({"canonicalKey": row[0], "companyCode": row[1]})
+                else:
+                    raise PipelineError("排序缓存无效", code="model_cache_corrupt")
+            return rows
+        def decode(value: Mapping[str, Any] | list[Any]) -> tuple[object, ...]:
+            if not isinstance(value, list):
                 raise PipelineError("排序缓存无效", code="model_cache_corrupt")
-            return tuple((row["canonicalKey"], row["companyCode"]) for row in value)
+            result: list[object] = []
+            for row in value:
+                if not isinstance(row, Mapping) or not isinstance(row.get("companyCode"), str):
+                    raise PipelineError("排序缓存无效", code="model_cache_corrupt")
+                if isinstance(row.get("catalystKeys"), list):
+                    result.append({"companyCode": row["companyCode"], "catalystKeys": list(row["catalystKeys"])})
+                elif isinstance(row.get("canonicalKey"), str):
+                    result.append((row["canonicalKey"], row["companyCode"]))
+                else:
+                    raise PipelineError("排序缓存无效", code="model_cache_corrupt")
+            return tuple(result)
         return self._run(operation="prioritize", stage="prioritize", item_key="global", item=item,
                          invoke=lambda: self._base.prioritize(candidates=candidates), encode=encode, decode=decode)
 
@@ -2519,7 +2839,8 @@ class SqliteCompanyMetadataProvider(CompanyMetadataProvider):
 def _docs_for_window(*, window: ScanWindow, db_path: Path, completed_at: datetime,
                      source_keys: Sequence[str], frozen_refs: Sequence[Mapping[str, Any]] = (),
                      frozen_snapshot: bool = False,
-                     current_refs: Sequence[Mapping[str, Any]] | None = None) -> tuple[DiscoveryDocument,...]:
+                     current_refs: Sequence[Mapping[str, Any]] | None = None,
+                     collected_input: bool = False) -> tuple[DiscoveryDocument,...]:
     # Publication time defines the report window.  Fetch time only establishes that a version
     # existed by this scan's actual completion, so delayed fetches are retained and later
     # corrections cannot rewrite this scan's input.
@@ -2530,13 +2851,23 @@ def _docs_for_window(*, window: ScanWindow, db_path: Path, completed_at: datetim
     else:
         rows = store.list_source_document_versions(cutoff_at=None, db_path=db_path, source_keys=source_keys)
     out=[]
+    loaded_refs: set[EvidenceRef] = set()
     for row in rows:
+        loaded_refs.add(EvidenceRef(row["documentId"], int(row["revision"])))
         try: published=datetime.fromisoformat(str(row["publishedAt"])) if row["publishedAt"] else None
         except ValueError: published=None
         try: fetched=datetime.fromisoformat(str(row["fetchedAt"]))
-        except ValueError: continue
-        if (row.get("publishedPrecision") == "exact" and published is not None and published.tzinfo is not None
-                and fetched.tzinfo is not None and fetched <= completed_at and window.contains(published)):
+        except ValueError:
+            if collected_input:
+                raise PipelineError("冻结采集资料的取得时间无效", code="collected_input_invalid")
+            continue
+        evening_collected = (collected_input and window.kind == "evening"
+                             and (published is None or published.tzinfo is None
+                                  or published < window.cutoff_at))
+        eligible = evening_collected or (
+            row.get("publishedPrecision") == "exact" and published is not None and published.tzinfo is not None
+            and fetched.tzinfo is not None and fetched <= completed_at and window.contains(published))
+        if eligible:
             out.append(DiscoveryDocument(document_id=row["documentId"], revision=int(row["revision"]),
                                          published_at=row["publishedAt"], fetched_at=row["fetchedAt"],
                                          original_text=row["originalText"], excerpt=row["excerpt"], metadata={**row["metadata"], "sourceKey": row["sourceKey"]}))
@@ -2547,7 +2878,7 @@ def _docs_for_window(*, window: ScanWindow, db_path: Path, completed_at: datetim
             if not isinstance(ref, Mapping) or not isinstance(ref.get("documentId"), str) or not isinstance(ref.get("revision"), int):
                 raise PipelineError("冻结发现输入包含无效资料引用，拒绝伪作原样重试")
             expected.add(EvidenceRef(ref["documentId"], ref["revision"]))
-        actual = {document.evidence_ref for document in documents}
+        actual = loaded_refs if collected_input else {document.evidence_ref for document in documents}
         if actual != expected:
             # A prior Build may have frozen targeted verification material.  Do not silently
             # drop it and claim this is the same retry, and never let it re-enter discovery.
@@ -2607,6 +2938,112 @@ def _frozen_input_sha256(coverage: Mapping[str, Any]) -> str | None:
     return sha256(json.dumps(refs, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _b92_terminal_document_refs(*, task_id: str, run: DiscoveryRun,
+                                input_refs: Sequence[Mapping[str, Any]],
+                                db_path: Path) -> list[dict[str, Any]]:
+    """Project only durably decided source versions for the next report."""
+    allowed = {(item["documentId"], item["revision"]) for item in input_refs
+               if isinstance(item, Mapping) and isinstance(item.get("documentId"), str)
+               and isinstance(item.get("revision"), int)}
+    triage = store.read_title_triage_items(task_id=task_id, db_path=db_path)
+    completed_understanding = {
+        row["itemKey"] for row in store.completed_execution_items(
+            task_id=task_id, item_kind="document", stage="understand", db_path=db_path)
+    }
+    troubled_events = {issue.canonical_key for issue in run.issues
+                       if isinstance(issue.canonical_key, str) and issue.canonical_key}
+    event_refs: dict[tuple[str, int], list[EventDraft]] = {}
+    for event in run.events:
+        for ref in event.source_refs:
+            event_refs.setdefault((ref.document_id, ref.revision), []).append(event)
+    terminal: set[tuple[str, int]] = set()
+    duplicates: list[tuple[tuple[str, int], tuple[str, int]]] = []
+    for item in triage:
+        key = (item["documentId"], item["revision"])
+        if key not in allowed:
+            continue
+        disposition = item["disposition"]
+        if disposition in {"not_selected", "no_value"}:
+            terminal.add(key)
+        elif disposition in {"merged", "exact_duplicate"}:
+            target = item.get("mergedRef")
+            if isinstance(target, Mapping):
+                duplicates.append((key, (target.get("documentId"), target.get("revision"))))
+        elif item.get("selectionRank") is not None:
+            binding = store.selected_body_binding(
+                task_id=task_id, parent_document_id=key[0], parent_revision=key[1], db_path=db_path)
+            body = binding.get("bodyRef") if isinstance(binding, Mapping) else None
+            effective = ((body.get("documentId"), body.get("revision"))
+                         if isinstance(body, Mapping) else key)
+            events = event_refs.get(effective, ())
+            if (f"{effective[0]}@{effective[1]}" in completed_understanding
+                    and all(event.canonical_key not in troubled_events for event in events)):
+                terminal.add(key)
+                # The selected directory remains the frozen admission ref,
+                # while its question-bound full body is a distinct durable
+                # version. Both received a terminal decision; otherwise the
+                # next evening would misread that already-decided body as a
+                # fresh collected development.
+                if body is not None:
+                    terminal.add(effective)
+    for key, representative in duplicates:
+        if representative in terminal:
+            terminal.add(key)
+    return [{"documentId": document_id, "revision": revision}
+            for document_id, revision in sorted(terminal)]
+
+
+def _b92_selected_body_documents(*, documents: Sequence[DiscoveryDocument], task_id: str,
+                                 db_path: Path, cutoff_at: datetime,
+                                 gateway: Jin10QuestionGateway,
+                                 leaseguard: Callable[[], None] | None,
+                                 clock: Callable[[], datetime]) -> tuple[tuple[DiscoveryDocument, ...],
+                                                                         dict[EvidenceRef, EvidenceRef],
+                                                                         list[dict[str, Any]]]:
+    """Hydrate selected directory entries without changing the frozen title set."""
+    result: list[DiscoveryDocument] = []
+    companions: dict[EvidenceRef, EvidenceRef] = {}
+    gaps: list[dict[str, Any]] = []
+    for parent in documents:
+        if parent.metadata.get("sourceKey") != "jin10-news" or parent.original_text:
+            result.append(parent)
+            continue
+        parent_ref = _ref_payload(parent.evidence_ref)
+        binding = store.selected_body_binding(task_id=task_id,
+            parent_document_id=parent.document_id, parent_revision=parent.revision, db_path=db_path)
+        if binding is None:
+            bundle = gateway.selected_body(document=parent, cutoff_at=cutoff_at)
+            if bundle.state == "pending":
+                raise DiscoveryUnderstandingIncomplete("已付费正文请求结果未知，保留同一任务恢复")
+            body = next((item for item in bundle.eligible_documents
+                         if item.document_id == parent.document_id
+                         and item.revision > parent.revision and item.original_text), None)
+            if body is None:
+                gaps.append({"documentRef": parent_ref, "reason": bundle.coverage.get("reason", "body_unavailable"),
+                             "state": bundle.coverage.get("state", "partial")})
+                continue
+            binding = store.bind_selected_body_revision(task_id=task_id,
+                parent_document_id=parent.document_id, parent_revision=parent.revision,
+                body_document_id=body.document_id, body_revision=body.revision,
+                question="已入选文章的完整正文是什么，目录摘要遗漏哪些限定条件或子事项？",
+                obtained_at=_text(clock()), db_path=db_path, leaseguard=leaseguard)
+        body_ref = binding.get("bodyRef") if isinstance(binding, Mapping) else None
+        if not isinstance(body_ref, Mapping):
+            raise PipelineError("入选正文绑定缺少真实版本", code="selected_body_binding_invalid")
+        rows = store.load_document_versions(refs=[body_ref], db_path=db_path,
+                                            source_keys=("jin10-news",))
+        if len(rows) != 1 or not rows[0].get("originalText"):
+            raise PipelineError("入选正文绑定版本不可读取", code="selected_body_binding_invalid")
+        row = rows[0]
+        body = DiscoveryDocument(row["documentId"], int(row["revision"]),
+            row.get("publishedAt"), row["fetchedAt"], row.get("originalText"),
+            row.get("excerpt"), {**row.get("metadata", {}), "sourceKey": row["sourceKey"],
+                                   "parentDirectoryRef": parent_ref})
+        result.append(body)
+        companions[body.evidence_ref] = parent.evidence_ref
+    return tuple(result), companions, gaps
+
+
 def _recovered_understanding(*, task_id: str, documents: Sequence[DiscoveryDocument], db_path: Path,
                              require_claims: bool = False) -> dict[EvidenceRef, tuple[EventDraft, ...]]:
     """Load only validated derivatives whose hash matches this scan's frozen revision."""
@@ -2656,8 +3093,8 @@ def _late_arrival_replay_seconds(*, configuration: Mapping[str, Any], source_key
     if len(matches) != 1:
         raise ValueError(f"来源 {source_key} 缺少唯一 lateArrivalReplaySeconds 配置")
     value = matches[0].get("lateArrivalReplaySeconds")
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(f"来源 {source_key} 的 lateArrivalReplaySeconds 必须是正整数")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"来源 {source_key} 的 lateArrivalReplaySeconds 必须是非负整数")
     return value
 
 
@@ -2672,11 +3109,20 @@ def _replay_window(*, nominal: ScanWindow, replay_seconds: int) -> ScanWindow:
                       start_inclusive=True, cutoff_inclusive=nominal.cutoff_inclusive)
 
 
-def _ingested_document_refs(ingestion: IngestionRun) -> list[dict[str, Any]]:
+def _ingested_document_refs(*, ingestion: IngestionRun, include_existing_current_parent_refs: bool = False) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     for outcome in ingestion.outcomes:
-        values = outcome.coverage.get("newDocumentRefs")
+        # A normal later scan must only receive newly persisted versions.
+        # Re-including every replayed ``documentRefs`` reopens material that
+        # an older scan has already researched and can rebill it.  B90 morning
+        # is the narrow exception: its own review-channel request can append a
+        # version moments before the sibling discovery request reaches it; the
+        # same frozen parent may therefore make that current request visible.
+        values = (outcome.coverage.get("documentRefs")
+                  if include_existing_current_parent_refs else outcome.coverage.get("newDocumentRefs"))
+        if not isinstance(values, list) and include_existing_current_parent_refs:
+            values = outcome.coverage.get("newDocumentRefs")
         if not isinstance(values, list):
             continue
         for ref in values:
@@ -2828,7 +3274,7 @@ def _snapshot_admission_matches(
     # completed understand checkpoint supplies one exact original EventDraft.
     # Do not pop keys from the event row and guess: stage/state/verification
     # and eventComparison were all legitimate source-fact names.
-    if snapshot.prompt_contract_revision not in {"k10-investigation-v1", RESEARCH_ROUND_CONTRACT}:
+    if snapshot.prompt_contract_revision not in {"k10-investigation-v1", B78_RESEARCH_ROUND_CONTRACT}:
         return False
     # B81 can merge two supporting body results into one research input.  Use
     # the runtime's one exact reassembler: it reads the frozen admission order
@@ -3071,6 +3517,52 @@ def _b76_ranking_input_for_run(*, run, coverage: Mapping[str, Any]) -> dict[str,
     """
     from .delivery import digest
 
+    all_candidates = (*run.candidates, *run.deferred, *run.background)
+    b90_candidates = [candidate for candidate in all_candidates
+                      if isinstance(candidate.comparison.differences, Mapping)
+                      and candidate.comparison.differences.get("recommendation") in {"recommend", "pending", "exclude"}]
+    if b90_candidates:
+        # The delivery manifest freezes the actual all-catalyst selection
+        # input.  It deliberately includes unselected catalysts in background:
+        # they were considered by the final editor, but never became a formal
+        # opportunity or sample.
+        grouped_b90: dict[str, list[dict[str, Any]]] = {}
+        seen_b90: set[tuple[str, str, str]] = set()
+        for candidate in b90_candidates:
+            key = (candidate.mapping.company_code, candidate.event.canonical_key, candidate.event.stage_key)
+            if key in seen_b90:
+                continue
+            seen_b90.add(key)
+            differences = candidate.comparison.differences
+            analysis_text = differences.get("analysisText")
+            source_refs = differences.get("sourceRefs")
+            if not isinstance(analysis_text, str) or not analysis_text.strip() or not isinstance(source_refs, list):
+                raise PipelineError("B90 冻结排序输入缺少催化正文或来源", code="prioritize_input_invalid")
+            grouped_b90.setdefault(candidate.mapping.company_code, []).append({
+                "canonicalKey": candidate.event.canonical_key,
+                "stageKey": candidate.event.stage_key,
+                "headline": candidate.event.headline,
+                "eventState": candidate.event.event_state,
+                "analysisText": analysis_text,
+                "sourceRefs": list(source_refs),
+                "evidenceDisclosure": differences.get("evidenceDisclosure"),
+                "mappingEvidenceRefs": [_ref_payload(ref) for ref in candidate.mapping.relation_evidence],
+                "comparisonEvidenceRefs": [_ref_payload(ref) for ref in candidate.comparison.evidence_refs],
+                "researchSnapshotId": candidate.comparison.research_snapshot_id,
+                "researchRevision": candidate.comparison.research_revision,
+            })
+        exclusions = coverage.get("researchDependencyExclusions")
+        return {
+            "version": "k10-priority-input-3.6.0-b90",
+            "companies": [
+                {"companyCode": company_code, "catalysts": catalysts}
+                for company_code, catalysts in sorted(grouped_b90.items())
+            ],
+            "dependencyExclusions": dict(exclusions) if isinstance(exclusions, Mapping) else {
+                "failedResearchUnitIds": [], "companyCodes": [], "companyCodesByResearchUnit": {},
+            },
+        }
+
     grouped: dict[str, list[Any]] = {}
     for candidate in (*run.candidates, *run.deferred):
         grouped.setdefault(candidate.mapping.company_code, []).append(candidate)
@@ -3121,6 +3613,70 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
     excluded_codes: set[str] = set()
     title_scope_unknown = False
     body_scope_unknown = False
+
+    # Source collection is an independently disclosed dependency.  A partial
+    # source cannot be silently upgraded to a complete recommendation report
+    # merely because another source supplied enough material to rank the
+    # surviving subset.  Keep the completed source's cards eligible while the
+    # exact failed/partial source remains a visible, bounded gap.
+    if coverage.get("ingestionState") == "partial":
+        outcomes = coverage.get("sourceOutcomes")
+        if not isinstance(outcomes, list):
+            raise PipelineError("来源 partial 缺少逐来源结果", code="source_coverage_missing")
+        for raw in outcomes:
+            if not isinstance(raw, Mapping):
+                raise PipelineError("来源 partial 结果无效", code="source_coverage_invalid")
+            source_key = raw.get("sourceKey")
+            complete = raw.get("complete")
+            if not isinstance(source_key, str) or not source_key:
+                raise PipelineError("来源 partial 缺少 sourceKey", code="source_coverage_invalid")
+            if complete is True:
+                continue
+            refs = _morning_refs(raw.get("documentRefs"))
+            errors = raw.get("errors")
+            error_code = (next((item for item in errors if isinstance(item, str) and item), None)
+                          if isinstance(errors, list) else None)
+            gaps.append(delivery_gap(
+                stage="ingestion", unit_kind="source", unit_id=source_key,
+                reason_code=error_code or "source_collection_partial",
+                message="该资讯来源未完整取得；其他来源已确认资料仍可读取。",
+                source_refs=refs, company_scope_known=False,
+            ))
+
+    if isinstance(coverage.get("collectedInput"), Mapping):
+        for raw in coverage["collectedInput"].get("blockedDocumentRefs", ()):
+            if not isinstance(raw, Mapping):
+                raise PipelineError("冻结未知外呼资料缺口无效", code="collected_input_boundary_invalid")
+            ref = _morning_refs([raw])
+            if len(ref) != 1:
+                raise PipelineError("冻结未知外呼资料引用无效", code="collected_input_boundary_invalid")
+            gaps.append(delivery_gap(
+                stage="ingestion", unit_kind="document",
+                unit_id=f"{ref[0]['documentId']}@{ref[0]['revision']}",
+                reason_code="prior_unknown_external_attempt",
+                message="此前资料的外部请求结果未知，当前报告没有重新付费处理该版本。",
+                source_refs=ref, company_scope_known=False,
+            ))
+        body_gaps = coverage.get("articleBodyGaps")
+        if body_gaps is not None and not isinstance(body_gaps, list):
+            raise PipelineError("入选文章正文缺口无效", code="selected_body_gap_invalid")
+        for raw in body_gaps or ():
+            if not isinstance(raw, Mapping) or not isinstance(raw.get("documentRef"), Mapping):
+                raise PipelineError("入选文章正文缺口无效", code="selected_body_gap_invalid")
+            refs = _morning_refs([raw["documentRef"]])
+            if len(refs) != 1:
+                raise PipelineError("入选文章正文引用无效", code="selected_body_gap_invalid")
+            codes = _title_scope_for_refs(task_id=task_id, refs=refs, db_path=db_path)
+            excluded_codes.update(codes)
+            if not codes:
+                body_scope_unknown = True
+            gaps.append(delivery_gap(
+                stage="understand", unit_kind="document",
+                unit_id=f"{refs[0]['documentId']}@{refs[0]['revision']}",
+                reason_code=str(raw.get("reason") or "article_body_unavailable"),
+                message="入选文章的正文未完整取得，相关公司不参与本轮聚合推荐。",
+                source_refs=refs, company_codes=sorted(codes), company_scope_known=bool(codes),
+            ))
 
     def recorded_research_dependency_codes(unit_id: str) -> set[str]:
         recorded = coverage.get("researchDependencyExclusions")
@@ -3545,12 +4101,30 @@ def _publish_scan(*, run, scan_id: str, kind: str, db_path: Path, created_at: st
         if morning_report_draft is not None:
             for items in morning_report_draft["groups"].values():
                 for item in items:
-                    update = item.get("content", {}).get("lifecycleUpdate")
-                    if update is not None:
+                    content = item.get("content") if isinstance(item.get("content"), Mapping) else {}
+                    updates = content.get("lifecycleUpdates")
+                    # Historical work items retained one proposal keyed to the
+                    # report item. B90 can cover several catalysts for a
+                    # company and records only explicitly named affected
+                    # opportunities, so retain that legacy form while making
+                    # the plural form the current publication boundary.
+                    if updates is None:
+                        legacy = content.get("lifecycleUpdate")
+                        updates = [] if legacy is None else [legacy]
+                    if not isinstance(updates, list):
+                        raise ValueError("晨间生命周期更新列表无效")
+                    allowed = content.get("affectedOpportunityIds")
+                    if allowed is None:
+                        allowed = [item.get("opportunityId")]
+                    if (not isinstance(allowed, list) or not allowed
+                            or any(not isinstance(value, str) or not value for value in allowed)
+                            or len(allowed) != len(set(allowed))):
+                        raise ValueError("晨间更新缺少受影响正式机会")
+                    for update in updates:
                         # Work items retain private, replayable proposals. Only
                         # this report transaction makes their lifecycle public.
                         if (not isinstance(update, Mapping)
-                                or update.get("opportunity_id") != item.get("opportunityId")
+                                or update.get("opportunity_id") not in allowed
                                 or update.get("content", {}).get("scanId") != scan_id):
                             raise ValueError("晨间更新与报告归属不一致")
                         store.append_opportunity_update_conn(conn, **dict(update))
@@ -3625,6 +4199,24 @@ def _morning_budget(configuration: Mapping[str, Any]) -> Mapping[str, Any] | Non
     return {"maxAttempts": policy["maxAttempts"]}
 
 
+def _b90_morning_parallelism(*, execution_profile: Mapping[str, Any]) -> tuple[int, int]:
+    """Split the one frozen deep-read budget between discovery and reviews.
+
+    A B90 morning must name at least two slots in its immutable execution
+    profile.  One share is never borrowed by discovery, so frozen-parent
+    companies keep progressing even during a large overnight discovery load;
+    together both shares are exactly ``deepReadConcurrency``.  This is a
+    scheduling split, not a strategy threshold or a new config default.
+    """
+    payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
+    discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+    capacity = discovery.get("deepReadConcurrency") if isinstance(discovery, Mapping) else None
+    if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 2:
+        raise PipelineError("B90 晨报共享深读并发必须在冻结配置中明确至少两个槽", code="morning_parallelism_invalid")
+    review_slots = max(1, capacity // 2)
+    return capacity - review_slots, review_slots
+
+
 def _morning_finalization_reserve(*, configuration: Mapping[str, Any],
                                   execution_profile: Mapping[str, Any]) -> timedelta:
     """Bound the last global ordering request from its frozen wire semantics.
@@ -3664,6 +4256,478 @@ def _morning_refs(value: Any) -> list[dict[str, Any]]:
     return [{"documentId": item["documentId"], "revision": item["revision"]}
             for item in value if isinstance(item, Mapping) and isinstance(item.get("documentId"), str)
             and item["documentId"] and isinstance(item.get("revision"), int) and not isinstance(item["revision"], bool)]
+
+
+def _dedupe_morning_refs(*values: Any) -> list[dict[str, Any]]:
+    """Keep visible evidence identities in first-seen order without a quota."""
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for value in values:
+        for ref in _morning_refs(value):
+            key = (ref["documentId"], ref["revision"])
+            if key not in seen:
+                seen.add(key)
+                refs.append(ref)
+    return refs
+
+
+def _b90_review_refs_by_target(*, morning_refs: Sequence[Mapping[str, Any]],
+                                targets: Sequence[Mapping[str, Any]], db_path: Path,
+                                ) -> dict[str, list[dict[str, Any]]]:
+    """Index shared overnight documents by the frozen company they actually mention.
+
+    The source fetch remains shared and complete for audit, but feeding its
+    whole market-wide body list into every company review both repeats content
+    and obscures what that company was actually checked against.  This is a
+    local, deterministic relevance boundary only: no score, count, or source
+    is discarded from the persisted review-source manifest.  A target with no
+    named material receives an empty shared set and may still ask its own
+    reason-bound independent question.
+    """
+    shared = _dedupe_morning_refs(morning_refs)
+    rows = store.load_document_versions(refs=shared, db_path=db_path)
+    document_text: dict[tuple[str, int], str] = {}
+    for row in rows:
+        document_id, revision = row.get("documentId"), row.get("revision")
+        if not isinstance(document_id, str) or not isinstance(revision, int):
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        title = metadata.get("title") if isinstance(metadata.get("title"), str) else ""
+        parts = (title, row.get("originalText"), row.get("excerpt"))
+        document_text[(document_id, revision)] = "\n".join(
+            part for part in parts if isinstance(part, str) and part
+        )
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for target in targets:
+        review_id = target.get("reviewId")
+        company_code = target.get("companyCode")
+        company_name = target.get("companyName")
+        if not isinstance(review_id, str) or not review_id or not isinstance(company_code, str) or not company_code:
+            continue
+        names = [company_code]
+        if isinstance(company_name, str) and company_name.strip():
+            names.append(company_name.strip())
+        indexed[review_id] = [
+            ref for ref in shared
+            if any(token in document_text.get((ref["documentId"], ref["revision"]), "") for token in names)
+        ]
+    return indexed
+
+
+def _b90_review_source_index(*, morning_refs: Sequence[Mapping[str, Any]],
+                             db_path: Path) -> list[dict[str, Any]]:
+    """Expose every shared overnight item by compact, durable identity.
+
+    A company name is useful for automatic preloading, but it is not a valid
+    relevance gate: an industry, upstream or product fact can refute one
+    frozen reason without spelling the company name.  Reviews therefore see
+    the current shared catalogue's exact document identity and relevance
+    clues, then choose which body to read locally in the existing work item.
+    A titleless flash needs its own short raw content here; a roundup needs
+    pointers to its individual paragraphs. Full articles stay local until read.
+    """
+    shared = _dedupe_morning_refs(morning_refs)
+    documents = store.load_document_versions(refs=shared, db_path=db_path)
+    index: list[dict[str, Any]] = []
+    for document in documents:
+        document_id, revision = document.get("documentId"), document.get("revision")
+        if not isinstance(document_id, str) or not document_id or isinstance(revision, bool) or not isinstance(revision, int):
+            continue
+        metadata = document.get("metadata") if isinstance(document.get("metadata"), Mapping) else {}
+        title = metadata.get("title") if isinstance(metadata.get("title"), str) else ""
+        source_key = document.get("sourceKey") if isinstance(document.get("sourceKey"), str) else ""
+        entry: dict[str, Any] = {
+            "documentId": document_id,
+            "revision": revision,
+            "title": title,
+            "publishedAt": document.get("publishedAt") if isinstance(document.get("publishedAt"), str) else None,
+            "sourceKey": source_key,
+        }
+        original = document.get("originalText")
+        roundup_title = any(token in title for token in (
+            "合集", "汇总", "公告精选", "公告速递", "公告一览", "公告集锦", "要闻精选",
+        ))
+        if source_key == "jin10-news" and not (isinstance(original, str) and original.strip()):
+            excerpt = document.get("excerpt")
+            if isinstance(excerpt, str) and excerpt.strip():
+                entry["contentCue"] = excerpt.strip()[:240]
+            if metadata.get("sourceKind") == "roundup" or roundup_title:
+                entry["itemCuesPending"] = True
+        if source_key == "tavily_verification":
+            excerpt = document.get("excerpt")
+            if isinstance(excerpt, str) and excerpt.strip():
+                entry["contentCue"] = excerpt.strip()[:240]
+        if source_key == "jin10-flash" and not title and isinstance(original, str) and original.strip():
+            # This is the actual flash content, not a synthetic title. The
+            # exact saved body is still available through the versioned read.
+            entry["contentCue"] = original.strip()[:600]
+            if len(original.strip()) > 600:
+                entry["cueTruncated"] = True
+        if source_key == "jin10-news" and isinstance(original, str) and original.strip():
+            import html
+            plain = html.unescape(re.sub(r"(?i)</?(?:p|div|br|li|h[1-6])\b[^>]*>", "\n", original))
+            numbered_items = re.findall(
+                r"(?m)(?:^|\n)\s*(?:[（(]?[一二三四五六七八九十\d]+[）).、]|[①②③④⑤⑥⑦⑧⑨⑩])", plain,
+            )
+            is_roundup = (metadata.get("sourceKind") == "roundup"
+                          or roundup_title
+                          or len(numbered_items) >= 2)
+            segments = [part.strip() for part in re.split(
+                r"\n+|(?=\s*(?:[（(]?[一二三四五六七八九十\d]+[）).、]|[①②③④⑤⑥⑦⑧⑨⑩]))", plain,
+            ) if part.strip()] if is_roundup else []
+            if len(segments) > 1:
+                entry["itemCues"] = [
+                    {"paragraph": position + 1, "text": segment[:180]}
+                    for position, segment in enumerate(segments)
+                ]
+        index.append(entry)
+    return index
+
+
+def _b90_find_local_source_index(*, db_path: Path, query: str, visible_at: str,
+                                 source_keys: Sequence[str], offset: int,
+                                 rowid_ceiling: int) -> tuple[list[dict[str, Any]], bool]:
+    """Locate exact pre-freeze local versions for one reason-bound question.
+
+    This query runs only after the review agent names a concrete missing fact.
+    A page contains locators, not another all-history model packet; subsequent
+    pages remain available through the returned cursor without an age gate.
+    """
+    if (not isinstance(query, str) or not query.strip() or len(query.strip()) > 80
+            or isinstance(offset, bool) or not isinstance(offset, int) or offset < 0
+            or isinstance(rowid_ceiling, bool) or not isinstance(rowid_ceiling, int) or rowid_ceiling < 0
+            or not source_keys or any(not isinstance(key, str) or not key for key in source_keys)):
+        raise ValueError("本地资料问题检索参数无效")
+    try:
+        frozen = datetime.fromisoformat(visible_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("本地资料冻结时间无效") from exc
+    if frozen.tzinfo is None:
+        raise ValueError("本地资料冻结时间无效")
+    keys = tuple(dict.fromkeys(source_keys))
+    needle = query.strip()
+    placeholders = ",".join("?" for _ in keys)
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            "SELECT v.document_id,v.revision FROM k10_source_document_versions v "
+            "JOIN k10_source_documents d ON d.document_id=v.document_id "
+            "WHERE d.source_key IN (" + placeholders + ") "
+            "AND v.rowid<=? AND julianday(v.fetched_at)<=julianday(?) AND julianday(v.created_at)<=julianday(?) "
+            "AND (instr(lower(COALESCE(v.original_text,'')),lower(?))>0 "
+            "OR instr(lower(COALESCE(v.excerpt,'')),lower(?))>0 "
+            "OR instr(lower(COALESCE(json_extract(v.metadata_json,'$.title'),'')),lower(?))>0) "
+            "AND NOT EXISTS (SELECT 1 FROM k10_source_document_versions newer "
+            "WHERE newer.document_id=v.document_id AND newer.revision>v.revision "
+            "AND newer.rowid<=? AND julianday(newer.fetched_at)<=julianday(?) "
+            "AND julianday(newer.created_at)<=julianday(?)) "
+            "ORDER BY julianday(v.fetched_at) DESC,v.document_id DESC,v.revision DESC LIMIT 21 OFFSET ?",
+            (*keys, rowid_ceiling, visible_at, visible_at, needle, needle, needle,
+             rowid_ceiling, visible_at, visible_at, offset),
+        ).fetchall()
+    refs = [{"documentId": row[0], "revision": row[1]} for row in rows[:20]]
+    entries = _b90_review_source_index(morning_refs=refs, db_path=db_path)
+    documents = store.load_document_versions(refs=refs, db_path=db_path)
+    by_ref = {(row["documentId"], row["revision"]): row for row in documents}
+    located: list[dict[str, Any]] = []
+    for entry in entries:
+        key = entry["documentId"], entry["revision"]
+        document = by_ref.get(key, {})
+        # The history lookup is a locator, not a second company-wide body
+        # packet. Show only the query's short matching context; exact body and
+        # roundup subitems require the Agent's versioned read action.
+        compact = {field: value for field, value in entry.items()
+                   if field not in {"itemCues", "contentCue", "cueTruncated"}}
+        text = next((part for part in (document.get("originalText"), document.get("excerpt"))
+                     if isinstance(part, str) and needle.casefold() in re.sub(r"\s+", " ", part).casefold()), None)
+        if isinstance(text, str):
+            plain = re.sub(r"\s+", " ", text).strip()
+            position = plain.casefold().find(needle.casefold())
+            start = max(0, position - 80)
+            snippet = plain[start:start + 240]
+            compact["contentCue"] = ("…" if start else "") + snippet + (
+                "…" if start + 240 < len(plain) else "")
+        located.append({**compact, "localHistory": True})
+    return located, len(rows) > 20
+
+
+def _b90_independent_review_evidence(*, parent: TaskContext, target: Mapping[str, Any],
+                                     configuration: Mapping[str, Any], gateway: TavilyEvidenceGateway | None,
+                                     cutoff_at: datetime,
+                                     action: Mapping[str, Any],
+                                     jin10_gateway: Jin10QuestionGateway | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Execute one review-agent-selected, question-bound evidence request.
+
+    The surrounding morning work item owns the agent loop.  This helper never
+    asks a planning model or chooses a query itself: it validates the agent's
+    one requested tool action against the immutable parent reasons, then uses
+    the normal evidence gateway.  A caller may return here repeatedly when a
+    prior useful tool result makes another question necessary; it stops only
+    on an agent conclusion, no new visible evidence, or the frozen deadline.
+    """
+    review_id = target.get("reviewId")
+    company_code = target.get("companyCode")
+    reasons = target.get("reasons")
+    if (not isinstance(review_id, str) or not review_id or not isinstance(company_code, str) or not company_code
+            or not isinstance(reasons, list) or not reasons):
+        return [], {"state": "partial", "reason": "formal_target_reference_missing", "reasonIds": []}
+    reason_ids = [row.get("opportunityId") for row in reasons
+                  if isinstance(row, Mapping) and isinstance(row.get("opportunityId"), str) and row["opportunityId"]]
+    if len(reason_ids) != len(reasons) or len(set(reason_ids)) != len(reason_ids):
+        return [], {"state": "partial", "reason": "formal_target_reference_missing", "reasonIds": reason_ids}
+    refs: list[dict[str, Any]] = []
+    seen_refs: set[tuple[str, int]] = set()
+    for reason in reasons:
+        if not isinstance(reason, Mapping):
+            return [], {"state": "partial", "reason": "formal_target_reference_missing", "reasonIds": reason_ids}
+        text = reason.get("analysisText")
+        if not isinstance(text, str) or not text.strip():
+            return [], {"state": "partial", "reason": "formal_target_analysis_missing", "reasonIds": reason_ids}
+        for ref in _morning_refs(reason.get("sourceRefs")):
+            key = (ref["documentId"], ref["revision"])
+            if key not in seen_refs:
+                seen_refs.add(key)
+                refs.append(ref)
+    if not refs:
+        return [], {"state": "partial", "reason": "formal_target_reference_missing", "reasonIds": reason_ids}
+    action_kind = action.get("action")
+    rationale = action.get("rationale")
+    if action_kind not in {"search", "extract", "read_article", "find_local"}:
+        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+    requested_source = action.get("source", "tavily") if action_kind == "search" else None
+    if action_kind == "search" and requested_source not in {"tavily", "jin10-flash", "jin10-news"}:
+        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+    # ``extract`` continues a search the same work item already requested.
+    # The agent names only a returned source identity; the runtime carries the
+    # exact earlier question privately rather than asking it to reconstruct a
+    # second search contract or invent a URL.
+    question_text = (action.get("question") if action_kind in {"search", "find_local"}
+                     else action.get("_independentQuestion") if action_kind == "extract"
+                     else "这篇已采集文章的完整正文有哪些会改变昨晚冻结理由的独立事项？")
+    query = action.get("query")
+    if (not isinstance(question_text, str) or not question_text.strip()
+            or (action_kind in {"search", "find_local"} and (
+                not isinstance(query, str) or not query.strip() or len(query.strip()) > 400))):
+        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+    if not isinstance(rationale, str) or not rationale.strip():
+        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+    if action_kind == "find_local":
+        profile = parent.execution_profile.get("payload") if isinstance(parent.execution_profile, Mapping) else None
+        discovery = profile.get("discovery") if isinstance(profile, Mapping) else None
+        source_keys = discovery.get("collectionSourceKeys") if isinstance(discovery, Mapping) else None
+        visible_at = target.get("localHistoryVisibleAt")
+        rowid_ceiling = target.get("localHistoryRowidCeiling")
+        offset = action.get("offset", 0)
+        if (not isinstance(source_keys, list) or not isinstance(visible_at, str)
+                or isinstance(rowid_ceiling, bool) or not isinstance(rowid_ceiling, int)
+                or not visible_at or not isinstance(query, str) or len(query.strip()) > 80):
+            return [], {"state": "partial", "reason": "local_history_boundary_unavailable", "reasonIds": reason_ids}
+        try:
+            entries, has_more = _b90_find_local_source_index(
+                db_path=parent.db_path, query=query, visible_at=visible_at,
+                # Previous question-bound Tavily receipts are also local
+                # evidence after the fresh B92 start, even though Tavily is
+                # deliberately absent from routine collection sources.
+                source_keys=[*source_keys, "tavily_verification"], offset=offset,
+                rowid_ceiling=rowid_ceiling,
+            )
+        except (ValueError, sqlite3.Error):
+            return [], {"state": "partial", "reason": "local_history_lookup_invalid", "reasonIds": reason_ids}
+        return [], {"state": "complete" if entries else "partial",
+                    "reason": "local_history_locators" if entries else "local_history_no_match",
+                    "reasonIds": reason_ids, "question": question_text.strip(),
+                    "query": query.strip(), "catalogueEntries": entries,
+                    "hasMore": has_more, "nextOffset": offset + len(entries) if has_more else None,
+                    "agentDecision": "find_local", "absenceProven": False}
+    stable = sha256((str(review_id) + "\x1f" + "\x1f".join(reason_ids)).encode("utf-8")).hexdigest()[:24]
+    question_id = "morning_question_" + stable
+    question = {
+        "questionId": question_id,
+        "question": question_text.strip(),
+        # An opportunity is a published window, not a research claim.  Keep
+        # parentReasonIds in the scope audit only; no type laundering here.
+        "claimIds": [],
+        "companyCodes": [company_code],
+        "supportCondition": "独立资料支持冻结理由仍可继续观察。",
+        "refuteCondition": "隔夜独立资料直接否定任一冻结理由或显示重大风险。",
+        "missingEvidence": "需要与冻结公司和原理由有关的独立资料。",
+    }
+    projection = {key: question[key] for key in (
+        "questionId", "question", "claimIds", "companyCodes", "supportCondition", "refuteCondition", "missingEvidence",
+    )}
+    scope = {
+        "questionId": question_id,
+        "claimIds": [],
+        "companyCodes": [company_code],
+        "questionSha256": sha256(json.dumps(projection, ensure_ascii=False, sort_keys=True,
+                                               separators=(",", ":")).encode()).hexdigest(),
+        "parentReviewId": review_id,
+        "parentReasonIds": reason_ids,
+    }
+    scope["scopeSha256"] = sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True,
+                                                separators=(",", ":")).encode()).hexdigest()
+    path = {
+        "questionId": question_id,
+        "pathId": "morning_path_" + stable,
+        "query": query.strip() if isinstance(query, str) else "",
+        "intent": "核验前一晚冻结理由的隔夜反证与重大变化",
+        "newPathReason": rationale.strip(),
+        "expectedInformationGain": "确认或否定冻结理由是否仍成立。",
+        "expectedJudgmentChange": "仅在独立资料直接支持时改变理由状态。",
+        "purposeKind": "counterevidence",
+        "targetRefs": [{"kind": "company", "companyCode": company_code}],
+        "questionScope": scope,
+    }
+    event = EventDraft(
+        canonical_key="morning-review:" + review_id,
+        stage_key="independent-review",
+        event_state="frozen-parent",
+        headline=f"{company_code} 前一晚冻结理由晨间独立核验",
+        event_kind="morning_review",
+        facts={"parentReviewId": review_id, "companyCode": company_code, "parentReasonIds": reason_ids},
+        source_refs=tuple(EvidenceRef(ref["documentId"], ref["revision"]) for ref in refs),
+    )
+    # The ledger identity carries the frozen work-item ID.  A timed-out search
+    # can consequently be isolated to this review only; it can never become a
+    # stage-wide exemption for another company's paid search.
+    try:
+        if action_kind in {"extract", "read_article"}:
+            source_ref = action.get("sourceRef")
+            if (not isinstance(source_ref, Mapping) or not isinstance(source_ref.get("documentId"), str)
+                    or not source_ref["documentId"] or isinstance(source_ref.get("revision"), bool)
+                    or not isinstance(source_ref.get("revision"), int) or source_ref["revision"] < 1):
+                return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+            selected_ref = {"documentId": source_ref["documentId"], "revision": source_ref["revision"]}
+            if action_kind == "extract":
+                returned = _morning_refs(action.get("_returnedIndependentRefs"))
+                if returned is None or selected_ref not in returned:
+                    return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+            else:
+                indexed = _morning_refs(target.get("morningSourceIndex"))
+                if indexed is None:
+                    return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+                if selected_ref not in indexed:
+                    # A later find_local action can expose a pre-freeze
+                    # article directory that was intentionally absent from
+                    # the overnight catalogue. Re-run that precise locator
+                    # under the immutable time/rowid fence before get_news.
+                    locator = action.get("_localHistoryLocator")
+                    profile = parent.execution_profile.get("payload") if isinstance(parent.execution_profile, Mapping) else None
+                    discovery = profile.get("discovery") if isinstance(profile, Mapping) else None
+                    source_keys = discovery.get("collectionSourceKeys") if isinstance(discovery, Mapping) else None
+                    visible_at = target.get("localHistoryVisibleAt")
+                    rowid_ceiling = target.get("localHistoryRowidCeiling")
+                    if (not isinstance(locator, Mapping) or not isinstance(source_keys, list)
+                            or not isinstance(visible_at, str) or not visible_at
+                            or isinstance(rowid_ceiling, bool) or not isinstance(rowid_ceiling, int)):
+                        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+                    try:
+                        located, _has_more = _b90_find_local_source_index(
+                            db_path=parent.db_path, query=locator.get("query"),
+                            visible_at=visible_at, source_keys=[*source_keys, "tavily_verification"],
+                            offset=locator.get("offset"), rowid_ceiling=rowid_ceiling,
+                        )
+                    except (ValueError, sqlite3.Error):
+                        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+                    if selected_ref not in _morning_refs(located):
+                        return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+            selected = store.load_document_versions(refs=[selected_ref], db_path=parent.db_path)
+            if len(selected) != 1:
+                return [], {"state": "partial", "reason": "independent_document_missing", "reasonIds": reason_ids}
+            source = selected[0]
+            if action_kind == "read_article" and (source.get("sourceKey") != "jin10-news"
+                                                  or source.get("originalText")):
+                return [], {"state": "partial", "reason": "independent_request_invalid", "reasonIds": reason_ids}
+            document = DiscoveryDocument(
+                selected_ref["documentId"], selected_ref["revision"], source.get("publishedAt"), source.get("fetchedAt"),
+                source.get("originalText"), source.get("excerpt"),
+                {**(source.get("metadata") if isinstance(source.get("metadata"), Mapping) else {}),
+                 "sourceKey": source.get("sourceKey")},
+            )
+            request = {
+                "questionId": question_id,
+                "sourceRef": selected_ref,
+                "reasonExcerptInsufficient": rationale.strip(),
+                "expectedJudgmentChange": "让本次晨间复核可读取独立资料原文并判断是否改变冻结理由。",
+            }
+            selected_gateway = (jin10_gateway if source.get("sourceKey") == "jin10-news" else gateway)
+            if selected_gateway is None:
+                return [], {"state": "partial", "reason": "independent_verification_unavailable", "reasonIds": reason_ids}
+            if selected_gateway is gateway:
+                selected_gateway = gateway.for_checkpoint_namespace("morning-review-" + review_id)
+            from types import SimpleNamespace
+            bundle = selected_gateway.fetch_fulltext(
+                event=event, document=document, question=question, request=request, cutoff_at=cutoff_at,
+            ) if selected_gateway is not jin10_gateway else selected_gateway.fetch_fulltext(
+                event=event, document=document,
+                question=SimpleNamespace(question=question_text.strip(), question_id=question_id),
+                request=SimpleNamespace(reason_excerpt_insufficient=rationale.strip()), cutoff_at=cutoff_at,
+            )
+        else:
+            if requested_source == "tavily":
+                if gateway is None:
+                    return [], {"state": "partial", "reason": "independent_verification_unavailable", "reasonIds": reason_ids}
+                scoped_gateway = gateway.for_checkpoint_namespace("morning-review-" + review_id)
+                bundle = scoped_gateway.fetch(event=event, retrieved_at=parent.clock(), cutoff_at=cutoff_at,
+                                               question=question, query_path=path)
+            else:
+                if jin10_gateway is None:
+                    return [], {"state": "partial", "reason": "jin10_not_configured", "reasonIds": reason_ids}
+                from types import SimpleNamespace
+                bundle = jin10_gateway.fetch(
+                    event=event, retrieved_at=parent.clock(), cutoff_at=cutoff_at,
+                    question=SimpleNamespace(question=question_text.strip(), question_id=question_id),
+                    query_path=SimpleNamespace(target_source=requested_source, query=query.strip(),
+                                               intent=path["intent"]),
+                )
+    except store.K10Conflict:
+        raise
+    except ProviderThrottleYield:
+        return [], {"state": "partial", "reason": "independent_verification_pending", "reasonIds": reason_ids,
+                    "questionId": question_id, "pathId": path["pathId"]}
+    except Exception as exc:
+        logging.getLogger(__name__).warning("B90 morning independent verification %s failed: %s", action_kind, type(exc).__name__)
+        return [], {"state": "partial", "reason": "independent_verification_unavailable", "reasonIds": reason_ids,
+                    "questionId": question_id, "pathId": path["pathId"]}
+    independent = [_ref_payload(document.evidence_ref) for document in bundle.eligible_documents]
+    tool_state = bundle.coverage.get("state")
+    state = ("complete" if bundle.state == "available" and independent
+             and tool_state in {"available", "complete", "completed"} else "partial")
+    coverage = {
+        "state": state,
+        "reason": "ok" if state == "complete" else str(bundle.coverage.get("reason") or "independent_verification_pending"),
+        "toolState": tool_state,
+        **({"pagesFetched": bundle.coverage["pagesFetched"]}
+           if isinstance(bundle.coverage.get("pagesFetched"), int) else {}),
+        **({"truncated": bundle.coverage["truncated"]}
+           if isinstance(bundle.coverage.get("truncated"), bool) else {}),
+        "reasonIds": reason_ids,
+        "questionId": question_id,
+        "pathId": path["pathId"],
+        "documentRefs": independent,
+        "agentDecision": action_kind,
+        **({"source": requested_source} if action_kind == "search" else {}),
+        **({"question": question_text.strip()} if action_kind in {"search", "read_article"} else {}),
+    }
+    return independent, coverage
+
+
+def _b90_morning_review_new_external_guard(*, parent: TaskContext,
+                                           configuration: Mapping[str, Any]) -> None:
+    """Fence only a *new* review search once final publication time begins.
+
+    ``TavilyEvidenceGateway`` invokes this from the transactional claim path
+    only before a new paid wire.  Existing checkpoint results and exact paid
+    response receipts remain locally readable after that boundary, which is
+    necessary to finish a recovered work item without rebilling it.
+    """
+    parent.require_lease()
+    if parent.execution_deadline_at is None:
+        return
+    reserve = _morning_finalization_reserve(configuration=configuration,
+                                             execution_profile=parent.execution_profile or {})
+    if parent.clock() >= parent.execution_deadline_at - reserve:
+        raise ProviderThrottleYield(0)
 
 
 def _morning_fallback_item(*, scan_id: str, target: Mapping[str, Any], cutoff_at: str,
@@ -3721,14 +4785,26 @@ def _morning_report_item_with_safe_error(item: Mapping[str, Any], *, safe_error_
 
 def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, Any]], configuration: Mapping[str, Any],
                          config_id: str, config_revision: int, source_status: str, now: datetime,
-                         report_items: list[dict[str, Any]] | None = None, scan_id: str | None = None) -> tuple[str, list[str]]:
-    """Execute frozen reviews as parent-owned work items, never child tasks."""
+                         report_items: list[dict[str, Any]] | None = None, scan_id: str | None = None,
+                         independent_gateway: TavilyEvidenceGateway | None = None,
+                         jin10_gateway: Jin10QuestionGateway | None = None,
+                         cutoff_at: datetime | None = None, review_concurrency: int = 1) -> tuple[str, list[str]]:
+    """Run frozen parent reviews with bounded, fair company admission.
+
+    B90 keeps the shared discovery/review capacity in the caller.  This worker
+    queue only owns that review share: every company is admitted in frozen card
+    order, completion is durably projected before the next company replaces it,
+    and no company can occupy more than one slot.  Historical callers retain a
+    single review slot and therefore their old main-thread execution shape.
+    """
     from .morning_runtime import morning_review_handler
     from .v2_store import (ensure_morning_review_work_item, finish_morning_review_work_item,
                            read_morning_review_work_item)
 
     if not matches:
         return "completed", []
+    if isinstance(review_concurrency, bool) or not isinstance(review_concurrency, int) or review_concurrency < 1:
+        return "not_configured", []
     budget = _morning_budget(configuration)
     if budget is None:
         return "not_configured", []
@@ -3738,94 +4814,174 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
         timeout = configuration.get("taskPolicies", {}).get("morning", {}).get("timeoutSeconds")
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
             return "not_configured", []
-        # Metered morning work items have one wire attempt and no child retry.
-        # Keep the frozen finalization envelope unspent for report assembly and
-        # atomic submission instead of offering that time to another review.
         finalization_reserve = _morning_finalization_reserve(
             configuration=configuration, execution_profile=parent.execution_profile or {})
         closeout_reserve = timedelta(seconds=timeout) + finalization_reserve
         response_deadline_at = parent.execution_deadline_at - finalization_reserve
     observations = {row["candidateId"]: row["observationId"] for row in store.list_observations(db_path=parent.db_path)}
+    review_cutoff = cutoff_at
+    if review_cutoff is None:
+        try:
+            review_cutoff = datetime.fromisoformat(parent.input_cutoff_at.replace("Z", "+00:00"))
+        except ValueError:
+            return "not_configured", []
+    if review_cutoff.tzinfo is None:
+        return "not_configured", []
+
     work_item_ids: list[str] = []
     outcomes: list[str] = []
+    prepared: list[dict[str, Any]] = []
+
     for match in matches:
         parent.require_lease()
-        candidate = store.get_candidate(candidate_id=str(match["candidateId"]), db_path=parent.db_path)
+        reasons = list(match.get("reasons", ())) if match.get("b90Parent") is True else []
+        reason_candidate_ids = [row.get("candidateId") for row in reasons if isinstance(row, Mapping)]
+        if (reasons and (len(reason_candidate_ids) != len(reasons)
+                        or any(not isinstance(value, str) or not value for value in reason_candidate_ids))):
+            outcomes.append("failed")
+            continue
+        candidate_ids = list(dict.fromkeys(reason_candidate_ids)) if reasons else [match.get("candidateId")]
+        candidates = [
+            store.get_candidate(candidate_id=str(candidate_id), db_path=parent.db_path)
+            for candidate_id in candidate_ids if isinstance(candidate_id, str) and candidate_id
+        ]
+        if len(candidates) != len(candidate_ids) or any(candidate is None for candidate in candidates):
+            outcomes.append("failed")
+            continue
+        candidate = next((row for row in candidates if row and row["candidateId"] == match.get("candidateId")), candidates[0])
         if candidate is None:
             outcomes.append("failed")
             continue
+        scans = [store.get_scan(scan_id=row["scanId"], db_path=parent.db_path) for row in candidates if row]
         scan = store.get_scan(scan_id=candidate["scanId"], db_path=parent.db_path)
-        if scan is None:
+        if scan is None or any(item is None for item in scans):
             outcomes.append("failed")
             continue
         refs = _morning_refs(match.get("morningEvidenceRefs"))
-        identity = json.dumps({"candidateId": candidate["candidateId"], "eventId": match["eventId"], "cutoff": parent.input_cutoff_at, "refs": refs}, ensure_ascii=False, sort_keys=True)
+        independent_refs = _morning_refs(match.get("independentVerificationRefs"))
+        independent_coverage: Mapping[str, Any] | None = None
+        target_source_status = source_status
+        independent_evidence_fetch: Callable[[Mapping[str, Any]], tuple[list[dict[str, Any]], Mapping[str, Any]]] | None = None
+        if match.get("b90Parent") is True:
+            reason_ids = [row.get("opportunityId") for row in reasons
+                          if isinstance(row, Mapping) and isinstance(row.get("opportunityId"), str)]
+            frozen_execution = parent.execution_profile.get("payload") if isinstance(parent.execution_profile, Mapping) else None
+            discovery_policy = frozen_execution.get("discovery") if isinstance(frozen_execution, Mapping) else None
+            local_question_contract = (isinstance(discovery_policy, Mapping) and
+                discovery_policy.get("reportInputContract") == "k10-collected-input-3.6.1-b92")
+            independent_coverage = ({
+                "state": "not_required", "reason": "local_evidence_sufficient", "reasonIds": reason_ids,
+            } if local_question_contract else {
+                "state": "partial", "reason": "independent_verification_pending", "reasonIds": reason_ids,
+            })
+            if not local_question_contract:
+                target_source_status = "partial"
+
+            def independent_evidence_fetch(action: Mapping[str, Any], *, _match=match) -> tuple[list[dict[str, Any]], Mapping[str, Any]]:
+                return _b90_independent_review_evidence(
+                    parent=parent, target=_match, configuration=configuration, gateway=independent_gateway,
+                    jin10_gateway=jin10_gateway,
+                    cutoff_at=review_cutoff, action=action,
+                )
+        identity = json.dumps({"candidateId": candidate["candidateId"], "eventId": match.get("eventId"),
+                               "cutoff": parent.input_cutoff_at, "refs": refs}, ensure_ascii=False, sort_keys=True)
         digest = sha256(identity.encode()).hexdigest()[:32]
-        work_item_id = f"morning_review_{digest}"
+        b90_review_id = match.get("reviewId") if match.get("b90Parent") is True else None
+        work_item_id = b90_review_id if isinstance(b90_review_id, str) and b90_review_id else f"morning_review_{digest}"
         original_cutoff = store.candidate_publication_cutoff(candidate_id=candidate["candidateId"], db_path=parent.db_path)
         if original_cutoff is None:
             outcomes.append("failed")
             continue
-        payload = {"parentScanId": scan_id, "candidateId": candidate["candidateId"], "observationId": observations.get(candidate["candidateId"]),
-                   "originalCutoffAt": original_cutoff, "originalNewsCutoffAt": scan["cutoffAt"], "morningEvidenceRefs": refs,
-                   "independentVerificationRefs": _morning_refs(match.get("independentVerificationRefs")),
+        payload = {"parentScanId": scan_id, "candidateId": candidate["candidateId"],
+                   "observationId": observations.get(candidate["candidateId"]),
+                   "originalCutoffAt": original_cutoff, "originalNewsCutoffAt": scan["cutoffAt"],
+                   "morningEvidenceRefs": refs, "independentVerificationRefs": independent_refs,
+                   # B91 keeps the market-wide material compact until the
+                   # company review chooses an exact persisted original.  The
+                   # initial body packet above remains company-local, while
+                   # this identity-only index preserves indirect reasoning
+                   # paths (for example an upstream notice that names no
+                   # listed company) without fanning every body into every
+                   # review.
+                   "morningSourceIndex": list(match.get("morningSourceIndex", ())),
+                   **({"localHistoryVisibleAt": match["localHistoryVisibleAt"]}
+                      if isinstance(match.get("localHistoryVisibleAt"), str) else {}),
+                   **({"localHistoryRowidCeiling": match["localHistoryRowidCeiling"]}
+                      if isinstance(match.get("localHistoryRowidCeiling"), int)
+                      and not isinstance(match.get("localHistoryRowidCeiling"), bool) else {}),
                    "companyWindowId": match.get("companyWindowId"), "displayRank": match.get("displayRank"),
                    "selectionState": match.get("selectionState"), "lifecycle": match.get("lifecycle"),
-                   "isNew": bool(match.get("isNew")), "sourceStatus": source_status,
+                   "isNew": bool(match.get("isNew")), "sourceStatus": target_source_status,
+                   "morningSourceStatus": source_status,
+                   **({"independentCoverage": dict(independent_coverage)} if independent_coverage is not None else {}),
+                   "b90ReviewId": b90_review_id, "parentReasons": reasons,
+                   "parentReasonCandidateIds": list(candidate_ids) if reasons else [],
                    "configId": config_id, "configRevision": config_revision,
                    "runtimeContract": runtime_contract(), "workItemId": work_item_id}
         input_sha256 = sha256(json.dumps({"payload": payload, "cutoff": parent.input_cutoff_at,
                                           "configuration": configuration}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-        parent.require_lease()
         ensure_morning_review_work_item(scan_id=str(scan_id), work_item_id=work_item_id,
                                         input_sha256=input_sha256, created_at=_text(now), db_path=parent.db_path)
         work_item_ids.append(work_item_id)
         stored = read_morning_review_work_item(scan_id=str(scan_id), work_item_id=work_item_id,
                                                 input_sha256=input_sha256, db_path=parent.db_path)
         if stored["status"] in {"completed", "failed", "not_configured"}:
-            # A parent retry may happen after the review was durably settled but
-            # before the parent/report transaction committed.  Reuse the exact
-            # terminal projection; a retry must never issue a second model call
-            # to turn a known 429/402 or result into a different report item.
             stored_item = stored["reportItem"]
             if not isinstance(stored_item, Mapping):
                 raise ValueError("晨间终态工作项缺少冻结报告投影")
             outcomes.append(str(stored["status"]))
             if report_items is not None:
                 report_items.append(_morning_report_item_with_safe_error(
-                    stored_item, safe_error_code=(
-                        stored["safeErrorCode"] if isinstance(stored.get("safeErrorCode"), str) else None
-                    ), work_item_id=work_item_id,
+                    stored_item, safe_error_code=(stored["safeErrorCode"] if isinstance(stored.get("safeErrorCode"), str) else None),
+                    work_item_id=work_item_id,
                 ))
             continue
         if stored["status"] != "running":
             raise ValueError("晨间父任务工作项状态无效")
-        review_context = replace(parent, task=replace(parent.task, payload=payload))
+        prepared.append({"match": match, "payload": payload, "workItemId": work_item_id,
+                         "targetSourceStatus": target_source_status, "independentRefs": independent_refs,
+                         "independentEvidenceFetch": independent_evidence_fetch})
+
+    response_fence = Event()
+
+    def execute(prepared_item: Mapping[str, Any]) -> TaskResult:
+        review_context = replace(parent, task=replace(parent.task, payload=prepared_item["payload"]))
         try:
-            review = morning_review_handler(review_context, clock=lambda: _text(parent.clock()),
-                                            closeout_reserve=closeout_reserve,
-                                            response_deadline_at=response_deadline_at)
+            kwargs: dict[str, Any] = {
+                "clock": lambda: _text(parent.clock()),
+                "closeout_reserve": closeout_reserve,
+                "response_deadline_at": response_deadline_at,
+                "response_fence": response_fence,
+                "independent_evidence_fetch": prepared_item["independentEvidenceFetch"],
+            }
+            return morning_review_handler(review_context, **kwargs)
         except store.K10Conflict:
             raise
+        except SqliteWriteBusy:
+            # A review helper can race a sibling's durable checkpoint write
+            # after a paid reply has already arrived.  Keep the same task on
+            # its receipt-recovery path; SQLite contention is not a review
+            # conclusion and must never be collapsed into a semantic failure.
+            raise
         except Exception as exc:
-            review = TaskResult("failed", "morning_review", error=f"晨间复核执行异常：{type(exc).__name__}")
+            return TaskResult("failed", "morning_review", error=f"晨间复核执行异常：{type(exc).__name__}")
+
+    def persist(prepared_item: Mapping[str, Any], review: TaskResult) -> None:
+        match = prepared_item["match"]
+        work_item_id = str(prepared_item["workItemId"])
         status = review.status if review.status in {"completed", "failed", "not_configured"} else "failed"
         result_item = review.checkpoint.get("reportItem") if isinstance(review.checkpoint, Mapping) else None
-        # A provider result without a renderable report item is not a completed
-        # review.  Persist the fallback against the parent work item so the
-        # public report can disclose exactly which formal opportunity remains
-        # unreviewed without recreating a child task.
         if status == "completed" and not isinstance(result_item, Mapping):
             status = "failed"
-        stored_item: dict[str, Any] | None
         if status == "completed" and isinstance(result_item, Mapping):
-            stored_item = dict(result_item)
+            stored_item: dict[str, Any] | None = dict(result_item)
         else:
             stored_item = _morning_fallback_item(
                 scan_id=parent.task.task_id, target=match, cutoff_at=parent.input_cutoff_at,
-                source_status=source_status, task_status="not_configured" if status == "not_configured" else "failed",
-                summary="晨间复核未完成，资料待核。",
-                is_new=bool(match.get("isNew")), independent_refs=match.get("independentVerificationRefs", ()),
+                source_status=str(prepared_item["targetSourceStatus"]),
+                task_status="not_configured" if status == "not_configured" else "failed",
+                summary="晨间复核未完成，资料待核。", is_new=bool(match.get("isNew")),
+                independent_refs=prepared_item["independentRefs"],
             )
         safe_error_code = _morning_review_safe_error_code(review)
         if isinstance(stored_item, Mapping):
@@ -3834,15 +4990,79 @@ def _run_morning_reviews(*, parent: TaskContext, matches: Sequence[Mapping[str, 
             )
         parent.require_lease()
         finish_morning_review_work_item(
-            scan_id=str(scan_id), work_item_id=work_item_id, status=status,
-            result=stored_item,
+            scan_id=str(scan_id), work_item_id=work_item_id, status=status, result=stored_item,
             safe_error_code=safe_error_code, updated_at=_text(now), db_path=parent.db_path,
         )
         outcomes.append(status)
         if report_items is not None and stored_item is not None:
             report_items.append(stored_item)
-    return ("completed" if all(value == "completed" for value in outcomes) else "partial"), work_item_ids
 
+    # The pre-B90 path has exactly one review slot. Keep it on the worker's
+    # main thread: its frozen response contract uses the process-local SIGALRM
+    # guard. Moving it to an otherwise unnecessary helper thread turns a
+    # proven response timeout into an ordinary provider failure that can
+    # incorrectly publish a partial report. B90 multi-slot reviews use the
+    # deadline-aware helper pool below; a B90 one-slot review share can still
+    # run beside its discovery thread without changing historical semantics.
+    executor: ThreadPoolExecutor | None = None
+    futures: dict[Future[TaskResult], Mapping[str, Any]] = {}
+    index = 0
+    detached = False
+    if review_concurrency == 1:
+        while index < len(prepared):
+            if response_deadline_at is not None and parent.clock() >= response_deadline_at:
+                response_fence.set()
+                for pending_item in prepared[index:]:
+                    persist(pending_item, TaskResult(
+                        "failed", "morning_closeout", {"safeErrorCode": "morning_closeout_reserve"},
+                        "为晨报提交保留时间，本项复核未启动，已完成内容保留",
+                    ))
+                break
+            prepared_item = prepared[index]
+            index += 1
+            persist(prepared_item, execute(prepared_item))
+        return ("completed" if outcomes and all(value == "completed" for value in outcomes) else "partial"), work_item_ids
+
+    # A frozen response deadline may be enforced in a worker thread by the
+    # HTTP layer's remaining-time timeout. We never wait beyond it here: a
+    # still-running worker owns only its exact ledger request and cannot append
+    # to a report that the parent has sealed as partial.
+    try:
+        executor = ThreadPoolExecutor(max_workers=review_concurrency, thread_name_prefix="k10-morning-review")
+        while index < len(prepared) or futures:
+            while index < len(prepared) and len(futures) < review_concurrency:
+                if response_deadline_at is not None and parent.clock() >= response_deadline_at:
+                    break
+                prepared_item = prepared[index]
+                index += 1
+                futures[executor.submit(execute, prepared_item)] = prepared_item
+            if not futures:
+                break
+            timeout = None
+            if response_deadline_at is not None:
+                timeout = max(0.0, (response_deadline_at - parent.clock()).total_seconds())
+            done, _ = wait(tuple(futures), timeout=timeout, return_when=FIRST_COMPLETED)
+            if not done:
+                detached = True
+                break
+            for future in done:
+                prepared_item = futures.pop(future)
+                persist(prepared_item, future.result())
+        if index < len(prepared) or futures:
+            # Do not start another paid call once the report's finalization
+            # envelope begins.  Running calls remain exactly ledger-unknown;
+            # their local report projection is a company-scoped gap.
+            response_fence.set()
+            pending = [*futures.values(), *prepared[index:]]
+            for prepared_item in pending:
+                review = TaskResult("failed", "morning_closeout", {"safeErrorCode": "morning_closeout_reserve"},
+                                    "为晨报提交保留时间，本项复核未启动或未返回，已完成内容保留")
+                persist(prepared_item, review)
+            futures.clear()
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=not detached, cancel_futures=False)
+    return ("completed" if outcomes and all(value == "completed" for value in outcomes) else "partial"), work_item_ids
 
 def _terminal_lifecycle_refs(target: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Use only an explicitly frozen independent source for a terminal conclusion.
@@ -3884,10 +5104,151 @@ def _merge_morning_matches(matches: Sequence[Mapping[str, Any]]) -> dict[str, di
     return merged
 
 
+def _freeze_b90_morning_parent(*, scan_id: str, cutoff_at: datetime, db_path: Path) -> Mapping[str, Any]:
+    """Freeze exactly the immediately preceding natural-day evening report.
+
+    This deliberately reads report cards, not active D1/D2 windows.  A parent
+    with zero cards is a valid empty target set; a missing/late/older evening
+    report is recorded as unavailable and is never silently replaced by an
+    older report on a later retry.
+    """
+    current = store.get_scan(scan_id=scan_id, db_path=db_path)
+    coverage = current.get("coverage") if isinstance(current, Mapping) and isinstance(current.get("coverage"), Mapping) else {}
+    frozen = coverage.get("b90MorningParent") if isinstance(coverage, Mapping) else None
+    if isinstance(frozen, Mapping):
+        return dict(frozen)
+    local_cutoff = cutoff_at.astimezone(CN_TZ)
+    expected_day = local_cutoff.date() - timedelta(days=1)
+    parent: tuple[str, str] | None = None
+    with read_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT report_id,cutoff_at,available_at FROM k10_v2_report_runs "
+            "WHERE window_kind='evening' AND status IN ('completed','partial') AND available_at IS NOT NULL "
+            "ORDER BY available_at DESC,report_id DESC"
+        ).fetchall()
+        for report_id, raw_cutoff, raw_available in rows:
+            try:
+                report_cutoff = datetime.fromisoformat(str(raw_cutoff).replace("Z", "+00:00"))
+                available_at = datetime.fromisoformat(str(raw_available).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if (report_cutoff.tzinfo is None or available_at.tzinfo is None
+                    or report_cutoff.astimezone(CN_TZ).date() != expected_day
+                    or report_cutoff.astimezone(CN_TZ).hour != 21
+                    or available_at > cutoff_at):
+                continue
+            parent = (str(report_id), str(raw_cutoff))
+            break
+        targets: list[dict[str, Any]] = []
+        if parent is not None:
+            for card_id, company_code, company_name, card_rank, company_window_id, raw_content in conn.execute(
+                    "SELECT card_id,company_code,company_name,rank,company_window_id,content_json "
+                    "FROM k10_v2_report_cards WHERE report_id=? ORDER BY rank,company_code,card_id", (parent[0],)):
+                try:
+                    content = json.loads(raw_content)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    content = {}
+                catalysts = content.get("catalysts") if isinstance(content, Mapping) else None
+                identity = content.get("deliveryIdentity") if isinstance(content, Mapping) else None
+                identity_rows = identity.get("catalysts") if isinstance(identity, Mapping) else None
+                candidate_by_event = {
+                    (row.get("eventId"), row.get("eventRevision")): row.get("candidateId")
+                    for row in identity_rows if isinstance(row, Mapping)
+                    and isinstance(row.get("eventId"), str) and isinstance(row.get("eventRevision"), int)
+                    and isinstance(row.get("candidateId"), str)
+                } if isinstance(identity_rows, list) else {}
+                reasons: list[dict[str, Any]] = []
+                for catalyst in catalysts if isinstance(catalysts, list) else ():
+                    if not isinstance(catalyst, Mapping):
+                        continue
+                    opportunity_id = catalyst.get("opportunityId")
+                    event_id, revision = catalyst.get("eventId"), catalyst.get("eventRevision")
+                    refs = catalyst.get("sourceRefs")
+                    if not isinstance(opportunity_id, str) or not opportunity_id:
+                        continue
+                    reasons.append({
+                        "opportunityId": opportunity_id,
+                        "eventId": event_id if isinstance(event_id, str) else None,
+                        "eventRevision": revision if isinstance(revision, int) else None,
+                        "analysisText": catalyst.get("analysisText") if isinstance(catalyst.get("analysisText"), str) else None,
+                        "sourceRefs": _morning_refs(refs),
+                        "candidateId": candidate_by_event.get((event_id, revision)),
+                    })
+                review_id = "morning_review_" + sha256(
+                    (scan_id + "\x1f" + str(card_id)).encode("utf-8")
+                ).hexdigest()[:32]
+                targets.append({
+                    "reviewId": review_id, "parentCardId": str(card_id), "companyCode": str(company_code),
+                    "companyName": str(company_name), "displayRank": int(card_rank),
+                    "companyWindowId": str(company_window_id),
+                    "opportunityIds": [row["opportunityId"] for row in reasons], "reasons": reasons,
+                    "opportunityId": reasons[0]["opportunityId"] if reasons else None,
+                    "candidateId": next((row["candidateId"] for row in reasons if isinstance(row.get("candidateId"), str)), None),
+                    "sourceRefs": [ref for row in reasons for ref in row["sourceRefs"]],
+                })
+    snapshot: dict[str, Any] = {
+        "state": "complete" if parent is not None else "unavailable",
+        "parentReportId": parent[0] if parent is not None else None,
+        "parentCutoffAt": parent[1] if parent is not None else None,
+        "targetCompanyCount": len(targets),
+        "targetReasonCount": sum(len(row["reasons"]) for row in targets),
+        "targets": targets,
+        **({"reason": "parent_report_unavailable"} if parent is None else {}),
+    }
+    store.merge_running_scan_coverage(
+        scan_id=scan_id, patch={"b90MorningParent": snapshot}, db_path=db_path,
+    )
+    return snapshot
+
+
 def _morning_target_items(*, scan_id: str, cutoff_at: datetime, db_path: Path,
                           morning_refs: Sequence[Mapping[str, Any]],
                           review_matches: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
-    """Project active targets and the one just-expired D2 target into this morning report."""
+    """Return the frozen B90 parent set, else legacy D1/D2 compatibility targets."""
+    try:
+        scan = store.get_scan(scan_id=scan_id, db_path=db_path)
+    except SchemaUnavailable:
+        # Direct legacy projection tests deliberately exercise the read-only
+        # D1/D2 helper without a scan database.  A B90 parent can only exist
+        # in a durable scan coverage row, so this is unambiguously legacy.
+        scan = None
+    coverage = scan.get("coverage") if isinstance(scan, Mapping) and isinstance(scan.get("coverage"), Mapping) else {}
+    b90_parent = coverage.get("b90MorningParent") if isinstance(coverage, Mapping) else None
+    if isinstance(b90_parent, Mapping):
+        targets = b90_parent.get("targets")
+        if not isinstance(targets, list):
+            return []
+        frozen_review_source = b90_parent.get("reviewSource")
+        if isinstance(frozen_review_source, Mapping) and frozen_review_source.get("catalogueVersion") == 1:
+            frozen_targets = frozen_review_source.get("catalogueTargets")
+            if isinstance(frozen_targets, list) and all(isinstance(item, Mapping) for item in frozen_targets):
+                # A parent-owned review has already reserved its immutable
+                # input.  Discovery may have appended newer source versions,
+                # but a recovery must use the precise catalogue that produced
+                # the original input hash and paid receipt identity.
+                return [dict(item) for item in frozen_targets]
+        shared_refs = _dedupe_morning_refs(morning_refs)
+        relevant_refs = _b90_review_refs_by_target(
+            morning_refs=shared_refs, targets=[item for item in targets if isinstance(item, Mapping)], db_path=db_path,
+        )
+        source_index = _b90_review_source_index(morning_refs=shared_refs, db_path=db_path)
+        values: list[dict[str, Any]] = []
+        for target in targets:
+            if not isinstance(target, Mapping) or not isinstance(target.get("reviewId"), str):
+                continue
+            candidate_id = target.get("candidateId")
+            values.append({**dict(target), "candidateId": candidate_id,
+                           "eventId": None, "companyWindowId": target.get("companyWindowId"), "selectionState": "unhandled",
+                           "lifecycle": "published", "isNew": False, "justExpired": False,
+                           # The full review-source manifest stays in scan
+                           # coverage.  A company receives only documents
+                           # that name that frozen company, never the entire
+                           # market feed merely because it arrived overnight.
+                           "morningEvidenceRefs": relevant_refs.get(str(target["reviewId"]), []),
+                           "morningSourceIndex": source_index,
+                           "independentVerificationRefs": [],
+                           "reviewMatched": bool(shared_refs), "b90Parent": True})
+        return values
     try:
         prior_day = prev_trading_day(cutoff_at.astimezone(CN_TZ).date(), db_path=db_path)
     except RuntimeError:
@@ -3919,6 +5280,119 @@ def _morning_target_items(*, scan_id: str, cutoff_at: datetime, db_path: Path,
     return values
 
 
+def _b90_morning_review_sources(*, parent: TaskContext, adapter: SourceAdapter | Sequence[SourceAdapter], cutoff_at: datetime,
+                                completed_at: datetime) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Read the discovery channel's currently durable shared evidence only.
+
+    Parent-company review must begin even while the all-market collector is
+    blocked.  It therefore never issues a second full-market adapter request
+    and never waits for discovery to finish: documents already committed by
+    the sibling can enter the compact catalogue, while each company can still
+    perform its own reason-bound independent check.  The coverage honestly
+    records that this shared view is a point-in-time partial index.
+    """
+    scan_id = _scan_id(kind="morning", cutoff_at=cutoff_at, identity=parent.task.task_id)
+    scan = store.get_scan(scan_id=scan_id, db_path=parent.db_path)
+    scan_coverage = scan.get("coverage") if isinstance(scan, Mapping) else None
+    collected = scan_coverage.get("collectedInput") if isinstance(scan_coverage, Mapping) else None
+    if isinstance(collected, Mapping):
+        source_keys = tuple(source.coverage.source_key for source in _source_adapter_tuple(adapter))
+        refs = collected.get("inputDocumentRefs")
+        if not isinstance(refs, list):
+            raise PipelineError("晨间冻结资料清单无效", code="collected_input_boundary_invalid")
+        # Reviews may use older saved facts as background or contrary evidence.
+        # The sibling discovery still applies the strict overnight new-event window.
+        review_window = ScanWindow(kind="evening", start_at=cutoff_at - timedelta(days=1),
+                                   cutoff_at=cutoff_at, start_inclusive=False,
+                                   cutoff_inclusive=False)
+        documents = _docs_for_window(window=review_window, db_path=parent.db_path,
+                                     completed_at=completed_at, source_keys=source_keys,
+                                     frozen_refs=refs, frozen_snapshot=True, collected_input=True)
+        outcomes = collected.get("sourceOutcomes")
+        outcomes = outcomes if isinstance(outcomes, list) else []
+        state = "complete" if outcomes and all(row.get("state") == "completed" for row in outcomes) else "partial"
+        visible_refs = [_ref_payload(document.evidence_ref) for document in documents]
+        return state, visible_refs, {
+            "state": state, "reason": "frozen_collected_input",
+            "inputFrozenAt": collected.get("inputFrozenAt"),
+            "sourceVersionRowidCeiling": collected.get("sourceVersionRowidCeiling"),
+            "documentRefs": visible_refs, "sourceOutcomes": outcomes,
+            "sourceCoverage": collected.get("sourceCoverage"),
+        }
+    window = morning_window(observation_day=cutoff_at.astimezone(CN_TZ).date())
+    adapters = _source_adapter_tuple(adapter)
+    try:
+        documents = _docs_for_window(window=window, db_path=parent.db_path, completed_at=completed_at,
+                                     source_keys=tuple(source.coverage.source_key for source in adapters), current_refs=None)
+    except PipelineError:
+        documents = ()
+    visible_refs = [_ref_payload(document.evidence_ref) for document in documents]
+    outcomes = [{"sourceKey": source.coverage.source_key, "state": "pending",
+                 "mode": "shared_discovery_index"} for source in adapters]
+    coverage = {
+        "state": "partial",
+        "reason": "shared_discovery_in_progress",
+        "window": {"startAt": _text(window.start_at), "cutoffAt": _text(window.cutoff_at)},
+        "documentRefs": visible_refs,
+        "sourceOutcomes": outcomes,
+    }
+    return "partial", visible_refs, coverage
+
+
+def _b90_frozen_morning_review_catalogue(*, scan_id: str, cutoff_at: datetime, db_path: Path,
+                                         source_status: str, morning_refs: Sequence[Mapping[str, Any]],
+                                         source_coverage: Mapping[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """Freeze the exact review inputs before the first work-item reservation.
+
+    Discovery is permitted to keep persisting its own documents after frozen
+    parent reviews begin.  That must not alter a reclaiming review's input
+    hash: the parent task either resumes the original catalogue and paid
+    receipts, or records a corruption failure.  The frozen copy lives with
+    the scan coverage because it is input to every parent-owned work item,
+    never a later report projection.
+    """
+    scan = store.get_scan(scan_id=scan_id, db_path=db_path)
+    coverage = scan.get("coverage") if isinstance(scan, Mapping) and isinstance(scan.get("coverage"), Mapping) else {}
+    parent = coverage.get("b90MorningParent") if isinstance(coverage, Mapping) else None
+    if not isinstance(parent, Mapping):
+        return source_status, []
+    existing = parent.get("reviewSource")
+    if isinstance(existing, Mapping) and existing.get("catalogueVersion") == 1:
+        stored_status = existing.get("sourceStatus")
+        stored_targets = existing.get("catalogueTargets")
+        if (not isinstance(stored_status, str) or stored_status not in {"complete", "partial", "unavailable"}
+                or not isinstance(stored_targets, list)
+                or any(not isinstance(item, Mapping) for item in stored_targets)):
+            raise PipelineError("晨间复核冻结目录无效", code="morning_review_catalogue_invalid")
+        return stored_status, [dict(item) for item in stored_targets]
+
+    # Build this only before any review reservation.  It contains the compact
+    # identity index and direct company refs, so recalculating it after a
+    # sibling discovery write would change the signed review payload.
+    targets = _morning_target_items(
+        scan_id=scan_id, cutoff_at=cutoff_at, db_path=db_path, morning_refs=morning_refs,
+    )
+    frozen_at = source_coverage.get("inputFrozenAt")
+    rowid_ceiling = source_coverage.get("sourceVersionRowidCeiling")
+    if (isinstance(frozen_at, str) and frozen_at and isinstance(rowid_ceiling, int)
+            and not isinstance(rowid_ceiling, bool) and rowid_ceiling >= 0):
+        targets = [{**item, "localHistoryVisibleAt": frozen_at,
+                    "localHistoryRowidCeiling": rowid_ceiling} for item in targets]
+    catalogue = {
+        "catalogueVersion": 1,
+        "sourceStatus": source_status,
+        "sourceRefs": _dedupe_morning_refs(morning_refs),
+        "sourceCoverage": dict(source_coverage),
+        "catalogueTargets": [dict(item) for item in targets],
+    }
+    store.merge_running_scan_coverage(
+        scan_id=scan_id,
+        patch={"b90MorningParent": {"reviewSource": catalogue}},
+        db_path=db_path,
+    )
+    return source_status, targets
+
+
 def _unrecordable_morning_item(*, scan_id: str, target: Mapping[str, Any], cutoff_at: str, summary: str) -> dict[str, Any]:
     """Last-resort coverage record for an already-published target with corrupt old refs."""
     opportunity_id = str(target.get("opportunityId") or "unknown")
@@ -3931,12 +5405,37 @@ def _unrecordable_morning_item(*, scan_id: str, target: Mapping[str, Any], cutof
             "sourceRefs": _morning_refs(target.get("sourceRefs")), "independentVerificationRefs": []}}
 
 
+def _b90_terminal_review_item(*, scan_id: str, review_id: Any, db_path: Path) -> tuple[dict[str, Any], str | None] | None:
+    """Return a previously settled parent-owned review without changing its input.
+
+    The independent review channel can finish before discovery's own source
+    and ranking work.  Its durable result is the authority at aggregation;
+    rebuilding a different work-item payload just because discovery later
+    produced another document revision would invite a second paid call.
+    """
+    if not isinstance(review_id, str) or not review_id:
+        return None
+    with read_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT status,report_item_json,safe_error_code FROM k10_morning_review_work_items "
+            "WHERE scan_id=? AND work_item_id=?", (scan_id, review_id),
+        ).fetchone()
+    if row is None or row[0] not in {"completed", "failed", "not_configured"} or row[1] is None:
+        return None
+    try:
+        item = json.loads(row[1])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return (dict(item), str(row[2]) if isinstance(row[2], str) and row[2] else None) if isinstance(item, Mapping) else None
+
+
 def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: datetime,
                              configuration: Mapping[str, Any], config_id: str, config_revision: int,
                              source_status: str, morning_refs: Sequence[Mapping[str, Any]], generated_at: datetime,
                              review_matches: Sequence[Mapping[str, Any]] = (),
                              additional_gaps: Sequence[str] = (),
                              additional_coverage: Mapping[str, Any] | None = None,
+                             independent_gateway: TavilyEvidenceGateway | None = None,
                              persist: bool = True) -> tuple[dict[str, Any], list[str], str]:
     """Build one immutable five-section report for every formal target in scope.
 
@@ -3948,9 +5447,35 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
                                     morning_refs=morning_refs, review_matches=review_matches)
     report_items: list[dict[str, Any]] = []
     runnable: list[dict[str, Any]] = []
+    settled_work_item_ids: list[str] = []
+    settled_incomplete = False
     for target in targets:
         lifecycle = target.get("lifecycle")
-        if source_status != "complete":
+        settled = (_b90_terminal_review_item(scan_id=scan_id, review_id=target.get("reviewId"), db_path=parent.db_path)
+                   if target.get("b90Parent") is True else None)
+        if settled is not None:
+            item, safe_error_code = settled
+            review_id = target.get("reviewId")
+            if isinstance(review_id, str) and review_id:
+                settled_work_item_ids.append(review_id)
+            if item.get("status") != "completed":
+                settled_incomplete = True
+            report_items.append(_morning_report_item_with_safe_error(
+                item, safe_error_code=safe_error_code, work_item_id=str(target["reviewId"]),
+            ))
+            continue
+        if target.get("b90Parent") is True and not isinstance(target.get("candidateId"), str):
+            item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
+                source_status="unavailable", task_status="failed", reason_status="needs_review",
+                summary="昨晚正式理由缺少可复核的冻结候选，无法确认隔夜变化。", is_new=False)
+        elif target.get("b90Parent") is True and not _morning_refs(target.get("morningEvidenceRefs")):
+            # The shared market-wide feed is not a prerequisite for a frozen
+            # parent review.  `_run_morning_reviews` will bind the company and
+            # all original reasons to its own independent evidence request;
+            # if that cannot complete it records an explicit uncertain result.
+            runnable.append(target)
+            continue
+        elif source_status != "complete" and target.get("b90Parent") is not True:
             item = _morning_fallback_item(scan_id=scan_id, target=target, cutoff_at=parent.input_cutoff_at,
                 source_status=source_status, task_status="failed", reason_status="needs_review",
                 summary="晨间来源覆盖不完整，无法确认当前状态。", is_new=bool(target.get("isNew")))
@@ -3980,9 +5505,13 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
     # The report may have no model reviews at all.  It still writes an immutable report below,
     # so every path needs an ownership check before the first possible write.
     parent.require_lease()
-    review_state, work_item_ids = _run_morning_reviews(parent=parent, matches=runnable, configuration=configuration,
+    review_state, runnable_work_item_ids = _run_morning_reviews(parent=parent, matches=runnable, configuration=configuration,
         config_id=config_id, config_revision=config_revision, source_status=source_status, now=generated_at,
-        report_items=report_items, scan_id=scan_id)
+        report_items=report_items, scan_id=scan_id, independent_gateway=independent_gateway,
+        cutoff_at=cutoff_at)
+    work_item_ids = list(dict.fromkeys([*settled_work_item_ids, *runnable_work_item_ids]))
+    if settled_incomplete and review_state == "completed":
+        review_state = "partial"
     known = {item.get("opportunityId") for item in report_items}
     for target in targets:
         if target.get("opportunityId") not in known:
@@ -3997,6 +5526,15 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
         groups[section].sort(key=lambda item: (item.get("content", {}).get("displayRank") if isinstance(item.get("content"), Mapping) and isinstance(item["content"].get("displayRank"), int) else 2**31, str(item.get("itemId"))))
     needs_review = len(groups["needs_review"])
     failed_items = sum(1 for item in report_items if item.get("status") != "completed")
+    source_only_uncertainty = (source_status != "complete" and review_state == "completed"
+        and bool(groups["needs_review"]) and all(
+            item.get("status") == "completed"
+            and isinstance(item.get("content"), Mapping)
+            and isinstance(item["content"].get("coverage"), Mapping)
+            and isinstance(item["content"]["coverage"].get("independentVerification"), Mapping)
+            and item["content"]["coverage"]["independentVerification"].get("state") == "not_required"
+            and item["content"].get("material") is False
+            for item in groups["needs_review"]))
     # A discovery/input time gap is still a partial morning report even when there are
     # no currently published targets to place in ``needs_review``.  Otherwise an empty
     # report would falsely read as a complete "no change" conclusion.
@@ -4005,7 +5543,7 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
     gaps: list[str] = []
     if source_status != "complete": gaps.append("morning_source_" + source_status)
     if review_state != "completed": gaps.append("morning_review_" + review_state)
-    if needs_review: gaps.append("needs_review_items")
+    if needs_review and not source_only_uncertainty: gaps.append("needs_review_items")
     if failed_items: gaps.append("failed_report_items")
     for gap in additional_gaps:
         if isinstance(gap, str) and gap and gap not in gaps:
@@ -4059,14 +5597,21 @@ def _morning_delivery_for_report(*, delivery: Mapping[str, Any], report: Mapping
     review_state = coverage.get("reviewState")
     groups = report.get("groups") if isinstance(report.get("groups"), Mapping) else {}
     has_incomplete_item = any(
-        isinstance(item, Mapping) and item.get("status") != "completed"
+        isinstance(item, Mapping) and (
+            item.get("status") != "completed"
+            or (isinstance(item.get("content"), Mapping)
+                and item["content"].get("section") == "needs_review"
+                and not (result.get("outcome") == "partial"
+                         and isinstance(item["content"].get("coverage"), Mapping)
+                         and isinstance(item["content"]["coverage"].get("independentVerification"), Mapping)
+                         and item["content"]["coverage"]["independentVerification"].get("state") == "not_required"))
+        )
         for rows in groups.values()
         if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes))
         for item in rows
     )
     needs_review = coverage.get("needsReviewCount")
-    if review_state == "completed" and not has_incomplete_item and not (
-            isinstance(needs_review, int) and not isinstance(needs_review, bool) and needs_review > 0):
+    if review_state == "completed" and not has_incomplete_item:
         # Discovery can truthfully be partial without an independently-owned
         # review problem. Its delivery gap already speaks for that condition;
         # never fabricate a morning-review failure.
@@ -4076,17 +5621,26 @@ def _morning_delivery_for_report(*, delivery: Mapping[str, Any], report: Mapping
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
             continue
         for item in rows:
-            if not isinstance(item, Mapping) or item.get("status") == "completed":
+            if not isinstance(item, Mapping):
                 continue
             content = item.get("content") if isinstance(item.get("content"), Mapping) else {}
+            needs_review_item = content.get("section") == "needs_review"
+            if item.get("status") == "completed" and not needs_review_item:
+                continue
             work_item_id = content.get("workItemId")
             unit_id = work_item_id if isinstance(work_item_id, str) and work_item_id else item.get("itemId")
             if not isinstance(unit_id, str) or not unit_id:
                 continue
             status = item.get("status")
             safe_error_code = content.get("safeErrorCode")
+            independent_coverage = content.get("coverage") if isinstance(content.get("coverage"), Mapping) else {}
+            independent_verification = (independent_coverage.get("independentVerification")
+                                        if isinstance(independent_coverage.get("independentVerification"), Mapping) else {})
+            independent_reason = independent_verification.get("reason")
             reason = (safe_error_code if isinstance(safe_error_code, str)
                       and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", safe_error_code)
+                      else independent_reason if isinstance(independent_reason, str)
+                      and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", independent_reason)
                       else "morning_review_not_configured" if status == "not_configured"
                       else "morning_review_failed")
             key = ("morning_review", "work_item", unit_id, reason)
@@ -4144,20 +5698,251 @@ def _source_input(coverage: Mapping[str, Any], source_key: str) -> tuple[datetim
     return parsed, cursor
 
 
+def _source_adapter_tuple(adapter: SourceAdapter | Sequence[SourceAdapter]) -> tuple[SourceAdapter, ...]:
+    """Normalize an explicit source collection without silently choosing one.
+
+    Existing callers supply one adapter.  B90's source boundary accepts a
+    sequence, but the frozen configuration still owns the allowed keys; this
+    helper only protects the in-memory handoff from accidentally dropping or
+    duplicating a source before ingestion persists its per-source outcome.
+    """
+    if isinstance(adapter, Sequence) and not isinstance(adapter, (str, bytes, bytearray)):
+        adapters = tuple(adapter)
+    else:
+        adapters = (adapter,)
+    if not adapters:
+        raise PipelineError("发现任务缺少显式来源适配器", code="source_adapters_missing")
+    keys: list[str] = []
+    for item in adapters:
+        coverage = getattr(item, "coverage", None)
+        key = getattr(coverage, "source_key", None)
+        if not isinstance(key, str) or not key.strip():
+            raise PipelineError("来源适配器缺少稳定 source_key", code="source_adapter_invalid")
+        keys.append(key)
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicates:
+        raise PipelineError("来源适配器 source_key 重复：" + ", ".join(duplicates),
+                            code="source_adapter_duplicate")
+    return adapters
+
+
+def _configured_source_keys(configuration: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = configuration.get("sourceAdapters")
+    if not isinstance(raw, list):
+        raise PipelineError("冻结配置缺少来源集合", code="source_adapters_missing")
+    keys: list[str] = []
+    for item in raw:
+        key = item.get("key") if isinstance(item, Mapping) else None
+        if not isinstance(key, str) or not key.strip():
+            raise PipelineError("冻结配置来源键无效", code="source_adapter_invalid")
+        keys.append(key)
+    if not keys or len(keys) != len(set(keys)):
+        raise PipelineError("冻结配置来源集合为空或重复", code="source_adapter_invalid")
+    return tuple(keys)
+
+
+def _source_replay_for(
+    *, source_key: str, nominal_window: ScanWindow, effective_window: ScanWindow,
+    cutoff_at: datetime, replay_seconds: int, b90_fixed_morning: bool,
+) -> dict[str, Any]:
+    return {
+        "sourceKey": source_key,
+        "nominalStartAt": _text(nominal_window.start_at),
+        "effectiveStartAt": _text(effective_window.start_at),
+        "replayStartAt": _text(effective_window.start_at if b90_fixed_morning
+                                 else cutoff_at - timedelta(seconds=replay_seconds)),
+        "cutoffAt": _text(effective_window.cutoff_at),
+        "replaySeconds": replay_seconds,
+        "requestState": "pending",
+    }
+
+
+def _production_source_adapters(
+    *, context: TaskContext, configuration: Mapping[str, Any], tushare_token: str | None,
+    request_bound: int, source_adapter_factory: Callable[[TaskContext, int], SourceAdapter | Sequence[SourceAdapter]] | None,
+) -> tuple[SourceAdapter, ...]:
+    """Resolve only the source keys frozen into this task's configuration.
+
+    The production default intentionally remains the already-authorized
+    TuShare adapter.  A caller can explicitly inject a deterministic adapter
+    collection for offline CLI/worker verification, but a config key never
+    becomes a dynamic provider import, credential lookup, or silent fallback.
+    """
+    expected = _configured_source_keys(configuration)
+    if source_adapter_factory is not None:
+        adapters = _source_adapter_tuple(source_adapter_factory(context, request_bound))
+    else:
+        # This is the registered production source identity, not a dynamic
+        # provider lookup.  Keep it independent from the adapter class so an
+        # offline factory replacement cannot change the frozen-config check.
+        # Adding another real source still requires an explicit runtime
+        # adapter factory and a matching frozen sourceAdapters declaration.
+        if expected != ("tushare-major-news",):
+            raise PipelineError("冻结来源未配置运行时适配器", code="source_adapter_unavailable")
+        if not isinstance(tushare_token, str) or not tushare_token.strip():
+            raise PipelineError("TuShare token 未配置", code="source_adapter_unavailable")
+        adapters = (TuShareMajorNewsAdapter(token=tushare_token, request_bound=request_bound),)
+    actual = tuple(item.coverage.source_key for item in adapters)
+    if actual != expected:
+        raise PipelineError("运行时来源集合与冻结配置不一致", code="source_adapter_mismatch")
+    return adapters
+
+
+def _frozen_source_adapters_for_recovery(
+    *, scan_id: str, configuration: Mapping[str, Any], db_path: Path,
+) -> tuple[SourceAdapter, ...]:
+    """Rebuild source identities from the persisted input boundary only.
+
+    A recovery whose input snapshot is already frozen must not instantiate a
+    live adapter merely to recover its coverage declaration.  That would make
+    a no-rebill/source-replay path depend on a current token or request client.
+    The original per-source coverage record is durable with the scan, so use
+    it to construct fetch-forbidden adapters and fail closed if it is absent.
+    """
+    scan = store.get_scan(scan_id=scan_id, db_path=db_path)
+    coverage = scan.get("coverage") if isinstance(scan, Mapping) and isinstance(scan.get("coverage"), Mapping) else None
+    outcomes = coverage.get("sourceOutcomes") if isinstance(coverage, Mapping) else None
+    if not isinstance(outcomes, list):
+        raise PipelineError("冻结恢复缺少逐来源覆盖记录", code="resume_source_coverage_missing")
+    expected = _configured_source_keys(configuration)
+    by_key: dict[str, Mapping[str, Any]] = {}
+    for raw in outcomes:
+        key = raw.get("sourceKey") if isinstance(raw, Mapping) else None
+        if not isinstance(key, str) or not key or key in by_key:
+            raise PipelineError("冻结恢复来源覆盖无效", code="resume_source_coverage_invalid")
+        by_key[key] = raw
+    if tuple(by_key) != expected:
+        raise PipelineError("冻结恢复来源集合与配置不一致", code="resume_source_coverage_invalid")
+    adapters: list[SourceAdapter] = []
+    for key in expected:
+        raw = by_key[key]
+        limitations = raw.get("limitations", ())
+        string_fields = ("scope", "authorization", "pagination", "watermarkField", "publicationTimeField")
+        if (any(not isinstance(raw.get(field), str) or not raw[field].strip() for field in string_fields)
+                or not isinstance(limitations, (list, tuple))
+                or any(not isinstance(item, str) for item in limitations)
+                or not isinstance(raw.get("isMarketWide"), bool)):
+            raise PipelineError("冻结恢复来源覆盖字段无效", code="resume_source_coverage_invalid")
+        try:
+            source_coverage = SourceCoverage(
+                source_key=key,
+                scope=raw["scope"],
+                authorization=raw["authorization"],
+                pagination=raw["pagination"],
+                watermark_field=raw["watermarkField"],
+                publication_time_field=raw["publicationTimeField"],
+                is_market_wide=raw["isMarketWide"],
+                limitations=tuple(limitations),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PipelineError("冻结恢复来源覆盖字段无效", code="resume_source_coverage_invalid") from exc
+        adapters.append(_FrozenDiscoverySource(source_coverage))
+    return tuple(adapters)
+
+
+def _b92_report_source_adapters(source_keys: Sequence[str]) -> tuple[SourceAdapter, ...]:
+    """Expose frozen source identities without constructing a collection client."""
+    return tuple(_FrozenDiscoverySource(SourceCoverage(
+        source_key=key, scope="durable collected documents", authorization="frozen local report input",
+        pagination="not_applicable", watermark_field="coverageThrough",
+        publication_time_field="publishedAt", is_market_wide=False,
+    )) for key in source_keys)
+
+
+def _freeze_b92_report_input(*, context: TaskContext, scan_id: str, kind: str,
+                             cutoff: datetime, frozen_at: datetime,
+                             execution_profile: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Bind one report to versions already durable before research starts."""
+    payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
+    discovery = payload.get("discovery") if isinstance(payload, Mapping) else None
+    if not isinstance(discovery, Mapping):
+        raise PipelineError("报告缺少冻结资料配置", code="collected_input_binding_invalid")
+    source_keys = discovery.get("collectionSourceKeys")
+    if not isinstance(source_keys, list):
+        raise PipelineError("报告缺少采集来源集合", code="collected_input_binding_invalid")
+    store.validate_collected_input_binding(execution_profile=payload, source_keys=source_keys)
+    snapshot = store.freeze_collected_input(
+        db_path=context.db_path, scan_id=scan_id, window=kind, source_keys=source_keys,
+        frozen_at=frozen_at, leaseguard=context.require_lease,
+        bootstrap_at=discovery.get("collectedInputBootstrapAt"),
+    )
+    try:
+        snapshot_cutoff = datetime.fromisoformat(str(snapshot.get("reportAsOf")))
+    except ValueError as exc:
+        raise PipelineError("冻结资料业务截止无效", code="collected_input_boundary_invalid") from exc
+    if snapshot_cutoff.tzinfo is None or snapshot_cutoff != cutoff:
+        raise PipelineError("冻结资料业务截止与报告不一致", code="collected_input_boundary_invalid")
+    refs = snapshot.get("inputDocumentRefs")
+    outcomes = snapshot.get("sourceOutcomes")
+    if not isinstance(refs, list) or not isinstance(outcomes, list):
+        raise PipelineError("冻结资料清单无效", code="collected_input_boundary_invalid")
+    window = (morning_window(observation_day=cutoff.astimezone(CN_TZ).date()) if kind == "morning"
+              else ScanWindow(kind="evening", start_at=cutoff - timedelta(days=1), cutoff_at=cutoff,
+                              start_inclusive=False, cutoff_inclusive=False))
+    state = "completed" if outcomes and all(item.get("state") == "completed" for item in outcomes) else "partial"
+    patch = {
+        "inputDocumentRefs": refs, "inputSnapshotFrozen": True,
+        "inputVisibleAt": snapshot["inputFrozenAt"],
+        "sourceOutcomes": outcomes, "sourceCoverage": snapshot.get("sourceCoverage"),
+        "ingestionState": state, "state": state,
+        "window": {"kind": kind, "startAt": _text(window.start_at), "cutoffAt": _text(cutoff),
+                   "startInclusive": window.start_inclusive, "cutoffInclusive": window.cutoff_inclusive},
+    }
+    context.require_lease()
+    store.merge_running_scan_coverage(scan_id=scan_id, patch=patch, db_path=context.db_path)
+    return snapshot
+
+
+def _b92_jin10_client_factory(*, db_path: Path,
+                              collection_task_ids: Sequence[str],
+                              binding: Mapping[str, Any] | None) -> Callable[[], Jin10Client | None]:
+    """Resolve only a frozen collection binding; absent credentials stay local."""
+    from .collection_runtime import collection_config_for_report
+    stored = collection_config_for_report(
+        db_path=db_path, collection_task_ids=list(collection_task_ids), binding=binding)
+    configuration = stored.get("payload") if isinstance(stored, Mapping) else None
+    if not isinstance(configuration, Mapping):
+        return lambda: None
+    mcp = configuration.get("mcp")
+    sources = configuration.get("sources")
+    if not isinstance(mcp, Mapping) or not isinstance(sources, list):
+        return lambda: None
+    entries = [item for item in sources if isinstance(item, Mapping)
+               and item.get("sourceKey") in {"jin10-flash", "jin10-news"}]
+    if len(entries) != 2 or entries[0].get("credentialEnv") != entries[1].get("credentialEnv"):
+        return lambda: None
+    credential_env = entries[0].get("credentialEnv")
+    if not isinstance(credential_env, str):
+        return lambda: None
+    token = os.environ.get(credential_env)
+    timeout = max(item.get("timeoutSeconds", 0) for item in entries)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        return lambda: None
+    endpoint, protocol = mcp.get("endpoint"), mcp.get("protocolVersion")
+    def create() -> Jin10Client:
+        return Jin10Client(token=token or None, endpoint=endpoint, protocol_version=protocol,
+                           timeout_seconds=float(timeout))
+    return create
+
+
 def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,Any], db_path: Path,
-                 adapter, model: DiscoveryModel, metadata: CompanyMetadataProvider, created_at: datetime,
+                 adapter: SourceAdapter | Sequence[SourceAdapter], model: DiscoveryModel,
+                 metadata: CompanyMetadataProvider, created_at: datetime,
                  config_id: str | None = None, config_revision: int | None = None,
                  scan_identity: str | None = None, completed_at: datetime | None = None,
                  bootstrap_cutoff: str | None = None, leaseguard: Callable[[], None] | None = None,
                  publication_clock: Callable[[], datetime] | None = None,
                  verification_gateway: VerificationGateway | None = None,
+                 jin10_client_factory: Callable[[], Jin10Client | None] | None = None,
                  task_id: str | None = None, execution_profile: Mapping[str, Any] | None = None,
                  runtime_contract: Mapping[str, Any] | None = None,
                  resume_scan_id: str | None = None, frozen_input_sha256: str | None = None,
                  allow_failed_research_resume: bool = False,
                  allow_unpublished_failed_delivery_replacement: bool = False,
                  lease_owner: str | None = None, execution_deadline_at: datetime | None = None,
-                 defer_b76_morning_publication: bool = False) -> TaskResult:
+                 defer_b76_morning_publication: bool = False,
+                 morning_input_ready: Callable[[Sequence[DiscoveryDocument], Mapping[str, Any]], None] | None = None,
+                 deep_read_concurrency_limit: int | None = None) -> TaskResult:
     """Run or resume one frozen scan.
 
     A scan checkpoints its immutable source window, exact input revisions, and complete model
@@ -4166,6 +5951,16 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     """
     if kind not in {"evening", "morning"}:
         raise ValueError("未知扫描窗口")
+    source_adapters = _source_adapter_tuple(adapter)
+    source_keys = tuple(item.coverage.source_key for item in source_adapters)
+    b92_collected = _uses_b92_collected_input(runtime=runtime_contract,
+                                               execution_profile=execution_profile)
+    discovery_binding = (execution_profile.get("payload", {}).get("discovery", {})
+                         if isinstance(execution_profile, Mapping) else {})
+    configured_source_keys = (tuple(discovery_binding.get("collectionSourceKeys", ()))
+                              if b92_collected else _configured_source_keys(configuration))
+    if set(source_keys) != set(configured_source_keys):
+        return TaskResult("not_configured", "source_configuration", error="冻结来源集合与运行时适配器不一致")
     from .delivery import is_b76_runtime_contract, is_current_runtime_contract
     # The B76 runtime marker also selects the compact research protocol for
     # offline/legacy execution fixtures.  Public B76 delivery, however, is a
@@ -4173,6 +5968,13 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     # older frozen configuration that has no V2 strategy snapshot.
     b76_delivery = (is_b76_runtime_contract(runtime_contract)
                     and configuration.get("configVersion") == "k10-v2")
+    b90_research = _uses_b90_research_contract(runtime=runtime_contract,
+                                                execution_profile=execution_profile)
+    if (deep_read_concurrency_limit is not None
+            and (isinstance(deep_read_concurrency_limit, bool)
+                 or not isinstance(deep_read_concurrency_limit, int)
+                 or deep_read_concurrency_limit < 1)):
+        raise ValueError("共享深读并发上限必须为正整数")
     if not validate_run_config(configuration, scope="discovery").ready:
         return TaskResult("not_configured", "configuration", error="发现模型或策略配置未就绪")
     if configuration.get("configVersion") == "k10-v2":
@@ -4284,12 +6086,17 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     if not isinstance(scan_created_at, str):
         scan_created_at = _text(created_at)
     coverage: dict[str, Any] = dict(existing.get("coverage", {})) if isinstance(existing, Mapping) else {}
+    if b92_collected and (coverage.get("inputSnapshotFrozen") is not True
+                          or not isinstance(coverage.get("collectedInput"), Mapping)):
+        return TaskResult("failed", "collected_input", {"scanId": scan_id},
+                          "报告缺少原子冻结的本地采集资料")
     source_replay = coverage.get("sourceReplay") if isinstance(coverage.get("sourceReplay"), Mapping) else None
+    source_replays = coverage.get("sourceReplays") if isinstance(coverage.get("sourceReplays"), Mapping) else None
     frozen_refs = coverage.get("inputDocumentRefs")
     if coverage.get("inputSnapshotFrozen") is True and isinstance(frozen_refs, list):
         try:
             _validate_frozen_discovery_source_boundary(
-                frozen_refs=frozen_refs, db_path=db_path, source_keys=(adapter.coverage.source_key,),
+                frozen_refs=frozen_refs, db_path=db_path, source_keys=source_keys,
             )
         except PipelineError as exc:
             if existing is not None and existing["status"] == "running":
@@ -4329,37 +6136,86 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     # Recovery always wins over live watermarks.  The previous source request must be replayed
     # exactly, even if it succeeded before a later model/persistence failure.
     window = _scan_window_from_coverage(coverage)
-    stored_watermark, stored_cursor = _source_input(coverage, adapter.coverage.source_key)
+    stored_inputs = {key: _source_input(coverage, key) for key in source_keys}
+    stored_watermarks = {key: values[0] for key, values in stored_inputs.items()}
+    stored_cursors = {key: values[1] for key, values in stored_inputs.items()}
     if window is None:
-        watermark = store.latest_source_watermark(source_key=adapter.coverage.source_key, db_path=db_path)
-        start = None if watermark is None else datetime.fromisoformat(watermark["successCutoffAt"])
+        watermarks = {
+            key: store.latest_source_watermark(source_key=key, db_path=db_path)
+            for key in source_keys
+        }
+        starts = {
+            key: (None if watermark is None else datetime.fromisoformat(watermark["successCutoffAt"]))
+            for key, watermark in watermarks.items()
+        }
         if kind == "evening":
-            if start is None:
-                try:
-                    start = _bootstrap_cutoff(configuration=configuration, source_key=adapter.coverage.source_key,
-                                              explicit=bootstrap_cutoff, cutoff_at=cutoff_at)
-                except ValueError as exc:
-                    return TaskResult("not_configured", "source_bootstrap", error=str(exc))
-            if start is None:
-                return TaskResult("not_configured", "source_bootstrap", error="晚间扫描缺少来源成功水位和显式首次回补 cutoff")
-            nominal_window = evening_window(trading_day=cutoff_at.astimezone(CN_TZ).date(), source_success_watermark=start)
+            for key, start in tuple(starts.items()):
+                if start is None:
+                    try:
+                        start = _bootstrap_cutoff(configuration=configuration, source_key=key,
+                                                  explicit=bootstrap_cutoff, cutoff_at=cutoff_at)
+                    except ValueError as exc:
+                        return TaskResult("not_configured", "source_bootstrap", error=str(exc))
+                    starts[key] = start
+                if start is None:
+                    return TaskResult("not_configured", "source_bootstrap",
+                                      error=f"晚间扫描缺少来源 {key} 的成功水位和显式首次回补 cutoff")
+            nominal_windows = {
+                key: evening_window(trading_day=cutoff_at.astimezone(CN_TZ).date(), source_success_watermark=start)
+                for key, start in starts.items()
+            }
         else:
             fixed = morning_window(observation_day=cutoff_at.astimezone(CN_TZ).date())
-            nominal_window = fixed if start is None or start >= fixed.start_at else ScanWindow(
-                kind="morning", start_at=start, cutoff_at=fixed.cutoff_at, start_inclusive=False, cutoff_inclusive=True)
-        replay_seconds = _late_arrival_replay_seconds(configuration=configuration, source_key=adapter.coverage.source_key)
-        window = _replay_window(nominal=nominal_window, replay_seconds=replay_seconds)
-        source_replay = {
-            "sourceKey": adapter.coverage.source_key,
-            "nominalStartAt": _text(nominal_window.start_at),
-            "effectiveStartAt": _text(window.start_at),
-            "replayStartAt": _text(cutoff_at - timedelta(seconds=replay_seconds)),
-            "cutoffAt": _text(window.cutoff_at),
-            "replaySeconds": replay_seconds,
-            "requestState": "pending",
+            # B90's morning business input is exactly last natural day's
+            # 21:00 through this morning's 08:30.  A stale source watermark
+            # is a collection-maintenance fact, not permission to place older
+            # materials back in the new-opportunity model packet.
+            nominal_windows = {
+                key: (fixed if b90_research or start is None or start >= fixed.start_at else ScanWindow(
+                    kind="morning", start_at=start, cutoff_at=fixed.cutoff_at,
+                    start_inclusive=False, cutoff_inclusive=True))
+                for key, start in starts.items()
+            }
+        b90_fixed_morning = kind == "morning" and b90_research
+        # The raw collection cursor can still be maintained independently,
+        # but B90's overnight discovery packet has no replay tail.  Record
+        # that fact truthfully instead of exposing a misleading old
+        # ``replayStartAt`` alongside a fixed effective business window.
+        replay_seconds_by_key = {
+            key: (0 if b90_fixed_morning else _late_arrival_replay_seconds(
+                configuration=configuration, source_key=key,
+            ))
+            for key in source_keys
         }
-        stored_watermark = nominal_window.start_at
-        stored_cursor = None if watermark is None else watermark["cursorValue"]
+        effective_windows = {
+            key: (nominal_windows[key] if b90_fixed_morning else _replay_window(
+                nominal=nominal_windows[key], replay_seconds=replay_seconds_by_key[key],
+            ))
+            for key in source_keys
+        }
+        # Ingestion has one request envelope, while every adapter still gets
+        # its own watermark/cursor.  Use the earliest approved boundary only
+        # for that envelope; documents remain attributed to their source and
+        # the model packet is frozen from exact stored refs.
+        request_start = min(item.start_at for item in effective_windows.values() if item.start_at is not None)
+        window = ScanWindow(kind=kind, start_at=request_start, cutoff_at=cutoff_at,
+                            start_inclusive=all(item.start_inclusive for item in effective_windows.values()),
+                            cutoff_inclusive=all(item.cutoff_inclusive for item in effective_windows.values()))
+        source_replays = {
+            key: _source_replay_for(
+                source_key=key, nominal_window=nominal_windows[key], effective_window=effective_windows[key],
+                cutoff_at=cutoff_at, replay_seconds=replay_seconds_by_key[key], b90_fixed_morning=b90_fixed_morning,
+            )
+            for key in source_keys
+        }
+        # Preserve the historic single-source shape exactly.  Multi-source
+        # scans expose a per-key map and never let one cursor stand for all.
+        source_replay = source_replays[source_keys[0]] if len(source_keys) == 1 else None
+        stored_watermarks = {key: nominal_windows[key].start_at for key in source_keys}
+        stored_cursors = {
+            key: (None if watermarks[key] is None else watermarks[key]["cursorValue"])
+            for key in source_keys
+        }
 
     if leaseguard is not None:
         leaseguard()
@@ -4406,7 +6262,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         running_coverage = dict(base_coverage)
         try:
             documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
-                                         source_keys=(adapter.coverage.source_key,), frozen_refs=frozen, frozen_snapshot=True)
+                                         source_keys=source_keys, frozen_refs=frozen, frozen_snapshot=True,
+                                         collected_input=b92_collected)
         except PipelineError as exc:
             finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=snapshot_at, db_path=db_path,
                                     status="failed", pipeline_state="source_boundary", coverage_extra=running_coverage)
@@ -4424,16 +6281,16 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         running_coverage = dict(base_coverage)
         try:
             documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
-                                         source_keys=(adapter.coverage.source_key,), frozen_refs=frozen,
-                                         frozen_snapshot=True)
+                                         source_keys=source_keys, frozen_refs=frozen,
+                                         frozen_snapshot=True, collected_input=b92_collected)
         except PipelineError as exc:
             finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=snapshot_at, db_path=db_path,
                                     status="failed", pipeline_state="source_boundary", coverage_extra=running_coverage)
             return TaskResult("failed", "source_boundary", {"scanId": scan_id}, str(exc))
     else:
-        ingestion = ingest_to_sqlite(db_path=db_path, scan_id=scan_id, window=window, adapters=(adapter,),
-            source_watermarks={adapter.coverage.source_key: stored_watermark or window.start_at},
-            source_cursors={adapter.coverage.source_key: stored_cursor}, config_id=config_id, config_revision=config_revision,
+        ingestion = ingest_to_sqlite(db_path=db_path, scan_id=scan_id, window=window, adapters=source_adapters,
+            source_watermarks={key: stored_watermarks.get(key) or window.start_at for key in source_keys},
+            source_cursors=stored_cursors, config_id=config_id, config_revision=config_revision,
             created_at=created_at, completed_at=completed_at or _now(), finalize=False, leaseguard=leaseguard)
         current = store.get_scan(scan_id=scan_id, db_path=db_path)
         base_coverage = dict(current.get("coverage", {})) if isinstance(current, Mapping) else coverage
@@ -4446,6 +6303,11 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             running_coverage = {**base_coverage, **ingestion_coverage(run=ingestion), "inputSnapshotFrozen": False}
             if source_replay:
                 running_coverage["sourceReplay"] = {**source_replay, "requestState": "failed"}
+            if source_replays:
+                running_coverage["sourceReplays"] = {
+                    key: {**value, "requestState": "failed"}
+                    for key, value in source_replays.items()
+                }
             if leaseguard is not None:
                 leaseguard()
             store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
@@ -4456,11 +6318,14 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         snapshot_frozen = base_coverage.get("inputSnapshotFrozen") is True and isinstance(frozen, list)
         snapshot_at = completed_at or _now()
         current_refs = None if snapshot_frozen else _merge_document_refs(
-            _unfrozen_scan_document_refs(base_coverage), _ingested_document_refs(ingestion),
+            _unfrozen_scan_document_refs(base_coverage), _ingested_document_refs(
+                ingestion=ingestion,
+                include_existing_current_parent_refs=(kind == "morning" and b90_research),
+            ),
         )
         try:
             documents = _docs_for_window(window=window, db_path=db_path, completed_at=snapshot_at,
-                                         source_keys=(adapter.coverage.source_key,),
+                                         source_keys=source_keys,
                                          frozen_refs=frozen if isinstance(frozen, list) else (), frozen_snapshot=snapshot_frozen,
                                          current_refs=current_refs)
         except PipelineError as exc:
@@ -4476,14 +6341,27 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                           "inputOpportunitySnapshot": prior_opportunities,
                           "inputMorningCandidates": prior_candidates}
         replay_coverage = ({**source_replay, "requestState": ingestion.state} if source_replay else None)
+        replay_coverages = ({
+            key: {**value, "requestState": ingestion.state}
+            for key, value in source_replays.items()
+        } if source_replays else None)
         running_coverage = {**base_coverage, **ingestion_coverage(run=ingestion), **input_coverage,
-                            **({"sourceReplay": replay_coverage} if replay_coverage is not None else {})}
+                            **({"sourceReplay": replay_coverage} if replay_coverage is not None else {}),
+                            **({"sourceReplays": replay_coverages} if replay_coverages is not None else {})}
         if leaseguard is not None:
             leaseguard()
         store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
 
+    # A B90 morning parent begins review as soon as its immutable overnight
+    # source set is available.  The callback owns independent work items; the
+    # discovery path continues below without waiting for its result.
+    if kind == "morning" and morning_input_ready is not None:
+        morning_input_ready(tuple(documents), dict(running_coverage))
+
     recovered_understanding: Mapping[EvidenceRef, Sequence[EventDraft]] | None = None
     discovery_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
+    title_parent_documents: dict[EvidenceRef, DiscoveryDocument] = {}
+    body_companions: dict[EvidenceRef, EvidenceRef] = {}
     title_enabled = isinstance(profile_payload, Mapping) and profile_payload.get("executionVersion") == "k10-execution-v4"
     if task_id is not None and execution_profile is not None:
         profile_id, profile_revision, binding_kind = (execution_profile.get("configId"), execution_profile.get("revision"),
@@ -4597,7 +6475,31 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     and (row.get("eventId"), row.get("companyCode")) in active_pairs]
                 documents = select_title_documents(documents=documents, window_kind=kind, task_id=task_id,
                     execution_profile=execution_profile, model=model, db_path=db_path, guard=discovery_guard,
-                    progress=title_progress, known_subjects=known_subjects)
+                    progress=title_progress, known_subjects=known_subjects,
+                    concurrency_limit=deep_read_concurrency_limit)
+                if b92_collected:
+                    title_parent_documents = {item.evidence_ref: item for item in documents}
+                    selected_gateway = Jin10QuestionGateway(
+                        db_path=db_path, task_id=task_id,
+                        client_factory=jin10_client_factory or (lambda: None),
+                        leaseguard=leaseguard,
+                        new_external_admission_guard=new_research_external_admission_guard,
+                        clock=publication_clock or _now,
+                    )
+                    documents, body_companions, body_gaps = _b92_selected_body_documents(
+                        documents=documents, task_id=task_id, db_path=db_path,
+                        cutoff_at=cutoff_at, gateway=selected_gateway,
+                        leaseguard=leaseguard, clock=publication_clock or _now)
+                    running_coverage["supplementalBodyRefs"] = [
+                        _ref_payload(ref) for ref in body_companions]
+                    running_coverage["supplementalBodyBindings"] = [
+                        {"bodyRef": _ref_payload(body), "parentRef": _ref_payload(parent)}
+                        for body, parent in body_companions.items()]
+                    running_coverage["articleBodyGaps"] = body_gaps
+                    document_by_key.update({_document_checkpoint_key(item)[0]: item for item in documents})
+                    recovered_understanding = _recovered_understanding(
+                        task_id=task_id, documents=documents, db_path=db_path,
+                        require_claims=require_claims)
             except (TitleTriageProtocolError, PipelineError) as exc:
                 safe_code = getattr(exc, "code", "title_protocol_invalid")
                 # A global reconciliation can fail after every batch has
@@ -4696,7 +6598,19 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             # direct model round.
             if hasattr(verifier, "new_external_admission_guard"):
                 verifier.new_external_admission_guard = new_research_external_admission_guard
+            jin10_verifier = (Jin10QuestionGateway(
+                db_path=db_path, task_id=task_id,
+                client_factory=jin10_client_factory or (lambda: None),
+                leaseguard=leaseguard,
+                new_external_admission_guard=new_research_external_admission_guard,
+                clock=publication_clock or _now,
+            ) if b92_collected and task_id is not None else None)
             def verify(event: EventDraft) -> Verification:
+                if b92_collected:
+                    # B92 direct research decides if a question needs a tool.
+                    # Reaching the legacy always-fetch verifier would break
+                    # zero-search completion and the frozen question ledger.
+                    raise PipelineError("B92 研究意外进入旧式必搜核验", code="b92_legacy_verifier_forbidden")
                 discovery_guard()
                 bundle = verifier.fetch(event=event, retrieved_at=_now(), cutoff_at=cutoff_at,
                                         cutoff_inclusive=window.cutoff_inclusive)
@@ -4723,6 +6637,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     state = "needs_review"
                 return Verification(state, reviewed.summary, reviewed.evidence_refs, bundle.coverage, bundle.eligible_documents)
             document_by_ref = {document.evidence_ref: document for document in documents}
+            document_by_ref.update(title_parent_documents)
             research_progress_lock = RLock()
             research_gateway_lock = RLock()
             researched_unit_refs: dict[str, set[tuple[str, int]]] = {}
@@ -4766,9 +6681,19 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
 
                 def fetch(self, **kwargs):
                     with research_gateway_lock:
+                        path = kwargs.get("query_path")
+                        target_source = getattr(path, "target_source", "")
+                        if isinstance(target_source, str) and target_source.casefold().startswith("jin10-"):
+                            if jin10_verifier is None:
+                                raise PipelineError("金十问题工具未绑定", code="jin10_gateway_missing")
+                            return jin10_verifier.fetch(**kwargs)
                         return verifier.fetch(**kwargs)
                 def fetch_fulltext(self, **kwargs):
                     with research_gateway_lock:
+                        document = kwargs.get("document")
+                        if (jin10_verifier is not None and isinstance(document, DiscoveryDocument)
+                                and document.metadata.get("sourceKey") == "jin10-news"):
+                            return jin10_verifier.fetch_fulltext(**kwargs)
                         return verifier.fetch_fulltext(**kwargs)
             research_gateway = ResearchGateway()
             def record_snapshot(snapshot_id: str) -> None:
@@ -4902,18 +6827,22 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     "scopeKnown": bool(article_codes) if failed_article_refs else True,
                 }
                 return excluded
+            configured_deep_read = profile_payload["discovery"]["deepReadConcurrency"] if title_enabled else None
+            deep_read_concurrency = (
+                min(configured_deep_read, deep_read_concurrency_limit)
+                if isinstance(configured_deep_read, int) and deep_read_concurrency_limit is not None
+                else configured_deep_read
+            )
             run = run_discovery(documents=documents, configuration=configuration, model=model, verify=verify,
                                 metadata=metadata, cutoff_at=cutoff_at, phase=kind, leaseguard=discovery_guard,
                                 previous_opportunities=prior_opportunities, understood_by_document=recovered_understanding,
                                 checkpoint=discovery_checkpoint,
                                 selected_source_refs=([doc.evidence_ref for doc in documents] if title_enabled else None),
-                                understand_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
-                                                        if title_enabled else None),
-                                document_batch_size=(profile_payload["discovery"]["deepReadConcurrency"]
-                                                     if title_enabled else None),
+                                source_ref_companions=body_companions,
+                                understand_concurrency=deep_read_concurrency,
+                                document_batch_size=deep_read_concurrency,
                                 investigate=investigate if title_enabled else None,
-                                investigation_concurrency=(profile_payload["discovery"]["deepReadConcurrency"]
-                                                           if title_enabled else None),
+                                investigation_concurrency=deep_read_concurrency,
                                 research_input_checkpoint=record_research_input if title_enabled else None,
                                 pre_ranking_exclusions=pre_ranking_exclusions if b76_delivery and title_enabled else None,
                                 finalization_guard=finalization_guard,
@@ -5145,6 +7074,10 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             run=run, coverage=final_coverage, failed_snapshots=failed_research_snapshots,
             task_id=task_id, db_path=db_path,
         )
+        if not b92_collected and isinstance(runtime_contract, Mapping):
+            frozen_delivery_contract = runtime_contract.get("reportDelivery")
+            if isinstance(frozen_delivery_contract, str):
+                delivery["contractVersion"] = frozen_delivery_contract
     checkpoint = {"scanId": scan_id, "ingestionState": ingestion.state, "discoveryState": run.state,
                   "candidateCount": len({item.mapping.company_code for item in run.candidates}), "deferredCount": run.deferred_count}
     if final_coverage.get("researchRequired") is True:
@@ -5158,6 +7091,14 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         final_coverage["delivery"] = delivery
         ranking_input = _b76_ranking_input_for_run(run=run, coverage=final_coverage)
         final_coverage["rankingInput"] = ranking_input if delivery["rankingScope"] != "none" else None
+    if (b92_collected and delivery is not None and research_terminal_error is None
+            and isinstance(task_id, str)):
+        final_coverage["collectedInputConsumption"] = {
+            "terminalRefs": _b92_terminal_document_refs(
+                task_id=task_id, run=run,
+                input_refs=final_coverage.get("inputDocumentRefs", ()), db_path=db_path,
+            )
+        }
     # Build the exact terminal scan projection now, but for B76 only write it
     # in the same transaction as visible lifecycle rows, report/cards and the
     # owning task.  Durable discovery drafts remain intentionally private.
@@ -5319,7 +7260,10 @@ def _morning_has_time_gap(coverage: Mapping[str, Any]) -> bool:
     )
 
 
-def production_scan_handler(context: TaskContext, *, tushare_token: str | None, parquet_dir: Path, now=_now) -> TaskResult:
+def production_scan_handler(
+    context: TaskContext, *, tushare_token: str | None, parquet_dir: Path, now=_now,
+    source_adapter_factory: Callable[[TaskContext, int], SourceAdapter | Sequence[SourceAdapter]] | None = None,
+) -> TaskResult:
     from .delivery import is_current_runtime_contract
     if not is_current_runtime_contract(context.task.payload.get("runtimeContract")):
         # The public worker paths reject this before leasing.  Keep a second
@@ -5349,6 +7293,12 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
                 reason="扫描任务缺少获批的标题筛选与正文篇数配置", generated_at=started_at)
         return TaskResult("not_configured", "execution_configuration", error="扫描任务缺少获批的标题筛选与正文篇数配置")
+    b90_morning = (kind == "morning" and _uses_b90_research_contract(
+        runtime=payload.get("runtimeContract"), execution_profile=execution_profile,
+    ))
+    b92_collected = _uses_b92_collected_input(
+        runtime=payload.get("runtimeContract"), execution_profile=execution_profile,
+    )
     # Establish this run's report identity before a source/model request can
     # block.  In particular, a 09:20 reader must resolve *this* morning's
     # frozen deadline, never silently fall back to yesterday's report.
@@ -5375,6 +7325,22 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
             snapshot_id=frozen["payload"]["strategySnapshotId"], kind=kind,
             created_at=_text(started_at), delivery_deadline_at=deadline_text,
         )
+        if b90_morning:
+            # Freeze yesterday's actual readable evening delivery before any
+            # new-source request.  A retry reads this durable snapshot instead
+            # of selecting a newer or older report opportunistically.
+            _freeze_b90_morning_parent(scan_id=scan_id, cutoff_at=cutoff, db_path=context.db_path)
+        if b92_collected:
+            try:
+                _freeze_b92_report_input(context=context, scan_id=scan_id, kind=kind,
+                                         cutoff=cutoff, frozen_at=started_at,
+                                         execution_profile=execution_profile)
+            except (PipelineError, store.K10Conflict, ValueError) as exc:
+                if kind == "morning":
+                    return _append_unavailable_morning_report(
+                        context=context, cutoff=cutoff, frozen=frozen,
+                        reason="本地采集资料冻结失败，来源待核。", generated_at=started_at)
+                return TaskResult("not_configured", "collected_input", error=str(exc))
     resume_scan_id = payload.get("resumeScanId")
     legacy_recovery = isinstance(resume_scan_id, str)
     recovery_authorization = context.checkpoint.get("recoveryAuthorized")
@@ -5434,18 +7400,37 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     if resolution.provider is not None:
         bind_provider_execution_spending(provider=resolution.provider, task_id=context.task.task_id,
                                          execution_profile=execution_profile)
-    if resolution.provider is None or (not resuming and not tushare_token):
+    if resolution.provider is None or (not b92_collected and not resuming and not tushare_token):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
                 reason=resolution.error or "TuShare token 未配置", generated_at=started_at)
         return TaskResult("not_configured","configuration",error=resolution.error or "TuShare token 未配置")
     source_policy = frozen["payload"].get("taskPolicies", {}).get("discovery", {})
     bound = source_policy.get("maxSourceRequests") if isinstance(source_policy, Mapping) else None
-    if not resuming and (isinstance(bound,bool) or not isinstance(bound,int) or bound<1):
+    if not b92_collected and not resuming and (isinstance(bound,bool) or not isinstance(bound,int) or bound<1):
         if kind == "morning":
             return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
                 reason="来源分页上限未配置", generated_at=started_at)
         return TaskResult("not_configured","configuration",error="来源分页上限未配置")
+    try:
+        source_adapters = (
+            _b92_report_source_adapters(
+                execution_payload["discovery"]["collectionSourceKeys"]
+            ) if b92_collected else
+            _frozen_source_adapters_for_recovery(
+                scan_id=str(resume_scan_id or _scan_id(kind=kind, cutoff_at=cutoff, identity=context.task.task_id)),
+                configuration=frozen["payload"], db_path=context.db_path,
+            )
+            if resuming else _production_source_adapters(
+                context=context, configuration=frozen["payload"], tushare_token=tushare_token,
+                request_bound=bound, source_adapter_factory=source_adapter_factory,
+            )
+        )
+    except PipelineError as exc:
+        if kind == "morning":
+            return _append_unavailable_morning_report(context=context, cutoff=cutoff, frozen=frozen,
+                reason=str(exc), generated_at=started_at)
+        return TaskResult("not_configured", "source_configuration", error=str(exc))
     calendar_day = scan_calendar_day(kind=kind, run_day=cutoff.astimezone(CN_TZ).date())
     if not resuming and official_is_trading_day(calendar_day,db_path=context.db_path) is not True:
         if kind == "morning":
@@ -5508,19 +7493,91 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
     execution_discovery = execution_profile.get("payload", {}).get("discovery") if isinstance(execution_profile, Mapping) else None
     network_max_attempts = (execution_discovery.get("networkMaxAttempts")
                             if isinstance(execution_discovery, Mapping) else None)
+    discovery_cancelled = Event()
+    discovery_detached = False
+    discovery_deep_read_limit: int | None = None
+    review_concurrency = 1
+    if b90_morning:
+        discovery_deep_read_limit, review_concurrency = _b90_morning_parallelism(
+            execution_profile=execution_profile,
+        )
+
+    def discovery_leaseguard() -> None:
+        context.require_lease()
+        if discovery_cancelled.is_set():
+            raise store.K10Conflict("晨报发现已在固定截止前封存")
+
     verifier = TavilyEvidenceGateway(db_path=context.db_path,
                                      metadata_resolver=metadata_resolver, task_id=context.task.task_id,
-                                     leaseguard=context.require_lease,
+                                     leaseguard=discovery_leaseguard if b90_morning else context.require_lease,
                                      network_max_attempts=network_max_attempts,
-                                     lease_owner=context.task.lease_owner)
+                                     lease_owner=context.task.lease_owner,
+                                     # Morning discovery and review share the
+                                     # frozen business clock, not process
+                                     # construction time.  Otherwise a
+                                     # deterministic recovery can produce a
+                                     # research snapshot whose verification
+                                     # cutoff predates its morning input.
+                                     **({"clock": context.clock} if b90_morning else {}))
+    # The two morning channels may share durable document versions, never a
+    # mutable gateway/client or a checkpoint identity.  In particular an
+    # unfinished reason-bound check must not be mistaken for a cancellable
+    # discovery request at the 09:20 boundary.
+    review_verifier = (TavilyEvidenceGateway(
+        db_path=context.db_path, metadata_resolver=metadata_resolver, task_id=context.task.task_id,
+        leaseguard=context.require_lease, network_max_attempts=network_max_attempts,
+        lease_owner=context.task.lease_owner, checkpoint_namespace="morning-review", lease_clock=context.clock,
+        clock=context.clock,
+        new_external_admission_guard=lambda: _b90_morning_review_new_external_guard(
+            parent=context, configuration=frozen["payload"],
+        ),
+    ) if b90_morning else None)
+    review_jin10_gateway: Jin10QuestionGateway | None = None
+    if b90_morning and b92_collected:
+        review_scan = store.get_scan(scan_id=scan_id, db_path=context.db_path)
+        review_coverage = review_scan.get("coverage") if isinstance(review_scan, Mapping) else None
+        review_input = review_coverage.get("collectedInput") if isinstance(review_coverage, Mapping) else None
+        if isinstance(review_input, Mapping):
+            review_jin10_gateway = Jin10QuestionGateway(
+                db_path=context.db_path, task_id=context.task.task_id,
+                client_factory=_b92_jin10_client_factory(
+                    db_path=context.db_path,
+                    collection_task_ids=tuple(review_input.get("collectionTaskIds", ())),
+                    binding=review_input.get("questionToolConfigBinding"),
+                ),
+                leaseguard=context.require_lease, clock=context.clock,
+                new_external_admission_guard=lambda: _b90_morning_review_new_external_guard(
+                    parent=context, configuration=frozen["payload"],
+                ),
+            )
     historical_loader = make_historical_context_loader(db_path=context.db_path, gateway=verifier, clock=now)
-    try:
-        result = execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,
-                            adapter=(_FrozenDiscoverySource() if resuming else TuShareMajorNewsAdapter(token=tushare_token,request_bound=bound)),model=DeepSeekDiscoveryModel(resolution.provider, market_context_loader=market_loader, historical_context_loader=historical_loader.load, historical_local_context_loader=historical_loader.load_local),metadata=SqliteCompanyMetadataProvider(db_path=context.db_path),created_at=started_at,
+    discovery_executor: ThreadPoolExecutor | None = None
+    discovery_future: Future[TaskResult] | None = None
+    review_source_coverage: Mapping[str, Any] | None = None
+
+    def execute_current_scan() -> TaskResult:
+        """The discovery channel owns its model/provider and normal source state."""
+        collected_input = None
+        if b92_collected:
+            scan = store.get_scan(scan_id=_scan_id(kind=kind, cutoff_at=cutoff,
+                identity=context.task.task_id), db_path=context.db_path)
+            scan_coverage = scan.get("coverage") if isinstance(scan, Mapping) else None
+            collected_input = (scan_coverage.get("collectedInput")
+                               if isinstance(scan_coverage, Mapping) else None)
+        jin10_factory = (_b92_jin10_client_factory(
+            db_path=context.db_path,
+            collection_task_ids=tuple(collected_input.get("collectionTaskIds", ())),
+            binding=collected_input.get("questionToolConfigBinding"),
+        ) if isinstance(collected_input, Mapping) else None)
+        return execute_scan(kind=kind,cutoff_at=cutoff,configuration=frozen["payload"],db_path=context.db_path,
+                            adapter=(tuple(_FrozenDiscoverySource(item.coverage) for item in source_adapters)
+                                     if resuming else source_adapters),model=DeepSeekDiscoveryModel(resolution.provider, market_context_loader=market_loader, historical_context_loader=historical_loader.load, historical_local_context_loader=historical_loader.load_local),metadata=SqliteCompanyMetadataProvider(db_path=context.db_path),created_at=started_at,
                             config_id=frozen["configId"],config_revision=frozen["revision"],
                             scan_identity=context.task.task_id,
-                            bootstrap_cutoff=payload.get("sourceBootstrapCutoff"), leaseguard=context.require_lease,
-                            verification_gateway=verifier, task_id=context.task.task_id,
+                            bootstrap_cutoff=payload.get("sourceBootstrapCutoff"),
+                            leaseguard=discovery_leaseguard if b90_morning else context.require_lease,
+                            verification_gateway=verifier, jin10_client_factory=jin10_factory,
+                            task_id=context.task.task_id,
                             execution_profile=execution_profile, runtime_contract=payload.get("runtimeContract"),
                             resume_scan_id=resume_scan_id,
                             frozen_input_sha256=payload.get("frozenInputSha256"),
@@ -5529,7 +7586,79 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
                             lease_owner=context.task.lease_owner,
                             execution_deadline_at=context.execution_deadline_at,
                             defer_b76_morning_publication=(
-                                kind == "morning" and frozen["payload"].get("configVersion") == "k10-v2"))
+                                kind == "morning" and frozen["payload"].get("configVersion") == "k10-v2"),
+                            morning_input_ready=None,
+                            deep_read_concurrency_limit=discovery_deep_read_limit)
+    try:
+        if b90_morning:
+            # Reviews use their allocated worker pool; its HTTP wait is
+            # deadline-aware even outside the main thread.  Discovery has its
+            # own provider/model context in the sibling thread; neither
+            # channel shares a mutable client or SQLite connection.  The
+            # review source request starts after the parent snapshot but never
+            # waits for discovery ingestion/classification.
+            discovery_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="k10-morning-discovery")
+            discovery_future = discovery_executor.submit(execute_current_scan)
+            review_source_status, review_refs, review_source_coverage = _b90_morning_review_sources(
+                parent=context, adapter=source_adapters, cutoff_at=cutoff, completed_at=now(),
+            )
+            snapshot = _freeze_b90_morning_parent(scan_id=scan_id, cutoff_at=cutoff, db_path=context.db_path)
+            if snapshot.get("state") == "complete" and snapshot.get("targets"):
+                review_source_status, review_targets = _b90_frozen_morning_review_catalogue(
+                    scan_id=scan_id, cutoff_at=cutoff, db_path=context.db_path,
+                    source_status=review_source_status, morning_refs=review_refs,
+                    source_coverage=review_source_coverage,
+                )
+                _run_morning_reviews(parent=context, matches=review_targets, configuration=frozen["payload"],
+                                     config_id=frozen["configId"], config_revision=frozen["revision"],
+                                     source_status=review_source_status, now=now(), scan_id=scan_id,
+                                     independent_gateway=review_verifier, jin10_gateway=review_jin10_gateway,
+                                     cutoff_at=cutoff,
+                                     review_concurrency=review_concurrency)
+            # The discovery channel may continue only while one frozen final
+            # publication envelope remains.  At that boundary, seal its
+            # leaseguard and publish the independently completed review as an
+            # explicit partial; do not let an unbounded ``Future.result`` turn
+            # the 09:20 reader promise into a best-effort wait.
+            if context.execution_deadline_at is None:
+                raise PipelineError("B90 晨报缺少冻结完成时限", code="morning_deadline_missing")
+            reserve = _morning_finalization_reserve(
+                configuration=frozen["payload"], execution_profile=execution_profile,
+            )
+            wait_seconds = max(0.0, (context.execution_deadline_at - reserve - now()).total_seconds())
+            try:
+                result = discovery_future.result(timeout=wait_seconds)
+                discovery_executor.shutdown(wait=True, cancel_futures=False)
+                discovery_executor = None
+            except FutureTimeoutError:
+                discovery_cancelled.set()
+                # Running I/O is deliberately not killed.  Its original
+                # ledger row may settle later, but the fenced worker can no
+                # longer start another request or write this sealed scan.
+                discovery_executor.shutdown(wait=False, cancel_futures=True)
+                discovery_executor = None
+                discovery_detached = True
+                result = _b90_discovery_deadline_result(
+                    context=context, scan_id=scan_id, configuration=frozen["payload"],
+                    cutoff_at=cutoff, generated_at=now(),
+                )
+            current_scan = store.get_scan(scan_id=scan_id, db_path=context.db_path)
+            current_coverage = current_scan.get("coverage") if isinstance(current_scan, Mapping) and isinstance(current_scan.get("coverage"), Mapping) else None
+            if isinstance(current_coverage, Mapping) and isinstance(current_coverage.get("b90MorningParent"), Mapping):
+                parent_snapshot = dict(current_coverage["b90MorningParent"])
+                frozen_catalogue = parent_snapshot.get("reviewSource")
+                # Once review work items were reserved, the catalogue is part
+                # of their signed input.  Discovery completion can be exposed
+                # by its own scan coverage but must never replace the frozen
+                # review refs/targets with a later all-market snapshot.
+                if not (isinstance(frozen_catalogue, Mapping)
+                        and frozen_catalogue.get("catalogueVersion") == 1):
+                    parent_snapshot["reviewSource"] = dict(review_source_coverage or {"state": "unavailable"})
+                if current_scan.get("status") == "running":
+                    store.merge_running_scan_coverage(scan_id=scan_id,
+                        patch={"b90MorningParent": parent_snapshot}, db_path=context.db_path)
+        else:
+            result = execute_current_scan()
     except store.K10Conflict:
         # A lost lease owns no report.  Leave the running task and scan for its rightful
         # worker instead of writing a failure artifact from this expired instance.
@@ -5555,6 +7684,14 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
                 task_status="failed", failure_stage="discovery_failed",
             )
         raise
+    finally:
+        if discovery_executor is not None:
+            # Before the deadline path has fenced this worker, wait for an
+            # owned call so a failure cannot race the parent lease.  The
+            # deadline branch explicitly shuts down without waiting: its
+            # guarded late receipt is intentionally private and cannot mutate
+            # an already published report.
+            discovery_executor.shutdown(wait=not discovery_detached, cancel_futures=discovery_detached)
     if frozen["payload"].get("configVersion") == "k10-v2" and result.retry_at is not None:
         from .v2_store import record_incomplete_report
         failed_scan_id = result.checkpoint.get("scanId") if isinstance(result.checkpoint, Mapping) else None
@@ -5595,14 +7732,39 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
             configuration=frozen["payload"], config_id=frozen["configId"], config_revision=frozen["revision"],
             source_status=source_status, morning_refs=refs, generated_at=now(), review_matches=review_matches,
             additional_gaps=report_gaps, additional_coverage=report_coverage or None,
+            independent_gateway=review_verifier,
             persist=not isinstance(deferred, Mapping))
     except (store.K10Conflict, ValueError) as exc:
         return TaskResult("failed", "morning_report", {**result.checkpoint, "scanId": scan_id}, str(exc))
     checkpoint = {key: value for key, value in result.checkpoint.items() if key != "_b76DeferredPublication"}
     checkpoint.update({"morningReviewWorkItemIds": child_ids, "morningReviewState": review_state,
                        "morningAggregateStatus": report["status"]})
+    provisional_delivery: dict[str, Any] | None = None
+    if isinstance(deferred, Mapping) and isinstance(deferred.get("delivery"), Mapping):
+        # The delivery projection is immutable input to both the unresolved
+        # attempt check and the later publication transaction.  Construct it
+        # once so the precise work-item gap we authorize is the one readers
+        # receive, not a similar aggregate assembled after the fact.
+        provisional_delivery = _morning_delivery_for_report(
+            delivery=deferred["delivery"], report=report,
+        )
     attempts = store.external_attempt_summary(task_id=context.task.task_id, db_path=context.db_path)
-    if attempts["started"] or attempts["unknown"]:
+    isolated_dependencies = (
+        _b90_isolated_morning_unsettled_dependencies(
+            task_id=context.task.task_id, db_path=context.db_path,
+            review_work_item_ids=child_ids, delivery=provisional_delivery,
+            scan_id=scan_id,
+            discovery_deadline_declared=(checkpoint.get("allowDiscoveryUnknownPublication") is True),
+        ) if provisional_delivery is not None else None
+    )
+    if isolated_dependencies is not None:
+        deadline_isolated_discovery, isolated_review_ids = isolated_dependencies
+        if isolated_review_ids:
+            checkpoint["allowMorningReviewUnknownPublication"] = isolated_review_ids
+    else:
+        deadline_isolated_discovery, isolated_review_ids = False, []
+    if ((attempts["started"] or attempts["unknown"])
+            and isolated_dependencies is None):
         # A cancelled HTTP wait is not evidence that the provider charged
         # nothing. Let the existing failed-task transaction expose safe
         # materials/diagnostics, leaving the attempt unresolved and unreplayed.
@@ -5621,7 +7783,9 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
         # discovery.  Build the unified provisional manifest before any visible
         # report/card row is written, then carry that exact value through scan
         # and task finalization.
-        delivery = _morning_delivery_for_report(delivery=delivery, report=report)
+        delivery = provisional_delivery
+        if delivery is None:
+            return TaskResult("failed", "morning_report", {**checkpoint, "scanId": scan_id}, "晨报公开交付冻结状态无效")
         checkpoint["delivery"] = delivery
         checkpoint["deliveryPublicationAtomic"] = True
         aggregate_status = str(report["status"])
@@ -5672,14 +7836,19 @@ def production_scan_handler(context: TaskContext, *, tushare_token: str | None, 
 
 
 def production_handlers(*, tushare_token: str | None, parquet_dir: Path,
-                        now: Callable[[], datetime] = _now) -> dict[str,Any]:
+                        now: Callable[[], datetime] = _now,
+                        source_adapter_factory: Callable[[TaskContext, int], SourceAdapter | Sequence[SourceAdapter]] | None = None,
+                        ) -> dict[str,Any]:
     # Analysis owns its explicit provider/evidence resolution; registering it here prevents
     # an observation task from being stranded by the production worker's handler map.
     from .runtime import production_analysis_handler
     from .morning_runtime import morning_review_handler
 
     def scan_handler(context):
-        return production_scan_handler(context, tushare_token=tushare_token, parquet_dir=parquet_dir, now=now)
+        return production_scan_handler(
+            context, tushare_token=tushare_token, parquet_dir=parquet_dir, now=now,
+            source_adapter_factory=source_adapter_factory,
+        )
 
     # These are the public worker handlers.  Marking the map itself closes the
     # direct ``run_once`` bypass: a B75 task is not leased merely because a

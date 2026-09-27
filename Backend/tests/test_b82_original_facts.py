@@ -50,6 +50,15 @@ class _OriginalFactsTransport(DirectRoundTransport):
 
     def respond(self, request: httpx.Request) -> httpx.Response:
         payload = self._packet(request)
+        # B81 recovery fixtures intentionally freeze the old execution
+        # contract before enqueue. Its representative-candidate wire remains
+        # distinct from B90's all-catalyst company choices.
+        if "candidates" in payload and "choices" in payload.get("output", {}):
+            self._record("prioritize")
+            return self._ok({"choices": [
+                {"canonicalKey": row["canonicalKey"], "companyCode": row["companyCode"]}
+                for row in payload["candidates"]
+            ]})
         if (payload.get("action") is None
                 and isinstance(payload.get("documentId"), str)
                 and isinstance(payload.get("revision"), int)):
@@ -553,7 +562,10 @@ def _run_b81_fallback_finalization(*, tmp_path: Path, monkeypatch: pytest.Monkey
                 assert row[0] == "k10-research-3.5.0-b78"
                 assert "admissionContext" not in json.loads(row[1])
             else:
-                assert row[0] == "k10-investigation-v2"
+                # This branch is produced with the current explicitly bound
+                # contract; the historical B78 branch above stays frozen.
+                from neckline.k10.research_contracts import RESEARCH_ROUND_CONTRACT
+                assert row[0] == RESEARCH_ROUND_CONTRACT
                 assert "admissionContext" in json.loads(row[1])
     calls_before_resume = tuple(transport.calls)
     with sqlite3.connect(database) as connection:

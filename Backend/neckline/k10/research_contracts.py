@@ -34,7 +34,12 @@ MERGED_RESEARCH_ACTIONS = frozenset({"plan_research", "assess_and_decide"})
 # vocabulary and doing so would tempt a caller to project a round back into
 # the retired plan/assess/close state machine.
 RESEARCH_ROUND_ACTION = "research_round"
-RESEARCH_ROUND_CONTRACT = "k10-research-3.5.0-b78"
+# The B78 spelling remains in persisted snapshots and paid receipts.  Keep it
+# separate from the active semantic contract: a recovery must render the wire
+# that was paid for, never reinterpret an old snapshot as B90.
+B78_RESEARCH_ROUND_CONTRACT = "k10-research-3.5.0-b78"
+RESEARCH_ROUND_CONTRACT = "k10-research-3.6.0-b90"
+B92_RESEARCH_ROUND_CONTRACT = "k10-research-3.6.1-b92"
 
 
 class ResearchContractError(ValueError):
@@ -721,6 +726,39 @@ class ResearchRoundResult:
 def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ResearchContractError("company assessment 必须为对象", field_name="companyAssessments[]", expected="object")
+    # B90 has one natural-language conclusion per actually related company.
+    # It intentionally does not make the model restate rank / gap / two-day
+    # prose merely to satisfy several old storage fields.  Keep the old shape
+    # readable for frozen B78 receipts, but retain B90 as its own natural
+    # contract throughout the new execution path.
+    if "recommendation" in value or "analysisText" in value:
+        company_code = canonical_company_code(value.get("companyCode"))
+        recommendation = _enum(value.get("recommendation"), frozenset({"recommend", "pending", "exclude"}), "recommendation")
+        analysis = _text(value.get("analysisText"), "analysisText")
+        refs = _refs(value.get("sourceRefs"), "sourceRefs")
+        disclosure = EvidenceDisclosure.from_dict(value.get("evidenceDisclosure"))
+        identity = value.get("identity")
+        if identity is not None:
+            if not isinstance(identity, Mapping):
+                raise ResearchContractError("identity 必须为对象", field_name="identity", expected="object")
+            kind = _enum(identity.get("kind"), frozenset({"initial", "independent", "material_stage", "continuation", "needs_review", "invalidated", "background"}), "identity.kind")
+            related = identity.get("relatedOpportunityId")
+            if related is not None and (not isinstance(related, str) or not related):
+                raise ResearchContractError("identity.relatedOpportunityId 无效", field_name="identity.relatedOpportunityId")
+            _text(identity.get("reason"), "identity.reason")
+            identity = {
+                "kind": kind, "relatedOpportunityId": related, "reason": identity["reason"].strip(),
+                "newFacts": identity.get("newFacts"), "changedJudgment": identity.get("changedJudgment"),
+                "twoDayReason": identity.get("twoDayReason"),
+            }
+        return {
+            "companyCode": company_code,
+            "recommendation": recommendation,
+            "analysisText": analysis,
+            "sourceRefs": [dict(ref) for ref in refs],
+            "evidenceDisclosure": disclosure.to_dict(),
+            **({"identity": identity} if identity is not None else {}),
+        }
     company_code = canonical_company_code(value.get("companyCode"))
     role = _enum(value.get("role"), COMPANY_ROLES, "role")
     rank = value.get("rank")
@@ -741,7 +779,7 @@ def validate_company_assessment(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "CLAIM_KINDS", "CLAIM_NOVELTIES", "COMPANY_ROLES", "EVIDENCE_RELATIONS", "EXECUTION_STATUSES", "FULLTEXT_STATES",
-    "QUESTION_STATES", "QUERY_STATES", "RESEARCH_ACTIONS", "MERGED_RESEARCH_ACTIONS", "RESEARCH_ROUND_ACTION", "RESEARCH_ROUND_CONTRACT", "RESEARCH_STATUSES", "VERIFICATION_STATUSES",
+    "QUESTION_STATES", "QUERY_STATES", "RESEARCH_ACTIONS", "MERGED_RESEARCH_ACTIONS", "RESEARCH_ROUND_ACTION", "B78_RESEARCH_ROUND_CONTRACT", "RESEARCH_ROUND_CONTRACT", "B92_RESEARCH_ROUND_CONTRACT", "RESEARCH_STATUSES", "VERIFICATION_STATUSES",
     "Claim", "EvidenceDisclosure", "FullTextRequest", "QueryPath", "Question", "ResearchContractError", "ResearchSnapshot",
     "ResearchStageResult", "MergedResearchResult", "ResearchRoundResult", "validate_company_assessment",
 ]

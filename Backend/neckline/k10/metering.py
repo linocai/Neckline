@@ -472,6 +472,9 @@ class MeteredProvider(OpenAICompatProvider):
         if (not isinstance(active, dict) or active.get("settled") or active.get("settlementFailed")
                 or active.get("rawReceiptStarted")):
             return
+        # A sealed parent forbids business publication, not accounting.  A
+        # complete late response must still settle its exact paid receipt and
+        # actual usage; chat() fences the result from its caller separately.
         attempt_id = active.get("attemptId")
         request_sha256 = active.get("requestSha256")
         reuse_scope_sha256 = active.get("reuseScopeSha256")
@@ -492,15 +495,10 @@ class MeteredProvider(OpenAICompatProvider):
         # never returned to the original caller.
         raw_result.raw_receipt_only = True
         active["providerResult"] = raw_result
-        try:
-            self._settle_attempt(
-                attempt_id=attempt_id,
-                request_sha256=request_sha256,
-                reuse_scope_sha256=reuse_scope_sha256,
-                result=raw_result,
-            )
-        except Exception as exc:  # noqa: BLE001 - retain started/unknown, never repost
-            logger.warning("K10 raw response receipt settlement pending (%s)", type(exc).__name__)
+        if not self._settle_received_response(
+            attempt_id=attempt_id, request_sha256=request_sha256,
+            reuse_scope_sha256=reuse_scope_sha256, result=raw_result,
+        ):
             active["settlementFailed"] = True
             return
         active["settled"] = True
@@ -571,6 +569,38 @@ class MeteredProvider(OpenAICompatProvider):
             retry_after_seconds=getattr(result, "retry_after_seconds", None),
         )
 
+    def _settle_received_response(
+        self, *, attempt_id: str, request_sha256: str, reuse_scope_sha256: str, result: LLMResult,
+    ) -> bool:
+        """Persist a received response without ever issuing a second request.
+
+        The first bounded SQLite transaction can lose a race with a sibling
+        checkpoint write after the provider has already returned its body.
+        Make one further *local* settlement attempt after that transaction has
+        exhausted its own bounded backoff.  Both calls carry the same attempt
+        ID and immutable raw receipt; an unresolved second write remains a
+        started/unknown attempt and is never treated as safe to repost.
+        """
+        from .schema import SqliteWriteBusy
+
+        for local_attempt in range(2):
+            try:
+                self._settle_attempt(
+                    attempt_id=attempt_id, request_sha256=request_sha256,
+                    reuse_scope_sha256=reuse_scope_sha256, result=result,
+                )
+                return True
+            except SqliteWriteBusy as exc:
+                if local_attempt == 0:
+                    logger.warning("K10 response receipt settlement retry after SQLite contention")
+                    continue
+                logger.warning("K10 response receipt settlement pending (%s)", type(exc).__name__)
+                return False
+            except Exception as exc:  # noqa: BLE001 - retain the immutable unknown boundary
+                logger.warning("K10 response receipt settlement pending (%s)", type(exc).__name__)
+                return False
+        return False
+
     def _finalize_provider_result(self, result: LLMResult) -> LLMResult:
         """Settle non-body outcomes and expose a parsed received body.
 
@@ -602,15 +632,10 @@ class MeteredProvider(OpenAICompatProvider):
         if not all(isinstance(value, str) and value for value in (attempt_id, request_sha256, reuse_scope_sha256)):
             return result
         active["providerResult"] = result
-        try:
-            self._settle_attempt(
-                attempt_id=attempt_id,
-                request_sha256=request_sha256,
-                reuse_scope_sha256=reuse_scope_sha256,
-                result=result,
-            )
-        except Exception as exc:  # noqa: BLE001 - preserve unknown outcome; never issue a retry
-            logger.warning("K10 response receipt settlement pending (%s)", type(exc).__name__)
+        if not self._settle_received_response(
+            attempt_id=attempt_id, request_sha256=request_sha256,
+            reuse_scope_sha256=reuse_scope_sha256, result=result,
+        ):
             active["settlementFailed"] = True
             return LLMResult(
                 ok=False, reason="K10 response persistence failed", provider=self.name, model=self.model,
@@ -620,6 +645,10 @@ class MeteredProvider(OpenAICompatProvider):
         return result
 
     def chat(self, *args, **kwargs):
+        response_fence = getattr(self, "response_fence", None)
+        if callable(getattr(response_fence, "is_set", None)) and response_fence.is_set():
+            return LLMResult(ok=False, reason="parent report already sealed", provider=self.name, model=self.model,
+                             error_code="provider_response_after_report_close", usage_unavailable=True)
         # DeepSeek's extension is not part of the Chat Completions protocol.
         effective_kwargs = dict(kwargs)
         if not self.model.lower().startswith("deepseek") and isinstance(effective_kwargs.get("model_options"), Mapping):
@@ -683,8 +712,18 @@ class MeteredProvider(OpenAICompatProvider):
                     raise ValueError("缺少已派发模型请求指纹")
                 if reuse_scope_sha256 is None:
                     raise ValueError("缺少已派发模型调用语义范围")
-                self._settle_attempt(attempt_id=attempt_id, request_sha256=request_sha256,
-                                     reuse_scope_sha256=reuse_scope_sha256, result=result)
+                if not self._settle_received_response(
+                    attempt_id=attempt_id, request_sha256=request_sha256,
+                    reuse_scope_sha256=reuse_scope_sha256, result=result,
+                ):
+                    raise RuntimeError("K10 response receipt settlement pending")
+            if callable(getattr(response_fence, "is_set", None)) and response_fence.is_set():
+                # Keep result/providerResult intact for both accounting
+                # ledgers.  Only the business-facing return is fenced.
+                returned = LLMResult(
+                    ok=False, reason="parent report already sealed", provider=self.name, model=self.model,
+                    error_code="provider_response_after_report_close", usage_unavailable=True,
+                )
         except Exception as exc:
             if result is not None and attempt_id is not None:
                 # The provider may already have billed the request.  A failed local

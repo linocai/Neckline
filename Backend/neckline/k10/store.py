@@ -394,6 +394,119 @@ def read_title_selection_manifest(*, task_id: str, db_path: Path) -> Optional[di
     return None if row is None else {"taskId": task_id, "selectionManifestSha256": row[0], "selectedRefs": json.loads(row[1]), "createdAt": row[2]}
 
 
+def bind_selected_body_revision(
+    *, task_id: str, parent_document_id: str, parent_revision: int,
+    body_document_id: str, body_revision: int, question: str, obtained_at: str,
+    db_path: Path, leaseguard: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Bind one selected directory version to its real get_news body once."""
+    if not question.strip() or _utc_instant(obtained_at) == "":
+        raise ValueError("正文补证缺少问题或取得时间")
+    if leaseguard:
+        leaseguard()
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        if leaseguard:
+            leaseguard()
+        selected = conn.execute(
+            "SELECT 1 FROM k10_v2_title_selection_manifests m "
+            "JOIN k10_v2_title_triage_items i ON i.task_id=m.task_id "
+            "WHERE m.task_id=? AND i.document_id=? AND i.revision=? AND i.selection_rank IS NOT NULL",
+            (task_id, parent_document_id, parent_revision),
+        ).fetchone()
+        if selected is None or body_document_id != parent_document_id or body_revision <= parent_revision:
+            raise K10Conflict("正文 revision 不属于已选目录原件")
+        body = conn.execute(
+            "SELECT v.original_text,d.source_key,d.external_id FROM k10_source_document_versions v "
+            "JOIN k10_source_documents d ON d.document_id=v.document_id "
+            "WHERE v.document_id=? AND v.revision=?",
+            (body_document_id, body_revision),
+        ).fetchone()
+        if body is None or not body[0] or body[1] != "jin10-news":
+            raise K10Conflict("入选正文版本不可读取或来源不符")
+        row = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            raise K10Conflict("正文任务不存在")
+        checkpoint = json.loads(row[0])
+        receipts = checkpoint.get("toolReceipts") if isinstance(checkpoint, dict) else None
+        links = checkpoint.get("toolQuestionLinks") if isinstance(checkpoint, dict) else None
+        proven = False
+        for attempt in conn.execute(
+            "SELECT attempt_key,input_sha256 FROM k10_external_attempts "
+            "WHERE task_id=? AND stage='jin10:get_news' AND state='succeeded'",
+            (task_id,),
+        ):
+            receipt = receipts.get(attempt[0]) if isinstance(receipts, dict) else None
+            related = links.get(attempt[1]) if isinstance(links, dict) else None
+            if not isinstance(receipt, dict) or receipt.get("inputSha256") != attempt[1]:
+                continue
+            if not isinstance(related, list) or not any(
+                isinstance(link, dict) and link.get("question") == question
+                and link.get("target") == f"selected-article:{parent_document_id}@{parent_revision}"
+                for link in related
+            ):
+                continue
+            raw = receipt.get("result")
+            structured = raw.get("structuredContent") if isinstance(raw, dict) else None
+            article = structured.get("data") if isinstance(structured, dict) else None
+            if not isinstance(article, dict) or article.get("content") != body[0]:
+                continue
+            if article.get("id") != body[2]:
+                continue
+            proven = True
+            break
+        if not proven:
+            raise K10Conflict("入选正文缺少同任务、同问题的真实 get_news 回执")
+        bindings = checkpoint.setdefault("selectedBodyBindings", {})
+        if not isinstance(bindings, dict):
+            raise K10Conflict("正文绑定检查点无效")
+        key = f"{parent_document_id}@{parent_revision}"
+        binding = {"parentRef": {"documentId": parent_document_id, "revision": parent_revision},
+                   "bodyRef": {"documentId": body_document_id, "revision": body_revision},
+                   "question": question, "obtainedAt": _utc_instant(obtained_at)}
+        old = bindings.get(key)
+        if old is not None and old != binding:
+            raise K10Conflict("入选目录正文已绑定，不能改绑")
+        if old is None:
+            bindings[key] = binding
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?",
+                         (_json(checkpoint), task_id))
+        return binding
+
+
+def selected_body_binding(*, task_id: str, parent_document_id: str,
+                          parent_revision: int, db_path: Path) -> dict[str, Any] | None:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+    if row is None:
+        return None
+    checkpoint = json.loads(row[0])
+    bindings = checkpoint.get("selectedBodyBindings") if isinstance(checkpoint, dict) else None
+    value = bindings.get(f"{parent_document_id}@{parent_revision}") if isinstance(bindings, dict) else None
+    return value if isinstance(value, dict) else None
+
+
+def _selected_body_parent_conn(conn, *, task_id: str, document_id: str,
+                               revision: int) -> tuple[str, int] | None:
+    row = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+    checkpoint = json.loads(row[0]) if row is not None else {}
+    bindings = checkpoint.get("selectedBodyBindings") if isinstance(checkpoint, dict) else None
+    if not isinstance(bindings, dict):
+        return None
+    for binding in bindings.values():
+        if not isinstance(binding, dict):
+            continue
+        body = binding.get("bodyRef")
+        parent = binding.get("parentRef")
+        if (isinstance(body, dict) and isinstance(parent, dict)
+                and body.get("documentId") == document_id and body.get("revision") == revision
+                and isinstance(parent.get("documentId"), str)
+                and isinstance(parent.get("revision"), int)):
+            return parent["documentId"], parent["revision"]
+    return None
+
+
 def admit_article(
     *, task_id: str, document_id: str, revision: int, admission_kind: str, created_at: str, db_path: Path,
 ) -> dict[str, Any]:
@@ -417,6 +530,19 @@ def admit_article(
             if old[0] != admission_kind:
                 raise K10Conflict("同一文章不能以不同 admission 类型占两次名额")
             return {"state": "reused", "reason": old[2], "admissionKind": old[0], "articleState": old[1]}
+        if admission_kind == "selected":
+            parent = _selected_body_parent_conn(conn, task_id=task_id,
+                                                document_id=document_id, revision=revision)
+            if parent is not None:
+                admitted = conn.execute(
+                    "SELECT admission_kind,state,reason_code FROM k10_v2_article_admissions "
+                    "WHERE task_id=? AND document_id=? AND revision=?",
+                    (task_id, *parent),
+                ).fetchone()
+                if admitted is None or admitted[0] != "selected":
+                    raise K10Conflict("入选正文父目录缺少 admission")
+                return {"state": "reused", "reason": admitted[2], "admissionKind": "selected",
+                        "articleState": admitted[1]}
         selected = conn.execute(
             "SELECT 1 FROM k10_v2_title_selection_manifests m JOIN k10_v2_title_triage_items i ON i.task_id=m.task_id "
             "WHERE m.task_id=? AND i.document_id=? AND i.revision=? AND i.selection_rank IS NOT NULL",
@@ -443,6 +569,10 @@ def record_article_outcome(
         raise ValueError("正文失败必须带安全 reason_code")
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
+        parent = _selected_body_parent_conn(conn, task_id=task_id,
+                                            document_id=document_id, revision=revision)
+        if parent is not None:
+            document_id, revision = parent
         old = conn.execute(
             "SELECT state,reason_code FROM k10_v2_article_admissions WHERE task_id=? AND document_id=? AND revision=?",
             (task_id, document_id, revision),
@@ -605,6 +735,116 @@ def begin_external_attempt(
             "VALUES(?,?,?,?,?,?, 'started',?)", (attempt_id, task_id, stage, item_key, attempt_key, input_sha256, started_at),
         )
     return {"state": "started", "reason": None, "attemptId": attempt_id}
+
+
+def begin_tool_attempt(*, task_id: str, stage: str, item_key: str, attempt_key: str,
+                       input_sha256: str, started_at: str, db_path: Path) -> dict[str, Any]:
+    """Reserve one exact Jin10/TuShare tool wire input before network I/O."""
+    if not all((task_id, stage, item_key, attempt_key, input_sha256, started_at)):
+        raise ValueError("工具 attempt 身份不完整")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        task = conn.execute("SELECT kind,status,checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if task is None or task[1] != "running":
+            raise K10Conflict("工具调用要求运行中任务")
+        key = control_key_for_task(str(task[0]))
+        control = conn.execute("SELECT state FROM k10_run_controls WHERE control_key=?", (key,)).fetchone()
+        if control is None or control[0] != "open":
+            return {"state": "paused", "attemptId": None}
+        old_rows = conn.execute(
+            "SELECT attempt_id,state,input_sha256,attempt_key,error_code,settled_at "
+            "FROM k10_external_attempts WHERE task_id=? AND "
+            "(attempt_key=? OR attempt_key LIKE ?) ORDER BY rowid",
+            (task_id, attempt_key, attempt_key + ":retry:%"),
+        ).fetchall()
+        checkpoint = json.loads(task[2])
+        receipts = checkpoint.get("toolReceipts") if isinstance(checkpoint, dict) else None
+        if old_rows:
+            if any(old[2] != input_sha256 for old in old_rows):
+                raise K10Conflict("工具 attempt_key 输入冲突")
+            for old in old_rows:
+                receipt = receipts.get(old[3]) if isinstance(receipts, dict) else None
+                if old[1] == "succeeded" and isinstance(receipt, dict) and receipt.get("inputSha256") == input_sha256:
+                    return {"state": "reused", "attemptId": old[0], "result": receipt["result"]}
+                if old[1] in {"started", "unknown"}:
+                    return {"state": "pending_outcome", "attemptId": old[0]}
+            last = old_rows[-1]
+            if last[4] not in {"pre_send_error", "closed_before_send", "rate_limited", "session_expired"}:
+                return {"state": "known_failure", "attemptId": last[0]}
+            budget = json.loads(conn.execute("SELECT budget_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
+            maximum = budget.get("maxAttempts") if isinstance(budget, dict) else None
+            if not isinstance(maximum, int) or maximum < 1:
+                bound, _ = _bound_v3_config(conn, task_id=task_id)
+                discovery = bound.get("discovery") if isinstance(bound, Mapping) else None
+                maximum = discovery.get("networkMaxAttempts") if isinstance(discovery, Mapping) else 1
+            if len(old_rows) >= maximum:
+                return {"state": "attempt_limit", "attemptId": last[0]}
+            if last[4] == "rate_limited" and isinstance(last[5], str):
+                if datetime.fromisoformat(started_at) < datetime.fromisoformat(last[5]) + timedelta(seconds=30):
+                    return {"state": "retry_later", "attemptId": last[0]}
+            attempt_key = attempt_key + f":retry:{len(old_rows)}"
+        attempt_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO k10_external_attempts(attempt_id,task_id,stage,item_key,attempt_key,input_sha256,state,started_at) "
+            "VALUES(?,?,?,?,?,?,'started',?)",
+            (attempt_id, task_id, stage, item_key, attempt_key, input_sha256, started_at),
+        )
+        return {"state": "started", "attemptId": attempt_id, "attemptKey": attempt_key}
+
+
+def settle_tool_attempt(*, task_id: str, attempt_id: str, attempt_key: str,
+                        input_sha256: str, result: Mapping[str, Any] | None,
+                        outcome: str, safe_error_code: str | None, settled_at: str,
+                        db_path: Path) -> None:
+    """Commit the exact structured reply and attempt outcome atomically."""
+    if outcome not in {"succeeded", "failed", "unknown"} or (outcome == "succeeded") != (result is not None):
+        raise ValueError("工具回执状态无效")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute(
+            "SELECT state,input_sha256,attempt_key FROM k10_external_attempts WHERE attempt_id=? AND task_id=?",
+            (attempt_id, task_id),
+        ).fetchone()
+        if row is None or tuple(row[1:]) != (input_sha256, attempt_key):
+            raise K10Conflict("工具回执身份不匹配")
+        if row[0] != "started":
+            raise K10Conflict("工具回执已结算")
+        task = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if task is None:
+            raise K10Conflict("工具任务不存在")
+        checkpoint = json.loads(task[0])
+        if not isinstance(checkpoint, dict):
+            raise K10Conflict("工具任务检查点无效")
+        if result is not None:
+            receipts = checkpoint.setdefault("toolReceipts", {})
+            if not isinstance(receipts, dict) or attempt_key in receipts:
+                raise K10Conflict("工具回执重复")
+            receipts[attempt_key] = {"inputSha256": input_sha256, "result": dict(result),
+                                      "receivedAt": settled_at}
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+        conn.execute(
+            "UPDATE k10_external_attempts SET state=?,error_code=?,settled_at=? WHERE attempt_id=?",
+            (outcome, safe_error_code, settled_at, attempt_id),
+        )
+
+
+def record_tool_question_link(*, task_id: str, input_sha256: str, question: str,
+                              target: str, purpose: str, db_path: Path) -> None:
+    link = {"question": question, "target": target, "purpose": purpose}
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            raise K10Conflict("工具任务不存在")
+        checkpoint = json.loads(row[0])
+        links = checkpoint.setdefault("toolQuestionLinks", {})
+        if not isinstance(links, dict):
+            raise K10Conflict("工具问题审计无效")
+        related = links.setdefault(input_sha256, [])
+        if link not in related:
+            related.append(link)
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?",
+                         (_json(checkpoint), task_id))
 
 
 def _same_report_provider_terminal(conn, *, task_id: str, service: str) -> tuple[str, str] | None:
@@ -1249,6 +1489,47 @@ def run_control_status(*, db_path: Path) -> dict[str, Any]:
     return {"state": row[0], "reasonCode": row[1], "changedAt": row[2], "changedBy": row[3]}
 
 
+_REPORT_TASK_KINDS = frozenset({"evening_scan", "morning_scan", "analysis", "morning_review",
+                                "collect_market_day_fact", "evaluate_company_window"})
+_COLLECTION_TASK_KINDS = frozenset({"collect_news"})
+
+
+def control_key_for_task(kind: str) -> str:
+    if kind in _COLLECTION_TASK_KINDS:
+        return "k10_collection"
+    if kind in _REPORT_TASK_KINDS:
+        return "k10_discovery"
+    raise K10Conflict("未知任务类型不能自动领取")
+
+
+def task_control_status(*, kind: str, db_path: Path) -> dict[str, Any]:
+    key = control_key_for_task(kind)
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT state,reason_code,changed_at,changed_by FROM k10_run_controls WHERE control_key=?", (key,)
+        ).fetchone()
+    if row is None:
+        return {"state": "closed", "reasonCode": "control_missing", "changedAt": None, "changedBy": None}
+    return {"state": row[0], "reasonCode": row[1], "changedAt": row[2], "changedBy": row[3]}
+
+
+def set_collection_control(*, state: str, reason_code: str, changed_at: str,
+                           changed_by: str, db_path: Path) -> dict[str, Any]:
+    if state not in {"open", "closed"} or not reason_code.strip() or not changed_by.strip():
+        raise ValueError("采集控制需要明确 state、reason_code 与 changed_by")
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        conn.execute(
+            "INSERT INTO k10_run_controls(control_key,state,reason_code,changed_at,changed_by) "
+            "VALUES('k10_collection',?,?,?,?) ON CONFLICT(control_key) DO UPDATE SET "
+            "state=excluded.state,reason_code=excluded.reason_code,changed_at=excluded.changed_at,"
+            "changed_by=excluded.changed_by",
+            (state, reason_code, changed_at, changed_by),
+        )
+    return task_control_status(kind="collect_news", db_path=db_path)
+
+
 def run_control_execution_status(*, db_path: Path) -> dict[str, Any]:
     """Read the control boundary together with unsettled work, without DDL.
 
@@ -1657,12 +1938,73 @@ def reopen_scan(*, scan_id: str, db_path: Path) -> bool:
     return changed == 1
 
 
-def update_running_scan_coverage(*, scan_id: str, coverage: Mapping[str, Any], db_path: Path) -> None:
-    """Checkpoint a running scan before an LLM call; terminal scans remain immutable."""
+def _merge_coverage_mapping(existing: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge a narrow running-scan patch without erasing a sibling channel.
+
+    Morning B90 runs discovery and parent reviews concurrently.  They may each
+    checkpoint a different subtree of the scan coverage, so an in-memory full
+    snapshot is never a safe replacement for a sibling's later durable write.
+    Lists remain explicit replacement values; only independently-addressable
+    mappings merge recursively.
+    """
+    merged = dict(existing)
+    for key, value in patch.items():
+        old = merged.get(key)
+        if isinstance(old, Mapping) and isinstance(value, Mapping):
+            merged[key] = _merge_coverage_mapping(old, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def merge_running_scan_coverage(*, scan_id: str, patch: Mapping[str, Any], db_path: Path) -> None:
+    """Atomically merge a focused checkpoint patch into a running scan."""
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
+        row = conn.execute("SELECT coverage_json FROM k10_scans WHERE scan_id=? AND status='running'", (scan_id,)).fetchone()
+        if row is None:
+            raise K10Conflict("扫描不是当前 running 状态")
+        try:
+            current = json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("当前扫描 coverage 无效") from exc
+        if not isinstance(current, Mapping):
+            raise K10Conflict("当前扫描 coverage 无效")
+        merged = _merge_coverage_mapping(current, patch)
         changed = conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=? AND status='running'",
-                               (_json(coverage), scan_id)).rowcount
+                               (_json(merged), scan_id)).rowcount
+        if changed != 1:
+            raise K10Conflict("扫描不是当前 running 状态")
+
+
+def update_running_scan_coverage(*, scan_id: str, coverage: Mapping[str, Any], db_path: Path) -> None:
+    """Checkpoint a running scan before an LLM call; terminal scans remain immutable.
+
+    Discovery's historical callers intentionally submit a complete mutable
+    snapshot.  Preserve the B90 parent-review subtree from the latest durable
+    row when that snapshot predates a concurrent review checkpoint; the review
+    side uses :func:`merge_running_scan_coverage` for its focused writes.
+    """
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        row = conn.execute("SELECT coverage_json FROM k10_scans WHERE scan_id=? AND status='running'", (scan_id,)).fetchone()
+        if row is None:
+            raise K10Conflict("扫描不是当前 running 状态")
+        try:
+            current = json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise K10Conflict("当前扫描 coverage 无效") from exc
+        if not isinstance(current, Mapping):
+            raise K10Conflict("当前扫描 coverage 无效")
+        persisted_parent = current.get("b90MorningParent")
+        next_coverage = dict(coverage)
+        if isinstance(persisted_parent, Mapping):
+            supplied_parent = next_coverage.get("b90MorningParent")
+            next_coverage["b90MorningParent"] = _merge_coverage_mapping(
+                persisted_parent, supplied_parent if isinstance(supplied_parent, Mapping) else {},
+            )
+        changed = conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=? AND status='running'",
+                               (_json(next_coverage), scan_id)).rowcount
         if changed != 1:
             raise K10Conflict("扫描不是当前 running 状态")
 
@@ -1704,6 +2046,54 @@ def latest_source_watermark(*, source_key: str, db_path: Path) -> Optional[dict[
         return None
     return {"watermarkId": row[0], "sourceKey": source_key, "cursorValue": row[1],
             "successCutoffAt": row[2], "fetchedAt": row[3], "scanId": row[4], "createdAt": row[5]}
+
+
+def save_collection_source_checkpoint(*, task_id: str, worker_id: str, source_key: str,
+                                      source_state: Mapping[str, Any], saved_at: datetime,
+                                      db_path: Path, watermark_through: str | None = None,
+                                      leaseguard: Callable[[], None] | None = None) -> dict[str, Any]:
+    """Save one durable page/result and optionally its success watermark together."""
+    if saved_at.tzinfo is None or not source_key or not worker_id:
+        raise ValueError("采集检查点身份无效")
+    now = saved_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+    if leaseguard:
+        leaseguard()
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        if leaseguard:
+            leaseguard()
+        row = conn.execute(
+            "SELECT checkpoint_json FROM k10_tasks WHERE task_id=? AND kind='collect_news' "
+            "AND status='running' AND lease_owner=? AND lease_until>=?",
+            (task_id, worker_id, now),
+        ).fetchone()
+        if row is None:
+            raise K10Conflict("采集检查点租约无效")
+        checkpoint = json.loads(row[0])
+        if not isinstance(checkpoint, dict):
+            raise K10Conflict("采集检查点无效")
+        sources = checkpoint.setdefault("sources", {})
+        if not isinstance(sources, dict):
+            raise K10Conflict("采集来源检查点无效")
+        sources[source_key] = dict(source_state)
+        checkpoint["collectionContract"] = "k10-collection-3.6.1-b92"
+        conn.execute("UPDATE k10_tasks SET checkpoint_json=?,updated_at=? WHERE task_id=?",
+                     (_json(checkpoint), now, task_id))
+        if watermark_through is not None:
+            watermark = _utc_instant(watermark_through)
+            watermark_id = "watermark_" + hashlib.sha256(
+                f"{task_id}\x1f{source_key}\x1f{watermark}".encode()).hexdigest()[:32]
+            old = conn.execute("SELECT source_key,success_cutoff_at FROM k10_source_watermark_updates "
+                               "WHERE watermark_id=?", (watermark_id,)).fetchone()
+            if old is not None and tuple(old) != (source_key, watermark):
+                raise K10Conflict("采集水位身份冲突")
+            conn.execute(
+                "INSERT OR IGNORE INTO k10_source_watermark_updates"
+                "(watermark_id,source_key,cursor_value,success_cutoff_at,fetched_at,scan_id,created_at)"
+                " VALUES(?,?,NULL,?,?,NULL,?)",
+                (watermark_id, source_key, watermark, now, now),
+            )
+        return checkpoint
 
 
 def create_candidate(
@@ -2058,9 +2448,10 @@ def _insert_task(
         if tuple(old[1:7]) != stored:
             raise K10Conflict("任务幂等键被不同输入复用")
         return Task(str(old[0]), str(old[1]), str(old[7]), int(old[8]), old[9], old[10], json.loads(old[5]))
-    if kind in {"evening_scan", "morning_scan", "analysis", "morning_review"}:
+    if kind in _REPORT_TASK_KINDS | _COLLECTION_TASK_KINDS:
+        control_key = control_key_for_task(kind)
         control = conn.execute(
-            "SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'"
+            "SELECT state FROM k10_run_controls WHERE control_key=?", (control_key,)
         ).fetchone()
         if control is None or control[0] != "open":
             raise K10Conflict("K10 运行控制非 open，拒绝入队")
@@ -2082,9 +2473,10 @@ def enqueue_task(
 ) -> Task:
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
-        if require_discovery_control_open or kind in {"evening_scan", "morning_scan", "analysis", "morning_review"}:
+        if require_discovery_control_open or kind in _REPORT_TASK_KINDS | _COLLECTION_TASK_KINDS:
+            control_key = control_key_for_task(kind)
             control = conn.execute(
-                "SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'"
+                "SELECT state FROM k10_run_controls WHERE control_key=?", (control_key,)
             ).fetchone()
             if control is None or control[0] != "open":
                 # A closed control may return only an already complete, unchanged
@@ -2422,7 +2814,8 @@ def append_morning_report(
             content = item.get("content")
             if not isinstance(item_id, str) or not item_id or not isinstance(state, str) or not state or not isinstance(content, Mapping):
                 raise ValueError("晨报项目缺少 itemId、status 或 content")
-            content = {key: value for key, value in content.items() if key != "lifecycleUpdate"}
+            content = {key: value for key, value in content.items()
+                       if key not in {"lifecycleUpdate", "lifecycleUpdates"}}
             values.append({"itemId": item_id, "section": group, "position": position,
                            "opportunityId": item.get("opportunityId"), "companyWindowId": item.get("companyWindowId"),
                            "status": state, "content": dict(content)})
@@ -2603,6 +2996,244 @@ def list_source_document_versions(
     return [{"documentId": r[0], "revision": r[1], "contentSha256": r[2], "publishedAt": r[3],
              "publishedPrecision": r[4], "fetchedAt": r[5], "originalText": r[6], "excerpt": r[7],
              "fetchVersion": r[8], "metadata": json.loads(r[9]), "createdAt": r[10], "sourceKey": r[11]} for r in rows]
+
+
+def validate_collected_input_binding(*, execution_profile: Mapping[str, Any],
+                                     source_keys: Sequence[str]) -> None:
+    discovery = execution_profile.get("discovery")
+    if not isinstance(discovery, Mapping) or discovery.get("reportInputContract") != "k10-collected-input-3.6.1-b92":
+        raise K10Conflict("报告执行配置缺少 B92 本地资料契约")
+    if list(source_keys) != discovery.get("collectionSourceKeys"):
+        raise K10Conflict("报告资料来源与冻结执行配置不一致")
+
+
+def freeze_collected_input(
+    *, db_path: Path, scan_id: str, window: str, source_keys: Sequence[str],
+    frozen_at: datetime, leaseguard: Callable[[], None] | None = None,
+    bootstrap_at: str | None = None,
+) -> dict[str, Any]:
+    """Freeze exact durable document versions and coverage in one short transaction.
+
+    A retry returns the same scan coverage projection. The previous formal
+    evening report supplies the normal consumption boundary; the first B92
+    evening requires an explicit bootstrap instead of reprocessing all history.
+    """
+    if window not in {"evening", "morning"} or frozen_at.tzinfo is None:
+        raise ValueError("报告窗口和冻结时刻无效")
+    keys = _validated_source_keys(source_keys)
+    if not keys:
+        raise ValueError("报告必须明确指定采集来源")
+    frozen_text = frozen_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+    if leaseguard:
+        leaseguard()
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        if leaseguard:
+            leaseguard()
+        row = conn.execute("SELECT window_kind,cutoff_at,coverage_json FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone()
+        if row is None or row[0] != window:
+            raise K10Conflict("冻结报告扫描不存在或窗口不匹配")
+        coverage = json.loads(row[2])
+        if not isinstance(coverage, dict):
+            raise K10Conflict("扫描覆盖快照无效")
+        previous = coverage.get("collectedInput")
+        if previous is not None:
+            if not isinstance(previous, dict):
+                raise K10Conflict("已冻结资料快照无效")
+            return previous
+        cutoff = _utc_instant(row[1])
+        scan_rows = conn.execute(
+            "SELECT s.scan_id,s.coverage_json,s.created_at FROM k10_scans s "
+            "JOIN k10_v2_report_runs r ON r.scan_id=s.scan_id "
+            "WHERE s.scan_id<>? AND s.window_kind='evening' AND r.available_at IS NOT NULL "
+            "AND r.status IN ('completed','partial') "
+            "AND julianday(s.cutoff_at)<julianday(?) "
+            "ORDER BY julianday(s.cutoff_at) DESC,s.created_at DESC LIMIT 1",
+            (scan_id, cutoff),
+        ).fetchall()
+        prior_coverage = json.loads(scan_rows[0][1]) if scan_rows else {}
+        prior_input = prior_coverage.get("collectedInput") if isinstance(prior_coverage, dict) else None
+        if not isinstance(prior_input, dict):
+            if scan_rows:
+                raise K10Conflict("新起点报告缺少 collectedInput；禁止读取旧报告兼容边界")
+            if not isinstance(bootstrap_at, str):
+                raise K10Conflict("首次 B92 冻结缺少显式 bootstrap")
+            prior_cutoff = _utc_instant(bootstrap_at)
+        else:
+            prior_cutoff = str(prior_input.get("inputFrozenAt") or "")
+            if not prior_cutoff:
+                raise K10Conflict("上次正式资料边界无效")
+        terminal: set[tuple[str, int]] = set()
+        blocked: set[tuple[str, int]] = set()
+        # Only durable terminal judgements count as consumed. Unknown and
+        # failed versions remain eligible in the next evening.
+        previously_present: set[tuple[str, int]] = set()
+        for prior in conn.execute(
+            "SELECT s.scan_id,s.coverage_json FROM k10_scans s JOIN k10_v2_report_runs r ON r.scan_id=s.scan_id "
+            "WHERE s.window_kind='evening' AND r.available_at IS NOT NULL "
+            "AND r.status IN ('completed','partial') AND julianday(s.cutoff_at)<julianday(?)", (cutoff,)
+        ):
+            item = json.loads(prior[1])
+            previous_input = item.get("collectedInput") if isinstance(item, dict) else None
+            previous_refs = (previous_input.get("inputDocumentRefs") if isinstance(previous_input, dict)
+                             else None)
+            if isinstance(previous_refs, list):
+                previously_present.update((ref["documentId"], ref["revision"]) for ref in previous_refs
+                                          if isinstance(ref, dict) and isinstance(ref.get("documentId"), str)
+                                          and isinstance(ref.get("revision"), int))
+                unsettled = conn.execute(
+                    "SELECT 1 FROM k10_scan_execution_bindings b "
+                    "JOIN k10_external_attempts a ON a.task_id=b.task_id "
+                    "WHERE b.scan_id=? AND a.state IN ('started','unknown') LIMIT 1",
+                    (prior[0],),
+                ).fetchone()
+                if unsettled is not None:
+                    blocked.update((ref["documentId"], ref["revision"]) for ref in previous_refs
+                                   if isinstance(ref, dict) and isinstance(ref.get("documentId"), str)
+                                   and isinstance(ref.get("revision"), int))
+            consumption = item.get("collectedInputConsumption") if isinstance(item, dict) else None
+            refs = consumption.get("terminalRefs") if isinstance(consumption, dict) else None
+            if isinstance(refs, list):
+                terminal.update((ref["documentId"], ref["revision"]) for ref in refs
+                                if isinstance(ref, dict) and isinstance(ref.get("documentId"), str)
+                                and isinstance(ref.get("revision"), int))
+        # A failed/unpublished old report may still own an unresolved paid
+        # request. Publication is the consumption boundary, never permission
+        # to route that dependency through a fresh report task.
+        for prior in conn.execute(
+            "SELECT s.coverage_json FROM k10_scans s WHERE s.scan_id<>? "
+            "AND julianday(s.cutoff_at)<julianday(?) AND EXISTS ("
+            "SELECT 1 FROM k10_scan_execution_bindings b "
+            "JOIN k10_external_attempts a ON a.task_id=b.task_id "
+            "WHERE b.scan_id=s.scan_id AND a.state IN ('started','unknown'))",
+            (scan_id, cutoff),
+        ):
+            item = json.loads(prior[0])
+            old_input = item.get("collectedInput") if isinstance(item, dict) else None
+            old_refs = (old_input.get("inputDocumentRefs") if isinstance(old_input, dict)
+                        else None)
+            if isinstance(old_refs, list):
+                blocked.update((ref["documentId"], ref["revision"]) for ref in old_refs
+                               if isinstance(ref, dict) and isinstance(ref.get("documentId"), str)
+                               and isinstance(ref.get("revision"), int))
+        args: list[Any] = [frozen_text, *keys]
+        rows = conn.execute(
+            "SELECT v.document_id,v.revision,d.source_key,v.content_sha256,v.published_at,v.fetched_at "
+            "FROM k10_source_document_versions v JOIN k10_source_documents d ON d.document_id=v.document_id "
+            "WHERE julianday(v.fetched_at)<=julianday(?) AND d.source_key IN (" +
+            ",".join("?" for _ in keys) + ") ORDER BY v.document_id,v.revision", tuple(args)
+        ).fetchall()
+        # Keep a prior nonterminal revision even if its document has since
+        # been corrected. A paid unknown bound to that exact ref must not be
+        # silently exchanged for the new revision.
+        refs = [
+            {"documentId": item[0], "revision": item[1], "sourceKey": item[2],
+             "contentSha256": item[3], "publishedAt": item[4], "fetchedAt": item[5]}
+            for item in rows
+            if (item[0], item[1]) not in terminal
+            and (item[0], item[1]) not in blocked
+            and ((window == "evening" and (item[0], item[1]) in previously_present)
+                 or datetime.fromisoformat(str(item[5])) > datetime.fromisoformat(prior_cutoff))
+        ]
+        refs.sort(key=lambda item: (item["fetchedAt"], item["documentId"], item["revision"]))
+        task_rows = conn.execute(
+            "SELECT task_id,checkpoint_json FROM k10_tasks WHERE kind='collect_news' "
+            "AND julianday(created_at)<=julianday(?) "
+            "ORDER BY julianday(json_extract(payload_json,'$.slotAt')) DESC,created_at DESC,task_id DESC",
+            (frozen_text,)
+        ).fetchall()
+        outcomes: list[dict[str, Any]] = []
+        task_ids: list[str] = []
+        for key in keys:
+            source = None
+            for task_id, raw in task_rows:
+                checkpoint = json.loads(raw)
+                sources = checkpoint.get("sources") if isinstance(checkpoint, dict) else None
+                candidate = sources.get(key) if isinstance(sources, dict) else None
+                if isinstance(candidate, dict):
+                    source = candidate
+                    if task_id not in task_ids:
+                        task_ids.append(task_id)
+                    break
+            source = source or {}
+            through = source.get("coverageThrough")
+            requested_start = source.get("requestedStartAt")
+            requested_end = source.get("requestedEndAt")
+            gaps = list(source.get("gaps") or [])
+            if not through or datetime.fromisoformat(str(through)) < datetime.fromisoformat(cutoff):
+                gaps.append({"startAt": through or requested_start, "endAt": cutoff,
+                             "reasonCode": "collection_not_current"})
+            state = source.get("state", "unavailable")
+            if state == "completed" and gaps:
+                state = "partial"
+            outcomes.append({
+                "sourceKey": key, "state": state, "requestedStartAt": requested_start,
+                "requestedEndAt": requested_end, "coverageThrough": through,
+                "observedStartAt": source.get("observedStartAt"),
+                "observedEndAt": source.get("observedEndAt"), "gaps": gaps,
+                "limitations": list(source.get("limitations") or []),
+            })
+        blocked_by_source = {item[2] for item in rows
+                             if (item[0], item[1]) in blocked - terminal}
+        for outcome in outcomes:
+            if outcome["sourceKey"] in blocked_by_source:
+                outcome["gaps"].append({"startAt": None, "endAt": cutoff,
+                                         "reasonCode": "prior_unknown_external_attempt"})
+                outcome["limitations"].append("prior_unknown_external_attempt")
+                if outcome["state"] == "completed":
+                    outcome["state"] = "partial"
+        # Select the question-tool profile at the same immutable input boundary.
+        # Older unconsumed documents retain their own provenance; a profile
+        # change between source runs does not invalidate the report. A same-slot
+        # disagreement makes only new Jin10 questions unavailable.
+        config_candidates: list[tuple[datetime, str, str, int, str]] = []
+        for task_id in task_ids:
+            candidate = conn.execute("SELECT payload_json FROM k10_tasks WHERE task_id=? AND kind='collect_news'",
+                                     (task_id,)).fetchone()
+            payload = json.loads(candidate[0]) if candidate else {}
+            try:
+                slot = datetime.fromisoformat(payload["slotAt"])
+                identity = (payload["configId"], payload["configRevision"], payload["configHash"])
+                if slot.tzinfo is None or not isinstance(identity[0], str) or not isinstance(identity[1], int) or not isinstance(identity[2], str):
+                    continue
+                config_candidates.append((slot.astimezone(timezone.utc), task_id, *identity))
+            except (KeyError, TypeError, ValueError):
+                continue
+        question_binding: dict[str, Any] | None = None
+        question_gap: str | None = None
+        if config_candidates:
+            newest = max(candidate[0] for candidate in config_candidates)
+            current = [candidate for candidate in config_candidates if candidate[0] == newest]
+            if len({candidate[2:] for candidate in current}) == 1:
+                chosen = sorted(current, key=lambda candidate: candidate[1])[0]
+                question_binding = {"taskId": chosen[1], "configId": chosen[2],
+                                    "revision": chosen[3], "contentHash": chosen[4]}
+            else:
+                question_gap = "collection_config_ambiguous_same_slot"
+        else:
+            question_gap = "collection_config_unavailable"
+        snapshot: dict[str, Any] = {
+            "reportAsOf": cutoff, "inputFrozenAt": frozen_text, "inputDocumentRefs": refs,
+            # Append-only source versions: a late-paid reply may carry an old
+            # fetchedAt, so clock alone cannot freeze later question lookups.
+            "sourceVersionRowidCeiling": conn.execute(
+                "SELECT COALESCE(MAX(rowid),0) FROM k10_source_document_versions").fetchone()[0],
+            "blockedDocumentRefs": [{"documentId": document_id, "revision": revision,
+                                     "reasonCode": "prior_unknown_external_attempt"}
+                                    for document_id, revision in sorted(blocked - terminal)],
+            "sourceOutcomes": outcomes, "sourceCoverage": {"inputFrozenAt": frozen_text,
+                "collectionTaskIds": task_ids, "sources": outcomes},
+            "collectionTaskIds": task_ids,
+            "questionToolConfigBinding": question_binding,
+            "questionToolConfigGap": question_gap,
+        }
+        snapshot["inputSha256"] = _hash(snapshot)
+        coverage["collectedInput"] = snapshot
+        changed = conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=? AND coverage_json=?",
+                               (_json(coverage), scan_id, row[2])).rowcount
+        if changed != 1:
+            raise K10Conflict("冻结资料边界并发冲突")
+        return snapshot
 
 
 def latest_event_revision(*, event_id: str, db_path: Path) -> Optional[EventRevision]:
@@ -3095,14 +3726,16 @@ def claim_tasks(
         protocol_values: tuple[Any, ...] = ()
         if require_b76_contract:
             from .delivery import REPORT_DELIVERY_CONTRACT, RESEARCH_CONTRACT
-            protocol_where = (" AND json_type(t.payload_json,'$.runtimeContract')='object' AND "
+            protocol_where = (" AND (t.kind='collect_news' OR (json_type(t.payload_json,'$.runtimeContract')='object' AND "
                               "json_extract(t.payload_json,'$.runtimeContract.reportDelivery')=? AND "
                               "json_extract(t.payload_json,'$.runtimeContract.research')=? AND "
-                              "(SELECT COUNT(*) FROM json_each(t.payload_json,'$.runtimeContract'))=2")
+                              "(SELECT COUNT(*) FROM json_each(t.payload_json,'$.runtimeContract'))=2))")
             protocol_values = (REPORT_DELIVERY_CONTRACT, RESEARCH_CONTRACT)
         rows = conn.execute(
             "SELECT t.task_id FROM k10_tasks t LEFT JOIN k10_task_retry_schedules r ON r.task_id=t.task_id "
-            "WHERE EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_discovery' AND c.state='open') "
+            "WHERE ((t.kind='collect_news' AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_collection' AND c.state='open')) "
+            "OR (t.kind IN ('evening_scan','morning_scan','analysis','morning_review','collect_market_day_fact','evaluate_company_window') "
+            "AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_discovery' AND c.state='open'))) "
             "AND NOT EXISTS (SELECT 1 FROM k10_discovery_retirements d WHERE d.task_id=t.task_id) AND "
             "((t.status='queued' AND (r.not_before_at IS NULL OR r.not_before_at <= ?)) "
             "OR (t.status='running' AND t.lease_until < ?)) "
@@ -3116,14 +3749,16 @@ def claim_tasks(
             changed = conn.execute(
                 "UPDATE k10_tasks SET status='running',stage='leased',attempt_count=attempt_count+1,"
                 "lease_owner=?,lease_until=?,updated_at=? WHERE task_id=? AND "
-                "EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_discovery' AND c.state='open') AND "
+                "((kind='collect_news' AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_collection' AND c.state='open')) "
+                "OR (kind IN ('evening_scan','morning_scan','analysis','morning_review','collect_market_day_fact','evaluate_company_window') "
+                "AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_discovery' AND c.state='open'))) AND "
                 "NOT EXISTS (SELECT 1 FROM k10_discovery_retirements d WHERE d.task_id=k10_tasks.task_id) AND "
                 "((status='queued' AND NOT EXISTS (SELECT 1 FROM k10_task_retry_schedules r WHERE r.task_id=k10_tasks.task_id AND r.not_before_at > ?)) "
                 "OR (status='running' AND lease_until < ?))" +
-                (" AND json_type(payload_json,'$.runtimeContract')='object' AND "
+                (" AND (kind='collect_news' OR (json_type(payload_json,'$.runtimeContract')='object' AND "
                  "json_extract(payload_json,'$.runtimeContract.reportDelivery')=? AND "
                  "json_extract(payload_json,'$.runtimeContract.research')=? AND "
-                 "(SELECT COUNT(*) FROM json_each(payload_json,'$.runtimeContract'))=2" if require_b76_contract else ""),
+                 "(SELECT COUNT(*) FROM json_each(payload_json,'$.runtimeContract'))=2))" if require_b76_contract else ""),
                 (worker_id, lease_until, now_text, task_id, now_text, now_text, *protocol_values),
             ).rowcount
             if changed != 1:
@@ -3146,10 +3781,10 @@ def claim_task_by_id(*, task_id: str, worker_id: str, now: datetime, lease_for: 
     lease_until = (now.astimezone(timezone.utc) + lease_for).isoformat(timespec="seconds")
     with write_connection(db_path) as conn:
         _require_write_schema(conn)
-        protocol_where = (" AND json_type(payload_json,'$.runtimeContract')='object' AND "
+        protocol_where = (" AND (kind='collect_news' OR (json_type(payload_json,'$.runtimeContract')='object' AND "
                           "json_extract(payload_json,'$.runtimeContract.reportDelivery')=? AND "
                           "json_extract(payload_json,'$.runtimeContract.research')=? AND "
-                          "(SELECT COUNT(*) FROM json_each(payload_json,'$.runtimeContract'))=2" if require_b76_contract else "")
+                          "(SELECT COUNT(*) FROM json_each(payload_json,'$.runtimeContract'))=2))" if require_b76_contract else "")
         if require_b76_contract:
             from .delivery import REPORT_DELIVERY_CONTRACT, RESEARCH_CONTRACT
             protocol_values: tuple[Any, ...] = (REPORT_DELIVERY_CONTRACT, RESEARCH_CONTRACT)
@@ -3157,7 +3792,9 @@ def claim_task_by_id(*, task_id: str, worker_id: str, now: datetime, lease_for: 
             protocol_values = ()
         changed = conn.execute(
             "UPDATE k10_tasks SET status='running',stage='leased',attempt_count=attempt_count+1,lease_owner=?,lease_until=?,updated_at=? "
-            "WHERE task_id=? AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_discovery' AND c.state='open') "
+            "WHERE task_id=? AND ((kind='collect_news' AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_collection' AND c.state='open')) "
+            "OR (kind IN ('evening_scan','morning_scan','analysis','morning_review','collect_market_day_fact','evaluate_company_window') "
+            "AND EXISTS (SELECT 1 FROM k10_run_controls c WHERE c.control_key='k10_discovery' AND c.state='open'))) "
             "AND NOT EXISTS (SELECT 1 FROM k10_discovery_retirements d WHERE d.task_id=k10_tasks.task_id) AND "
             "((status='queued' AND NOT EXISTS (SELECT 1 FROM k10_task_retry_schedules r WHERE r.task_id=k10_tasks.task_id AND r.not_before_at > ?)) "
             "OR (status='running' AND lease_until < ?))" + protocol_where,
@@ -3533,11 +4170,10 @@ def finish_task_with_publication(
     ).fetchone()
     if control is None or control[0] != "open":
         raise K10Conflict("K10 运行已暂停，拒绝公开未完成交付")
-    if conn.execute(
-        "SELECT 1 FROM k10_external_attempts WHERE task_id=? AND state IN ('started','unknown')",
+    unsettled_attempts = [(str(row[0]), str(row[1])) for row in conn.execute(
+        "SELECT stage,item_key FROM k10_external_attempts WHERE task_id=? AND state IN ('started','unknown')",
         (task_id,),
-    ).fetchone() is not None:
-        raise K10Conflict("存在未结算外部调用，拒绝公开交付")
+    ).fetchall()]
     task_row = conn.execute(
         "SELECT payload_json,checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,),
     ).fetchone()
@@ -3565,6 +4201,64 @@ def finish_task_with_publication(
     delivery = checkpoint.get("delivery")
     if not isinstance(delivery, Mapping) or delivery.get("outcome") not in {"complete", "partial"}:
         raise K10Conflict("公开交付缺少 B76 终态清单")
+    if unsettled_attempts:
+        # A B90 morning deadline may publish an independently completed review
+        # while a *discovery* request remains ledger-unknown.  This narrow
+        # exception preserves that row and requires the exact public gap;
+        # review-stage uncertainty, another contract, a complete delivery, or
+        # any missing identity remains a hard atomic-publication blocker.
+        gaps = delivery.get("gaps")
+        has_deadline_gap = isinstance(gaps, list) and any(
+            isinstance(gap, Mapping)
+            and gap.get("stage") == "discovery"
+            and gap.get("unitKind") == "scan"
+            and gap.get("unitId") == checkpoint.get("scanId")
+            and gap.get("reasonCode") == "morning_discovery_deadline"
+            for gap in gaps
+        )
+        allowed_discovery_deadline_partial = (
+            current_contract
+            and payload.get("windowKind") == "morning"
+            and checkpoint.get("allowDiscoveryUnknownPublication") is True
+            and delivery.get("outcome") == "partial"
+            and has_deadline_gap
+        )
+        named_review_ids = checkpoint.get("allowMorningReviewUnknownPublication")
+        if (not isinstance(named_review_ids, list) or not named_review_ids
+                or any(not isinstance(value, str) or not value for value in named_review_ids)
+                or len(named_review_ids) != len(set(named_review_ids))):
+            named_review_ids = []
+        review_gaps = {
+            gap.get("unitId") for gap in gaps if isinstance(gap, Mapping)
+            and gap.get("stage") == "morning_review" and gap.get("unitKind") == "work_item"
+            and isinstance(gap.get("unitId"), str)
+        } if isinstance(gaps, list) else set()
+        allowed_review_deadline_partial = (
+            current_contract and payload.get("windowKind") == "morning"
+            and delivery.get("outcome") == "partial"
+            and bool(named_review_ids) and set(named_review_ids).issubset(review_gaps)
+        )
+
+        def allowed_unsettled_attempt(stage: str, item_key: str) -> bool:
+            if stage == "morning":
+                return allowed_review_deadline_partial and any(
+                    item_key.startswith(review_id + ":review-round:")
+                    for review_id in named_review_ids
+                )
+            if stage == "search" and allowed_review_deadline_partial:
+                return any(
+                    item_key.startswith("tavily:morning-review-" + review_id + ":")
+                    for review_id in named_review_ids
+                )
+            # Older review search identities lack a durable per-work-item
+            # namespace.  They remain a hard publication blocker rather than
+            # broadening this B90 exception.
+            if item_key.startswith("tavily:morning-review"):
+                return False
+            return allowed_discovery_deadline_partial
+
+        if not all(allowed_unsettled_attempt(stage, item_key) for stage, item_key in unsettled_attempts):
+            raise K10Conflict("存在未结算外部调用，拒绝公开交付")
     report = conn.execute(
         "SELECT c.content_json FROM k10_v2_report_runs r JOIN k10_v2_report_coverage c ON c.report_id=r.report_id "
         "WHERE r.scan_id=?", (checkpoint.get("scanId"),),
@@ -3691,8 +4385,12 @@ def schedule_task_retry(
         _require_write_schema(conn)
         # This runs under the same immediate write transaction as the retry
         # row.  A worker-side precheck alone leaves a pause→schedule window.
+        kind_row = conn.execute("SELECT kind FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if kind_row is None:
+            raise K10Conflict("重试任务不存在")
         control = conn.execute(
-            "SELECT state FROM k10_run_controls WHERE control_key='k10_discovery'"
+            "SELECT state FROM k10_run_controls WHERE control_key=?",
+            (control_key_for_task(str(kind_row[0])),)
         ).fetchone()
         if control is None or control[0] != "open":
             return False
@@ -3767,6 +4465,16 @@ def _preserve_execution_started_at(conn, *, task_id: str, checkpoint: Mapping[st
         merged.pop(key, None)
         if isinstance(parsed, Mapping) and key in parsed:
             merged[key] = parsed[key]
+    # Provider receipts, question citations and the selected directory ->
+    # paid body binding are written while a handler runs. Its in-memory
+    # checkpoint can predate those writes; every terminal/continuation path
+    # must retain the committed values instead of overwriting their proof.
+    for key in ("toolReceipts", "toolQuestionLinks", "selectedBodyBindings", "sources"):
+        merged.pop(key, None)
+        if isinstance(parsed, Mapping) and key in parsed:
+            if not isinstance(parsed[key], Mapping):
+                raise K10Conflict("工具/采集持久检查点无效")
+            merged[key] = dict(parsed[key])
     if started is not None:
         merged["executionStartedAt"] = started
     # Only authorize_discovery_recovery writes this authority. A handler's
@@ -4389,15 +5097,26 @@ def publish_opportunities(*, batch_id: str, scan_id: str, publication_kind: str,
             differences = comparison["differences"]
             classification = comparison["classification"]
             required_difference = {"role", "priorityReason", "gap", "rankChangeConditions", "twoDayReason"}
+            b90_difference = isinstance(differences, Mapping) and "recommendation" in differences
             allowed_difference = required_difference | {"evidenceDisclosure"}
+            if b90_difference:
+                required_difference = {"recommendation", "analysisText", "sourceRefs", "evidenceDisclosure"}
+                allowed_difference = required_difference | {"identity"}
             required_classification = {"kind", "opportunityKey", "reason", "newFacts", "changedJudgment", "twoDayReason", "relatedOpportunityId"}
             if (not isinstance(comparison["summary"], str) or not comparison["summary"].strip() or
                 not isinstance(differences, Mapping) or not required_difference <= set(differences) or not set(differences) <= allowed_difference or
                 not isinstance(classification, Mapping) or set(classification) != required_classification or
-                differences.get("role") != item.category or classification.get("opportunityKey") != item.opportunity_key or
+                (not b90_difference and differences.get("role") != item.category) or
+                (b90_difference and item.category != "primary") or
+                classification.get("opportunityKey") != item.opportunity_key or
                 classification.get("relatedOpportunityId") != item.related_opportunity_id or
                 classification.get("kind") not in {"initial", "material_stage", "independent"} or
-                not all(isinstance(differences.get(name), str) and differences[name].strip() for name in required_difference) or
+                (not b90_difference and not all(isinstance(differences.get(name), str) and differences[name].strip() for name in required_difference)) or
+                (b90_difference and (
+                    differences.get("recommendation") != "recommend"
+                    or not isinstance(differences.get("analysisText"), str) or not differences["analysisText"].strip()
+                    or not isinstance(differences.get("sourceRefs"), list) or not differences["sourceRefs"]
+                )) or
                 not all(isinstance(classification.get(name), str) and classification[name].strip() for name in ("reason", "newFacts", "twoDayReason")) or
                 (classification.get("kind") == "material_stage" and (not item.related_opportunity_id or not isinstance(classification.get("changedJudgment"), str) or not classification["changedJudgment"].strip())) or
                 (classification.get("kind") != "material_stage" and classification.get("changedJudgment") is not None and not isinstance(classification.get("changedJudgment"), str)) or

@@ -51,6 +51,8 @@ protocol K10Servicing: Sendable {
     func configuration() async throws -> K10Configuration
     func operationsReadiness() async throws -> K10OperationsReadiness
     func pauseDiscovery() async throws -> K10DiscoveryPauseResult
+    func collectionStatus() async throws -> K10CollectionStatus
+    func setCollectionControl(state: String) async throws -> K10CollectionStatus
     func usageSummary() async throws -> K10UsageSummary
 }
 
@@ -88,6 +90,12 @@ extension K10Servicing {
     func pauseDiscovery() async throws -> K10DiscoveryPauseResult {
         throw K10APIError.notFound("服务端尚未提供暂停入口")
     }
+    func collectionStatus() async throws -> K10CollectionStatus {
+        throw K10APIError.notFound("服务端尚未提供采集状态")
+    }
+    func setCollectionControl(state: String) async throws -> K10CollectionStatus {
+        throw K10APIError.notFound("服务端尚未提供采集开关")
+    }
 }
 
 actor K10APIClient: K10Servicing {
@@ -100,17 +108,23 @@ actor K10APIClient: K10Servicing {
     func publications() async throws -> [K10Publication] { try await allPages(path: "/api/v1/k10/publications", extra: [], as: K10PublicationList.self).items }
     func companyWindows() async throws -> [K10CompanyWindow] { try await allPages(path: "/api/v1/k10/company-windows", extra: [], as: K10CompanyWindowList.self).items }
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
-        try await get("/api/v1/k10/v2/reports/latest", query: [URLQueryItem(name: "window", value: window), URLQueryItem(name: "limit", value: "30")])
+        let response: K10DailyReportResponse = try await get("/api/v1/k10/v2/reports/latest", query: [URLQueryItem(name: "window", value: window), URLQueryItem(name: "limit", value: "30")])
+        guard response.isReadableByCurrentApp else { throw K10APIError.incompatibleVersion("服务端报告协议不受当前版本支持") }
+        return response
     }
     func dailyReport(id: String, cursor: String?) async throws -> K10DailyReportResponse {
         var query = [URLQueryItem(name: "limit", value: "30")]
         if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
-        return try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)", query: query)
+        let response: K10DailyReportResponse = try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)", query: query)
+        guard response.isReadableByCurrentApp else { throw K10APIError.incompatibleVersion("服务端报告协议不受当前版本支持") }
+        return response
     }
     func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage {
         var query = [URLQueryItem(name: "limit", value: "30")]
         if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
-        return try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/materials", query: query)
+        let page: K10ReportMaterialsPage = try await get("/api/v1/k10/v2/reports/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/materials", query: query)
+        guard page.isReadableByCurrentApp else { throw K10APIError.incompatibleVersion("服务端报告材料协议不受当前版本支持") }
+        return page
     }
     func latestMorningReport() async throws -> K10MorningReport? {
         do { return try await get("/api/v1/k10/morning-reports/latest") }
@@ -132,6 +146,8 @@ actor K10APIClient: K10Servicing {
     func configuration() async throws -> K10Configuration { try await get("/api/v1/k10/configuration") }
     func operationsReadiness() async throws -> K10OperationsReadiness { try await get("/api/v1/k10/operations/readiness") }
     func pauseDiscovery() async throws -> K10DiscoveryPauseResult { try await post("/api/v1/k10/operations/pause", body: [String: String]()) }
+    func collectionStatus() async throws -> K10CollectionStatus { try await get("/api/v1/k10/collection/status") }
+    func setCollectionControl(state: String) async throws -> K10CollectionStatus { try await post("/api/v1/k10/collection/control", body: K10CollectionControlRequest(state: state)) }
     func usageSummary() async throws -> K10UsageSummary { try await get("/api/v1/usage/summary") }
 
     private func allPages<Page: Decodable>(path: String, extra: [URLQueryItem], as _: Page.Type) async throws -> Page where Page: K10Paginated {

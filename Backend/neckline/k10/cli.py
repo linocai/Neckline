@@ -18,6 +18,9 @@ from .pipeline import production_handlers
 from .windows import evening_cutoff, morning_cutoff, morning_delivery_deadline, scan_calendar_day
 from .worker import run_once, run_worker
 from .delivery import runtime_contract
+from .collection_config import COLLECTION_CONTRACT, validate_collection_config
+from .collection_runtime import create_collection_handler
+from .windows import SHANGHAI
 
 
 def _id(prefix: str, *parts: str) -> str: return prefix+"_"+sha256("\x1f".join(parts).encode()).hexdigest()[:32]
@@ -53,6 +56,58 @@ def configure_execution(*, db_path: Path, config_id: str, file_path: Path, now: 
         raise ValueError(f"执行配置未就绪：{detail}")
     revision = store.append_execution_config(config_id=config_id, payload=payload, created_at=now.isoformat(), db_path=db_path)
     return config_id, revision
+
+
+def configure_collection(*, db_path: Path, config_id: str, file_path: Path,
+                         now: datetime) -> tuple[str, int]:
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("采集配置文件不可读或不是 JSON") from exc
+    status = validate_collection_config(payload)
+    if not status.ready:
+        raise ValueError("采集配置无效：" + "; ".join((*status.missing, *status.errors)))
+    revision = store.append_execution_config(config_id=config_id, payload=payload,
+                                             created_at=now.isoformat(), db_path=db_path)
+    # Configuration creates the distinct control explicitly, closed by default.
+    control = store.task_control_status(kind="collect_news", db_path=db_path)
+    if control["reasonCode"] == "control_missing":
+        store.set_collection_control(state="closed", reason_code="configured_closed",
+                                     changed_at=now.isoformat(), changed_by="cli",
+                                     db_path=db_path)
+    return config_id, revision
+
+
+def enqueue_collection(*, db_path: Path, slot: datetime, config_id: str,
+                       config_revision: int, now: datetime,
+                       scheduled: bool = False) -> str | dict[str, object]:
+    if slot.tzinfo is None or now.tzinfo is None:
+        raise ValueError("采集槽位与执行时间必须带时区")
+    local = slot.astimezone(SHANGHAI)
+    if local.isoformat() != slot.isoformat() or local.strftime("%H:%M:%S") not in {"08:00:00", "20:00:00"}:
+        raise ValueError("采集槽位必须为北京时间自然日08:00或20:00")
+    if now < slot:
+        raise ValueError("采集槽位尚未到时")
+    config = store.read_execution_config(config_id=config_id, revision=config_revision, db_path=db_path)
+    if config is None or not validate_collection_config(config["payload"]).ready:
+        raise RuntimeError("指定采集配置修订不存在或无效")
+    control = store.task_control_status(kind="collect_news", db_path=db_path)
+    skipped = _scheduled_closed_skip(control=control, scheduled=scheduled)
+    if skipped is not None:
+        return skipped
+    if control["state"] != "open":
+        raise RuntimeError("采集控制已关闭，拒绝入队")
+    task_id = _id("task", "collect-news", slot.isoformat(), config_id, str(config_revision))
+    task = store.enqueue_task(
+        task_id=task_id, kind="collect_news",
+        idempotency_key=f"collect-news:{slot.isoformat()}:{config_id}:{config_revision}",
+        input_version=config["contentSha256"], input_cutoff_at=slot.isoformat(),
+        payload={"collectionContract": COLLECTION_CONTRACT, "slotAt": slot.isoformat(),
+                 "configId": config_id, "configRevision": config_revision,
+                 "configHash": config["contentSha256"]},
+        budget={"maxAttempts": max(int(item["maxAttempts"]) for item in config["payload"]["sources"])},
+        created_at=now.isoformat(), db_path=db_path)
+    return task.task_id
 
 
 def _approved_v3_execution(*, db_path: Path, config_id: str, revision: int) -> bool:
@@ -209,13 +264,17 @@ def recover_scan(
 
 def main(argv: list[str] | None=None) -> int:
     parser=argparse.ArgumentParser(); sub=parser.add_subparsers(dest="command",required=True)
+    fresh=sub.add_parser("initialize-fresh"); fresh.add_argument("--db",required=True,type=Path)
     config=sub.add_parser("configure"); config.add_argument("--db",required=True,type=Path); config.add_argument("--config-id",required=True); config.add_argument("--file",required=True,type=Path)
     execution_config=sub.add_parser("configure-execution"); execution_config.add_argument("--db",required=True,type=Path); execution_config.add_argument("--config-id",required=True); execution_config.add_argument("--file",required=True,type=Path)
+    collection_config=sub.add_parser("configure-collection"); collection_config.add_argument("--db",required=True,type=Path); collection_config.add_argument("--config-id",required=True); collection_config.add_argument("--file",required=True,type=Path)
+    collection_control=sub.add_parser("collection-control"); collection_control.add_argument("--db",required=True,type=Path); collection_control.add_argument("--state",choices=("open","closed"),required=True); collection_control.add_argument("--config-id"); collection_control.add_argument("--config-revision",type=int)
+    collect=sub.add_parser("enqueue-collection"); collect.add_argument("--db",required=True,type=Path); collect.add_argument("--slot",required=True); collect.add_argument("--config-id",required=True); collect.add_argument("--config-revision",required=True,type=int); collect.add_argument("--scheduled",action="store_true")
     enqueue=sub.add_parser("enqueue"); enqueue.add_argument("--db",required=True,type=Path); enqueue.add_argument("--kind",choices=("evening","morning"),required=True); enqueue.add_argument("--trading-day",required=True); enqueue.add_argument("--config-id",required=True); enqueue.add_argument("--config-revision",required=True,type=int); enqueue.add_argument("--bootstrap-cutoff"); enqueue.add_argument("--execution-config-id"); enqueue.add_argument("--execution-config-revision",type=int); enqueue.add_argument("--scheduled",action="store_true")
     recover=sub.add_parser("recover-scan"); recover.add_argument("--db",required=True,type=Path); recover.add_argument("--scan-id",required=True); recover.add_argument("--execution-config-id",required=True); recover.add_argument("--execution-config-revision",required=True,type=int); recover.add_argument("--confirm-frozen-input-sha256",required=True)
     recover.add_argument("--finalization-max-tokens",type=int)
     recover.add_argument("--research-max-tokens",type=int); recover.add_argument("--completion-deadline-seconds",type=int)
-    worker=sub.add_parser("worker"); worker.add_argument("--db",required=True,type=Path); worker.add_argument("--parquet-dir",required=True,type=Path); worker.add_argument("--worker-id",required=True); worker.add_argument("--tushare-token-env",required=True); worker.add_argument("--once",action="store_true")
+    worker=sub.add_parser("worker"); worker.add_argument("--db",required=True,type=Path); worker.add_argument("--parquet-dir",required=True,type=Path); worker.add_argument("--worker-id",required=True); worker.add_argument("--tushare-token-env",required=True); worker.add_argument("--jin10-token-env",default="JIN10_MCP_TOKEN"); worker.add_argument("--once",action="store_true")
     importer = sub.add_parser("import-v2-profiles")
     for name in ("universe-file", "profiles-dir", "db", "confirmed-target"):
         importer.add_argument("--" + name, required=True, type=Path)
@@ -229,6 +288,10 @@ def main(argv: list[str] | None=None) -> int:
     binder.add_argument("--execution-config-id", required=True)
     binder.add_argument("--execution-config-revision", type=int, required=True)
     args=parser.parse_args(argv)
+    if args.command == "initialize-fresh":
+        from neckline.fresh_start import initialize_fresh_database
+        print(json.dumps(initialize_fresh_database(target=args.db), ensure_ascii=False))
+        return 0
     if args.command == "bind-v2-strategy":
         from .v2_store import bind_strategy
         print(json.dumps(bind_strategy(db_path=args.db, snapshot_id=args.snapshot_id, config_id=args.config_id,
@@ -251,6 +314,30 @@ def main(argv: list[str] | None=None) -> int:
     if args.command=="configure-execution":
         config_id, revision = configure_execution(db_path=args.db, config_id=args.config_id, file_path=args.file, now=datetime.now().astimezone())
         print(json.dumps({"configId": config_id, "revision": revision}, ensure_ascii=False))
+        return 0
+    if args.command=="configure-collection":
+        config_id, revision = configure_collection(db_path=args.db, config_id=args.config_id,
+            file_path=args.file, now=datetime.now(SHANGHAI))
+        print(json.dumps({"configId": config_id, "revision": revision}, ensure_ascii=False))
+        return 0
+    if args.command=="collection-control":
+        if args.state == "open":
+            if args.config_id is None or args.config_revision is None:
+                raise RuntimeError("打开采集须显式指定配置ID和修订")
+            config = store.read_execution_config(config_id=args.config_id,
+                revision=args.config_revision, db_path=args.db)
+            if config is None or not validate_collection_config(config["payload"]).ready:
+                raise RuntimeError("采集配置缺失或无效，不能打开")
+        print(json.dumps(store.set_collection_control(state=args.state,
+            reason_code="operator_open" if args.state == "open" else "operator_paused",
+            changed_at=datetime.now(SHANGHAI).isoformat(), changed_by="cli", db_path=args.db),
+            ensure_ascii=False))
+        return 0
+    if args.command=="enqueue-collection":
+        result = enqueue_collection(db_path=args.db, slot=datetime.fromisoformat(args.slot),
+            config_id=args.config_id, config_revision=args.config_revision,
+            now=datetime.now(SHANGHAI), scheduled=args.scheduled)
+        print(json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else result)
         return 0
     if args.command=="enqueue":
         trading_day = _day(args.trading_day)
@@ -280,11 +367,11 @@ def main(argv: list[str] | None=None) -> int:
     with read_connection(args.db) as connection:
         require_schema(connection)
     control = store.run_control_status(db_path=args.db)
-    if control.get("state") != "open":
-        print(json.dumps({"status": "paused", "reason": control.get("reasonCode"), "taskId": None}, ensure_ascii=False))
-        return 0
-    require_notifications_schema(args.db)
+    if control.get("state") == "open":
+        require_notifications_schema(args.db)
     handlers = production_handlers(tushare_token=token, parquet_dir=args.parquet_dir)
+    handlers["collect_news"] = create_collection_handler(
+        tushare_token=token, jin10_token=os.environ.get(args.jin10_token_env))
     # These two workers only persist/read frozen market facts and fixed company
     # windows.  They are deliberately independent from discovery/model routing.
     handlers.update({"collect_market_day_fact": market_day_fact_handler,
@@ -292,8 +379,9 @@ def main(argv: list[str] | None=None) -> int:
     notification_maintenance = create_notification_maintenance(db_path=args.db, worker_id=args.worker_id)
 
     def maintenance() -> None:
-        maintain_evaluations(db_path=args.db, now=datetime.now().astimezone())
-        notification_maintenance()
+        if store.run_control_status(db_path=args.db).get("state") == "open":
+            maintain_evaluations(db_path=args.db, now=datetime.now().astimezone())
+            notification_maintenance()
     if args.once:
         run_once(db_path=args.db,worker_id=args.worker_id,lease_for=timedelta(minutes=5),handlers=handlers,
                  require_b76_contract=True)

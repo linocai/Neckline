@@ -1,4 +1,4 @@
-"""B76 acceptance: full-scale, deterministic, no-network production entry paths.
+"""Full-scale regressions from B76 on the current explicitly bound producer.
 
 The transport is synthetic by design.  These tests prove the release's local
 execution, persistence, API and client-fixture boundary; they do not claim a
@@ -78,7 +78,7 @@ def _assert_full_scale_complete(flow) -> None:
     assert coverage["titleSelectionManifestSha256"]
 
     envelope = _report(flow)
-    assert envelope["schemaVersion"] == 9
+    assert envelope["schemaVersion"] == 10
     assert envelope["state"] == "available"
     report = envelope["report"]
     assert report is not None
@@ -164,7 +164,7 @@ def test_b76_full_scale_complete_zero_cards_is_not_an_empty_report(tmp_path, mon
     assert flow.gateway_calls == ()
 
     envelope = _report(flow)
-    assert envelope["schemaVersion"] == 9
+    assert envelope["schemaVersion"] == 10
     assert envelope["state"] == "available"
     report = envelope["report"]
     assert report is not None
@@ -202,7 +202,7 @@ def test_b76_full_scale_single_content_refusal_publishes_isolated_partial_subset
     _assert_no_inflight_external_attempts(flow)
 
     envelope = _report(flow)
-    assert envelope["schemaVersion"] == 9
+    assert envelope["schemaVersion"] == 10
     assert envelope["state"] == "available"
     report = envelope["report"]
     assert report is not None
@@ -252,7 +252,7 @@ def test_b76_global_priority_content_refusal_returns_actual_failed_report(tmp_pa
     assert flow.calls["prioritize"] == 1
     _assert_no_inflight_external_attempts(flow)
     envelope = _report(flow)
-    assert envelope["schemaVersion"] == 9
+    assert envelope["schemaVersion"] == 10
     assert envelope["state"] == "available"
     assert envelope["reason"] == {
         "reason": "incomplete", "message": "今天没跑成 · 处理未完成", "missing": [],
@@ -277,7 +277,7 @@ def test_b76_partial_zero_cards_is_not_an_empty_report(tmp_path, monkeypatch):
     assert flow.task_status == "completed"
     _assert_no_inflight_external_attempts(flow)
     envelope = _report(flow)
-    assert envelope["schemaVersion"] == 9
+    assert envelope["schemaVersion"] == 10
     assert envelope["state"] == "available"
     report = envelope["report"]
     assert report is not None

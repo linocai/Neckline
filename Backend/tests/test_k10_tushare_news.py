@@ -56,7 +56,10 @@ def test_major_news_uses_official_endpoint_and_exact_second_parameters_with_mock
     document = result.documents[0]
     assert document.canonical_url is None
     assert document.original_text == "完整通讯正文"
-    assert document.metadata == {"provider": "tushare", "source": "新华社", "title": "测试通讯", "rawPubTime": "2026-09-06 22:00:00"}
+    assert document.metadata == {
+        "provider": "tushare", "source": "新华社", "title": "测试通讯",
+        "originalTitle": "测试通讯", "sourceKind": "article", "rawPubTime": "2026-09-06 22:00:00",
+    }
     assert "announcements" in " ".join(adapter.coverage.limitations)
 
 

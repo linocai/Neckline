@@ -136,7 +136,7 @@ def test_comparison_persists_complete_company_coverage_and_safe_summary(tmp_path
     }
 
 
-def test_contract_rejects_verified_rumor_and_migration_forwards_schema_six(tmp_path):
+def test_contract_rejects_verified_rumor_and_retired_schema_six(tmp_path):
     with pytest.raises(ResearchContractError, match="传闻不能标记"):
         EvidenceDisclosure("verified", True, "unknown", None, (), "若证实再判断")
 
@@ -146,10 +146,9 @@ def test_contract_rejects_verified_rumor_and_migration_forwards_schema_six(tmp_p
         schema._apply_v1(conn); schema._apply_v2(conn); schema._apply_v3(conn); schema._apply_v4(conn); schema._apply_v6(conn)
         for version in (1, 2, 3, 4, 6):
             conn.execute("INSERT INTO k10_schema_migrations VALUES(?,?)", (version, NOW))
-    assert schema.initialize_schema(path) == schema.SCHEMA_VERSION == schema.schema_version(path)
-    with sqlite3.connect(path) as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"k10_research_snapshot_revisions", "k10_research_stage_results", "k10_research_company_assessments"} <= tables
+    from neckline.fresh_start import RetiredDataError
+    with pytest.raises(RetiredDataError):
+        schema.initialize_schema(path)
 
 
 def test_b39_execution_profile_requires_explicit_investigation_option_and_prompt_contract():
@@ -415,20 +414,17 @@ def test_controlled_pre_b39_migration_and_restore_preserve_history_and_pause(tmp
     path = tmp_path / f"schema-{prior_version}.sqlite"
     before = _seed_pre_b39_database(path, schema_version=prior_version)
     backup = tmp_path / f"schema-{prior_version}.backup.sqlite"
-    receipt = migration.migrate_to_v3(target=path, confirmed_target=path, backup=backup, writers_stopped=True)
-    assert schema.schema_version(path) == schema.SCHEMA_VERSION
-    assert receipt.backup_sha256 == migration.file_sha256(backup)
+    # Pre-B92 historical import was explicitly retired by the user. Keep the
+    # authentic old schema/paid-row fixture, but assert it cannot be reopened.
+    from neckline.fresh_start import RetiredDataError
+    from neckline.k10.schema import initialize_schema, read_connection
     with sqlite3.connect(path) as conn:
-        assert tuple(row[1] for row in conn.execute("PRAGMA table_info(k10_candidates)")) == before["candidateColumns"]
-        assert conn.execute("SELECT COUNT(*) FROM k10_candidates").fetchone()[0] == before["candidateRows"]
-        control = conn.execute("SELECT state,reason_code FROM k10_run_controls WHERE control_key='k10_discovery'").fetchone()
-        assert control == (("closed", "fixture_paused") if prior_version == 6 else ("closed", "unconfigured_closed"))
-        if prior_version == 6:
-            assert conn.execute("SELECT COUNT(*) FROM k10_title_triage_items").fetchone()[0] == before["titleRows"]
-            assert conn.execute("SELECT COUNT(*) FROM k10_article_admissions WHERE state='completed'").fetchone()[0] == 1
-            assert conn.execute("SELECT COUNT(*) FROM k10_external_attempts WHERE state='succeeded'").fetchone()[0] == before["attemptRows"]
-    migration.restore_backup(target=path, confirmed_target=path, backup=backup,
-                             expected_sha256=receipt.backup_sha256, writers_stopped=True)
-    assert migration.file_sha256(path) == receipt.backup_sha256
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone()[0] == prior_version
+        conn.execute("PRAGMA application_id=0")
+    original = migration.file_sha256(path)
+    with pytest.raises(RetiredDataError):
+        initialize_schema(path)
+    with pytest.raises(RetiredDataError):
+        with read_connection(path):
+            pytest.fail("retired history exposed")
+    assert migration.file_sha256(path) == original
+    assert not backup.exists()

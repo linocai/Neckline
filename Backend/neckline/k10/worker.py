@@ -267,13 +267,14 @@ def run_once(
     # historical B36 task into a running task which later reaches a provider.
     try:
         control = store.run_control_status(db_path=db_path)
+        collection_control = store.task_control_status(kind="collect_news", db_path=db_path)
     except SqliteWriteBusy:
         # Nothing has been leased yet.  Leave selection to the next regular
         # worker tick instead of terminating the process or manufacturing a
         # replacement task.
         logger.warning("K10 task selection deferred by SQLite write contention")
         return None
-    if control.get("state") != "open":
+    if control.get("state") != "open" and collection_control.get("state") != "open":
         return None
     # The real production handler map carries this marker as well as the CLI
     # passing the explicit flag.  Low-level tests can still inject a custom
@@ -339,7 +340,7 @@ def run_once(
             result = TaskResult("failed", "attempt_limit", context.checkpoint, "任务已达到重试上限")
         elif handler is None:
             result = TaskResult("not_configured", "configuration", error="任务处理器尚未配置")
-        elif store.run_control_status(db_path=db_path).get("state") != "open":
+        elif store.task_control_status(kind=task.kind, db_path=db_path).get("state") != "open":
             # The task may have been claimed immediately before an operator
             # closed the durable switch.  Do not enter a handler (which may
             # still read sources before its provider-level admission gate).
@@ -419,13 +420,13 @@ def run_once(
         )
         if not atomically_delivered:
             context.require_lease()
-            if result.status == "failed" and store.run_control_status(db_path=db_path).get("state") != "open":
+            if result.status == "failed" and store.task_control_status(kind=task.kind, db_path=db_path).get("state") != "open":
                 # A closed switch can stop any phase, including a terminal title
                 # failure with no retry_at. Keep its checkpoints and paid receipts,
                 # but identify the operator pause consistently for notification.
                 result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
             if result.retry_at is not None:
-                if store.run_control_status(db_path=db_path).get("state") != "open":
+                if store.task_control_status(kind=task.kind, db_path=db_path).get("state") != "open":
                     # A pause never discards already-settled handler output, but
                     # it must prevent this task from arranging a future attempt.
                     result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
@@ -436,7 +437,7 @@ def run_once(
                         retry_kind=str(result.retry_kind), max_failure_attempts=maximum, db_path=db_path,
                     )
                     if not scheduled:
-                        if store.run_control_status(db_path=db_path).get("state") != "open":
+                        if store.task_control_status(kind=task.kind, db_path=db_path).get("state") != "open":
                             result = TaskResult("failed", "paused", result.checkpoint, "K10 运行已暂停")
                         else:
                             result = TaskResult("failed", "attempt_limit", result.checkpoint, "任务已达到重试上限")
@@ -467,8 +468,6 @@ def run_worker(
     """Serial dispatch keeps the small service bounded; the caller handles signals."""
     if idle_seconds <= 0:
         raise ValueError("idle_seconds must be positive")
-    if store.run_control_status(db_path=db_path).get("state") != "open":
-        return
     while not stop.is_set():
         try:
             task = run_once(db_path=db_path, worker_id=worker_id, lease_for=lease_for, handlers=handlers,

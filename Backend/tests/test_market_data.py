@@ -248,10 +248,20 @@ class TestWriteReadRoundTrip:
             table_dir("not_a_real_table")
 
 
+@pytest.fixture
+def fresh_market_root(tmp_path):
+    # Storage belongs to the new start; dirty-value fixtures below represent
+    # failures within this data generation, not imported pre-B92 files.
+    from neckline.fresh_start import require_current_market_directory
+    root = tmp_path / "fresh-market"
+    require_current_market_directory(root, initialize=True)
+    return root
+
+
 class TestSchemaAlignmentOnWrite:
     """TuShare 类型漂移防线(2026-07-21 生产真踩:turnover_rate_f 全空日落成 String)。"""
 
-    def test_string_column_cast_to_existing_float(self, tmp_path):
+    def test_string_column_cast_to_existing_float(self, fresh_market_root):
         import polars as pl
         from neckline.data.market_data import write_table_day, scan_table_range
         from datetime import date
@@ -259,24 +269,24 @@ class TestSchemaAlignmentOnWrite:
             "ts_code": ["000001.SZ"], "trade_date": [date(2026, 7, 20)],
             "turnover_rate_f": [1.23],
         })
-        write_table_day("daily_basic", date(2026, 7, 20), good, parquet_dir=tmp_path)
+        write_table_day("daily_basic", date(2026, 7, 20), good, parquet_dir=fresh_market_root)
         drifted = pl.DataFrame({
             "ts_code": ["000001.SZ"], "trade_date": [date(2026, 7, 21)],
             "turnover_rate_f": ["", None, "2.5"][0:1],
         })
-        write_table_day("daily_basic", date(2026, 7, 21), drifted, parquet_dir=tmp_path)
-        out = scan_table_range("daily_basic", date(2026, 7, 20), date(2026, 7, 21), parquet_dir=tmp_path)
+        write_table_day("daily_basic", date(2026, 7, 21), drifted, parquet_dir=fresh_market_root)
+        out = scan_table_range("daily_basic", date(2026, 7, 20), date(2026, 7, 21), parquet_dir=fresh_market_root)
         assert out.schema["turnover_rate_f"] == pl.Float64
         assert out.height == 2
         assert out.sort("trade_date")["turnover_rate_f"][1] is None  # 空串 → null 而非炸
 
-    def test_first_write_no_existing_partition_passthrough(self, tmp_path):
+    def test_first_write_no_existing_partition_passthrough(self, fresh_market_root):
         import polars as pl
         from neckline.data.market_data import write_table_day, get_market_slice
         from datetime import date
         df = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": [date(2026, 7, 21)], "x": ["s"]})
-        write_table_day("daily_basic", date(2026, 7, 21), df, parquet_dir=tmp_path)
-        out = get_market_slice(date(2026, 7, 21), table="daily_basic", parquet_dir=tmp_path)
+        write_table_day("daily_basic", date(2026, 7, 21), df, parquet_dir=fresh_market_root)
+        out = get_market_slice(date(2026, 7, 21), table="daily_basic", parquet_dir=fresh_market_root)
         assert out.schema["x"] == pl.String and out.height == 1
 
 
@@ -290,14 +300,14 @@ class TestCanonicalSchemaAlignment:
     does_not_drag_new_write`** —— 它锁死的正是 2026-07-27 生产事故的根因。"""
 
     @staticmethod
-    def _write_raw(tmp_path, table, d, df):
+    def _write_raw(fresh_market_root, table, d, df):
         """绕开 `write_table_day`(即绕开对齐防线)直接落一个分区文件,用来合成
         「历史遗留的脏分区」——防线上线前的历史数据就是这么躺在盘上的。"""
-        p = tmp_path / table / f"year={d.year}" / f"{d.strftime('%Y%m%d')}.parquet"
+        p = fresh_market_root / table / f"year={d.year}" / f"{d.strftime('%Y%m%d')}.parquet"
         p.parent.mkdir(parents=True, exist_ok=True)
         df.write_parquet(p)
 
-    def test_dirty_first_partition_does_not_drag_new_write(self, tmp_path):
+    def test_dirty_first_partition_does_not_drag_new_write(self, fresh_market_root):
         """**反向证伪(本次事故根因)**:首个分区是「12 数值列全 String 的 0 行空文件」
         (= 生产 moneyflow_dc 2020-01-02 的真实形态)时,新落的干净 Float64 数据**不得**
         被它带偏成 String。
@@ -317,17 +327,17 @@ class TestCanonicalSchemaAlignment:
             schema={"trade_date": pl.Date, "ts_code": pl.String, "name": pl.String,
                     "pct_change": pl.String, "close": pl.String, "net_amount": pl.String},
         )
-        self._write_raw(tmp_path, "moneyflow_dc", date(2020, 1, 2), empty_str)
+        self._write_raw(fresh_market_root, "moneyflow_dc", date(2020, 1, 2), empty_str)
 
         # ② 今天的真数据是干净 Float64
         fresh = pl.DataFrame({
             "trade_date": [date(2026, 7, 27)], "ts_code": ["600176.SH"], "name": ["中国巨石"],
             "pct_change": [9.99], "close": [41.07], "net_amount": [140214.98],
         })
-        write_table_day("moneyflow_dc", date(2026, 7, 27), fresh, parquet_dir=tmp_path)
+        write_table_day("moneyflow_dc", date(2026, 7, 27), fresh, parquet_dir=fresh_market_root)
 
         # ③ 新文件必须仍是 Float64(没被脏基准带偏)——这一条挂 = 事故根因复活
-        newp = tmp_path / "moneyflow_dc" / "year=2026" / "20260727.parquet"
+        newp = fresh_market_root / "moneyflow_dc" / "year=2026" / "20260727.parquet"
         got = pl.read_parquet_schema(newp)
         assert got["pct_change"] == pl.Float64
         assert got["close"] == pl.Float64
@@ -346,15 +356,15 @@ class TestCanonicalSchemaAlignment:
         # 副产品(**不是**脏数据被修好了)—— 只要读的区间跨到脏那年,照样炸。下面两条把
         # 这个新边界钉死:同年读通过、跨年读仍 SchemaError。
         assert get_market_slice(
-            date(2026, 7, 27), table="moneyflow_dc", parquet_dir=tmp_path
+            date(2026, 7, 27), table="moneyflow_dc", parquet_dir=fresh_market_root
         )["net_amount"][0] == 140214.98      # 只 glob year=2026,碰不到 2020 的脏分区
         from neckline.data.market_data import scan_table_range
         with pytest.raises(pl.exceptions.SchemaError):
             scan_table_range(
-                "moneyflow_dc", date(2020, 1, 1), date(2026, 7, 27), parquet_dir=tmp_path
+                "moneyflow_dc", date(2020, 1, 1), date(2026, 7, 27), parquet_dir=fresh_market_root
             )                                 # 跨到脏那年 → 互补契约未被削弱,照旧炸
 
-    def test_string_incoming_cast_to_canonical_even_without_partitions(self, tmp_path):
+    def test_string_incoming_cast_to_canonical_even_without_partitions(self, fresh_market_root):
         """表**尚无任何分区**时,TuShare 漂成 String 的数值列也要按声明落成 Float64。
         (旧实现此处直接 `return df` 原样通过 → 落一个 String 分区,就是脏基准的诞生方式。)"""
         import polars as pl
@@ -365,14 +375,14 @@ class TestCanonicalSchemaAlignment:
             "trade_date": [date(2026, 7, 21)], "ts_code": ["600176.SH"], "name": ["中国巨石"],
             "pct_change": ["9.99"], "close": ["41.07"], "net_amount": [""],
         })
-        write_table_day("moneyflow_dc", date(2026, 7, 21), drifted, parquet_dir=tmp_path)
-        p = tmp_path / "moneyflow_dc" / "year=2026" / "20260721.parquet"
+        write_table_day("moneyflow_dc", date(2026, 7, 21), drifted, parquet_dir=fresh_market_root)
+        p = fresh_market_root / "moneyflow_dc" / "year=2026" / "20260721.parquet"
         df = pl.read_parquet(p)
         assert df.schema["pct_change"] == pl.Float64
         assert df["pct_change"][0] == 9.99
         assert df["net_amount"][0] is None      # 空串 → null,不臆造 0
 
-    def test_undeclared_column_still_aligns_to_existing_partition(self, tmp_path):
+    def test_undeclared_column_still_aligns_to_existing_partition(self, fresh_market_root):
         """声明覆盖不到的列(如 TuShare 新增列)仍走「向既有分区看齐」兜底,不被丢下。"""
         import polars as pl
         from datetime import date
@@ -382,17 +392,17 @@ class TestCanonicalSchemaAlignment:
             "trade_date": [date(2026, 7, 20)], "ts_code": ["600176.SH"], "name": ["巨石"],
             "pct_change": [1.0], "brand_new_col": [7.5],
         })
-        write_table_day("moneyflow_dc", date(2026, 7, 20), first, parquet_dir=tmp_path)
+        write_table_day("moneyflow_dc", date(2026, 7, 20), first, parquet_dir=fresh_market_root)
         second = pl.DataFrame({
             "trade_date": [date(2026, 7, 21)], "ts_code": ["600176.SH"], "name": ["巨石"],
             "pct_change": [2.0], "brand_new_col": ["8.5"],      # 未声明列漂成 String
         })
-        write_table_day("moneyflow_dc", date(2026, 7, 21), second, parquet_dir=tmp_path)
-        out = scan_table_range("moneyflow_dc", date(2026, 7, 20), date(2026, 7, 21), parquet_dir=tmp_path)
+        write_table_day("moneyflow_dc", date(2026, 7, 21), second, parquet_dir=fresh_market_root)
+        out = scan_table_range("moneyflow_dc", date(2026, 7, 20), date(2026, 7, 21), parquet_dir=fresh_market_root)
         assert out.schema["brand_new_col"] == pl.Float64      # 兜底生效
         assert out.height == 2
 
-    def test_missing_declaration_warns_and_falls_back(self, tmp_path, monkeypatch, caplog):
+    def test_missing_declaration_warns_and_falls_back(self, fresh_market_root, monkeypatch, caplog):
         """表未声明 → **不静默**:打 WARNING 且退回旧行为(向既有分区看齐)。"""
         import logging
         import polars as pl
@@ -402,10 +412,10 @@ class TestCanonicalSchemaAlignment:
         monkeypatch.delitem(md.TABLE_FLOAT_COLS, "daily")
         df = pl.DataFrame({"trade_date": [date(2026, 7, 21)], "ts_code": ["600176.SH"], "close": ["4.5"]})
         with caplog.at_level(logging.WARNING, logger="neckline.data.market_data"):
-            md.write_table_day("daily", date(2026, 7, 21), df, parquet_dir=tmp_path)
+            md.write_table_day("daily", date(2026, 7, 21), df, parquet_dir=fresh_market_root)
         assert any("未在 TABLE_FLOAT_COLS 声明" in r.getMessage() for r in caplog.records)
         # 无既有分区 + 无声明 = 旧行为原样通过
-        assert pl.read_parquet(tmp_path / "daily" / "year=2026" / "20260721.parquet").schema["close"] == pl.String
+        assert pl.read_parquet(fresh_market_root / "daily" / "year=2026" / "20260721.parquet").schema["close"] == pl.String
 
     def test_every_valid_table_has_a_declaration(self):
         """守门:往 `_VALID_TABLES` 加了新表却忘了补 canonical 声明,这条直接挂。"""

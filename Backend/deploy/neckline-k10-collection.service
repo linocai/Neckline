@@ -1,0 +1,13 @@
+[Unit]
+Description=Enqueue independent Neckline K10 news collection
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/k10.env
+# Timer fires at Beijing 08:00 and 20:00 on every natural day. The CLI
+# validates the canonical slot and the explicit immutable collection binding.
+ExecStart=/bin/sh -c 'exec "$K10_PYTHON" -m neckline.k10.cli enqueue-collection --db "$K10_DB_PATH" --slot "$(TZ=Asia/Shanghai /bin/date +%%FT%%H:00:00+08:00)" --config-id "$K10_COLLECTION_CONFIG_ID" --config-revision "$K10_COLLECTION_CONFIG_REVISION" --scheduled'

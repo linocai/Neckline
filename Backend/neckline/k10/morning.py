@@ -97,10 +97,15 @@ def _versioned_refs(value: Sequence[Mapping[str, Any]], *, field: str, required:
 def morning_section(*, lifecycle: str, reason_status: str, source_status: str,
                     material: bool, is_new: bool, task_status: str = "completed") -> str:
     """Classify exactly once; incomplete coverage is never described as no change."""
-    if task_status != "completed" or source_status != "complete":
+    if task_status != "completed":
         return "needs_review"
     if lifecycle == "withdrawn" or reason_status == "invalidated":
+        # A directly independent counterexample remains actionable even if a
+        # separate market-wide source was partial.  The report still carries
+        # that source gap; it must not bury a confirmed withdrawal under it.
         return "major_contrary"
+    if source_status != "complete":
+        return "needs_review"
     if reason_status in {"needs_review", "unavailable"}:
         return "needs_review"
     if material:
@@ -115,6 +120,7 @@ def build_morning_report_item(
     selection_state: str, lifecycle: str, source_status: str, reason_status: str,
     material: bool, is_new: bool, summary: str, coverage: Mapping[str, Any],
     source_refs: Sequence[Mapping[str, Any]], independent_verification_refs: Sequence[Mapping[str, Any]],
+    local_contrary_refs: Sequence[Mapping[str, Any]] = (),
     lifecycle_event_id: str | None = None, task_status: str = "completed",
     content: Mapping[str, Any] | None = None,
 ) -> MorningReportItem:
@@ -128,13 +134,17 @@ def build_morning_report_item(
         raise MorningReportError("晨报项目任务状态无效")
     refs = _versioned_refs(source_refs, field="sourceRefs", required=True)
     independent = _versioned_refs(independent_verification_refs, field="independentVerificationRefs", required=False)
+    local_contrary = _versioned_refs(local_contrary_refs, field="localContraryRefs", required=False)
+    if any(ref not in refs for ref in local_contrary):
+        raise MorningReportError("本地反证必须属于晨间冻结资料")
     section = morning_section(lifecycle=lifecycle, reason_status=reason_status, source_status=source_status,
                               material=material, is_new=is_new, task_status=task_status)
-    # An invalidated conclusion needs independent frozen support.  A material item still marked
-    # ``needs_review`` is an honest risk alert, not an already verified withdrawal, so it must
-    # remain visible even before independent confirmation arrives.
-    if reason_status == "invalidated" and lifecycle != "withdrawn" and not independent:
-        raise MorningReportError("已核撤回必须带独立核验资料版本")
+    # A new, exact-version local original can itself contradict a frozen
+    # reason. The review runtime validates its exact local original and keeps
+    # its publication provenance visible without an age cutoff;
+    # do not relabel that source as a separately searched verification result.
+    if reason_status == "invalidated" and lifecycle != "withdrawn" and not (independent or local_contrary):
+        raise MorningReportError("已核撤回必须带独立核验或本地新原件版本")
     priority = "high" if section == "major_contrary" else ("review" if section == "needs_review" else "normal")
     return MorningReportItem(
         item_id=item_id, opportunity_id=opportunity_id, company_window_id=company_window_id,

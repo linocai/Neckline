@@ -26,6 +26,7 @@ import socket
 import sqlite3
 import sys
 from typing import Any, Mapping
+from unittest.mock import patch
 
 import pytest
 
@@ -70,12 +71,22 @@ def _task_cli_stdout(database: Path, task_id: str) -> str:
 
 
 def _api_projection(database: Path, *, window: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Read the production FastAPI router exactly as a client does."""
-    with base.actual_api(database, **explicit_bindings(database)) as client:
+    """Read the real router during the fixture's original selection window."""
+    class ReadClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 9, 22, 10, tzinfo=SHANGHAI)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+
+    # This historical fixture asserts selectability before its fixed D2
+    # deadline. The host date must not expire it just because tests run later.
+    with patch("neckline.api.k10.datetime", ReadClock), patch("neckline.k10.store.datetime", ReadClock), base.actual_api(database, **explicit_bindings(database)) as client:
         latest_response = client.get(f"/api/v1/k10/v2/reports/latest?window={window}")
         latest_response.raise_for_status()
         latest = latest_response.json()
-        assert latest["schemaVersion"] == 9
+        # This fixture executes today's producer; archived report formats are
+        # tested from their preserved rows, not inferred from its file name.
+        assert latest["schemaVersion"] == 10
         report = latest["report"]
         assert isinstance(report, dict)
         report_id = report["reportId"]
@@ -86,7 +97,7 @@ def _api_projection(database: Path, *, window: str) -> tuple[dict[str, Any], dic
         materials_response = client.get(f"/api/v1/k10/v2/reports/{report_id}/materials")
         materials_response.raise_for_status()
         materials = materials_response.json()
-        assert materials["schemaVersion"] == 9 and materials["reportId"] == report_id
+        assert materials["schemaVersion"] == 10 and materials["reportId"] == report_id
         for item in materials["items"]:
             assert isinstance(item["eventId"], str) and item["eventId"]
     return latest, materials
@@ -185,7 +196,8 @@ def _capture_morning_partial(
     execution_payload = dict(store.read_execution_config(
         config_id=execution_id, revision=execution_revision, db_path=database,
     )["payload"])
-    execution_payload["discovery"] = {**execution_payload["discovery"], "deepReadConcurrency": 1}
+    execution_payload["discovery"] = {**execution_payload["discovery"], "deepReadConcurrency": 1,
+        "investigationPromptContractRevision": "k10-investigation-v2"}
     execution_revision = store.append_execution_config(
         config_id=execution_id, payload=execution_payload,
         created_at=(cutoff - timedelta(minutes=2)).isoformat(), db_path=database,
@@ -215,6 +227,12 @@ def _capture_morning_partial(
 
         def respond(self, request):
             payload = self._packet(request)
+            if "candidates" in payload and "choices" in payload.get("output", {}):
+                self._record("prioritize")
+                return self._ok({"choices": [
+                    {"canonicalKey": row["canonicalKey"], "companyCode": row["companyCode"]}
+                    for row in payload["candidates"]
+                ]})
             title_items = payload.get("items")
             if ("inputCount" not in payload and isinstance(title_items, list) and title_items
                     and all(isinstance(row, dict) and isinstance(row.get("title"), str) for row in title_items)):
@@ -272,7 +290,8 @@ def _capture_morning_partial(
     with sqlite3.connect(database) as connection:
         event = connection.execute(
             "SELECT status,safe_error_code FROM k10_execution_item_checkpoints "
-            "WHERE task_id=? AND item_kind='event' ORDER BY item_key", (task_id,),
+            "WHERE task_id=? AND item_kind='event' "
+            "AND stage IN ('model:investigation_research_round','verify_or_map') ORDER BY item_key", (task_id,),
         ).fetchall()
         assert sorted(event) == [("completed", None), ("failed", "morning_closeout_reserve")]
         assert connection.execute("SELECT COUNT(*) FROM k10_external_attempts WHERE state IN ('started','unknown')").fetchone()[0] == 0

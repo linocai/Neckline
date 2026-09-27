@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Neckline K10 independent news collection at Beijing 08:00 and 20:00
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Shanghai
+OnCalendar=*-*-* 20:00:00 Asia/Shanghai
+Persistent=false
+Unit=neckline-k10-collection.service
+
+[Install]
+WantedBy=timers.target

@@ -45,13 +45,15 @@ class VerificationCheckpointStore:
     """
 
     def __init__(self, *, db_path: Path, task_id: str, leaseguard: Callable[[], None] | None = None,
-                 lease_owner: str | None = None) -> None:
+                 lease_owner: str | None = None,
+                 lease_clock: Callable[[], datetime] | None = None) -> None:
         if not task_id:
             raise ValueError("Tavily 核验检查点需要 task_id")
         self.db_path = db_path
         self.task_id = task_id
         self.leaseguard = leaseguard
         self.lease_owner = lease_owner
+        self.lease_clock = lease_clock
 
     @staticmethod
     def input_sha256(*, canonical_key: str, stage_key: str, event_state: str, headline: str,
@@ -125,7 +127,9 @@ class VerificationCheckpointStore:
         row = conn.execute(
             "SELECT status,lease_owner,lease_until FROM k10_tasks WHERE task_id=?", (self.task_id,)
         ).fetchone()
-        if row is None or row[0] != "running" or row[1] != self.lease_owner or not row[2] or str(row[2]) < _now():
+        now = (self.lease_clock().astimezone(timezone.utc).isoformat(timespec="seconds")
+               if self.lease_clock is not None else _now())
+        if row is None or row[0] != "running" or row[1] != self.lease_owner or not row[2] or str(row[2]) < now:
             raise store.K10Conflict("任务租约已失效，请等待恢复")
 
     def claim(self, *, item_key: str, input_sha256: str, network_max_attempts: int,

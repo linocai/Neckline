@@ -118,6 +118,10 @@ def export_corpus(db_path: Path, task_id: str) -> dict[str, Any]:
     redactions: list[str] = []
     seen_rows: dict[str, set[str]] = {}
     try:
+        # Keep this SSH-stdin exporter stdlib-only. NK92 is the same immutable
+        # SQLite file identity defined in neckline.fresh_start.APPLICATION_ID.
+        if conn.execute("PRAGMA application_id").fetchone()[0] != 0x4E4B3932:
+            raise ValueError("B92 前任务历史禁止读取或导出")
         existing = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
         def take(table: str, where: str = "", args: tuple = ()) -> list[dict[str, Any]]:

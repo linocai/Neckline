@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Iterator
 
 
+from neckline.fresh_start import initialize_empty_identity, require_current_database
+
 SCHEMA_VERSION = 10
 
 
@@ -891,7 +893,7 @@ def _path(db_path: Path) -> Path:
 
 
 @contextmanager
-def write_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+def write_connection(db_path: Path, *, _initialize: bool = False) -> Iterator[sqlite3.Connection]:
     """受控写连接；仅迁移和 store 写入口可使用。"""
     path = _path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -921,6 +923,10 @@ def write_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
             break
         if conn is None:  # defensive; the loop either acquires or raises.
             raise SqliteWriteBusy("SQLite 写入争用仍未释放")
+        if _initialize:
+            initialize_empty_identity(conn)
+        else:
+            require_current_database(conn)
         yield conn
         try:
             conn.commit()
@@ -952,6 +958,7 @@ def read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     except sqlite3.OperationalError as exc:
         raise SchemaUnavailable(f"K10 schema 无法只读打开：{path}") from exc
     try:
+        require_current_database(conn)
         yield conn
     finally:
         conn.close()
@@ -968,6 +975,7 @@ def _version(conn: sqlite3.Connection) -> int:
 
 
 def require_schema(conn: sqlite3.Connection) -> None:
+    require_current_database(conn)
     version = _version(conn)
     if version != SCHEMA_VERSION:
         raise SchemaUnavailable(
@@ -983,7 +991,7 @@ def schema_version(db_path: Path) -> int:
 
 def initialize_schema(db_path: Path) -> int:
     """受控前滚至当前 K10 schema；可重复执行，绝不由读取或 API GET 调用。"""
-    with write_connection(db_path) as conn:
+    with write_connection(db_path, _initialize=True) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS k10_schema_migrations "
             "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -1002,37 +1010,8 @@ def initialize_schema(db_path: Path) -> int:
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
             _apply_v6(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version == 1:
-            _apply_v2(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (2,?)", (_now(),))
-            _apply_v3(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
-            _apply_v4(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v6(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version == 2:
-            _apply_v3(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (3,?)", (_now(),))
-            _apply_v4(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v6(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version == 3:
-            _apply_v4(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (4,?)", (_now(),))
-            _apply_v6(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version == 4:
-            _apply_v6(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version == 5:
-            _apply_v6(conn)
-            conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (6,?)", (_now(),))
-        elif version in {6, 7, 8, 9}:
-            pass
         elif version != SCHEMA_VERSION:
-            raise K10SchemaError(f"缺少从 K10 schema {version} 到 {SCHEMA_VERSION} 的迁移")
+            raise SchemaUnavailable("B92 只接受全新空库或当前 Schema10；旧版本迁移已退役")
         if _version(conn) == 6:
             _apply_v7(conn)
             conn.execute("INSERT INTO k10_schema_migrations(version, applied_at) VALUES (7,?)", (_now(),))

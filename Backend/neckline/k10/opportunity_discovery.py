@@ -72,6 +72,18 @@ def validate_evidence_disclosure(disclosure: Mapping[str, Any]) -> None:
 
 
 def validate_comparison(comparison: Mapping[str, Any], *, require_evidence_disclosure: bool = False) -> None:
+    if comparison.get("recommendation") in {"recommend", "pending", "exclude"}:
+        if not isinstance(comparison.get("analysisText"), str) or not comparison["analysisText"].strip():
+            raise ComparisonValidationError("公司结论缺少自然关联说明", code="compare_company_coverage_invalid")
+        refs = comparison.get("sourceRefs")
+        if not isinstance(refs, list) or not refs:
+            raise ComparisonValidationError("公司结论缺少真实来源", code="compare_company_coverage_invalid")
+        disclosure = comparison.get("evidenceDisclosure")
+        if disclosure is None and require_evidence_disclosure:
+            raise ComparisonValidationError("公司比较缺少证据披露", code="evidence_disclosure_invalid")
+        if disclosure is not None:
+            validate_evidence_disclosure(disclosure)
+        return
     role = comparison.get("role")
     if role not in COMPARISON_ROLES:
         raise ComparisonValidationError("公司比较必须声明发布、待核或排除角色", code="compare_company_role_invalid")
@@ -103,11 +115,17 @@ def publishable_assessments(comparisons: Mapping[str, Any]) -> dict[str, Any]:
     def role_of(value: Any) -> Any:
         if not isinstance(value, Mapping):
             return None
+        if value.get("recommendation") == "recommend":
+            return "primary"
         direct = value.get("role")
         if direct is not None:
             return direct
         differences = value.get("differences")
-        return differences.get("role") if isinstance(differences, Mapping) else None
+        if not isinstance(differences, Mapping):
+            return None
+        if differences.get("recommendation") == "recommend":
+            return "primary"
+        return differences.get("role")
 
     return {
         str(company_code): value for company_code, value in comparisons.items()
@@ -145,8 +163,18 @@ def validate_event_comparison(
         if not isinstance(differences, Mapping):
             raise ComparisonValidationError("事件比较缺少公司差异", code="compare_company_coverage_invalid")
         validate_comparison(differences, require_evidence_disclosure=require_evidence_disclosure)
-        roles[company_code] = str(differences["role"])
+        b90_recommendation = differences.get("recommendation")
+        roles[company_code] = ({"recommend": "primary", "pending": "pending", "exclude": "excluded"}.get(
+            b90_recommendation, differences.get("role")
+        ))
+        if roles[company_code] not in COMPARISON_ROLES:
+            raise ComparisonValidationError("公司比较必须声明发布、待核或排除角色", code="compare_company_role_invalid")
         rank = item.get("rank")
+        if b90_recommendation == "recommend":
+            # B90 final selection supplies report rank.  An event conclusion
+            # names its own recommendation but does not pretend to order every
+            # peer before the cross-catalyst editorial pass.
+            continue
         if roles[company_code] in PUBLISHABLE_ROLES:
             if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
                 raise ComparisonValidationError("可发布公司排序必须为正整数", code="compare_company_ranking_invalid")

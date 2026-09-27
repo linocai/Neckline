@@ -17,7 +17,7 @@ from typing import Any, Callable, Literal, Mapping
 from neckline.llm.base import LLMResult
 
 from . import store
-from .schema import require_schema, write_connection
+from .schema import SqliteWriteBusy, require_schema, write_connection
 
 
 _OPERATIONS = frozenset({
@@ -393,6 +393,13 @@ def execute_model_operation(
         with manager:
             candidate, provider_input, provider_output, provider_total = _parse_invocation(call())
         normalized = _normal_json(validate(candidate))
+    except SqliteWriteBusy:
+        # A provider reply can be durably settled before a later local write
+        # (for example, input-usage audit) completes.  SQLite contention is a
+        # same-task continuation condition, never a semantic rejection of that
+        # reply.  Let the worker resume the exact checkpoint and reuse its
+        # settled receipt without another provider request.
+        raise
     except ModelReceiptRecoveryUnavailable:
         # Preserve a started/unknown checkpoint exactly as it was.  It may be
         # reconciled later only from its matching receipt, never by a new POST.

@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import socket
 import sqlite3
+from threading import Lock
 from typing import Any, Literal
 
 import httpx
@@ -20,7 +21,7 @@ from neckline.k10.discovery import DiscoverySliceYield
 from neckline.k10.investigation import InvestigationError
 from neckline.k10.metering import MeteredProvider
 from neckline.k10.providers import ProviderResolution
-from neckline.k10.research_contracts import ResearchSnapshot
+from neckline.k10.research_contracts import RESEARCH_ROUND_CONTRACT, ResearchSnapshot
 from neckline.k10.sources import SourceDocumentInput, SourceFetchResult
 from neckline.k10.windows import SHANGHAI, evening_cutoff
 from neckline.k10.worker import run_once
@@ -111,13 +112,9 @@ class _ExecutionUnitTransport(DirectRoundTransport):
                 },
                 "companyAssessments": [{
                     "companyCode": company,
-                    "role": "primary",
-                    "rank": 1,
-                    "summary": f"{state} 来源对应的公司比较",
-                    "priorityReason": "独立来源需要保留",
-                    "gap": "尚未取得额外公司披露",
-                    "rankChangeConditions": "公司公开确认",
-                    "twoDayReason": "新事件固定窗口",
+                    "recommendation": "recommend",
+                    "analysisText": f"{state} 来源对应的公司关联；独立来源需要保留，尚未取得额外公司披露。",
+                    "sourceRefs": [reference],
                     "evidenceDisclosure": {
                         "verificationStatus": "unverified",
                         "isRumor": True,
@@ -300,7 +297,7 @@ def test_b82_execution_unit_keeps_same_event_announcement_and_denial_independent
     config_id, config_revision, execution_id, execution_revision = base.seed_database(
         database, trading_day=day, fixture_now=business_clock[0],
     )
-    execution_revision, _ = _cross_serial_execution_binding(
+    execution_revision, _ = _cross_execution_binding(
         database=database, execution_id=execution_id, execution_revision=execution_revision,
         configuration_id=config_id, configuration_revision=config_revision, created_at=business_clock[0],
     )
@@ -351,7 +348,7 @@ def test_b82_execution_unit_rejects_foreign_task_snapshot_for_same_public_event(
     config_id, config_revision, execution_id, execution_revision = base.seed_database(
         database, trading_day=first_day, fixture_now=business_clock[0],
     )
-    execution_revision, _ = _cross_serial_execution_binding(
+    execution_revision, _ = _cross_execution_binding(
         database=database, execution_id=execution_id, execution_revision=execution_revision,
         configuration_id=config_id, configuration_revision=config_revision, created_at=business_clock[0],
     )
@@ -372,27 +369,41 @@ def test_b82_execution_unit_rejects_foreign_task_snapshot_for_same_public_event(
         database=database, day=second_day, config_id=config_id, config_revision=config_revision,
         execution_id=execution_id, execution_revision=execution_revision,
     )
-    original_advance = pipeline._CheckpointedDiscoveryModel.advance_research_round
-    yielded = False
+    # The profile is legally B90 (two deep-read slots), but this regression
+    # needs an exact first-slice boundary before it substitutes the foreign
+    # snapshot. Gate at the research-unit boundary: retain the lock through
+    # durable snapshot creation and its coverage callback, then yield. A
+    # sibling therefore yields before it can create another snapshot; normal
+    # concurrent admission is released for the actual continuation.
+    original_research_outcome = pipeline._research_outcome
+    controls = {"yielded": False, "resume": False}
+    admission_lock = Lock()
 
-    def yield_after_second_task_snapshot(self, *, snapshot, evidence_packet):
-        nonlocal yielded
-        result = original_advance(self, snapshot=snapshot, evidence_packet=evidence_packet)
-        if self._task_id == second_task_id and not yielded:
-            yielded = True
-            raise DiscoverySliceYield()
-        return result
+    def yield_after_second_task_snapshot(*args, **kwargs):
+        task_id = kwargs.get("task_id")
+        if task_id != second_task_id or controls["resume"]:
+            return original_research_outcome(*args, **kwargs)
+        with admission_lock:
+            if controls["yielded"]:
+                raise DiscoverySliceYield()
+            snapshot_created = kwargs.get("snapshot_created")
+            assert callable(snapshot_created)
 
-    monkeypatch.setattr(
-        pipeline._CheckpointedDiscoveryModel,
-        "advance_research_round",
-        yield_after_second_task_snapshot,
-    )
+            def checkpoint_then_yield(snapshot_id: str) -> None:
+                snapshot_created(snapshot_id)
+                controls["yielded"] = True
+                raise DiscoverySliceYield()
+
+            return original_research_outcome(
+                *args, **{**kwargs, "snapshot_created": checkpoint_then_yield},
+            )
+
+    monkeypatch.setattr(pipeline, "_research_outcome", yield_after_second_task_snapshot)
     handler = _handler(parquet_dir=tmp_path / "second-parquet", business_clock=business_clock)
     paused = _run_worker(
         database=database, task_id=second_task_id, worker_id="b82-unit-second-paused", handler=handler,
     )
-    assert paused.status == "queued" and yielded
+    assert paused.status == "queued" and controls["yielded"]
     own_snapshot = _latest_snapshots(database=database, task_id=second_task_id)
     assert len(own_snapshot) == 1
     assert {item["eventId"] for item in own_snapshot} == {foreign_snapshot["eventId"]}
@@ -405,6 +416,7 @@ def test_b82_execution_unit_rejects_foreign_task_snapshot_for_same_public_event(
         due = datetime.fromisoformat(connection.execute(
             "SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?", (second_task_id,),
         ).fetchone()[0])
+    controls["resume"] = True
     rejected = run_once(
         db_path=database,
         task_id=second_task_id,
@@ -456,14 +468,25 @@ def _cross_latest_snapshots(*, database: Path, task_id: str) -> dict[str, dict[s
     }
 
 
-def _cross_serial_execution_binding(*, database: Path, execution_id: str, execution_revision: int,
-                                    configuration_id: str, configuration_revision: int,
-                                    created_at: datetime) -> tuple[int, dict[str, object]]:
-    """Make fixture research admission serial so the 29th unit is deterministic."""
+def _cross_execution_binding(*, database: Path, execution_id: str, execution_revision: int,
+                             configuration_id: str, configuration_revision: int,
+                             created_at: datetime) -> tuple[int, dict[str, object]]:
+    """Bind a legal frozen profile without changing historic fixture semantics.
+
+    B90 requires two deep-read slots because its morning parent has two
+    channels. Older frozen contracts retain their original one-slot value;
+    this helper does not claim that B90 research itself is serial.
+    """
     payload = dict(store.read_execution_config(
         config_id=execution_id, revision=execution_revision, db_path=database,
     )["payload"])
-    payload["discovery"] = {**payload["discovery"], "deepReadConcurrency": 1}
+    discovery = payload["discovery"]
+    assert isinstance(discovery, dict)
+    payload["discovery"] = {
+        **discovery,
+        "deepReadConcurrency": (2 if discovery.get("investigationPromptContractRevision") == RESEARCH_ROUND_CONTRACT
+                                else 1),
+    }
     revision = store.append_execution_config(
         config_id=execution_id, payload=payload, created_at=created_at.isoformat(), db_path=database,
     )
@@ -569,7 +592,7 @@ def _run_cross_slice_morning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     config_id, config_revision, execution_id, execution_revision = base.seed_database(
         database, trading_day=day - timedelta(days=1), fixture_now=cutoff - timedelta(hours=1),
     )
-    execution_revision, execution = _cross_serial_execution_binding(
+    execution_revision, execution = _cross_execution_binding(
         database=database, execution_id=execution_id, execution_revision=execution_revision,
         configuration_id=config_id, configuration_revision=config_revision,
         created_at=cutoff - timedelta(minutes=2),

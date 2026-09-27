@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from neckline.fresh_start import require_current_database, require_current_market_directory
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -63,7 +64,9 @@ def _to_date(d: DateLike) -> date:
 def table_dir(table: str, parquet_dir: Optional[Path] = None) -> Path:
     if table not in _VALID_TABLES:
         raise ValueError(f"未知表名 {table!r},合法值:{sorted(_VALID_TABLES)}")
-    return (parquet_dir or settings.parquet_dir) / table
+    root = parquet_dir or settings.parquet_dir
+    require_current_market_directory(root)
+    return root / table
 
 
 def day_file_path(
@@ -193,6 +196,7 @@ def _align_to_table_schema(table: str, df: pl.DataFrame, parquet_dir: Optional[P
 def write_table_day(table: str, trade_date: DateLike, df: pl.DataFrame, parquet_dir: Optional[Path] = None) -> Path:
     """写一天一表的 Parquet 文件(backfill / daily_update 落盘统一入口,幂等覆盖)。
     写入前经 `_align_to_table_schema` 对齐既有分区类型,防 TuShare 类型漂移毒化分区。"""
+    require_current_market_directory(parquet_dir or settings.parquet_dir, initialize=True)
     path = day_file_path(table, trade_date, parquet_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     df = _align_to_table_schema(table, df, parquet_dir)
@@ -369,6 +373,7 @@ def get_index_history(
 def load_stock_basic(db_path: Optional[Path] = None) -> pl.DataFrame:
     conn = sqlite3.connect(str(db_path or settings.db_path))
     try:
+        require_current_database(conn)
         rows = conn.execute(
             "SELECT ts_code, symbol, name, industry, market, list_date, delist_date, list_status FROM stock_basic"
         ).fetchall()
@@ -418,6 +423,7 @@ def resolve_stock_names(codes: Sequence[str], db_path: Optional[Path] = None) ->
 def load_namechange(db_path: Optional[Path] = None) -> pl.DataFrame:
     conn = sqlite3.connect(str(db_path or settings.db_path))
     try:
+        require_current_database(conn)
         rows = conn.execute(
             "SELECT ts_code, name, start_date, end_date, ann_date, change_reason FROM namechange"
         ).fetchall()
@@ -445,6 +451,7 @@ def load_trade_cal_days(exchange: str = "SSE", db_path: Optional[Path] = None) -
     """全部交易日(is_open=1),升序。供 limit_derived / calendar 缓存使用。"""
     conn = sqlite3.connect(str(db_path or settings.db_path))
     try:
+        require_current_database(conn)
         rows = conn.execute(
             "SELECT cal_date FROM trade_cal WHERE exchange=? AND is_open=1 ORDER BY cal_date", (exchange,)
         ).fetchall()

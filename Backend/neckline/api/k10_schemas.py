@@ -704,11 +704,16 @@ class SourceDocumentPageOut(K10Model):
     externalId: str
     canonicalUrl: str | None = None
     title: str | None = None
+    originalTitle: str | None = None
+    originalPublishedText: str | None = None
+    sourceKind: Literal["flash", "article"] | None = None
+    eventTime: dict[str, str | None] | None = None
     publishedAt: str | None = None
     publishedPrecision: Literal["exact", "date", "unknown"]
     fetchedAt: str
     excerpt: str | None = None
     body: str | None = None
+    contentKind: Literal["original", "excerpt", "unavailable"]
     page: PageMeta = Field(default_factory=PageMeta)
 
 
@@ -856,6 +861,11 @@ class V2CatalystOut(K10Model):
     summary: str
     classification: str
     verificationStatus: str
+    # B90 fields are absent from immutable Schema8/9 history.  Their absence
+    # says the older report did not preserve this detail; it never means a
+    # synthetic explanation or source was reconstructed later.
+    analysisText: str | None = None
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
 
 
 class CardPriceSourceReference(SourceReference):
@@ -915,6 +925,35 @@ class V2IncompleteReviewOut(K10Model):
     reason: str
 
 
+class V2DiscoveryOut(K10Model):
+    state: Literal["complete", "partial", "unavailable"]
+    outcome: Literal["recommendations", "no_recommendation", "not_completed"]
+    companyCount: int = Field(ge=0)
+    reasonCodes: list[str] = Field(default_factory=list)
+
+
+class V2MorningReviewItemOut(K10Model):
+    reviewId: str
+    parentCardId: str | None = None
+    companyCode: str
+    companyName: str
+    opportunityIds: list[str] = Field(default_factory=list)
+    unreviewedOpportunityIds: list[str] = Field(default_factory=list)
+    status: Literal["completed", "partial", "failed", "not_started"]
+    outcome: Literal["changed", "no_material_change", "uncertain"]
+    analysisText: str | None = None
+    checkedScope: str | None = None
+    sourceRefs: list[SourceReference] = Field(default_factory=list)
+
+
+class V2MorningReviewOut(K10Model):
+    state: Literal["complete", "partial", "unavailable"]
+    parentReportId: str | None = None
+    targetCompanyCount: int = Field(ge=0)
+    targetReasonCount: int = Field(ge=0)
+    items: list[V2MorningReviewItemOut] = Field(default_factory=list)
+
+
 class V2DeliveryCountsOut(K10Model):
     """System-derived processing counts; title/event/company axes never mix."""
     titleInput: int = Field(ge=0)
@@ -944,7 +983,8 @@ class V2DeliveryGapOut(K10Model):
 
 
 class V2ReportDeliveryOut(K10Model):
-    contractVersion: Literal["k10-report-delivery-3.4.0-b76", "k10-report-delivery-3.5.0-b78"]
+    contractVersion: Literal["k10-report-delivery-3.4.0-b76", "k10-report-delivery-3.5.0-b78",
+                             "k10-report-delivery-3.6.0-b90", "k10-report-delivery-3.6.1-b92"]
     outcome: Literal["complete", "partial", "failed"]
     rankingScope: Literal["all_processed", "completed_subset", "none"]
     counts: V2DeliveryCountsOut
@@ -984,7 +1024,7 @@ class V2ReportMaterialOut(K10Model):
 
 
 class V2ReportMaterialsEnvelope(K10Model):
-    schemaVersion: int = 9
+    schemaVersion: int = 10
     reportId: str
     items: list[V2ReportMaterialOut]
     page: PageMeta
@@ -992,6 +1032,7 @@ class V2ReportMaterialsEnvelope(K10Model):
 
 class V2ReportOut(K10Model):
     coverageGaps: list[str] = Field(default_factory=list)
+    sourceCoverage: dict[str, object] | None = None
     incompleteReviews: list[V2IncompleteReviewOut] = Field(default_factory=list)
     lifecycleUpdates: list[V2LifecycleUpdateOut] = Field(default_factory=list)
     reportId: str
@@ -1009,6 +1050,8 @@ class V2ReportOut(K10Model):
     materials: V2ReportMaterialsOut | None = None
     resultAvailableAt: str | None = None
     deliveryDeadlineAt: str | None = None
+    discovery: V2DiscoveryOut | None = None
+    morningReview: V2MorningReviewOut | None = None
     eveningCards: list[V2CardOut]
     updatedCards: list[V2CardOut]
     addedCards: list[V2CardOut]
@@ -1016,8 +1059,8 @@ class V2ReportOut(K10Model):
 
 
 class V2ReportEnvelope(K10Model):
-    schemaVersion: int = 8
-    state: Literal["available", "empty", "not_configured"]
+    schemaVersion: int = 10
+    state: Literal["available", "empty", "not_configured", "failed", "processing"]
     reason: ApiFailure | None = None
     report: V2ReportOut | None = None
 

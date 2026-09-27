@@ -126,7 +126,7 @@ actor K10SyntheticUIService: K10Servicing {
 
     init(presentsB39State: Bool = false) { self.presentsB39State = presentsB39State }
 
-    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.5.1 Build 82") }
+    func health() async throws -> K10Health { K10Health(status: "ok", version: "3.6.1 Build 93") }
 
     func latestScan(window: String) async throws -> K10Scan {
         let cutoff = window == "morning" ? "2026-09-07T09:00:00+08:00" : "2026-09-06T21:00:00+08:00"
@@ -199,7 +199,7 @@ actor K10SyntheticUIService: K10Servicing {
     }
 
     func latestDailyReport(window: String) async throws -> K10DailyReportResponse {
-        if presentsEmptyState { return K10DailyReportResponse(schemaVersion: 8, state: "empty", reason: nil, report: nil) }
+        if presentsEmptyState { return K10DailyReportResponse(schemaVersion: 10, state: "empty", reason: nil, report: nil) }
         let windows = try await companyWindows()
         let evening = window == "evening"
         let relevant = windows.filter { evening ? $0.id == Self.first.companyWindowId : true }
@@ -217,7 +217,9 @@ actor K10SyntheticUIService: K10Servicing {
                     K10CardCatalyst(eventId: opportunity.eventId, eventRevision: opportunity.eventRevision,
                         opportunityId: opportunity.id, companyWindowId: company.id, headline: "新工艺进入验证阶段",
                         summary: "共同事件事实只记录一次；这条催化保留自己的依据与原始观察窗口。",
-                        classification: "continuation", verificationStatus: "unverified")
+                        classification: "continuation", verificationStatus: "unverified",
+                        analysisText: "这条消息说明验证环节出现新的进展。公司与该环节存在已记录的业务联系，但尚未取得公司正式确认，因此只把未核实部分如实保留。",
+                        sourceRefs: [Self.source])
                 }, priceReaction: "合成行情：D1 收盘 12.00；仅为价格观察，不是假定成交收益。")
         }
         var report = K10DailyReport(reportId: "daily-\(window)", strategyVersion: "K10-v2", strategySnapshotId: "synthetic-v2",
@@ -228,7 +230,42 @@ actor K10SyntheticUIService: K10Servicing {
         report.materials = K10ReportMaterials(state: "available", count: 1, reason: nil)
         report.resultAvailableAt = evening ? "2026-09-06T21:10:00+08:00" : "2026-09-07T09:12:00+08:00"
         report.deliveryDeadlineAt = evening ? nil : "2026-09-07T09:20:00+08:00"
-        return K10DailyReportResponse(schemaVersion: 9, state: "available", reason: nil, report: report)
+        report.discovery = K10ReportDiscovery(
+            state: "complete", outcome: "recommendations", companyCount: cards.count, reasonCodes: []
+        )
+        let reviewGap = K10ReportDeliveryGap(
+            gapId: "synthetic-morning-review-pending", stage: "morning_review", unitKind: "opportunity",
+            unitId: "synthetic-opportunity-2", reasonCode: "morning_review_failed",
+            message: "一条昨晚推荐理由尚未完成隔夜复核。", sourceRefs: [],
+            eventIds: ["synthetic-event-b"], companyCodes: ["300001.SZ"], companyScopeKnown: true
+        )
+        report.delivery = K10ReportDelivery(
+            contractVersion: "k10-report-delivery-3.6.1-b92",
+            outcome: evening ? "complete" : "partial", rankingScope: "synthetic-isolated-ui",
+            counts: K10ReportDeliveryCounts(
+                titleInput: 2, titleProcessed: 2, titleFailed: 0, titleUnprocessed: 0,
+                eventInput: 2, eventProcessed: 2, eventFailed: 0, eventUnprocessed: 0,
+                comparableCompanies: cards.count, publishedCompanies: cards.count
+            ),
+            gaps: evening ? [] : [reviewGap], inputManifestSha256: "synthetic-input",
+            eligibleSetSha256: "synthetic-eligible", rankingInputSha256: "synthetic-ranking"
+        )
+        if !evening {
+            report.morningReview = K10MorningReview(
+                state: "partial", parentReportId: "daily-evening", targetCompanyCount: 1, targetReasonCount: 2,
+                items: [
+                    K10MorningReviewItem(
+                        reviewId: "synthetic-review-changed", parentCardId: "daily-evening-300001.SZ",
+                        companyCode: "300001.SZ", companyName: "合成科技",
+                        opportunityIds: ["synthetic-opportunity-1", "synthetic-opportunity-2"],
+                        unreviewedOpportunityIds: ["synthetic-opportunity-2"], status: "partial", outcome: "changed",
+                        analysisText: "隔夜出现一条需要重新阅读的补充资料；另一条昨晚理由尚未完成复核，因此不会把这家公司显示为没有变化。",
+                        checkedScope: "昨晚两条原推荐理由及其直接补充资料", sourceRefs: [Self.source]
+                    )
+                ]
+            )
+        }
+        return K10DailyReportResponse(schemaVersion: 10, state: "available", reason: nil, report: report)
     }
 
     func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage {
@@ -243,7 +280,7 @@ actor K10SyntheticUIService: K10Servicing {
             uncertainties: ["该材料只供阅读，不构成正式推荐或观察窗口。"],
             sourceRefs: [Self.source, Self.tavilyExcerpt], asOf: "2026-09-07T09:12:00+08:00"
         )
-        return K10ReportMaterialsPage(schemaVersion: 9, reportId: id, items: [material], page: K10Page(nextCursor: nil))
+        return K10ReportMaterialsPage(schemaVersion: 10, reportId: id, items: [material], page: K10Page(nextCursor: nil))
     }
 
     func opportunity(id: String) async throws -> K10OpportunityDetail {
@@ -336,7 +373,7 @@ actor K10SyntheticUIService: K10Servicing {
                 schemaVersion: "k10-api-v2", documentId: id, revision: revision ?? 1, sourceKey: "tavily", externalId: id,
                 canonicalUrl: "https://example.invalid/k10/synthetic-tavily", title: Self.tavilyExcerpt.title, publishedAt: nil,
                 publishedPrecision: "unknown", fetchedAt: "2026-09-06T20:06:00+08:00", excerpt: Self.tavilyExcerpt.excerpt,
-                body: nil, page: K10Page(nextCursor: nil)
+                body: nil, page: K10Page(nextCursor: nil), contentKind: "excerpt"
             )
         }
         let firstPage = offset == 0
@@ -344,7 +381,7 @@ actor K10SyntheticUIService: K10Servicing {
             schemaVersion: "k10-api-v2", documentId: id, revision: revision ?? 1, sourceKey: "synthetic-news", externalId: "synthetic-document",
             canonicalUrl: "https://example.invalid/k10/synthetic-document", title: Self.source.title, publishedAt: Self.source.publishedAt,
             publishedPrecision: "exact", fetchedAt: "2026-09-06T20:00:00+08:00", excerpt: Self.source.excerpt,
-            body: firstPage ? Self.documentFirstPage : Self.documentSecondPage, page: K10Page(nextCursor: firstPage ? "6000" : nil)
+            body: firstPage ? Self.documentFirstPage : Self.documentSecondPage, page: K10Page(nextCursor: firstPage ? "6000" : nil), contentKind: "original"
         )
     }
 

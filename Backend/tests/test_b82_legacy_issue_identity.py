@@ -32,7 +32,7 @@ def _legacy_v3_issue_round(
     config_id, config_revision, execution_id, execution_revision = base.seed_database(
         database, trading_day=day, fixture_now=business_clock[0],
     )
-    execution_revision, _ = cross._cross_serial_execution_binding(
+    execution_revision, _ = cross._cross_execution_binding(
         database=database,
         execution_id=execution_id,
         execution_revision=execution_revision,

@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from neckline import notify_kinds
 from neckline.api.deps import require_api_token_ready, require_token
 from neckline.api.k10 import create_router as create_k10_router
+from neckline.api.collection import create_router as create_collection_router
 from neckline.api.schemas import (
     DeviceRegisterIn, OkOut, ProviderCreateIn, ProviderOut, ProviderUpdateIn, ProvidersListOut,
     PushKindOut, PushSettingsOut, SettingsOut, SettingsProviderOut, SettingsPushIn,
@@ -24,14 +25,17 @@ from neckline.settings_store import (
     set_push_kinds, set_tavily_api_key, update_provider,
 )
 
-VERSION = "v3.5.1"
-RELEASE_SET = "v3.5.1-b89"
+VERSION = "v3.6.1"
+RELEASE_SET = "v3.6.1-b93"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
 
 def _db() -> Path:
-    return _DB_PATH_OVERRIDE or settings.db_path
+    path = _DB_PATH_OVERRIDE or settings.db_path
+    with read_connection(path) as conn:
+        require_schema(conn)
+    return path
 
 
 @asynccontextmanager
@@ -45,11 +49,18 @@ async def lifespan(app: FastAPI):
     yield
 
 
+from neckline.fresh_start import RetiredDataError
+
 app = FastAPI(title="Neckline", version=VERSION, lifespan=lifespan)
 # Validation errors must not echo a submitted API Key (including malformed JSON fields).
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(RetiredDataError)
+async def retired_database(request, exc):
+    return JSONResponse(status_code=503, content={"detail": {"reason": "retired_database", "message": str(exc)}})
 
 
 @app.exception_handler(RequestValidationError)
@@ -72,6 +83,13 @@ app.include_router(create_k10_router(db_path_provider=_db, require_token_depende
                                          settings.k10_execution_config_revision,
                                          settings.k10_execution_config_binding_error,
                                      )))
+app.include_router(create_collection_router(
+    db_path_provider=_db, require_token_dependency=require_token,
+    current_collection_binding_provider=lambda: (
+        settings.k10_collection_config_id,
+        settings.k10_collection_config_revision,
+        settings.k10_collection_config_binding_error,
+    )))
 
 
 @app.get(f"{API_PREFIX}/health")

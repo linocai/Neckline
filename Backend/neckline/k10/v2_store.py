@@ -191,6 +191,33 @@ def _write_report_delivery(
     else:
         coverage = {'coverageGaps': [], 'incompleteReviews': []}
     coverage['delivery'] = dict(delivery)
+    if delivery.get('contractVersion') in {
+        'k10-report-delivery-3.6.0-b90', 'k10-report-delivery-3.6.1-b92',
+    }:
+        counts = delivery.get('counts') if isinstance(delivery.get('counts'), Mapping) else {}
+        company_count = counts.get('publishedCompanies') if isinstance(counts.get('publishedCompanies'), int) else 0
+        gaps_for_discovery = delivery.get('gaps') if isinstance(delivery.get('gaps'), list) else []
+        discovery_gaps = [item for item in gaps_for_discovery
+                          if isinstance(item, Mapping) and item.get('stage') != 'morning_review']
+        reason_codes = sorted({item.get('reasonCode') for item in discovery_gaps
+                               if isinstance(item, Mapping) and isinstance(item.get('reasonCode'), str) and item['reasonCode']})
+        # A B90 morning report has two independently useful products.  A
+        # named review work-item gap makes the *report* partial, but it does
+        # not retroactively make an already completed zero/new-opportunity
+        # discovery channel look unfinished.  Other gaps remain discovery
+        # gaps, including source/triage/research failures.
+        review_only_partial = (
+            delivery.get('outcome') == 'partial'
+            and bool(gaps_for_discovery)
+            and not discovery_gaps
+        )
+        complete = delivery.get('outcome') == 'complete' or review_only_partial
+        coverage['discovery'] = {
+            'state': 'complete' if complete else 'partial' if delivery.get('outcome') == 'partial' else 'unavailable',
+            'outcome': ('recommendations' if complete and company_count else 'no_recommendation' if complete else 'not_completed'),
+            'companyCount': company_count,
+            'reasonCodes': reason_codes,
+        }
     legacy_gaps = coverage.get('coverageGaps')
     if not isinstance(legacy_gaps, list) or any(not isinstance(item, str) for item in legacy_gaps):
         legacy_gaps = []
@@ -266,6 +293,20 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
         if prior_report is not None else 0
     )
     cutoff, status = conn.execute('SELECT cutoff_at,status FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
+    source_companions: dict[tuple[str, int], dict[str, Any]] = {}
+    if isinstance(delivery, Mapping) and delivery.get('contractVersion') == 'k10-report-delivery-3.6.1-b92':
+        scan_coverage = conn.execute('SELECT coverage_json FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
+        value = json.loads(scan_coverage[0]) if scan_coverage is not None else {}
+        bindings = value.get('supplementalBodyBindings') if isinstance(value, Mapping) else None
+        for binding in bindings if isinstance(bindings, list) else ():
+            if not isinstance(binding, Mapping):
+                continue
+            body, parent_ref = binding.get('bodyRef'), binding.get('parentRef')
+            if not isinstance(body, Mapping) or not isinstance(parent_ref, Mapping):
+                continue
+            key = (body.get('documentId'), body.get('revision'))
+            if isinstance(key[0], str) and isinstance(key[1], int):
+                source_companions[key] = dict(parent_ref)
     delivery_identity = delivery_identity_for_inputs(inputs)
     if delivery is not None:
         from .delivery import digest
@@ -325,12 +366,48 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
             if not opportunity:
                 raise ValueError('日报卡催化未关联正式机会')
             headline = conn.execute('SELECT headline FROM k10_event_revisions WHERE event_id=? AND revision=?', (item.event_id, item.event_revision)).fetchone()[0]
-            disclosure = item.comparison['differences'].get('evidenceDisclosure') or {}
-            mappings.append({'eventId': item.event_id, 'eventRevision': item.event_revision,
-                             'opportunityId': opportunity[0], 'companyWindowId': opportunity[1],
-                             'headline': headline, 'summary': item.comparison['summary'],
-                             'classification': item.comparison['classification']['kind'],
-                             'verificationStatus': disclosure.get('verificationStatus', 'unverified')})
+            event_ref_row = conn.execute(
+                'SELECT source_refs_json FROM k10_event_revisions WHERE event_id=? AND revision=?',
+                (item.event_id, item.event_revision)).fetchone()
+            event_refs = json.loads(event_ref_row[0]) if event_ref_row is not None else []
+            def visible_refs(refs):
+                values = [dict(ref) for ref in refs if isinstance(ref, Mapping)]
+                for ref in tuple(values):
+                    parent_ref = source_companions.get((ref.get('documentId'), ref.get('revision')))
+                    if parent_ref is not None and parent_ref in event_refs and parent_ref not in values:
+                        values.append(parent_ref)
+                if isinstance(delivery, Mapping) and delivery.get('contractVersion') == 'k10-report-delivery-3.6.1-b92':
+                    # A model may cite one decisive excerpt from a merged
+                    # matter. Its other persisted source originals still
+                    # belong to that event and must remain openable from the
+                    # visible card without claiming they independently prove
+                    # the company relation.
+                    for ref in event_refs:
+                        if isinstance(ref, Mapping) and ref not in values:
+                            values.append(dict(ref))
+                return values
+            differences = item.comparison['differences']
+            disclosure = differences.get('evidenceDisclosure') or {}
+            mapping = {'eventId': item.event_id, 'eventRevision': item.event_revision,
+                       'opportunityId': opportunity[0], 'companyWindowId': opportunity[1],
+                       'headline': headline, 'summary': item.comparison['summary'],
+                       'classification': item.comparison['classification']['kind'],
+                       'verificationStatus': disclosure.get('verificationStatus', 'unverified')}
+            if 'recommendation' in differences:
+                # B90's explanation is a required paid research conclusion.
+                # Never fabricate it from a card summary: historical reports
+                # and malformed output must remain visibly absent/invalid.
+                analysis_text = differences.get('analysisText')
+                refs = differences.get('sourceRefs')
+                if not isinstance(analysis_text, str) or not analysis_text.strip():
+                    raise ValueError('B90 催化缺少 analysisText')
+                if not isinstance(refs, list) or not refs:
+                    raise ValueError('B90 催化缺少 sourceRefs')
+                mapping['analysisText'] = analysis_text.strip()
+                mapping['sourceRefs'] = visible_refs(refs)
+                if not mapping['sourceRefs']:
+                    raise ValueError('B90 催化 sourceRefs 无效')
+            mappings.append(mapping)
         # New sample is actionable when old and new catalysts share today's card.
         fresh = [mapping for mapping in mappings if mapping['classification'] in {'initial', 'independent', 'material_stage'}]
         target = (fresh or mappings)[0]['companyWindowId']
@@ -340,14 +417,27 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
                 if ref not in source_refs:
                     source_refs.append(ref)
             uncertainty.extend((item.comparison['differences'].get('evidenceDisclosure') or {}).get('unverifiedReasons') or [])
+        for mapping in mappings:
+            for ref in mapping.get('sourceRefs', []):
+                if ref not in source_refs:
+                    source_refs.append(ref)
         member = conn.execute('SELECT company_name FROM k10_v2_universe_members WHERE snapshot_id=? AND company_code=?', (UNIVERSE_ID, code)).fetchone()
         if not member:
             raise ValueError('日报公司不属于固定池')
         card_id = _id('card', report_id, code)
         from .market_context import card_price_context
         price, price_context = card_price_context([item.comparison.get('marketContext', {}).get(code) for item in items], company_code=code, cutoff_at=cutoff)
-        content = {'summary': '\n'.join(dict.fromkeys(item.comparison['summary'] for item in items)),
-                   'twoDayReason': '\n'.join(dict.fromkeys(item.comparison['differences']['twoDayReason'] for item in items)),
+        b90_card = all(item.comparison['differences'].get('recommendation') == 'recommend' for item in items)
+        # Schema10 still carries the historical card fields for the shared
+        # reader, but B90 never fabricates a second model rationale to fill
+        # them.  The card summary is a transparent aggregate of its selected
+        # catalyst analyses; its fixed D1/D2 sentence is system lifecycle
+        # context, not an attributed research conclusion.
+        content = {'summary': ('\n'.join(dict.fromkeys(
+                        str(item.comparison['differences']['analysisText']).strip() for item in items
+                    )) if b90_card else '\n'.join(dict.fromkeys(item.comparison['summary'] for item in items))),
+                   'twoDayReason': ('本卡按既有固定 D1/D2 观察窗口跟踪。' if b90_card else
+                                    '\n'.join(dict.fromkeys(item.comparison['differences']['twoDayReason'] for item in items))),
                    'uncertainty': list(dict.fromkeys(uncertainty)), 'sourceRefs': source_refs, 'catalysts': mappings, 'priceReaction': price, 'priceContext': price_context,
                    'deliveryIdentity': identity_by_code[code],
                    'sourceMarker': kind, 'latePublication': any(json.loads(row[0]).get('latePublication', False) for row in conn.execute(
@@ -864,6 +954,26 @@ def record_scan_task_failure(conn, *, task_id, status, stage, checkpoint, create
         checkpoint.setdefault("delivery", dict(delivery))
 
 
+def _decode_morning_result_cache(value: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Decode a B90 review cache without reinterpreting historic raw replies.
+
+    Earlier review rows stored the model conclusion itself.  B90 tool rounds
+    also derive selected local reads and independent evidence before the final
+    conclusion is checkpointed.  Keep that derived state in the same durable
+    write so a crash between the cache and work-item completion never opens a
+    new provider path on recovery.
+    """
+    if (isinstance(value, Mapping) and value.get("morningResultCacheVersion") == 1
+            and isinstance(value.get("raw"), Mapping)):
+        derived = value.get("derived")
+        if not isinstance(derived, Mapping):
+            raise ValueError("晨间复核缓存派生资料无效")
+        return dict(value["raw"]), dict(derived)
+    if not isinstance(value, Mapping):
+        raise ValueError("晨间复核缓存原结论无效")
+    return dict(value), None
+
+
 def read_morning_result(*, task_id, input_sha256, db_path, work_item_id: str | None = None):
     if work_item_id is not None:
         with read_connection(db_path) as conn:
@@ -875,15 +985,23 @@ def read_morning_result(*, task_id, input_sha256, db_path, work_item_id: str | N
             return None
         if row[0] != input_sha256:
             raise ValueError('晨间复核恢复输入发生变化')
-        return {'raw': json.loads(row[1]), 'capturedAt': row[2]}
+        raw, derived = _decode_morning_result_cache(json.loads(row[1]))
+        return {'raw': raw, 'derived': derived, 'capturedAt': row[2]}
     with read_connection(db_path) as conn:
         row=conn.execute('SELECT input_sha256,result_json,captured_at FROM k10_morning_review_results WHERE task_id=?',(task_id,)).fetchone()
     if row is None:return None
     if row[0]!=input_sha256:raise ValueError('晨间复核恢复输入发生变化')
-    return {'raw':json.loads(row[1]),'capturedAt':row[2]}
+    raw, derived = _decode_morning_result_cache(json.loads(row[1]))
+    return {'raw': raw, 'derived': derived, 'capturedAt': row[2]}
 
 
-def save_morning_result(*, task_id, input_sha256, raw, captured_at, db_path, work_item_id: str | None = None):
+def save_morning_result(*, task_id, input_sha256, raw, captured_at, db_path, work_item_id: str | None = None,
+                        derived: Mapping[str, Any] | None = None):
+    stored = (dict(raw) if derived is None else {
+        "morningResultCacheVersion": 1,
+        "raw": dict(raw),
+        "derived": dict(derived),
+    })
     if work_item_id is not None:
         with write_connection(db_path) as conn:
             row = conn.execute(
@@ -895,19 +1013,21 @@ def save_morning_result(*, task_id, input_sha256, raw, captured_at, db_path, wor
             if row[0] != input_sha256:
                 raise ValueError('晨间复核恢复输入发生变化')
             if row[1] is not None:
-                return {'raw': json.loads(row[1]), 'capturedAt': row[2]}
+                restored_raw, restored_derived = _decode_morning_result_cache(json.loads(row[1]))
+                return {'raw': restored_raw, 'derived': restored_derived, 'capturedAt': row[2]}
             conn.execute(
                 "UPDATE k10_morning_review_work_items SET result_json=?,captured_at=?,updated_at=? WHERE work_item_id=?",
-                (_json(raw), captured_at, captured_at, work_item_id),
+                (_json(stored), captured_at, captured_at, work_item_id),
             )
-        return {'raw': raw, 'capturedAt': captured_at}
+        return {'raw': dict(raw), 'derived': None if derived is None else dict(derived), 'capturedAt': captured_at}
     with write_connection(db_path) as conn:
         row=conn.execute('SELECT input_sha256,result_json,captured_at FROM k10_morning_review_results WHERE task_id=?',(task_id,)).fetchone()
         if row is not None:
             if row[0]!=input_sha256:raise ValueError('晨间复核恢复输入发生变化')
-            return {'raw':json.loads(row[1]),'capturedAt':row[2]}
-        conn.execute('INSERT INTO k10_morning_review_results VALUES (?,?,?,?)',(task_id,input_sha256,_json(raw),captured_at))
-    return {'raw':raw,'capturedAt':captured_at}
+            restored_raw, restored_derived = _decode_morning_result_cache(json.loads(row[1]))
+            return {'raw': restored_raw, 'derived': restored_derived, 'capturedAt': row[2]}
+        conn.execute('INSERT INTO k10_morning_review_results VALUES (?,?,?,?)',(task_id,input_sha256,_json(stored),captured_at))
+    return {'raw': dict(raw), 'derived': None if derived is None else dict(derived), 'capturedAt': captured_at}
 
 
 def ensure_morning_review_work_item(*, scan_id: str, work_item_id: str, input_sha256: str,
@@ -1010,14 +1130,16 @@ def refresh_morning_coverage_for_scan(conn, *, scan_id: str) -> bool:
         "FROM k10_morning_review_work_items WHERE scan_id=? ORDER BY work_item_id",
         (scan_id,),
     ).fetchall()
-    if parent_items:
+    scan_for_b90 = conn.execute('SELECT coverage_json FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
+    has_b90_parent = isinstance(scan_for_b90[0], str) and 'b90MorningParent' in scan_for_b90[0] if scan_for_b90 else False
+    if parent_items or has_b90_parent:
         aggregate = conn.execute(
             "SELECT report_id,status,coverage_json FROM k10_morning_reports WHERE scan_id=? "
             "ORDER BY revision DESC,generated_at DESC,report_id DESC LIMIT 1",
             (scan_id,),
         ).fetchone()
         aggregate_gaps: list[str] = []
-        aggregate_status = "partial"
+        aggregate_status = "completed" if has_b90_parent else "partial"
         aggregate_report_id: str | None = None
         if aggregate is not None:
             aggregate_report_id = str(aggregate[0])
@@ -1103,6 +1225,82 @@ def refresh_morning_coverage_for_scan(conn, *, scan_id: str) -> bool:
         )) and gap not in {'needs_review_items', 'failed_report_items'}]
         coverage['coverageGaps'] = sorted(set([*existing_gaps, *aggregate_gaps, *gaps]))
         coverage['incompleteReviews'] = incomplete
+        # B90 projects one review item per frozen parent-report company.  The
+        # target snapshot is written before source ingestion, so a zero work
+        # item count cannot hide a company/reason that never started.
+        scan_row = conn.execute('SELECT coverage_json FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
+        try:
+            scan_coverage = json.loads(scan_row[0]) if scan_row is not None else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            scan_coverage = {}
+        parent_snapshot = scan_coverage.get('b90MorningParent') if isinstance(scan_coverage, Mapping) else None
+        if isinstance(parent_snapshot, Mapping):
+            target_rows = parent_snapshot.get('targets')
+            work_by_id = {str(row[0]): (str(row[1]), row[2], row[3]) for row in parent_items}
+            review_items: list[dict[str, Any]] = []
+            b90_incomplete: list[dict[str, Any]] = []
+            for target in target_rows if isinstance(target_rows, list) else ():
+                if not isinstance(target, Mapping) or not isinstance(target.get('reviewId'), str):
+                    continue
+                work = work_by_id.get(target['reviewId'])
+                raw_content: Mapping[str, Any] = {}
+                status = 'not_started'
+                if work is not None:
+                    raw_item = work[1]
+                    try:
+                        parsed = json.loads(raw_item) if raw_item is not None else {}
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed = {}
+                    raw_content = parsed.get('content') if isinstance(parsed, Mapping) and isinstance(parsed.get('content'), Mapping) else {}
+                    status = 'completed' if work[0] == 'completed' else 'failed' if work[0] in {'failed', 'not_configured'} else 'partial'
+                update = raw_content.get('update') if isinstance(raw_content.get('update'), Mapping) else {}
+                reason_status = update.get('reasonStatus') if isinstance(update, Mapping) else None
+                material = raw_content.get('material')
+                outcome = ('changed' if reason_status == 'invalidated' or material is True
+                           or (material is None and raw_content.get('updated') is True
+                               and reason_status != 'needs_review')
+                           else 'no_material_change' if status == 'completed' and reason_status == 'current'
+                           else 'uncertain')
+                opportunity_ids = [value for value in target.get('opportunityIds', ()) if isinstance(value, str) and value]
+                item_coverage = raw_content.get('coverage') if isinstance(raw_content.get('coverage'), Mapping) else {}
+                independent_coverage = item_coverage.get('independentVerification') if isinstance(item_coverage.get('independentVerification'), Mapping) else {}
+                independent_state = independent_coverage.get('state')
+                checked_scope = None
+                if status == 'completed':
+                    checked_scope = ('前一晚报冻结的全部原始理由；已读取相关隔夜本地原件，无需额外外搜；总体来源覆盖仍单独披露。'
+                                     if independent_state == 'not_required' else
+                                     '前一晚报冻结的全部原始理由；已取得与该公司及理由绑定的独立隔夜资料并复核。'
+                                     if independent_state == 'complete' else
+                                     '前一晚报冻结的全部原始理由；独立隔夜核验未完整，结论保留不确定性。')
+                item = {
+                    'reviewId': target['reviewId'], 'parentCardId': target.get('parentCardId'),
+                    'companyCode': target.get('companyCode'), 'companyName': target.get('companyName'),
+                    'opportunityIds': opportunity_ids,
+                    'unreviewedOpportunityIds': [] if status == 'completed' else opportunity_ids,
+                    'status': status, 'outcome': outcome,
+                    'analysisText': raw_content.get('summary') if status == 'completed' and isinstance(raw_content.get('summary'), str) else None,
+                    'checkedScope': checked_scope,
+                    'sourceRefs': raw_content.get('sourceRefs') if isinstance(raw_content.get('sourceRefs'), list) else [],
+                }
+                review_items.append(item)
+                if status != 'completed':
+                    for opportunity_id in opportunity_ids:
+                        b90_incomplete.append({
+                            'taskId': target['reviewId'], 'opportunityId': opportunity_id,
+                            'companyWindowId': target.get('companyWindowId'), 'companyCode': target.get('companyCode'),
+                            'status': status, 'reason': (work[2] if work is not None and isinstance(work[2], str) else '晨间复核尚未完成'),
+                        })
+            parent_state = parent_snapshot.get('state')
+            coverage['morningReview'] = {
+                'state': ('unavailable' if parent_state == 'unavailable' else
+                          'partial' if any(item['status'] != 'completed' for item in review_items) else 'complete'),
+                'parentReportId': parent_snapshot.get('parentReportId'),
+                'targetCompanyCount': parent_snapshot.get('targetCompanyCount', len(review_items)),
+                'targetReasonCount': parent_snapshot.get('targetReasonCount', sum(len(item['opportunityIds']) for item in review_items)),
+                'items': review_items,
+            }
+            if b90_incomplete:
+                coverage['incompleteReviews'] = b90_incomplete
         delivery = coverage.get('delivery')
         delivery_partial = isinstance(delivery, Mapping) and delivery.get('outcome') == 'partial'
         partial = (aggregate_status == 'partial' or any(str(row[1]) != 'completed' for row in parent_items)

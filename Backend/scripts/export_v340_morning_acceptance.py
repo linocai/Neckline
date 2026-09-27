@@ -29,8 +29,9 @@ def export_morning_report(*, database: Path, output: Path, provenance: Path | No
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from neckline.api.k10 import create_router
+    from neckline.db import readonly_connection
 
-    with sqlite3.connect(database) as connection:
+    with readonly_connection(database) as connection:
         config = connection.execute(
             "SELECT config_id,revision FROM k10_run_config_revisions "
             "ORDER BY created_at DESC,revision DESC LIMIT 1"

@@ -69,7 +69,10 @@
     "completionDeadlineSeconds": 21600,
     "continuationDelaySeconds": 1,
     "titleReconcileContractVersion": "k10-title-reconcile-v2",
-    "investigationPromptContractRevision": "k10-investigation-v2",
+    "investigationPromptContractRevision": "k10-research-3.6.1-b92",
+    "reportInputContract": "k10-collected-input-3.6.1-b92",
+    "collectionSourceKeys": ["tushare-major-news", "jin10-flash", "jin10-news"],
+    "collectedInputBootstrapAt": "2026-09-22T21:00:00+08:00",
     "modelOptions": {
       "titleBatch": {
         "maxTokens": 12288,

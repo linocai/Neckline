@@ -1,0 +1,6936 @@
+{
+  "windows": {
+    "evening24h": {
+      "list_flash": {
+        "start_inclusive": "2026-09-24T21:00:00+08:00",
+        "end_exclusive": "2026-09-25T21:00:00+08:00",
+        "rows": 732,
+        "literal_pool_name_mention_items": 2,
+        "literal_company_names": [
+          "利亚德",
+          "联合化学"
+        ],
+        "examples": [
+          {
+            "names": [
+              "利亚德"
+            ],
+            "url": "https://flash.jin10.com/detail/20260925054438596800"
+          },
+          {
+            "names": [
+              "联合化学"
+            ],
+            "url": "https://flash.jin10.com/detail/20260924215144518800"
+          }
+        ],
+        "literal_match_caveat": "Not verified company association: e.g. 叙利亚德拉 contains 利亚德. Not a coverage/recall metric."
+      },
+      "list_news": {
+        "start_inclusive": "2026-09-24T21:00:00+08:00",
+        "end_exclusive": "2026-09-25T21:00:00+08:00",
+        "rows": 20,
+        "literal_pool_name_mention_items": 0,
+        "literal_company_names": [],
+        "examples": [],
+        "literal_match_caveat": "Not verified company association: e.g. 叙利亚德拉 contains 利亚德. Not a coverage/recall metric."
+      }
+    },
+    "morning11.5h": {
+      "list_flash": {
+        "start_inclusive": "2026-09-25T21:00:00+08:00",
+        "end_exclusive": "2026-09-26T08:30:00+08:00",
+        "rows": 273,
+        "literal_pool_name_mention_items": 0,
+        "literal_company_names": [],
+        "examples": [],
+        "literal_match_caveat": "Not verified company association: e.g. 叙利亚德拉 contains 利亚德. Not a coverage/recall metric."
+      },
+      "list_news": {
+        "start_inclusive": "2026-09-25T21:00:00+08:00",
+        "end_exclusive": "2026-09-26T08:30:00+08:00",
+        "rows": 1,
+        "literal_pool_name_mention_items": 0,
+        "literal_company_names": [],
+        "examples": [],
+        "literal_match_caveat": "Not verified company association: e.g. 叙利亚德拉 contains 利亚德. Not a coverage/recall metric."
+      }
+    },
+    "domestic_afternoon_observed_only": {
+      "list_flash": {
+        "start_inclusive": "2026-09-24T13:45:00+08:00",
+        "end_exclusive": "2026-09-24T21:00:00+08:00",
+        "rows": 558,
+        "literal_pool_name_mention_items": 9,
+        "literal_company_names": [
+          "中船汉光",
+          "先锋新材",
+          "利亚德",
+          "华康洁净",
+          "卓创资讯",
+          "奥尼电子",
+          "富祥股份",
+          "弘景光电",
+          "昆船智能",
+          "金丹科技"
+        ],
+        "examples": [
+          {
+            "names": [
+              "金丹科技"
+            ],
+            "url": "https://flash.jin10.com/detail/20260924201114880800"
+          },
+          {
+            "names": [
+              "利亚德"
+            ],
+            "url": "https://flash.jin10.com/detail/20260924194414179800"
+          },
+          {
+            "names": [
+              "华康洁净"
+            ],
+            "url": "https://flash.jin10.com/detail/20260924183942506800"
+          },
+          {
+            "names": [
+              "富祥股份"
+            ],
+            "url": "https://flash.jin10.com/detail/20260924182124259800"
+          },
+          {
+            "names": [
+              "弘景光电"
+            ],
+            "url": "https://flash.jin10.com/detail/20260924171701088800"
+          }
+        ],
+        "literal_match_caveat": "Not verified company association: e.g. 叙利亚德拉 contains 利亚德. Not a coverage/recall metric."
+      },
+      "list_news": {
+        "start_inclusive": "2026-09-24T13:45:00+08:00",
+        "end_exclusive": "2026-09-24T21:00:00+08:00",
+        "rows": 25,
+        "literal_pool_name_mention_items": 0,
+        "literal_company_names": [],
+        "examples": [],
+        "literal_match_caveat": "Not verified company association: e.g. 叙利亚德拉 contains 利亚德. Not a coverage/recall metric."
+      }
+    }
+  },
+  "streams": {
+    "list_flash": {
+      "pages": 82,
+      "rows": 1633,
+      "unique_urls": 1633,
+      "missing_title": 1602,
+      "missing_body": 0,
+      "missing_url": 0,
+      "time_inversions": 0,
+      "newest": "2026-09-26 12:51:04+08:00",
+      "oldest": "2026-09-24 13:08:13+08:00",
+      "content_length_median": 44
+    },
+    "list_news": {
+      "pages": 3,
+      "rows": 47,
+      "unique_urls": 47,
+      "missing_title": 0,
+      "missing_body": null,
+      "missing_url": 0,
+      "time_inversions": 0,
+      "newest": "2026-09-25 21:27:25+08:00",
+      "oldest": "2026-09-24 13:33:43+08:00",
+      "content_length_median": 0
+    }
+  },
+  "sample_companies": {
+    "search_flash": {
+      "tested": 30,
+      "nonempty": 25,
+      "empty": [
+        "南风股份",
+        "思创智联",
+        "和晶科技",
+        "本立科技",
+        "浙江华远"
+      ],
+      "total_returned": 116
+    },
+    "search_news": {
+      "tested": 30,
+      "nonempty": 0,
+      "empty": [
+        "广生堂",
+        "华大基因",
+        "开立医疗",
+        "南风股份",
+        "神州泰岳",
+        "探路者",
+        "汤臣倍健",
+        "莱美药业",
+        "思创智联",
+        "瑞凌股份",
+        "金运激光",
+        "和晶科技",
+        "永贵电器",
+        "华智数媒",
+        "富祥股份",
+        "汇金科技",
+        "金银河",
+        "赛意信息",
+        "汉嘉数智",
+        "耐普矿机",
+        "维康药业",
+        "创识科技",
+        "崧盛股份",
+        "本立科技",
+        "武汉天源",
+        "华兰疫苗",
+        "科源制药",
+        "民爆光电",
+        "浙江华远",
+        "超纯应材"
+      ],
+      "total_returned": 0
+    }
+  },
+  "searches": [
+    {
+      "keyword": "广生堂",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 63,
+      "count": 7,
+      "has_more": null,
+      "newest": "2026-09-17T19:49:18+08:00",
+      "oldest": "2026-04-01T11:35:09+08:00"
+    },
+    {
+      "keyword": "广生堂",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 64,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "华大基因",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 65,
+      "count": 6,
+      "has_more": null,
+      "newest": "2026-09-24T09:38:17+08:00",
+      "oldest": "2026-03-29T22:21:06+08:00"
+    },
+    {
+      "keyword": "华大基因",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 66,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "开立医疗",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 67,
+      "count": 1,
+      "has_more": null,
+      "newest": "2026-04-20T12:29:14+08:00",
+      "oldest": "2026-04-20T12:29:14+08:00"
+    },
+    {
+      "keyword": "开立医疗",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 68,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "南风股份",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 69,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "南风股份",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 70,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "神州泰岳",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 71,
+      "count": 2,
+      "has_more": null,
+      "newest": "2026-06-29T10:16:16+08:00",
+      "oldest": "2026-06-29T09:33:28+08:00"
+    },
+    {
+      "keyword": "神州泰岳",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 72,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "探路者",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 73,
+      "count": 7,
+      "has_more": null,
+      "newest": "2026-09-20T12:27:27+08:00",
+      "oldest": "2026-03-31T09:50:33+08:00"
+    },
+    {
+      "keyword": "探路者",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 74,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "汤臣倍健",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 75,
+      "count": 6,
+      "has_more": null,
+      "newest": "2026-08-07T18:39:27+08:00",
+      "oldest": "2026-04-24T21:07:14+08:00"
+    },
+    {
+      "keyword": "汤臣倍健",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 76,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "300436",
+      "kind": "code_control",
+      "tool": "search_flash",
+      "sequence": 77,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "300436",
+      "kind": "code_control",
+      "tool": "search_news",
+      "sequence": 78,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "300750",
+      "kind": "code_control",
+      "tool": "search_flash",
+      "sequence": 79,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "300750",
+      "kind": "code_control",
+      "tool": "search_news",
+      "sequence": 80,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "300308",
+      "kind": "code_control",
+      "tool": "search_flash",
+      "sequence": 81,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "300308",
+      "kind": "code_control",
+      "tool": "search_news",
+      "sequence": 82,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "601727",
+      "kind": "code_control",
+      "tool": "search_flash",
+      "sequence": 83,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "601727",
+      "kind": "code_control",
+      "tool": "search_news",
+      "sequence": 84,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "上海电气",
+      "kind": "external_company",
+      "tool": "search_flash",
+      "sequence": 85,
+      "count": 20,
+      "has_more": null,
+      "newest": "2026-09-17T10:58:09+08:00",
+      "oldest": "2026-03-30T17:41:34+08:00"
+    },
+    {
+      "keyword": "上海电气",
+      "kind": "external_company",
+      "tool": "search_news",
+      "sequence": 86,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "首例入组",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 87,
+      "count": 1,
+      "has_more": null,
+      "newest": "2026-05-25T16:09:14+08:00",
+      "oldest": "2026-05-25T16:09:14+08:00"
+    },
+    {
+      "keyword": "首例入组",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 88,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "临床试验",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 89,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T08:59:54+08:00",
+      "oldest": "2026-06-05T17:59:16+08:00"
+    },
+    {
+      "keyword": "临床试验",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 90,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "中标",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 91,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T09:40:37+08:00",
+      "oldest": "2026-07-16T09:21:11+08:00"
+    },
+    {
+      "keyword": "中标",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 92,
+      "count": 2,
+      "has_more": false,
+      "newest": "2026-08-13T14:05:09+08:00",
+      "oldest": "2026-06-05T20:59:13+08:00"
+    },
+    {
+      "keyword": "订单",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 93,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T20:44:40+08:00",
+      "oldest": "2026-09-10T12:44:20+08:00"
+    },
+    {
+      "keyword": "订单",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 94,
+      "count": 6,
+      "has_more": false,
+      "newest": "2026-07-13T20:50:21+08:00",
+      "oldest": "2025-11-20T09:33:57+08:00"
+    },
+    {
+      "keyword": "重组",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 95,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T18:58:27+08:00",
+      "oldest": "2026-08-19T19:53:56+08:00"
+    },
+    {
+      "keyword": "重组",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 96,
+      "count": 5,
+      "has_more": false,
+      "newest": "2026-09-10T10:22:10+08:00",
+      "oldest": "2026-05-08T12:46:55+08:00"
+    },
+    {
+      "keyword": "增持",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 97,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T10:53:35+08:00",
+      "oldest": "2026-07-24T18:45:35+08:00"
+    },
+    {
+      "keyword": "增持",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 98,
+      "count": 8,
+      "has_more": false,
+      "newest": "2026-09-08T07:12:12+08:00",
+      "oldest": "2026-05-06T21:10:31+08:00"
+    },
+    {
+      "keyword": "减持",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 99,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T21:59:13+08:00",
+      "oldest": "2026-07-28T20:39:59+08:00"
+    },
+    {
+      "keyword": "减持",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 100,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-17T20:54:47+08:00",
+      "oldest": "2026-05-26T20:59:51+08:00"
+    },
+    {
+      "keyword": "业绩预告",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 101,
+      "count": 70,
+      "has_more": null,
+      "newest": "2026-09-24T18:21:24+08:00",
+      "oldest": "2026-04-03T16:59:03+08:00"
+    },
+    {
+      "keyword": "业绩预告",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 102,
+      "count": 1,
+      "has_more": false,
+      "newest": "2026-07-07T07:50:55+08:00",
+      "oldest": "2026-07-07T07:50:55+08:00"
+    },
+    {
+      "keyword": "立案调查",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 103,
+      "count": 103,
+      "has_more": null,
+      "newest": "2026-09-24T17:35:57+08:00",
+      "oldest": "2026-03-27T16:27:41+08:00"
+    },
+    {
+      "keyword": "立案调查",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 104,
+      "count": 1,
+      "has_more": false,
+      "newest": "2026-05-12T21:06:47+08:00",
+      "oldest": "2026-05-12T21:06:47+08:00"
+    },
+    {
+      "keyword": "澄清",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 105,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T16:56:54+08:00",
+      "oldest": "2026-05-27T08:51:17+08:00"
+    },
+    {
+      "keyword": "澄清",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 106,
+      "count": 6,
+      "has_more": false,
+      "newest": "2026-06-17T21:05:30+08:00",
+      "oldest": "2026-04-09T21:19:06+08:00"
+    },
+    {
+      "keyword": "终止",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 107,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T02:51:40+08:00",
+      "oldest": "2026-07-16T11:29:38+08:00"
+    },
+    {
+      "keyword": "终止",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 108,
+      "count": 4,
+      "has_more": false,
+      "newest": "2026-08-13T21:02:27+08:00",
+      "oldest": "2026-03-31T07:00:17+08:00"
+    },
+    {
+      "keyword": "问询函",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 109,
+      "count": 25,
+      "has_more": null,
+      "newest": "2026-09-21T21:10:32+08:00",
+      "oldest": "2026-04-10T18:14:18+08:00"
+    },
+    {
+      "keyword": "问询函",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 110,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "互动易",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 111,
+      "count": 12,
+      "has_more": null,
+      "newest": "2026-09-15T10:29:35+08:00",
+      "oldest": "2026-04-07T18:02:34+08:00"
+    },
+    {
+      "keyword": "互动易",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 112,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "调研",
+      "kind": "event",
+      "tool": "search_flash",
+      "sequence": 113,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T09:35:01+08:00",
+      "oldest": "2026-07-15T22:39:12+08:00"
+    },
+    {
+      "keyword": "调研",
+      "kind": "event",
+      "tool": "search_news",
+      "sequence": 114,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "储能",
+      "kind": "sector",
+      "tool": "search_flash",
+      "sequence": 115,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T09:19:44+08:00",
+      "oldest": "2026-07-21T15:06:42+08:00"
+    },
+    {
+      "keyword": "储能",
+      "kind": "sector",
+      "tool": "search_news",
+      "sequence": 116,
+      "count": 1,
+      "has_more": false,
+      "newest": "2026-09-18T20:59:44+08:00",
+      "oldest": "2026-09-18T20:59:44+08:00"
+    },
+    {
+      "keyword": "算力",
+      "kind": "sector",
+      "tool": "search_flash",
+      "sequence": 117,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T14:57:10+08:00",
+      "oldest": "2026-09-09T21:40:20+08:00"
+    },
+    {
+      "keyword": "算力",
+      "kind": "sector",
+      "tool": "search_news",
+      "sequence": 118,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-23T15:35:33+08:00",
+      "oldest": "2026-08-07T10:40:18+08:00"
+    },
+    {
+      "keyword": "半导体",
+      "kind": "sector",
+      "tool": "search_flash",
+      "sequence": 119,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T10:38:18+08:00",
+      "oldest": "2026-09-11T15:21:33+08:00"
+    },
+    {
+      "keyword": "半导体",
+      "kind": "sector",
+      "tool": "search_news",
+      "sequence": 120,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-16T21:03:02+08:00",
+      "oldest": "2026-07-17T22:22:51+08:00"
+    },
+    {
+      "keyword": "创新药",
+      "kind": "sector",
+      "tool": "search_flash",
+      "sequence": 121,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T17:45:15+08:00",
+      "oldest": "2026-07-24T15:06:19+08:00"
+    },
+    {
+      "keyword": "创新药",
+      "kind": "sector",
+      "tool": "search_news",
+      "sequence": 122,
+      "count": 2,
+      "has_more": false,
+      "newest": "2026-06-01T20:52:48+08:00",
+      "oldest": "2026-04-03T21:15:10+08:00"
+    },
+    {
+      "keyword": "出口管制",
+      "kind": "sector",
+      "tool": "search_flash",
+      "sequence": 123,
+      "count": 93,
+      "has_more": null,
+      "newest": "2026-09-23T22:43:59+08:00",
+      "oldest": "2026-03-27T17:00:17+08:00"
+    },
+    {
+      "keyword": "出口管制",
+      "kind": "sector",
+      "tool": "search_news",
+      "sequence": 124,
+      "count": 1,
+      "has_more": false,
+      "newest": "2026-05-26T07:13:13+08:00",
+      "oldest": "2026-05-26T07:13:13+08:00"
+    },
+    {
+      "keyword": "原油",
+      "kind": "macro",
+      "tool": "search_flash",
+      "sequence": 125,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T08:54:11+08:00",
+      "oldest": "2026-09-22T02:31:59+08:00"
+    },
+    {
+      "keyword": "原油",
+      "kind": "macro",
+      "tool": "search_news",
+      "sequence": 126,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-24T18:35:10+08:00",
+      "oldest": "2026-09-08T18:10:11+08:00"
+    },
+    {
+      "keyword": "美联储",
+      "kind": "macro",
+      "tool": "search_flash",
+      "sequence": 127,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T09:12:00+08:00",
+      "oldest": "2026-09-23T04:26:54+08:00"
+    },
+    {
+      "keyword": "美联储",
+      "kind": "macro",
+      "tool": "search_news",
+      "sequence": 128,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-25T20:35:31+08:00",
+      "oldest": "2026-09-23T17:38:30+08:00"
+    },
+    {
+      "keyword": "关税",
+      "kind": "macro",
+      "tool": "search_flash",
+      "sequence": 129,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T10:13:24+08:00",
+      "oldest": "2026-09-08T14:28:43+08:00"
+    },
+    {
+      "keyword": "关税",
+      "kind": "macro",
+      "tool": "search_news",
+      "sequence": 130,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-24T13:13:59+08:00",
+      "oldest": "2026-09-08T08:28:57+08:00"
+    },
+    {
+      "keyword": "欧佩克",
+      "kind": "macro",
+      "tool": "search_flash",
+      "sequence": 131,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T14:01:36+08:00",
+      "oldest": "2026-07-13T07:47:37+08:00"
+    },
+    {
+      "keyword": "欧佩克",
+      "kind": "macro",
+      "tool": "search_news",
+      "sequence": 132,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-11T07:14:31+08:00",
+      "oldest": "2026-07-15T18:46:46+08:00"
+    },
+    {
+      "keyword": "广生堂 入组",
+      "kind": "query_semantics",
+      "tool": "search_flash",
+      "sequence": 133,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "广生堂 入组",
+      "kind": "query_semantics",
+      "tool": "search_news",
+      "sequence": 134,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "宁德时代 减持",
+      "kind": "query_semantics",
+      "tool": "search_flash",
+      "sequence": 135,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "宁德时代 减持",
+      "kind": "query_semantics",
+      "tool": "search_news",
+      "sequence": 136,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "上海电气 订单",
+      "kind": "query_semantics",
+      "tool": "search_flash",
+      "sequence": 137,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "上海电气 订单",
+      "kind": "query_semantics",
+      "tool": "search_news",
+      "sequence": 138,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "zzneckline无此主题20260926",
+      "kind": "query_semantics",
+      "tool": "search_flash",
+      "sequence": 139,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "zzneckline无此主题20260926",
+      "kind": "query_semantics",
+      "tool": "search_news",
+      "sequence": 140,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "莱美药业",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 141,
+      "count": 4,
+      "has_more": null,
+      "newest": "2026-08-25T09:33:15+08:00",
+      "oldest": "2026-06-09T19:31:42+08:00"
+    },
+    {
+      "keyword": "莱美药业",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 142,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "思创智联",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 143,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "思创智联",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 144,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "瑞凌股份",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 145,
+      "count": 3,
+      "has_more": null,
+      "newest": "2026-09-03T15:19:50+08:00",
+      "oldest": "2026-04-13T19:59:57+08:00"
+    },
+    {
+      "keyword": "瑞凌股份",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 146,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "金运激光",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 147,
+      "count": 2,
+      "has_more": null,
+      "newest": "2026-08-12T09:01:55+08:00",
+      "oldest": "2026-08-11T16:53:52+08:00"
+    },
+    {
+      "keyword": "金运激光",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 148,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "和晶科技",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 149,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "和晶科技",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 150,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "永贵电器",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 151,
+      "count": 4,
+      "has_more": null,
+      "newest": "2026-09-09T20:34:44+08:00",
+      "oldest": "2026-05-11T09:44:48+08:00"
+    },
+    {
+      "keyword": "永贵电器",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 152,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "华智数媒",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 153,
+      "count": 11,
+      "has_more": null,
+      "newest": "2026-09-21T10:49:42+08:00",
+      "oldest": "2026-04-03T10:42:14+08:00"
+    },
+    {
+      "keyword": "华智数媒",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 154,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "富祥股份",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 155,
+      "count": 8,
+      "has_more": null,
+      "newest": "2026-09-24T18:21:24+08:00",
+      "oldest": "2026-05-15T09:55:25+08:00"
+    },
+    {
+      "keyword": "富祥股份",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 156,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "汇金科技",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 157,
+      "count": 5,
+      "has_more": null,
+      "newest": "2026-08-26T10:25:08+08:00",
+      "oldest": "2026-05-26T21:21:51+08:00"
+    },
+    {
+      "keyword": "汇金科技",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 158,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "金银河",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 159,
+      "count": 6,
+      "has_more": null,
+      "newest": "2026-08-25T11:16:42+08:00",
+      "oldest": "2026-04-10T13:38:34+08:00"
+    },
+    {
+      "keyword": "金银河",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 160,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "赛意信息",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 161,
+      "count": 12,
+      "has_more": null,
+      "newest": "2026-09-16T16:57:02+08:00",
+      "oldest": "2026-05-14T17:34:06+08:00"
+    },
+    {
+      "keyword": "赛意信息",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 162,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "汉嘉数智",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 163,
+      "count": 1,
+      "has_more": null,
+      "newest": "2026-05-07T16:31:04+08:00",
+      "oldest": "2026-05-07T16:31:04+08:00"
+    },
+    {
+      "keyword": "汉嘉数智",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 164,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "耐普矿机",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 165,
+      "count": 2,
+      "has_more": null,
+      "newest": "2026-08-16T15:22:40+08:00",
+      "oldest": "2026-05-31T16:14:23+08:00"
+    },
+    {
+      "keyword": "耐普矿机",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 166,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "维康药业",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 167,
+      "count": 2,
+      "has_more": null,
+      "newest": "2026-09-15T16:27:16+08:00",
+      "oldest": "2026-07-03T09:38:15+08:00"
+    },
+    {
+      "keyword": "维康药业",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 168,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "创识科技",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 169,
+      "count": 1,
+      "has_more": null,
+      "newest": "2026-06-25T18:31:31+08:00",
+      "oldest": "2026-06-25T18:31:31+08:00"
+    },
+    {
+      "keyword": "创识科技",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 170,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "崧盛股份",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 171,
+      "count": 1,
+      "has_more": null,
+      "newest": "2026-08-19T15:44:13+08:00",
+      "oldest": "2026-08-19T15:44:13+08:00"
+    },
+    {
+      "keyword": "崧盛股份",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 172,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "本立科技",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 173,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "本立科技",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 174,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "武汉天源",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 175,
+      "count": 2,
+      "has_more": null,
+      "newest": "2026-09-22T13:14:16+08:00",
+      "oldest": "2026-04-21T19:20:57+08:00"
+    },
+    {
+      "keyword": "武汉天源",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 176,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "华兰疫苗",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 177,
+      "count": 6,
+      "has_more": null,
+      "newest": "2026-09-07T16:37:59+08:00",
+      "oldest": "2026-03-27T21:55:47+08:00"
+    },
+    {
+      "keyword": "华兰疫苗",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 178,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "科源制药",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 179,
+      "count": 7,
+      "has_more": null,
+      "newest": "2026-08-28T15:05:25+08:00",
+      "oldest": "2026-04-15T19:17:36+08:00"
+    },
+    {
+      "keyword": "科源制药",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 180,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "民爆光电",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 181,
+      "count": 5,
+      "has_more": null,
+      "newest": "2026-08-26T15:17:11+08:00",
+      "oldest": "2026-05-22T13:18:39+08:00"
+    },
+    {
+      "keyword": "民爆光电",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 182,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "浙江华远",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 183,
+      "count": 0,
+      "has_more": null,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "浙江华远",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 184,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "超纯应材",
+      "kind": "pool_company",
+      "tool": "search_flash",
+      "sequence": 185,
+      "count": 5,
+      "has_more": null,
+      "newest": "2026-08-26T13:11:16+08:00",
+      "oldest": "2026-08-11T09:25:22+08:00"
+    },
+    {
+      "keyword": "超纯应材",
+      "kind": "pool_company",
+      "tool": "search_news",
+      "sequence": 186,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "供应商",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 245,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T21:02:07+08:00",
+      "oldest": "2026-08-03T16:41:25+08:00"
+    },
+    {
+      "keyword": "供应商",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 246,
+      "count": 3,
+      "has_more": false,
+      "newest": "2026-09-21T17:27:25+08:00",
+      "oldest": "2026-05-04T12:51:42+08:00"
+    },
+    {
+      "keyword": "客户",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 247,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T10:20:52+08:00",
+      "oldest": "2026-09-15T12:31:59+08:00"
+    },
+    {
+      "keyword": "客户",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 248,
+      "count": 4,
+      "has_more": false,
+      "newest": "2026-09-18T20:17:02+08:00",
+      "oldest": "2026-06-04T20:58:17+08:00"
+    },
+    {
+      "keyword": "产能",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 249,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-25T20:17:24+08:00",
+      "oldest": "2026-09-11T08:03:23+08:00"
+    },
+    {
+      "keyword": "产能",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 250,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-18T07:28:03+08:00",
+      "oldest": "2026-06-24T14:26:32+08:00"
+    },
+    {
+      "keyword": "涨价",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 251,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T23:10:27+08:00",
+      "oldest": "2026-07-29T07:07:46+08:00"
+    },
+    {
+      "keyword": "涨价",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 252,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-22T13:43:16+08:00",
+      "oldest": "2026-06-18T13:32:46+08:00"
+    },
+    {
+      "keyword": "停产",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 253,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T08:14:54+08:00",
+      "oldest": "2026-07-07T14:17:26+08:00"
+    },
+    {
+      "keyword": "停产",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 254,
+      "count": 7,
+      "has_more": false,
+      "newest": "2026-09-24T07:23:03+08:00",
+      "oldest": "2026-04-02T08:42:45+08:00"
+    },
+    {
+      "keyword": "获批",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 255,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T21:44:47+08:00",
+      "oldest": "2026-07-06T16:52:21+08:00"
+    },
+    {
+      "keyword": "获批",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 256,
+      "count": 2,
+      "has_more": false,
+      "newest": "2026-07-12T22:04:29+08:00",
+      "oldest": "2026-06-30T07:32:06+08:00"
+    },
+    {
+      "keyword": "并购",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 257,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-24T15:34:40+08:00",
+      "oldest": "2026-05-12T07:46:51+08:00"
+    },
+    {
+      "keyword": "并购",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 258,
+      "count": 3,
+      "has_more": false,
+      "newest": "2026-07-15T15:25:09+08:00",
+      "oldest": "2026-04-15T11:10:32+08:00"
+    },
+    {
+      "keyword": "诉讼",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 259,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T01:27:23+08:00",
+      "oldest": "2026-07-09T06:14:56+08:00"
+    },
+    {
+      "keyword": "诉讼",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 260,
+      "count": 2,
+      "has_more": false,
+      "newest": "2026-08-06T15:14:56+08:00",
+      "oldest": "2026-04-08T20:56:11+08:00"
+    },
+    {
+      "keyword": "冻结",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 261,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T00:38:01+08:00",
+      "oldest": "2026-06-22T05:46:38+08:00"
+    },
+    {
+      "keyword": "冻结",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 262,
+      "count": 5,
+      "has_more": false,
+      "newest": "2026-07-01T08:54:17+08:00",
+      "oldest": "2026-04-22T11:35:10+08:00"
+    },
+    {
+      "keyword": "处罚",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 263,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T11:31:10+08:00",
+      "oldest": "2026-05-28T09:03:15+08:00"
+    },
+    {
+      "keyword": "处罚",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 264,
+      "count": 0,
+      "has_more": false,
+      "newest": null,
+      "oldest": null
+    },
+    {
+      "keyword": "退市",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 265,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-22T09:10:22+08:00",
+      "oldest": "2026-05-06T20:36:01+08:00"
+    },
+    {
+      "keyword": "退市",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 266,
+      "count": 1,
+      "has_more": false,
+      "newest": "2026-07-06T17:27:07+08:00",
+      "oldest": "2026-07-06T17:27:07+08:00"
+    },
+    {
+      "keyword": "违约",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 267,
+      "count": 140,
+      "has_more": null,
+      "newest": "2026-09-25T16:19:37+08:00",
+      "oldest": "2026-03-27T19:15:08+08:00"
+    },
+    {
+      "keyword": "违约",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 268,
+      "count": 2,
+      "has_more": false,
+      "newest": "2026-08-10T14:18:18+08:00",
+      "oldest": "2026-04-09T12:55:35+08:00"
+    },
+    {
+      "keyword": "政策",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 269,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T10:13:24+08:00",
+      "oldest": "2026-09-23T15:23:07+08:00"
+    },
+    {
+      "keyword": "政策",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 270,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-25T20:35:31+08:00",
+      "oldest": "2026-09-10T20:00:24+08:00"
+    },
+    {
+      "keyword": "回购",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_flash",
+      "sequence": 271,
+      "count": 150,
+      "has_more": null,
+      "newest": "2026-09-26T01:16:02+08:00",
+      "oldest": "2026-09-11T16:29:37+08:00"
+    },
+    {
+      "keyword": "回购",
+      "kind": "additional_neckline_use_case",
+      "tool": "search_news",
+      "sequence": 272,
+      "count": 10,
+      "has_more": true,
+      "newest": "2026-09-21T21:00:48+08:00",
+      "oldest": "2026-08-24T14:37:13+08:00"
+    }
+  ],
+  "details": [
+    {
+      "id": "230499",
+      "title": "斩获206GWh储能大单！锂电巨头子公司锁定全球储能龙头五年供货 | 盘后公告精选",
+      "time": "2026-09-18T20:59:44+08:00",
+      "url": "https://xnews.jin10.com/details/230499",
+      "sequence": 189,
+      "raw_content_chars": 5948,
+      "text_chars": 5948,
+      "intro_chars": 59,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": [
+        "阳普医疗",
+        "中铁装配",
+        "星徽股份",
+        "海辰药业",
+        "奥联电子",
+        "透景生命",
+        "佳禾智能",
+        "酷特智能",
+        "申昊科技"
+      ]
+    },
+    {
+      "id": "218976",
+      "title": "CRO巨头两名实控人遭证监会立案调查！| 盘后公告精选",
+      "time": "2026-05-12T21:06:47+08:00",
+      "url": "https://xnews.jin10.com/details/218976",
+      "sequence": 190,
+      "raw_content_chars": 5158,
+      "text_chars": 5158,
+      "intro_chars": 58,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": [
+        "安靠智电",
+        "恒宇信通"
+      ]
+    },
+    {
+      "id": "227357",
+      "title": "不加息也压不住？10年期美债中标收益率创金融危机以来最高！",
+      "time": "2026-08-13T14:05:09+08:00",
+      "url": "https://xnews.jin10.com/details/227357",
+      "sequence": 191,
+      "raw_content_chars": 1597,
+      "text_chars": 1597,
+      "intro_chars": 75,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": []
+    },
+    {
+      "id": "224371",
+      "title": "AI明星股痛斥“丢单”谣言！PCB产品需求旺盛，在手订单持续增长 | 盘后公告精选",
+      "time": "2026-07-13T20:50:21+08:00",
+      "url": "https://xnews.jin10.com/details/224371",
+      "sequence": 192,
+      "raw_content_chars": 19749,
+      "text_chars": 19749,
+      "intro_chars": 49,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": [
+        "春晖智控",
+        "争光股份"
+      ]
+    },
+    {
+      "id": "230277",
+      "title": "昔日半导体龙头，信用评级“两连降” | 盘后公告精选",
+      "time": "2026-09-16T21:03:02+08:00",
+      "url": "https://xnews.jin10.com/details/230277",
+      "sequence": 193,
+      "raw_content_chars": 5037,
+      "text_chars": 5037,
+      "intro_chars": 69,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": [
+        "宜通世纪",
+        "同和药业",
+        "赛意信息",
+        "金现代",
+        "凌玮科技",
+        "星源卓镁"
+      ]
+    },
+    {
+      "id": "230980",
+      "title": "沙特紧急抛出1亿桶原油，甚至“硬核包邮”",
+      "time": "2026-09-24T18:35:10+08:00",
+      "url": "https://xnews.jin10.com/details/230980",
+      "sequence": 194,
+      "raw_content_chars": 1757,
+      "text_chars": 1757,
+      "intro_chars": 69,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": []
+    },
+    {
+      "id": "231061",
+      "title": "美联储主席沃什框架初现：抛弃中性利率框架，政策逻辑与格林斯潘类似",
+      "time": "2026-09-25T20:35:31+08:00",
+      "url": "https://xnews.jin10.com/details/231061",
+      "sequence": 195,
+      "raw_content_chars": 1597,
+      "text_chars": 1597,
+      "intro_chars": 67,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": []
+    },
+    {
+      "id": "220941",
+      "title": "最高29.67亿美元！创新药企签下出海“超级大单” | 盘后公告精选",
+      "time": "2026-06-01T20:52:48+08:00",
+      "url": "https://xnews.jin10.com/details/220941",
+      "sequence": 196,
+      "raw_content_chars": 11327,
+      "text_chars": 11327,
+      "intro_chars": 54,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": [
+        "朗源股份",
+        "和仁科技",
+        "宏源药业"
+      ]
+    },
+    {
+      "id": "231064",
+      "title": "胡塞武装被曝早已致信欧盟，承诺不会袭击欧洲商船！",
+      "time": "2026-09-25T21:27:25+08:00",
+      "url": "https://xnews.jin10.com/details/231064",
+      "sequence": 197,
+      "raw_content_chars": 1374,
+      "text_chars": 1374,
+      "intro_chars": 55,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": []
+    },
+    {
+      "id": "230994",
+      "title": "千亿黄金巨头，大砍年内黄金产量计划！ | 盘后公告精选",
+      "time": "2026-09-24T20:57:56+08:00",
+      "url": "https://xnews.jin10.com/details/230994",
+      "sequence": 273,
+      "raw_content_chars": 6762,
+      "text_chars": 6762,
+      "intro_chars": 55,
+      "has_html": false,
+      "image_count": 0,
+      "literal_pool_mentions": [
+        "先锋新材",
+        "金丹科技",
+        "华康洁净",
+        "弘景光电"
+      ]
+    }
+  ],
+  "protocol": {
+    "method_counts": {
+      "initialize": 1,
+      "notifications/initialized": 1,
+      "tools/list": 1,
+      "resources/list": 1,
+      "tools/call": 268,
+      "resources/read": 1
+    },
+    "tool_counts": {
+      "list_flash": 83,
+      "list_news": 3,
+      "list_calendar": 1,
+      "search_flash": 85,
+      "search_news": 83,
+      "get_news": 10,
+      "get_quote": 2,
+      "get_kline": 1
+    },
+    "tool_total": 268,
+    "http_failures": 0,
+    "protocol_errors": 0,
+    "business_errors": 0,
+    "business_statuses": {
+      "200": 268
+    },
+    "structured_count": 268,
+    "first_at": "2026-09-26T05:07:26.629420+00:00",
+    "last_at": "2026-09-26T05:18:39.006502+00:00",
+    "latency_median_seconds": 0.0495,
+    "latency_max_seconds": 0.55
+  },
+  "scope": "User-authorized isolated Jin10 MCP source-fit test; no production integration, model call, or report run.",
+  "endpoint": "https://mcp.jin10.com/mcp",
+  "protocol_version": "2025-11-25",
+  "universe_sha256": "161c1dbbf7119a3ce5bf9d6aa183635eb0af05eee7b77d9e962ede5f54eb3b48",
+  "universe_count": 1089,
+  "sample_selection": "7 named companies present in the fixed pool plus 23 evenly spaced entries from the remaining ordered pool; not yesterday report companies and not a representative recall study.",
+  "sample_companies_records": [
+    {
+      "name": "广生堂",
+      "code": "300436.SZ"
+    },
+    {
+      "name": "华大基因",
+      "code": "300676.SZ"
+    },
+    {
+      "name": "开立医疗",
+      "code": "300633.SZ"
+    },
+    {
+      "name": "南风股份",
+      "code": "300004.SZ"
+    },
+    {
+      "name": "神州泰岳",
+      "code": "300002.SZ"
+    },
+    {
+      "name": "探路者",
+      "code": "300005.SZ"
+    },
+    {
+      "name": "汤臣倍健",
+      "code": "300146.SZ"
+    },
+    {
+      "ts_code": "300006.SZ",
+      "name": "莱美药业"
+    },
+    {
+      "ts_code": "300078.SZ",
+      "name": "思创智联"
+    },
+    {
+      "ts_code": "300154.SZ",
+      "name": "瑞凌股份"
+    },
+    {
+      "ts_code": "300220.SZ",
+      "name": "金运激光"
+    },
+    {
+      "ts_code": "300279.SZ",
+      "name": "和晶科技"
+    },
+    {
+      "ts_code": "300351.SZ",
+      "name": "永贵电器"
+    },
+    {
+      "ts_code": "300426.SZ",
+      "name": "华智数媒"
+    },
+    {
+      "ts_code": "300497.SZ",
+      "name": "富祥股份"
+    },
+    {
+      "ts_code": "300561.SZ",
+      "name": "汇金科技"
+    },
+    {
+      "ts_code": "300619.SZ",
+      "name": "金银河"
+    },
+    {
+      "ts_code": "300687.SZ",
+      "name": "赛意信息"
+    },
+    {
+      "ts_code": "300746.SZ",
+      "name": "汉嘉数智"
+    },
+    {
+      "ts_code": "300818.SZ",
+      "name": "耐普矿机"
+    },
+    {
+      "ts_code": "300878.SZ",
+      "name": "维康药业"
+    },
+    {
+      "ts_code": "300941.SZ",
+      "name": "创识科技"
+    },
+    {
+      "ts_code": "301002.SZ",
+      "name": "崧盛股份"
+    },
+    {
+      "ts_code": "301065.SZ",
+      "name": "本立科技"
+    },
+    {
+      "ts_code": "301127.SZ",
+      "name": "武汉天源"
+    },
+    {
+      "ts_code": "301207.SZ",
+      "name": "华兰疫苗"
+    },
+    {
+      "ts_code": "301281.SZ",
+      "name": "科源制药"
+    },
+    {
+      "ts_code": "301362.SZ",
+      "name": "民爆光电"
+    },
+    {
+      "ts_code": "301535.SZ",
+      "name": "浙江华远"
+    },
+    {
+      "ts_code": "301717.SZ",
+      "name": "超纯应材"
+    }
+  ],
+  "public_page_checks": [
+    {
+      "url": "https://flash.jin10.com/detail/20260924215144518800",
+      "http": 200,
+      "needle": "联合化学",
+      "needle_in_html": true,
+      "bytes": 31786,
+      "final_url": "https://flash.jin10.com/detail/20260924215144518800"
+    },
+    {
+      "url": "https://xnews.jin10.com/details/230277",
+      "http": 200,
+      "needle": "赛意信息",
+      "needle_in_html": true,
+      "bytes": 91711,
+      "final_url": "https://xnews.jin10.com/details/230277"
+    },
+    {
+      "url": "https://xnews.jin10.com/details/230499",
+      "http": 200,
+      "needle": "华锡有色",
+      "needle_in_html": true,
+      "bytes": 96723,
+      "final_url": "https://xnews.jin10.com/details/230499"
+    }
+  ],
+  "repeat_page": {
+    "first_sequence": 9,
+    "repeat_sequence": 244,
+    "identical": true
+  },
+  "list_exhaustion": {
+    "list_flash": {
+      "at": "2026-09-26T05:16:42.080006+00:00",
+      "sequence": 228,
+      "has_more": false,
+      "next_cursor": "",
+      "oldest": "2026-09-24T13:08:13+08:00",
+      "note": "Observed roughly 48-hour reach at this snapshot, not an official retention guarantee."
+    },
+    "list_news": {
+      "at": "2026-09-26T05:16:42.125357+00:00",
+      "sequence": 229,
+      "has_more": false,
+      "next_cursor": "",
+      "oldest": "2026-09-24T13:33:43+08:00",
+      "note": "Observed roughly 48-hour reach at this snapshot, not an official retention guarantee."
+    }
+  },
+  "gap_checks": [
+    {
+      "sequence": 230,
+      "tool": "search_flash",
+      "keyword": "GST-Peak-Triple",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    },
+    {
+      "sequence": 231,
+      "tool": "search_flash",
+      "keyword": "广生中霖",
+      "count": 1,
+      "ids": [],
+      "guangshengtang_mentions": 1,
+      "sample_urls": [
+        "https://flash.jin10.com/detail/20260917194918688800"
+      ]
+    },
+    {
+      "sequence": 232,
+      "tool": "search_flash",
+      "keyword": "首例试验参与者",
+      "count": 2,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": [
+        "https://flash.jin10.com/detail/20260907204446057800",
+        "https://flash.jin10.com/detail/20260623175759313800"
+      ]
+    },
+    {
+      "sequence": 233,
+      "tool": "search_flash",
+      "keyword": "入组",
+      "count": 22,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": [
+        "https://flash.jin10.com/detail/20260922174256881800",
+        "https://flash.jin10.com/detail/20260909170847804800"
+      ]
+    },
+    {
+      "sequence": 234,
+      "tool": "search_news",
+      "keyword": "赛意信息",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    },
+    {
+      "sequence": 235,
+      "tool": "search_news",
+      "keyword": "昔日半导体龙头",
+      "count": 1,
+      "ids": [
+        "230277"
+      ],
+      "guangshengtang_mentions": 0,
+      "sample_urls": [
+        "https://xnews.jin10.com/details/230277"
+      ]
+    },
+    {
+      "sequence": 236,
+      "tool": "search_news",
+      "keyword": "安靠智电",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    },
+    {
+      "sequence": 237,
+      "tool": "search_news",
+      "keyword": "CRO巨头",
+      "count": 1,
+      "ids": [
+        "218976"
+      ],
+      "guangshengtang_mentions": 0,
+      "sample_urls": [
+        "https://xnews.jin10.com/details/218976"
+      ]
+    },
+    {
+      "sequence": 238,
+      "tool": "search_flash",
+      "keyword": "联合化学",
+      "count": 2,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": [
+        "https://flash.jin10.com/detail/20260924215144518800",
+        "https://flash.jin10.com/detail/20260811104230842800"
+      ]
+    },
+    {
+      "sequence": 239,
+      "tool": "search_flash",
+      "keyword": "联合化学 减持",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    },
+    {
+      "sequence": 240,
+      "tool": "search_flash",
+      "keyword": "耐普矿机",
+      "count": 2,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": [
+        "https://flash.jin10.com/detail/20260816152240555800",
+        "https://flash.jin10.com/detail/20260531161423737800"
+      ]
+    },
+    {
+      "sequence": 241,
+      "tool": "search_news",
+      "keyword": "耐普矿机",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    },
+    {
+      "sequence": 242,
+      "tool": "search_flash",
+      "keyword": "思创医惠",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    },
+    {
+      "sequence": 243,
+      "tool": "search_flash",
+      "keyword": "汉嘉设计",
+      "count": 0,
+      "ids": [],
+      "guangshengtang_mentions": 0,
+      "sample_urls": []
+    }
+  ],
+  "call_ledger": [
+    {
+      "sequence": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "neckline-news-source-audit",
+          "version": "2026-09-26"
+        }
+      },
+      "at": "2026-09-26T05:07:26.629420+00:00",
+      "http": 200,
+      "seconds": 0.183,
+      "wireBytes": 504,
+      "reply_sha256": "cf2d395e60ec808674d821de545ce10540c7db7b3d2967ca8d876e6a73c08923"
+    },
+    {
+      "sequence": 2,
+      "method": "notifications/initialized",
+      "params": null,
+      "at": "2026-09-26T05:07:26.655269+00:00",
+      "http": 202,
+      "seconds": 0.025,
+      "wireBytes": 0,
+      "reply_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "sequence": 3,
+      "method": "tools/list",
+      "params": {},
+      "at": "2026-09-26T05:07:26.697625+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 11029,
+      "reply_sha256": "372f556efa9ce5ec55d5f00d3b8d264d63c2f395a79ec2e165b803fe341977a3"
+    },
+    {
+      "sequence": 4,
+      "method": "resources/list",
+      "params": {},
+      "at": "2026-09-26T05:07:26.724176+00:00",
+      "http": 200,
+      "seconds": 0.025,
+      "wireBytes": 261,
+      "reply_sha256": "012d43ecbaf6ff948953acdd3a90ea3ead16f8f1bd793755473af01c3ee0e164"
+    },
+    {
+      "sequence": 5,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {}
+      },
+      "at": "2026-09-26T05:07:51.852190+00:00",
+      "http": 200,
+      "seconds": 0.214,
+      "wireBytes": 26475,
+      "reply_sha256": "9b70ef170a85953e6681a8b41f70cc0849a3e189ae3a98dcd86051dcc98ffe0a"
+    },
+    {
+      "sequence": 6,
+      "method": "tools/call",
+      "params": {
+        "name": "list_news",
+        "arguments": {}
+      },
+      "at": "2026-09-26T05:07:51.896301+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 16741,
+      "reply_sha256": "9b6e4f8a5b691538f68cacba9e2856c3abf5d505b30615b728a1fc368bed934b"
+    },
+    {
+      "sequence": 7,
+      "method": "tools/call",
+      "params": {
+        "name": "list_calendar",
+        "arguments": {}
+      },
+      "at": "2026-09-26T05:07:51.964605+00:00",
+      "http": 200,
+      "seconds": 0.067,
+      "wireBytes": 63025,
+      "reply_sha256": "ede133fb116a20480457cdfbe215c80ff9e9507b2492b0670ad6f4cfb70ba301"
+    },
+    {
+      "sequence": 8,
+      "method": "resources/read",
+      "params": {
+        "uri": "quote://codes"
+      },
+      "at": "2026-09-26T05:07:51.991759+00:00",
+      "http": 200,
+      "seconds": 0.025,
+      "wireBytes": 5890,
+      "reply_sha256": "c876b5414b393328f1e2e52e3c67bfa77ed4cb390764613a10d4e33f12e3c2d6"
+    },
+    {
+      "sequence": 9,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790392530661"
+        }
+      },
+      "at": "2026-09-26T05:13:23.787850+00:00",
+      "http": 200,
+      "seconds": 0.127,
+      "wireBytes": 22249,
+      "reply_sha256": "ba422a57c5b284f320916401d5eef6435790465ef222a2b32616ce36675355bb"
+    },
+    {
+      "sequence": 10,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790385584006"
+        }
+      },
+      "at": "2026-09-26T05:13:23.838184+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 25499,
+      "reply_sha256": "b3930767932f0315b228cd7a5c0602d1206f5bf3fa40a36b53a943089f8d2a50"
+    },
+    {
+      "sequence": 11,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790381578424"
+        }
+      },
+      "at": "2026-09-26T05:13:23.883810+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 16288,
+      "reply_sha256": "3dbce2898c29de92ec1fe7d3c9292adb5896dd9d75f6b5c5cfd2e18fc4008586"
+    },
+    {
+      "sequence": 12,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790370473049"
+        }
+      },
+      "at": "2026-09-26T05:13:23.928799+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 17922,
+      "reply_sha256": "050b18d3a85b5955ecf505a347f72de3bc38418e37573ada4d2f0d5dfddf5037"
+    },
+    {
+      "sequence": 13,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790366852051"
+        }
+      },
+      "at": "2026-09-26T05:13:23.973883+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 10494,
+      "reply_sha256": "b0335b21fdefd5cfefb8fac2a1383d7470e6926090161e4c6d250100bc2a8315"
+    },
+    {
+      "sequence": 14,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790365639684"
+        }
+      },
+      "at": "2026-09-26T05:13:24.020434+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 12694,
+      "reply_sha256": "0c87a63a1f692b682d9f339eccc15b3310bed301382680795f945fa9e6f2c936"
+    },
+    {
+      "sequence": 15,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790362984775"
+        }
+      },
+      "at": "2026-09-26T05:13:24.120131+00:00",
+      "http": 200,
+      "seconds": 0.098,
+      "wireBytes": 10568,
+      "reply_sha256": "996422d47380d9ada9c23fed03d41d295ecf1faad364301769222f5974dc004f"
+    },
+    {
+      "sequence": 16,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790361360827"
+        }
+      },
+      "at": "2026-09-26T05:13:24.169478+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 8586,
+      "reply_sha256": "a878ded695d120568c3ad263593d5e3e496491d6a8d26a467c06e965eb20514d"
+    },
+    {
+      "sequence": 17,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790359680844"
+        }
+      },
+      "at": "2026-09-26T05:13:24.215194+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 10664,
+      "reply_sha256": "91477a2d0084632a3730b4f7f397784b8e6650519cf9e35d2fefe4459d5aee43"
+    },
+    {
+      "sequence": 18,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790356279454"
+        }
+      },
+      "at": "2026-09-26T05:13:24.259066+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 12552,
+      "reply_sha256": "7e574a310a941b82c5f703a6fefe6a9a9e3719c6b6f493f5c7a38f72835b0eda"
+    },
+    {
+      "sequence": 19,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790355038022"
+        }
+      },
+      "at": "2026-09-26T05:13:24.305518+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 17062,
+      "reply_sha256": "6ebfffe384edea5509e543d4277a7df94db4601cacf5556f13a4079664a63d6b"
+    },
+    {
+      "sequence": 20,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790352795617"
+        }
+      },
+      "at": "2026-09-26T05:13:24.360429+00:00",
+      "http": 200,
+      "seconds": 0.054,
+      "wireBytes": 12762,
+      "reply_sha256": "ca1b7e08579d03fd7b375dea7714dd4f20b965506a58452c0c3a26321ac5cafc"
+    },
+    {
+      "sequence": 21,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790348684838"
+        }
+      },
+      "at": "2026-09-26T05:13:24.406665+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 11388,
+      "reply_sha256": "f4baa1bb3f34e68571215d8452c1bd208f6c098e6c67251bf20ede673d0bb7b0"
+    },
+    {
+      "sequence": 22,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790345872785"
+        }
+      },
+      "at": "2026-09-26T05:13:24.445841+00:00",
+      "http": 200,
+      "seconds": 0.038,
+      "wireBytes": 10602,
+      "reply_sha256": "9c87354914696cdac1d4b3cf85d7a96aee46a6616d2ca982cd1b5cf30a31a2c7"
+    },
+    {
+      "sequence": 23,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790344767601"
+        }
+      },
+      "at": "2026-09-26T05:13:24.491652+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 9436,
+      "reply_sha256": "cbeff6ddacb77b12f996837472a74fa5b709ad59190d64c42f6e695ca2d5a4aa"
+    },
+    {
+      "sequence": 24,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790342284342"
+        }
+      },
+      "at": "2026-09-26T05:13:24.541626+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 15582,
+      "reply_sha256": "7fb4d34720c5ea0649d756130cf8dff322ae4d270b270dc6be32349ffd8cd299"
+    },
+    {
+      "sequence": 25,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790340731807"
+        }
+      },
+      "at": "2026-09-26T05:13:24.645361+00:00",
+      "http": 200,
+      "seconds": 0.102,
+      "wireBytes": 15442,
+      "reply_sha256": "50b662886d8ca52e5079d732dc727744ac7cc540cd138cb5fd84ca7a11c5d945"
+    },
+    {
+      "sequence": 26,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790338817468"
+        }
+      },
+      "at": "2026-09-26T05:13:24.688975+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 11750,
+      "reply_sha256": "07b5f3cae616e194c2a9e56b9190627f53ffd1798dcf9c863917b563cca8b9ac"
+    },
+    {
+      "sequence": 27,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790337698646"
+        }
+      },
+      "at": "2026-09-26T05:13:24.731352+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 10724,
+      "reply_sha256": "ac31cd318910b9b7e0915e3753329d2cbdc72ea84fb39d3c5d35c14ac9fd7ee2"
+    },
+    {
+      "sequence": 28,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790335758251"
+        }
+      },
+      "at": "2026-09-26T05:13:24.769232+00:00",
+      "http": 200,
+      "seconds": 0.037,
+      "wireBytes": 11054,
+      "reply_sha256": "0a8c49a856f23c465bf72f2388df4a5762a24d85aa0879b51ee085c9e3b9d884"
+    },
+    {
+      "sequence": 29,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790333304350"
+        }
+      },
+      "at": "2026-09-26T05:13:24.812793+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 15874,
+      "reply_sha256": "7cdd0d17d37bcdec29839493121e447a32af947a8aee85873f3becbdf91bc945"
+    },
+    {
+      "sequence": 30,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790330444756"
+        }
+      },
+      "at": "2026-09-26T05:13:24.852838+00:00",
+      "http": 200,
+      "seconds": 0.039,
+      "wireBytes": 11276,
+      "reply_sha256": "6bc00bfddb73220a402e1d6a9a7ffccd28fde9b41148d8712de973249f3fe947"
+    },
+    {
+      "sequence": 31,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790328814029"
+        }
+      },
+      "at": "2026-09-26T05:13:24.895756+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 18256,
+      "reply_sha256": "36a86083deb874bd1959cad609623fe3ad95f2cc241c455742c3a44123a76a47"
+    },
+    {
+      "sequence": 32,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790326402177"
+        }
+      },
+      "at": "2026-09-26T05:13:24.937779+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 9946,
+      "reply_sha256": "287fd48b4fba07779a699532c190ffd413ba67aed31e119681a8bc52c88b61cd"
+    },
+    {
+      "sequence": 33,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790325043036"
+        }
+      },
+      "at": "2026-09-26T05:13:24.985519+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 17425,
+      "reply_sha256": "073e26f2150c2fe878ffad1219a6bcf490f92b88ad13f4c7d55ea234788b48cd"
+    },
+    {
+      "sequence": 34,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790321576511"
+        }
+      },
+      "at": "2026-09-26T05:13:25.036502+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 17545,
+      "reply_sha256": "f18adf326a0a7db1a42d8aa12960d9fd67d705dcb686f24b1eaaa73c48353e9f"
+    },
+    {
+      "sequence": 35,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790319694081"
+        }
+      },
+      "at": "2026-09-26T05:13:25.171982+00:00",
+      "http": 200,
+      "seconds": 0.134,
+      "wireBytes": 21368,
+      "reply_sha256": "ee1ef18ded3c845ea0f01b6a44cec6711a8a9364105f475a2240a82c8be4764e"
+    },
+    {
+      "sequence": 36,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790316902845"
+        }
+      },
+      "at": "2026-09-26T05:13:25.224143+00:00",
+      "http": 200,
+      "seconds": 0.05,
+      "wireBytes": 21257,
+      "reply_sha256": "c1ec963280024691bb421349a451337b3df77d5a8d319f10dc38abfec223bd75"
+    },
+    {
+      "sequence": 37,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790311992189"
+        }
+      },
+      "at": "2026-09-26T05:13:25.272578+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 20656,
+      "reply_sha256": "175b44d9a87c4463eb1cfb2e9b3fa9004facd27461a976416874178a5c7f1547"
+    },
+    {
+      "sequence": 38,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790307429718"
+        }
+      },
+      "at": "2026-09-26T05:13:25.319921+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 18638,
+      "reply_sha256": "ccf79c821fc611d1dfc0300ddad20fcc45dad564d42c0287a1b5bfc57d4a0458"
+    },
+    {
+      "sequence": 39,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790303812911"
+        }
+      },
+      "at": "2026-09-26T05:13:25.365515+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 18040,
+      "reply_sha256": "523dc66f12dd75a2c58d5e67de391816889957712e3045698576890adba585ee"
+    },
+    {
+      "sequence": 40,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790300996032"
+        }
+      },
+      "at": "2026-09-26T05:13:25.416346+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 18495,
+      "reply_sha256": "839dfbcb8c437441a486581f241a63ffc8f16cd36394a6bcff8807d0de2b4f3d"
+    },
+    {
+      "sequence": 41,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790298693830"
+        }
+      },
+      "at": "2026-09-26T05:13:25.460826+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 13779,
+      "reply_sha256": "6899cdd5abde910afbbe93b31165af2f2be7116cab6a24f447837c72ca8e1ea2"
+    },
+    {
+      "sequence": 42,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790295001956"
+        }
+      },
+      "at": "2026-09-26T05:13:25.505098+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 20505,
+      "reply_sha256": "2298d6a22937e32f2be8307bd8a3ef183846ade98cbbf896bb1bd132a1289000"
+    },
+    {
+      "sequence": 43,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790290544390"
+        }
+      },
+      "at": "2026-09-26T05:13:25.552648+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 22053,
+      "reply_sha256": "0f936449b3639e67f623b1ff79c38beee8891e01995bf5a0b47b9c60b89d048c"
+    },
+    {
+      "sequence": 44,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790287150287"
+        }
+      },
+      "at": "2026-09-26T05:13:25.602718+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 22599,
+      "reply_sha256": "cdd89118d3244d05cd92f173fabf253389d1ac4a488f74df09c52c2419563d17"
+    },
+    {
+      "sequence": 45,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790283011060"
+        }
+      },
+      "at": "2026-09-26T05:13:25.728231+00:00",
+      "http": 200,
+      "seconds": 0.124,
+      "wireBytes": 14016,
+      "reply_sha256": "a3596721f86f86490e4b9e9530d5c483a6cda567335b6ef8ad396459741dfb6e"
+    },
+    {
+      "sequence": 46,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790280241727"
+        }
+      },
+      "at": "2026-09-26T05:13:25.773962+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 13372,
+      "reply_sha256": "e87615f19a4e2e160cb3c23944c85ab4fccda81fc6b6996f51e804503a8586a1"
+    },
+    {
+      "sequence": 47,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790276499075"
+        }
+      },
+      "at": "2026-09-26T05:13:25.818653+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 11229,
+      "reply_sha256": "76abbbf403f9c27cfef15d417b8db83df5e6ee6fcc6933780520b25d082aa851"
+    },
+    {
+      "sequence": 48,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790274885386"
+        }
+      },
+      "at": "2026-09-26T05:13:25.860369+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 9420,
+      "reply_sha256": "6641983015d02da5493f5fe1f77307c6e3ff47f4ffcdfe562ad69a642a702d20"
+    },
+    {
+      "sequence": 49,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790274186566"
+        }
+      },
+      "at": "2026-09-26T05:13:25.902296+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 10062,
+      "reply_sha256": "881c106eb5b4613ef37e6698583c9200116a11b8816175e8de9dab2aada93962"
+    },
+    {
+      "sequence": 50,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790272685968"
+        }
+      },
+      "at": "2026-09-26T05:13:25.951732+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 16639,
+      "reply_sha256": "ca9be3e7cdd8a56dcad4504cca2bd8b239aca12abc3ad11422be5113e3cac499"
+    },
+    {
+      "sequence": 51,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790269687090"
+        }
+      },
+      "at": "2026-09-26T05:13:25.996179+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 14406,
+      "reply_sha256": "0f29213cfc0d293be5340bd235939fb45b8e1c741c019ff76f51c82997f91867"
+    },
+    {
+      "sequence": 52,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790268076935"
+        }
+      },
+      "at": "2026-09-26T05:13:26.041246+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 12272,
+      "reply_sha256": "2185814a20f71622c0e76000da73f7d68a2fcd7e9c000ef73334c5f6a566c9e4"
+    },
+    {
+      "sequence": 53,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790265412398"
+        }
+      },
+      "at": "2026-09-26T05:13:26.086308+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 12829,
+      "reply_sha256": "8d32112ec3df462016bb7608614d5b61f39b476cee6629a0a7f6e0a80e0cce36"
+    },
+    {
+      "sequence": 54,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790263970763"
+        }
+      },
+      "at": "2026-09-26T05:13:26.224639+00:00",
+      "http": 200,
+      "seconds": 0.136,
+      "wireBytes": 13192,
+      "reply_sha256": "1e6ce52329cdcd256cbe926a5041b48fba4b90030c39b788a2d2547c4eddac46"
+    },
+    {
+      "sequence": 55,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790262873302"
+        }
+      },
+      "at": "2026-09-26T05:13:26.268212+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 13464,
+      "reply_sha256": "fc01b92e965a98c801727b483a9793c56c1c66e3b2ed86bab6e72c574cd77b7c"
+    },
+    {
+      "sequence": 56,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790261768250"
+        }
+      },
+      "at": "2026-09-26T05:13:26.314680+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 13724,
+      "reply_sha256": "fb74619a11df06e389600c735f659a93dece7aa3a0c17756c637cf0d671e31c1"
+    },
+    {
+      "sequence": 57,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790259492882"
+        }
+      },
+      "at": "2026-09-26T05:13:26.357389+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 10000,
+      "reply_sha256": "9d0c36cb8cb422aec9193030ab98990244737c1efceb2f0649a078d28b435cb2"
+    },
+    {
+      "sequence": 58,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790258441856"
+        }
+      },
+      "at": "2026-09-26T05:13:26.400275+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 12498,
+      "reply_sha256": "133635be458226809449652e27d85a96dc472a3ddc1e7356abbb4ab72f4b1450"
+    },
+    {
+      "sequence": 59,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790257603498"
+        }
+      },
+      "at": "2026-09-26T05:13:26.446873+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 15544,
+      "reply_sha256": "18f628ce1c9fff0b141cb453a1418a25762a67f4d5746fcc049ccf5899dca76b"
+    },
+    {
+      "sequence": 60,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790256340138"
+        }
+      },
+      "at": "2026-09-26T05:13:26.489538+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 11996,
+      "reply_sha256": "8490ebc5a4ad956cbc3a522ba312482f5f350456a1991f9957385c7d4f82e17d"
+    },
+    {
+      "sequence": 61,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790254844280"
+        }
+      },
+      "at": "2026-09-26T05:13:26.534652+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 13860,
+      "reply_sha256": "2dc2f13cc499da2dd450908f26ada05229dc339e3185f2f16ac07a64c685f1de"
+    },
+    {
+      "sequence": 62,
+      "method": "tools/call",
+      "params": {
+        "name": "list_news",
+        "arguments": {
+          "cursor": "1790259290995"
+        }
+      },
+      "at": "2026-09-26T05:13:26.581758+00:00",
+      "http": 200,
+      "seconds": 0.034,
+      "wireBytes": 15689,
+      "reply_sha256": "fddfa4ce5c630de24b04da0008d1835ef4c52e4ea72d3d2ac67af4d044efb655"
+    },
+    {
+      "sequence": 63,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "广生堂"
+        }
+      },
+      "at": "2026-09-26T05:13:26.990836+00:00",
+      "http": 200,
+      "seconds": 0.398,
+      "wireBytes": 9016,
+      "reply_sha256": "7176a7606f57bed10d420e2296917392db79dcdf287df584c139915b54a4505f"
+    },
+    {
+      "sequence": 64,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "广生堂"
+        }
+      },
+      "at": "2026-09-26T05:13:27.038707+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 296,
+      "reply_sha256": "857fb86046b075b120de1821fe6d667bca22a9eaab2e76525e23e63a44661f2a"
+    },
+    {
+      "sequence": 65,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "华大基因"
+        }
+      },
+      "at": "2026-09-26T05:13:27.430624+00:00",
+      "http": 200,
+      "seconds": 0.388,
+      "wireBytes": 6226,
+      "reply_sha256": "70898100d9bd58f15d6e11dce178cfec2c7c3f6eb0e88c6da5e25e0785c8928d"
+    },
+    {
+      "sequence": 66,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "华大基因"
+        }
+      },
+      "at": "2026-09-26T05:13:27.477404+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 296,
+      "reply_sha256": "b72d1721375439cedc7e105059d66f649d0a3d3203af1fbdbac47f4b8b6753c8"
+    },
+    {
+      "sequence": 67,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "开立医疗"
+        }
+      },
+      "at": "2026-09-26T05:13:27.869145+00:00",
+      "http": 200,
+      "seconds": 0.39,
+      "wireBytes": 1094,
+      "reply_sha256": "5fe7be56fc53b2b167295971e35f6091717e94a4f0a055d1133cc8bd167f466d"
+    },
+    {
+      "sequence": 68,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "开立医疗"
+        }
+      },
+      "at": "2026-09-26T05:13:27.914424+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 296,
+      "reply_sha256": "72866389e776739426471b3a225a45514f30a9490457ac9e444f57455b031540"
+    },
+    {
+      "sequence": 69,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "南风股份"
+        }
+      },
+      "at": "2026-09-26T05:13:28.314165+00:00",
+      "http": 200,
+      "seconds": 0.397,
+      "wireBytes": 222,
+      "reply_sha256": "cd40dde55cb9e49fca522752d18106ee47c918320b32650de1ee58c60dbda40f"
+    },
+    {
+      "sequence": 70,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "南风股份"
+        }
+      },
+      "at": "2026-09-26T05:13:28.360255+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 296,
+      "reply_sha256": "779a2096291a912659a91a5027a97c3b0c15cee394bddb81c3b5a26bea0ba659"
+    },
+    {
+      "sequence": 71,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "神州泰岳"
+        }
+      },
+      "at": "2026-09-26T05:13:28.838886+00:00",
+      "http": 200,
+      "seconds": 0.477,
+      "wireBytes": 1222,
+      "reply_sha256": "d3755ef1908e00c59f7738e5256e48d29b40d3ded9b0c8d1ba14fca5482401d6"
+    },
+    {
+      "sequence": 72,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "神州泰岳"
+        }
+      },
+      "at": "2026-09-26T05:13:28.883651+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 296,
+      "reply_sha256": "cbee1ac14cebd17e37b9b05cf26831fa82ab82bdac81d09d6e592a73555237eb"
+    },
+    {
+      "sequence": 73,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "探路者"
+        }
+      },
+      "at": "2026-09-26T05:13:29.364854+00:00",
+      "http": 200,
+      "seconds": 0.478,
+      "wireBytes": 7534,
+      "reply_sha256": "636f8be6d1f5ce6d7c695063e5407995b6df66a91bc01596e22dd38bf82a4205"
+    },
+    {
+      "sequence": 74,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "探路者"
+        }
+      },
+      "at": "2026-09-26T05:13:29.406676+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 296,
+      "reply_sha256": "a55d5065980ec11137056e62068b364310fb9a3b1bd67ea267ca1a737da523db"
+    },
+    {
+      "sequence": 75,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "汤臣倍健"
+        }
+      },
+      "at": "2026-09-26T05:13:29.951013+00:00",
+      "http": 200,
+      "seconds": 0.543,
+      "wireBytes": 13681,
+      "reply_sha256": "c5de7893f9bf7dff66e50bde3e4c0a9ab1cecaae3c1f4484a4bf0d6fef98bc0f"
+    },
+    {
+      "sequence": 76,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "汤臣倍健"
+        }
+      },
+      "at": "2026-09-26T05:13:29.992207+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 296,
+      "reply_sha256": "235bbfb7e2f70e1547c93519782db223841d2dd12ae3b37822ba6f76047ee5b5"
+    },
+    {
+      "sequence": 77,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "300436"
+        }
+      },
+      "at": "2026-09-26T05:13:30.412788+00:00",
+      "http": 200,
+      "seconds": 0.418,
+      "wireBytes": 222,
+      "reply_sha256": "93694188c3b7b45885f545c5608b1c6f45efc1667b935fc692c5fc7cb1611535"
+    },
+    {
+      "sequence": 78,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "300436"
+        }
+      },
+      "at": "2026-09-26T05:13:30.457352+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 296,
+      "reply_sha256": "59aca1b15684d76d5cef6f26c7bcd5e35f3e094b7174ed57fb78096aa7e41e31"
+    },
+    {
+      "sequence": 79,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "300750"
+        }
+      },
+      "at": "2026-09-26T05:13:30.846473+00:00",
+      "http": 200,
+      "seconds": 0.387,
+      "wireBytes": 222,
+      "reply_sha256": "1235025cd0891617cd26bc59436a0f5ac50e4259392b68736ca0458177278b77"
+    },
+    {
+      "sequence": 80,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "300750"
+        }
+      },
+      "at": "2026-09-26T05:13:30.972663+00:00",
+      "http": 200,
+      "seconds": 0.125,
+      "wireBytes": 296,
+      "reply_sha256": "964f9453dfdbd37f07b9a6d0b9d713affe51f62b236680e3da31f501b229f6f9"
+    },
+    {
+      "sequence": 81,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "300308"
+        }
+      },
+      "at": "2026-09-26T05:13:31.361204+00:00",
+      "http": 200,
+      "seconds": 0.386,
+      "wireBytes": 222,
+      "reply_sha256": "e824f9a3e90c8e8b738a176df0054d7528fa13f8e521c3a89a1e996b1f2dc151"
+    },
+    {
+      "sequence": 82,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "300308"
+        }
+      },
+      "at": "2026-09-26T05:13:31.459830+00:00",
+      "http": 200,
+      "seconds": 0.097,
+      "wireBytes": 296,
+      "reply_sha256": "84a2fbae8d6588689f299f5a24e5b79336ba2cabfaa249d1be9f3f824b0415a1"
+    },
+    {
+      "sequence": 83,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "601727"
+        }
+      },
+      "at": "2026-09-26T05:13:31.847890+00:00",
+      "http": 200,
+      "seconds": 0.385,
+      "wireBytes": 222,
+      "reply_sha256": "700d278e14f79204c5592c370c250d78340e8ffc9be23cfa3d25c34960242dbd"
+    },
+    {
+      "sequence": 84,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "601727"
+        }
+      },
+      "at": "2026-09-26T05:13:31.893255+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 296,
+      "reply_sha256": "4a78678df38ff5b658ef3c518ea1f849f8c1c3279ab0b6731955b81f84fced1a"
+    },
+    {
+      "sequence": 85,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "上海电气"
+        }
+      },
+      "at": "2026-09-26T05:13:32.393160+00:00",
+      "http": 200,
+      "seconds": 0.498,
+      "wireBytes": 38530,
+      "reply_sha256": "8d7ab8dde1501a911a78d96ccc283f9d8a05049e22a4f1e03a9682f93bfd449a"
+    },
+    {
+      "sequence": 86,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "上海电气"
+        }
+      },
+      "at": "2026-09-26T05:13:32.508633+00:00",
+      "http": 200,
+      "seconds": 0.114,
+      "wireBytes": 296,
+      "reply_sha256": "26cc4c946ccf746979b643ee08a20afb1b38248fbec0f042619a2c4b26494a3f"
+    },
+    {
+      "sequence": 87,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "首例入组"
+        }
+      },
+      "at": "2026-09-26T05:13:32.908770+00:00",
+      "http": 200,
+      "seconds": 0.398,
+      "wireBytes": 1566,
+      "reply_sha256": "4708d3ff35995dd552dcdc7f0b092d37279d1a58f437bc376e901d8dbeda2485"
+    },
+    {
+      "sequence": 88,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "首例入组"
+        }
+      },
+      "at": "2026-09-26T05:13:33.032561+00:00",
+      "http": 200,
+      "seconds": 0.123,
+      "wireBytes": 296,
+      "reply_sha256": "945515bfcfffc6d097e13976dc0d1900d84aac41a6d179df20bfc893e9d1dba3"
+    },
+    {
+      "sequence": 89,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "临床试验"
+        }
+      },
+      "at": "2026-09-26T05:13:33.579773+00:00",
+      "http": 200,
+      "seconds": 0.543,
+      "wireBytes": 220201,
+      "reply_sha256": "015ea3dfd89d11687b1ad1467693e4c2ef9f9743b1364d45a88e3b604f5f39ad"
+    },
+    {
+      "sequence": 90,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "临床试验"
+        }
+      },
+      "at": "2026-09-26T05:13:33.628230+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 296,
+      "reply_sha256": "e6535fca891dcd2cad07b30e691056d6295c70981b64f2a8a55e743a41c3e6de"
+    },
+    {
+      "sequence": 91,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "中标"
+        }
+      },
+      "at": "2026-09-26T05:13:34.106243+00:00",
+      "http": 200,
+      "seconds": 0.474,
+      "wireBytes": 178674,
+      "reply_sha256": "6b3edf910f32e89554b9ac68cf2315e111a237f04aeef1d19b4cd52f07be141d"
+    },
+    {
+      "sequence": 92,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "中标"
+        }
+      },
+      "at": "2026-09-26T05:13:34.154554+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 1902,
+      "reply_sha256": "cc1d232090e210748e31c765030faf12d203b8b0b661b2f9fefac054b810a384"
+    },
+    {
+      "sequence": 93,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "订单"
+        }
+      },
+      "at": "2026-09-26T05:13:34.633899+00:00",
+      "http": 200,
+      "seconds": 0.473,
+      "wireBytes": 246994,
+      "reply_sha256": "2a642b0b9bf90061913e8ad1be09e575128dfd2fe8143d46e8210bbe6e014bfe"
+    },
+    {
+      "sequence": 94,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "订单"
+        }
+      },
+      "at": "2026-09-26T05:13:34.680719+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 4582,
+      "reply_sha256": "8706cb7ae93a5cab7ef5502b73f49b0138a8a380c82bbad2f65b56fd4306f305"
+    },
+    {
+      "sequence": 95,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "重组"
+        }
+      },
+      "at": "2026-09-26T05:13:35.145919+00:00",
+      "http": 200,
+      "seconds": 0.46,
+      "wireBytes": 246516,
+      "reply_sha256": "b8a762f09b92869837e56f8a61c170f4afff16f97574775cdd392e19fff1fc27"
+    },
+    {
+      "sequence": 96,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "重组"
+        }
+      },
+      "at": "2026-09-26T05:13:35.201265+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 4388,
+      "reply_sha256": "2440a56b0719ef0b80dbcb1fd5be3cfba8263434dcccf5a02cc2e56369e4beba"
+    },
+    {
+      "sequence": 97,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "增持"
+        }
+      },
+      "at": "2026-09-26T05:13:35.665620+00:00",
+      "http": 200,
+      "seconds": 0.452,
+      "wireBytes": 269880,
+      "reply_sha256": "cee30009279f9035fad470e46c7be76b261639978fdf5ce46e77271e595639c1"
+    },
+    {
+      "sequence": 98,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "增持"
+        }
+      },
+      "at": "2026-09-26T05:13:35.721371+00:00",
+      "http": 200,
+      "seconds": 0.052,
+      "wireBytes": 7484,
+      "reply_sha256": "5ddd7139f0d404fd763c307e298c9f4453c0141e9b3d8860f94d1bef036632e3"
+    },
+    {
+      "sequence": 99,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "减持"
+        }
+      },
+      "at": "2026-09-26T05:13:36.181034+00:00",
+      "http": 200,
+      "seconds": 0.45,
+      "wireBytes": 242605,
+      "reply_sha256": "b23032af0b9372623e9d5ea393ef974e13e6587eee6a5775dbfaf7512358e479"
+    },
+    {
+      "sequence": 100,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "减持"
+        }
+      },
+      "at": "2026-09-26T05:13:36.234152+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 8569,
+      "reply_sha256": "b7651b1960f13133afc13798fdecdef771dbbad331215797063cba1c01211bf3"
+    },
+    {
+      "sequence": 101,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "业绩预告"
+        }
+      },
+      "at": "2026-09-26T05:13:36.705954+00:00",
+      "http": 200,
+      "seconds": 0.462,
+      "wireBytes": 106748,
+      "reply_sha256": "e7dd3ada863d6dd7d85d97f8132f061aa9aa1e4bf81dad424f12d78d28dfbb6d"
+    },
+    {
+      "sequence": 102,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "业绩预告"
+        }
+      },
+      "at": "2026-09-26T05:13:36.755238+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 1265,
+      "reply_sha256": "34f7f53ee22813b5e800ea181b63cce4e7030df866af54ccaceaeadf45814bea"
+    },
+    {
+      "sequence": 103,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "立案调查"
+        }
+      },
+      "at": "2026-09-26T05:13:37.227940+00:00",
+      "http": 200,
+      "seconds": 0.459,
+      "wireBytes": 185626,
+      "reply_sha256": "e6f57962a8a390473ebfd19d7c849c6b1f09e29ac6067f0f83bdcd814718b101"
+    },
+    {
+      "sequence": 104,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "立案调查"
+        }
+      },
+      "at": "2026-09-26T05:13:37.269318+00:00",
+      "http": 200,
+      "seconds": 0.039,
+      "wireBytes": 1047,
+      "reply_sha256": "ac77cf5a12950103b1365e2aee24af83d1b463952ede8f841f90f0b19ae40823"
+    },
+    {
+      "sequence": 105,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "澄清"
+        }
+      },
+      "at": "2026-09-26T05:13:37.770304+00:00",
+      "http": 200,
+      "seconds": 0.486,
+      "wireBytes": 316163,
+      "reply_sha256": "fc10da771dd16cb59a798f419b2bcc8b6240f6fa4bfd2642a86b648c1e56b20e"
+    },
+    {
+      "sequence": 106,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "澄清"
+        }
+      },
+      "at": "2026-09-26T05:13:37.822282+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 4953,
+      "reply_sha256": "e170f277eb2601a7fc7895c0c43ede9fb662eb2eef1b77981180f2f9b81fc87a"
+    },
+    {
+      "sequence": 107,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "终止"
+        }
+      },
+      "at": "2026-09-26T05:13:38.279325+00:00",
+      "http": 200,
+      "seconds": 0.441,
+      "wireBytes": 240350,
+      "reply_sha256": "11daad1e6f129068da3918a2662eaaab9b3fcc90766b0f17e7342c5bba2e5616"
+    },
+    {
+      "sequence": 108,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "终止"
+        }
+      },
+      "at": "2026-09-26T05:13:38.329715+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 3575,
+      "reply_sha256": "16d733469393e2fdb8858ffbf294319af63ab4e4472c43bb42813b9c88bf3e08"
+    },
+    {
+      "sequence": 109,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "问询函"
+        }
+      },
+      "at": "2026-09-26T05:13:38.835790+00:00",
+      "http": 200,
+      "seconds": 0.488,
+      "wireBytes": 40489,
+      "reply_sha256": "447f21e9da8a26ba2c01a218ec1aeff32946b0d17401af79002f679c88d3b424"
+    },
+    {
+      "sequence": 110,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "问询函"
+        }
+      },
+      "at": "2026-09-26T05:13:38.887618+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 297,
+      "reply_sha256": "14a5275ad4028096dac78ab0c5ddfe1a168e7869ba09c34aab037128f70b6cad"
+    },
+    {
+      "sequence": 111,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "互动易"
+        }
+      },
+      "at": "2026-09-26T05:13:39.328613+00:00",
+      "http": 200,
+      "seconds": 0.426,
+      "wireBytes": 17705,
+      "reply_sha256": "c2b79bfafc4a417be4a3f42061988b2dcc0b1fa117557538f38d54eefdac961c"
+    },
+    {
+      "sequence": 112,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "互动易"
+        }
+      },
+      "at": "2026-09-26T05:13:39.377160+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 297,
+      "reply_sha256": "9798a1e9cb188c6d039b8e85242cf222c7fd1c00cd6e69380a63197bda1b886a"
+    },
+    {
+      "sequence": 113,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "调研"
+        }
+      },
+      "at": "2026-09-26T05:13:39.907880+00:00",
+      "http": 200,
+      "seconds": 0.512,
+      "wireBytes": 299029,
+      "reply_sha256": "4da739bec4d101951e69b7502da1ef7ac3d7a7851ab16fabf2e1a640548a7a68"
+    },
+    {
+      "sequence": 114,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "调研"
+        }
+      },
+      "at": "2026-09-26T05:13:39.959426+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 297,
+      "reply_sha256": "82aa33a29273b6c3ab8d2f255c6ee2549d039ab6fdefc5814ea85decaec13c66"
+    },
+    {
+      "sequence": 115,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "储能"
+        }
+      },
+      "at": "2026-09-26T05:13:40.085307+00:00",
+      "http": 200,
+      "seconds": 0.116,
+      "wireBytes": 265247,
+      "reply_sha256": "9d6697eae422ef17cda1b3ee2f9e7657293a94ef7df7be706e3254855753c52a"
+    },
+    {
+      "sequence": 116,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "储能"
+        }
+      },
+      "at": "2026-09-26T05:13:40.128682+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 1133,
+      "reply_sha256": "62bf1d4effadff5a326a209f76adc62b46841094ea9368c72210860960a00a87"
+    },
+    {
+      "sequence": 117,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "算力"
+        }
+      },
+      "at": "2026-09-26T05:13:40.249827+00:00",
+      "http": 200,
+      "seconds": 0.112,
+      "wireBytes": 299457,
+      "reply_sha256": "35d077347f6ae9aa22ce57d992782e303f6551d975d1916ac31995c6dd136b3a"
+    },
+    {
+      "sequence": 118,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "算力"
+        }
+      },
+      "at": "2026-09-26T05:13:40.375855+00:00",
+      "http": 200,
+      "seconds": 0.124,
+      "wireBytes": 8641,
+      "reply_sha256": "b82c43b74589c58f8f4dc5698e83ba79dcef36ae5343bfa23077c64eb5c482cc"
+    },
+    {
+      "sequence": 119,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "半导体"
+        }
+      },
+      "at": "2026-09-26T05:13:40.499268+00:00",
+      "http": 200,
+      "seconds": 0.107,
+      "wireBytes": 205899,
+      "reply_sha256": "e7798abc3dcf8e82694397a21a4630f8225960e0fbd375b7990385429a8784a2"
+    },
+    {
+      "sequence": 120,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "半导体"
+        }
+      },
+      "at": "2026-09-26T05:13:40.556334+00:00",
+      "http": 200,
+      "seconds": 0.053,
+      "wireBytes": 8287,
+      "reply_sha256": "e8d4a756bd622d5637dc2fdbc05ad5421b7df314ca351032a32b2159beda73ca"
+    },
+    {
+      "sequence": 121,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "创新药"
+        }
+      },
+      "at": "2026-09-26T05:13:40.691970+00:00",
+      "http": 200,
+      "seconds": 0.104,
+      "wireBytes": 232769,
+      "reply_sha256": "a051fa7ed2813500f957daa486fae9bb5298ad3f73d21c7d08defb9825fa9da3"
+    },
+    {
+      "sequence": 122,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "创新药"
+        }
+      },
+      "at": "2026-09-26T05:13:40.735764+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 1913,
+      "reply_sha256": "2c07f5e54c5b617a82675f0b168b18c1a2ae4ddf422d6cb9eefcaa9c829c27be"
+    },
+    {
+      "sequence": 123,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "出口管制"
+        }
+      },
+      "at": "2026-09-26T05:13:41.179271+00:00",
+      "http": 200,
+      "seconds": 0.432,
+      "wireBytes": 218693,
+      "reply_sha256": "c64c99b20b950422057111407cdb2221b0cfb16565b29f97fde3c3a9d1282c3f"
+    },
+    {
+      "sequence": 124,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "出口管制"
+        }
+      },
+      "at": "2026-09-26T05:13:41.231377+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 1187,
+      "reply_sha256": "c7f68a2b2745bf59771ef64f4e7916edeb1d1d545dea2fba820984abcd71a05a"
+    },
+    {
+      "sequence": 125,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "原油"
+        }
+      },
+      "at": "2026-09-26T05:13:41.421929+00:00",
+      "http": 200,
+      "seconds": 0.177,
+      "wireBytes": 156121,
+      "reply_sha256": "b754c992556c738dc44491188cf16f9a661ea9e2e63d8c6e3ee33a44b7b5e9dd"
+    },
+    {
+      "sequence": 126,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "原油"
+        }
+      },
+      "at": "2026-09-26T05:13:41.472180+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 8567,
+      "reply_sha256": "73e84519741c0966fdb6a7c91a113e6cb7013a738a0cc6f3ff58d29371b9579b"
+    },
+    {
+      "sequence": 127,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "美联储"
+        }
+      },
+      "at": "2026-09-26T05:13:41.543612+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 159715,
+      "reply_sha256": "31587b28707d6c25809e07e10390ee23a5b53b228c49fb9fc51974c7055189ca"
+    },
+    {
+      "sequence": 128,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "美联储"
+        }
+      },
+      "at": "2026-09-26T05:13:41.609681+00:00",
+      "http": 200,
+      "seconds": 0.063,
+      "wireBytes": 8767,
+      "reply_sha256": "6af8d9e53ad29beb1547b3fd6f69afbd24f7877589e11a90ea2afddb7b7037f1"
+    },
+    {
+      "sequence": 129,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "关税"
+        }
+      },
+      "at": "2026-09-26T05:13:41.738875+00:00",
+      "http": 200,
+      "seconds": 0.106,
+      "wireBytes": 241661,
+      "reply_sha256": "7642e40df38653996e50c14d64db67ea4534f44527173cb966176518da5cdff8"
+    },
+    {
+      "sequence": 130,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "关税"
+        }
+      },
+      "at": "2026-09-26T05:13:41.796235+00:00",
+      "http": 200,
+      "seconds": 0.054,
+      "wireBytes": 9095,
+      "reply_sha256": "0a0c8e8edbe30773363db6f41a1e8c212f5a60ff033cf9939c3cf7bb566e7ed0"
+    },
+    {
+      "sequence": 131,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "欧佩克"
+        }
+      },
+      "at": "2026-09-26T05:13:42.278205+00:00",
+      "http": 200,
+      "seconds": 0.456,
+      "wireBytes": 270882,
+      "reply_sha256": "1bb62bd02c007e404695e8bf91a65b30ed6355359d8e9e2c7ac67596ac37e480"
+    },
+    {
+      "sequence": 132,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "欧佩克"
+        }
+      },
+      "at": "2026-09-26T05:13:42.333760+00:00",
+      "http": 200,
+      "seconds": 0.052,
+      "wireBytes": 8449,
+      "reply_sha256": "2282ec40d78d0b27ce368a667666d815d968994906908fb84f55daee613b86df"
+    },
+    {
+      "sequence": 133,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "广生堂 入组"
+        }
+      },
+      "at": "2026-09-26T05:13:42.749222+00:00",
+      "http": 200,
+      "seconds": 0.388,
+      "wireBytes": 223,
+      "reply_sha256": "4fa04501034837607acad8fcd2dcc1de3cd2ca66de9eba3eccf90828ba00f6a1"
+    },
+    {
+      "sequence": 134,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "广生堂 入组"
+        }
+      },
+      "at": "2026-09-26T05:13:42.791246+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 297,
+      "reply_sha256": "294ba248378c6ee91e076e877dfcf30c568ec13a004635e9fc1cf7ab894fa2ac"
+    },
+    {
+      "sequence": 135,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "宁德时代 减持"
+        }
+      },
+      "at": "2026-09-26T05:13:43.261244+00:00",
+      "http": 200,
+      "seconds": 0.443,
+      "wireBytes": 223,
+      "reply_sha256": "0a1d0d181b3d1a324cb851b7c4cd6bde323949585e09d54c61b8b3a09b003718"
+    },
+    {
+      "sequence": 136,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "宁德时代 减持"
+        }
+      },
+      "at": "2026-09-26T05:13:43.305030+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 297,
+      "reply_sha256": "f619a289b94e25d9f156076a46443c8d4ae87eb737f1f1cf0c1d3ccb4129e218"
+    },
+    {
+      "sequence": 137,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "上海电气 订单"
+        }
+      },
+      "at": "2026-09-26T05:13:43.717562+00:00",
+      "http": 200,
+      "seconds": 0.387,
+      "wireBytes": 223,
+      "reply_sha256": "f4305920dc22969c30d1691cb42a17887472ac814082e77b8366e3f0ce2d3292"
+    },
+    {
+      "sequence": 138,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "上海电气 订单"
+        }
+      },
+      "at": "2026-09-26T05:13:43.767872+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 297,
+      "reply_sha256": "d0f49147d91ca4bec427bc6ff5c55a8c9ccc9df207fb6c84728a63fb30a036d5"
+    },
+    {
+      "sequence": 139,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "zzneckline无此主题20260926"
+        }
+      },
+      "at": "2026-09-26T05:13:44.197600+00:00",
+      "http": 200,
+      "seconds": 0.402,
+      "wireBytes": 223,
+      "reply_sha256": "279a47fe46fafe93ce75f7ad64800b0bae74cc2f1c067168ee7ec0bd54045707"
+    },
+    {
+      "sequence": 140,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "zzneckline无此主题20260926"
+        }
+      },
+      "at": "2026-09-26T05:13:44.249117+00:00",
+      "http": 200,
+      "seconds": 0.05,
+      "wireBytes": 297,
+      "reply_sha256": "f5d7ecc690687727dbb022ca0cbeed7ba1d18176121cd2df332e6b1634e00cc1"
+    },
+    {
+      "sequence": 141,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "莱美药业"
+        }
+      },
+      "at": "2026-09-26T05:14:49.159437+00:00",
+      "http": 200,
+      "seconds": 0.457,
+      "wireBytes": 4563,
+      "reply_sha256": "29e81ccb273103e21287138b97f9800e097472fe10d89bf3887dd30d8e31ef63"
+    },
+    {
+      "sequence": 142,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "莱美药业"
+        }
+      },
+      "at": "2026-09-26T05:14:49.215368+00:00",
+      "http": 200,
+      "seconds": 0.055,
+      "wireBytes": 297,
+      "reply_sha256": "c0dc28a517e8827332c562893e9693c33f5dda0785718e0e8b8b9bbe9ca106f0"
+    },
+    {
+      "sequence": 143,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "思创智联"
+        }
+      },
+      "at": "2026-09-26T05:14:49.620885+00:00",
+      "http": 200,
+      "seconds": 0.389,
+      "wireBytes": 223,
+      "reply_sha256": "71d5e260666d2fe658e20c3aca95e29515f70fe0b2883375777f8c6fbda0a5d7"
+    },
+    {
+      "sequence": 144,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "思创智联"
+        }
+      },
+      "at": "2026-09-26T05:14:49.669701+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 297,
+      "reply_sha256": "09520b2017a9f364a02e224118c554723ff4fa71c13fafc579df84268024ab3e"
+    },
+    {
+      "sequence": 145,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "瑞凌股份"
+        }
+      },
+      "at": "2026-09-26T05:14:50.103873+00:00",
+      "http": 200,
+      "seconds": 0.394,
+      "wireBytes": 5255,
+      "reply_sha256": "a5292ac45b5e9b02f70b85ac41d7fa375de5593363005672b058a2c2d411c1e7"
+    },
+    {
+      "sequence": 146,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "瑞凌股份"
+        }
+      },
+      "at": "2026-09-26T05:14:50.152012+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 297,
+      "reply_sha256": "38231644cee0beccbe5aa049a60d4739379874feee0ccf15847308f340470b42"
+    },
+    {
+      "sequence": 147,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "金运激光"
+        }
+      },
+      "at": "2026-09-26T05:14:50.643120+00:00",
+      "http": 200,
+      "seconds": 0.467,
+      "wireBytes": 5258,
+      "reply_sha256": "0dac19a30bb19475adc22a7a42a4182652262dac2eaee6a29fe0be3fd560e2be"
+    },
+    {
+      "sequence": 148,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "金运激光"
+        }
+      },
+      "at": "2026-09-26T05:14:50.706418+00:00",
+      "http": 200,
+      "seconds": 0.062,
+      "wireBytes": 297,
+      "reply_sha256": "405e584329f6db6f25df727a7aeaa4b8b7b8578990bdc4e217fc01e9e92e129e"
+    },
+    {
+      "sequence": 149,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "和晶科技"
+        }
+      },
+      "at": "2026-09-26T05:14:51.153842+00:00",
+      "http": 200,
+      "seconds": 0.42,
+      "wireBytes": 223,
+      "reply_sha256": "50a6dcad21d065cd3e040f0f426d8d305161136a208124db8f8ef3a4b26e91d4"
+    },
+    {
+      "sequence": 150,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "和晶科技"
+        }
+      },
+      "at": "2026-09-26T05:14:51.199025+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 297,
+      "reply_sha256": "3d5aab40632979ff8dcc8735e068b0f234fe5520dd1eca8af8a03ae7efc41360"
+    },
+    {
+      "sequence": 151,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "永贵电器"
+        }
+      },
+      "at": "2026-09-26T05:14:51.678780+00:00",
+      "http": 200,
+      "seconds": 0.453,
+      "wireBytes": 4669,
+      "reply_sha256": "175453dbd5bd83046a2403b2cc5b8ef45cabe96548796559db05b29e52ccff5c"
+    },
+    {
+      "sequence": 152,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "永贵电器"
+        }
+      },
+      "at": "2026-09-26T05:14:51.722132+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 297,
+      "reply_sha256": "707fa55f1b196ac4d49dc3a0c407af2414460277d768ae74e3b9d8fecacb620a"
+    },
+    {
+      "sequence": 153,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "华智数媒"
+        }
+      },
+      "at": "2026-09-26T05:14:52.267956+00:00",
+      "http": 200,
+      "seconds": 0.522,
+      "wireBytes": 6243,
+      "reply_sha256": "f8c0901c97cf20182647161e5c774da989cc8032c9a56ff4b265990f4620c3b6"
+    },
+    {
+      "sequence": 154,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "华智数媒"
+        }
+      },
+      "at": "2026-09-26T05:14:52.311672+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 297,
+      "reply_sha256": "50806f95e3574502166877aff473156050e91e0cff0c2b55f39d1f4cdf6eea62"
+    },
+    {
+      "sequence": 155,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "富祥股份"
+        }
+      },
+      "at": "2026-09-26T05:14:52.794463+00:00",
+      "http": 200,
+      "seconds": 0.455,
+      "wireBytes": 7871,
+      "reply_sha256": "035c478ddc7a98169a501113a3242f4bceb7e995722008c5eac4284ca5505bdd"
+    },
+    {
+      "sequence": 156,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "富祥股份"
+        }
+      },
+      "at": "2026-09-26T05:14:52.839650+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 297,
+      "reply_sha256": "f178690251124b470fee9010915c6ecd8093fb539d35353f1b96b4dd05ca17e6"
+    },
+    {
+      "sequence": 157,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "汇金科技"
+        }
+      },
+      "at": "2026-09-26T05:14:53.263206+00:00",
+      "http": 200,
+      "seconds": 0.397,
+      "wireBytes": 3831,
+      "reply_sha256": "e17f5ce1f70e908ae7d698ec7a449e987afdf75aafb875b781efa82789678a7d"
+    },
+    {
+      "sequence": 158,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "汇金科技"
+        }
+      },
+      "at": "2026-09-26T05:14:53.312714+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 297,
+      "reply_sha256": "9f79bee88c1cedad1825ec375c4b172f69f0a27d57eee535d4f876be359df052"
+    },
+    {
+      "sequence": 159,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "金银河"
+        }
+      },
+      "at": "2026-09-26T05:14:53.775661+00:00",
+      "http": 200,
+      "seconds": 0.433,
+      "wireBytes": 4385,
+      "reply_sha256": "9297e993c92ac34be2e2420d69e4d5fef663217489749f7c6bd587bda2d6f34f"
+    },
+    {
+      "sequence": 160,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "金银河"
+        }
+      },
+      "at": "2026-09-26T05:14:53.829254+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 297,
+      "reply_sha256": "7e14a044aae8d8b5ce11d0a129bde7838c47d3f8550cf7ac9ae6db61a5b748c1"
+    },
+    {
+      "sequence": 161,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "赛意信息"
+        }
+      },
+      "at": "2026-09-26T05:14:54.299272+00:00",
+      "http": 200,
+      "seconds": 0.443,
+      "wireBytes": 21482,
+      "reply_sha256": "b8e6f41a77d0554655cae354ecb241f36d7ee79683c04bbcd97fe94a1d24c09c"
+    },
+    {
+      "sequence": 162,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "赛意信息"
+        }
+      },
+      "at": "2026-09-26T05:14:54.371910+00:00",
+      "http": 200,
+      "seconds": 0.071,
+      "wireBytes": 297,
+      "reply_sha256": "a5839750b58e878325c1abe8aca435b914710ce4b9c23b6376b7b9c7dfea23ba"
+    },
+    {
+      "sequence": 163,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "汉嘉数智"
+        }
+      },
+      "at": "2026-09-26T05:14:54.821916+00:00",
+      "http": 200,
+      "seconds": 0.433,
+      "wireBytes": 657,
+      "reply_sha256": "e69d8d70ce363851faccfe039052d58a0129209ec91a0c40b08e698fafdab217"
+    },
+    {
+      "sequence": 164,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "汉嘉数智"
+        }
+      },
+      "at": "2026-09-26T05:14:54.870308+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 297,
+      "reply_sha256": "2f2d2c6008f49be3df7d91e17aeab14c994ddfa38f441dcbe0749d510969a740"
+    },
+    {
+      "sequence": 165,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "耐普矿机"
+        }
+      },
+      "at": "2026-09-26T05:14:55.348736+00:00",
+      "http": 200,
+      "seconds": 0.452,
+      "wireBytes": 2793,
+      "reply_sha256": "cff3d6c609c3c2f0e01aaaf8f06561c9c61bf17f99bfa49a7577bde3282c612c"
+    },
+    {
+      "sequence": 166,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "耐普矿机"
+        }
+      },
+      "at": "2026-09-26T05:14:55.395157+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 297,
+      "reply_sha256": "07db2f48e3c22f43baff984e21c5f4aece4f3ea811a93bea217d0324aec1d03c"
+    },
+    {
+      "sequence": 167,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "维康药业"
+        }
+      },
+      "at": "2026-09-26T05:14:55.969619+00:00",
+      "http": 200,
+      "seconds": 0.549,
+      "wireBytes": 1677,
+      "reply_sha256": "317298d4edaca4783b9c995ae874ae3ba398f36d9c0851b11f81434fbbfae60b"
+    },
+    {
+      "sequence": 168,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "维康药业"
+        }
+      },
+      "at": "2026-09-26T05:14:56.014002+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 297,
+      "reply_sha256": "ec42cb0fc78995289c0549e4af9c9aeb4c95ab21adcf60a8dcbe381e8136d930"
+    },
+    {
+      "sequence": 169,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "创识科技"
+        }
+      },
+      "at": "2026-09-26T05:14:56.425846+00:00",
+      "http": 200,
+      "seconds": 0.387,
+      "wireBytes": 1617,
+      "reply_sha256": "20607a976240d3ccb9cabd538685580a00bf9f45089d68ddd5bbb828a7d43a46"
+    },
+    {
+      "sequence": 170,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "创识科技"
+        }
+      },
+      "at": "2026-09-26T05:14:56.469503+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 297,
+      "reply_sha256": "c10d892183680b569629ed7895bde187f83d5e3aa01938e845c37031a9be2567"
+    },
+    {
+      "sequence": 171,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "崧盛股份"
+        }
+      },
+      "at": "2026-09-26T05:14:56.990269+00:00",
+      "http": 200,
+      "seconds": 0.495,
+      "wireBytes": 1423,
+      "reply_sha256": "e897129fa402851e4bca314a27b79a27f4cb4098360d94a6b20369bf76f8ee57"
+    },
+    {
+      "sequence": 172,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "崧盛股份"
+        }
+      },
+      "at": "2026-09-26T05:14:57.031954+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 297,
+      "reply_sha256": "1bb6a152f6b1fece6d8a469f69475ef906f73d2de01cb30bfb3403e88893cf85"
+    },
+    {
+      "sequence": 173,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "本立科技"
+        }
+      },
+      "at": "2026-09-26T05:14:57.445617+00:00",
+      "http": 200,
+      "seconds": 0.384,
+      "wireBytes": 223,
+      "reply_sha256": "38d72da4cd6ad9716c4e9a2c9d4c177198e2073a8edde46bc4f4c56a548b1db1"
+    },
+    {
+      "sequence": 174,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "本立科技"
+        }
+      },
+      "at": "2026-09-26T05:14:57.493923+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 297,
+      "reply_sha256": "99131d6b0eb9275436422f737f82deac134874a9974da1f62c07b5e937ed84a5"
+    },
+    {
+      "sequence": 175,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "武汉天源"
+        }
+      },
+      "at": "2026-09-26T05:14:57.966342+00:00",
+      "http": 200,
+      "seconds": 0.444,
+      "wireBytes": 1873,
+      "reply_sha256": "4cab198df4fce7487f5342a38d1e13ac50beaf5ab0f791dbaf62124a2fe1b688"
+    },
+    {
+      "sequence": 176,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "武汉天源"
+        }
+      },
+      "at": "2026-09-26T05:14:58.012557+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 297,
+      "reply_sha256": "160dc7aaffabebd2988c997fa1830f456f63e1805f55891729fa5c9377d6697b"
+    },
+    {
+      "sequence": 177,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "华兰疫苗"
+        }
+      },
+      "at": "2026-09-26T05:14:58.492072+00:00",
+      "http": 200,
+      "seconds": 0.456,
+      "wireBytes": 6553,
+      "reply_sha256": "8f1cbb18e54953ee6c5e45bfa6849c969eaf77dab8b43bad2bc482230611ac81"
+    },
+    {
+      "sequence": 178,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "华兰疫苗"
+        }
+      },
+      "at": "2026-09-26T05:14:58.537425+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 297,
+      "reply_sha256": "37ebd5e0be34115637d6ba4d16be03de6fcf8f203046881df998336f77224512"
+    },
+    {
+      "sequence": 179,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "科源制药"
+        }
+      },
+      "at": "2026-09-26T05:14:59.041404+00:00",
+      "http": 200,
+      "seconds": 0.475,
+      "wireBytes": 6699,
+      "reply_sha256": "0c4c1c1b89ab307d19e652457b1b27c3b6001a6ca17b454f407b688e95b76021"
+    },
+    {
+      "sequence": 180,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "科源制药"
+        }
+      },
+      "at": "2026-09-26T05:14:59.101259+00:00",
+      "http": 200,
+      "seconds": 0.058,
+      "wireBytes": 297,
+      "reply_sha256": "f43a041cc40d15bbb666ef16af217ce7597b8de973c9160b6bb40ad417115482"
+    },
+    {
+      "sequence": 181,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "民爆光电"
+        }
+      },
+      "at": "2026-09-26T05:14:59.536373+00:00",
+      "http": 200,
+      "seconds": 0.408,
+      "wireBytes": 6134,
+      "reply_sha256": "ed61e197b1680c04b08e2d3c71b32aa10d03dbd2ac484dfc76e113227cf2f3ba"
+    },
+    {
+      "sequence": 182,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "民爆光电"
+        }
+      },
+      "at": "2026-09-26T05:14:59.584517+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 297,
+      "reply_sha256": "c3a26c007a2bbfc30bde20dcaa66c59798de0e999667b38aeee4af72192f3d49"
+    },
+    {
+      "sequence": 183,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "浙江华远"
+        }
+      },
+      "at": "2026-09-26T05:15:00.064508+00:00",
+      "http": 200,
+      "seconds": 0.463,
+      "wireBytes": 223,
+      "reply_sha256": "42925bf5b7907a6d2f483d6afa50ca7384ecdd4554f281fb3fc44503b23e7635"
+    },
+    {
+      "sequence": 184,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "浙江华远"
+        }
+      },
+      "at": "2026-09-26T05:15:00.112312+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 297,
+      "reply_sha256": "3e263545515ef28fe831ed2501d443644c20667352f384aa4c7deb3acc2926fb"
+    },
+    {
+      "sequence": 185,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "超纯应材"
+        }
+      },
+      "at": "2026-09-26T05:15:00.590415+00:00",
+      "http": 200,
+      "seconds": 0.452,
+      "wireBytes": 5977,
+      "reply_sha256": "6c825eee14aa7f063dd743873e7b38ac6dffac439de72a1ba2f123146bafa99a"
+    },
+    {
+      "sequence": 186,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "超纯应材"
+        }
+      },
+      "at": "2026-09-26T05:15:00.636047+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 297,
+      "reply_sha256": "c560a874e8b6e1d5db74193a14ce3f09dd2b91f153565c66bf28a68710e804e5"
+    },
+    {
+      "sequence": 187,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "原油",
+          "cursor": "1788862211571"
+        }
+      },
+      "at": "2026-09-26T05:15:00.703716+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 8731,
+      "reply_sha256": "a5a27497f215e067e4f0b77e9c1c98d040c27d5b05ae1c79d36ba87ecc582825"
+    },
+    {
+      "sequence": 188,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "半导体",
+          "cursor": "1784298171936"
+        }
+      },
+      "at": "2026-09-26T05:15:00.752557+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 8371,
+      "reply_sha256": "d43925d4a654542f22f5bdfaab5dbf2989f842f2dcb970ca2c9e508a2f288f65"
+    },
+    {
+      "sequence": 189,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "230499"
+        }
+      },
+      "at": "2026-09-26T05:15:00.827307+00:00",
+      "http": 200,
+      "seconds": 0.069,
+      "wireBytes": 32845,
+      "reply_sha256": "3ff807904d35bd6c12ec5c3e017d17205e550565e8c1c4856aa600c17a124196"
+    },
+    {
+      "sequence": 190,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "218976"
+        }
+      },
+      "at": "2026-09-26T05:15:01.016998+00:00",
+      "http": 200,
+      "seconds": 0.187,
+      "wireBytes": 28915,
+      "reply_sha256": "fe5701105330cf86545f0919565d3780f170c25048c1cb6721681e3f0306c655"
+    },
+    {
+      "sequence": 191,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "227357"
+        }
+      },
+      "at": "2026-09-26T05:15:01.180790+00:00",
+      "http": 200,
+      "seconds": 0.162,
+      "wireBytes": 9765,
+      "reply_sha256": "39020da7074304bd9060d9079b220433ae036689d8e6bd0594de595c2d010757"
+    },
+    {
+      "sequence": 192,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "224371"
+        }
+      },
+      "at": "2026-09-26T05:15:01.281957+00:00",
+      "http": 200,
+      "seconds": 0.099,
+      "wireBytes": 101154,
+      "reply_sha256": "fb542800e6007c1cf703c2fe05102dfcd8517ea377cbe768250fa2e726a33afb"
+    },
+    {
+      "sequence": 193,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "230277"
+        }
+      },
+      "at": "2026-09-26T05:15:01.373283+00:00",
+      "http": 200,
+      "seconds": 0.089,
+      "wireBytes": 27773,
+      "reply_sha256": "6340fae40201163b223076dcf59c1c08b068a8aec0be490762b6ee5f7c374e7c"
+    },
+    {
+      "sequence": 194,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "230980"
+        }
+      },
+      "at": "2026-09-26T05:15:01.416302+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 10973,
+      "reply_sha256": "a21cca1da50c19fc831b29b921955ec3cb86cf87268427df1e74cd6800f45ea7"
+    },
+    {
+      "sequence": 195,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "231061"
+        }
+      },
+      "at": "2026-09-26T05:15:01.450553+00:00",
+      "http": 200,
+      "seconds": 0.032,
+      "wireBytes": 10291,
+      "reply_sha256": "9c8f84be7c2070edb81ad9cf304464150ff3c045b98558f3eecfb3c0b97b333d"
+    },
+    {
+      "sequence": 196,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "220941"
+        }
+      },
+      "at": "2026-09-26T05:15:01.638359+00:00",
+      "http": 200,
+      "seconds": 0.185,
+      "wireBytes": 61917,
+      "reply_sha256": "ea79175c38160a4faf154d5d1728427b132579d52a78b06f6dc236d5556c76f0"
+    },
+    {
+      "sequence": 197,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "231064"
+        }
+      },
+      "at": "2026-09-26T05:15:01.684308+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 8933,
+      "reply_sha256": "085b78e58c5085345892237d6102a8ad61885094f997471a2ef9b97b5fd33dd7"
+    },
+    {
+      "sequence": 198,
+      "method": "tools/call",
+      "params": {
+        "name": "get_quote",
+        "arguments": {
+          "code": "XAUUSD"
+        }
+      },
+      "at": "2026-09-26T05:15:01.710471+00:00",
+      "http": 200,
+      "seconds": 0.024,
+      "wireBytes": 633,
+      "reply_sha256": "dc8d50fd717fe993c6ad71341e55367c876a6280215b101ade4173e42db0370c"
+    },
+    {
+      "sequence": 199,
+      "method": "tools/call",
+      "params": {
+        "name": "get_kline",
+        "arguments": {
+          "code": "XAUUSD",
+          "time": 1790363701,
+          "count": 3
+        }
+      },
+      "at": "2026-09-26T05:15:01.813956+00:00",
+      "http": 200,
+      "seconds": 0.102,
+      "wireBytes": 973,
+      "reply_sha256": "dd99603d9eea75279431878bfbf5c6b85fad26a0b389820a9268bd669feb42b6"
+    },
+    {
+      "sequence": 200,
+      "method": "tools/call",
+      "params": {
+        "name": "get_quote",
+        "arguments": {
+          "code": "399006"
+        }
+      },
+      "at": "2026-09-26T05:15:01.860919+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 643,
+      "reply_sha256": "94b3122e33ac0da307aea0a11de7de7c5182a8e6dbbec5318abc6f3e0af1b137"
+    },
+    {
+      "sequence": 201,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790254104981"
+        }
+      },
+      "at": "2026-09-26T05:16:40.301621+00:00",
+      "http": 200,
+      "seconds": 0.16,
+      "wireBytes": 15431,
+      "reply_sha256": "70bcea22e96dbd532fa29ccf6f800752dba5eb2ae949457547013ca4fc8f296f"
+    },
+    {
+      "sequence": 202,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790253011016"
+        }
+      },
+      "at": "2026-09-26T05:16:40.352719+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 18451,
+      "reply_sha256": "20b0bcc07c6bb766204401cf12b2d212335f6da50d57522ced93632ddc0007cf"
+    },
+    {
+      "sequence": 203,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790251962020"
+        }
+      },
+      "at": "2026-09-26T05:16:40.409392+00:00",
+      "http": 200,
+      "seconds": 0.052,
+      "wireBytes": 17460,
+      "reply_sha256": "bee96d02559f694302a159040c00e425eed46e640e98e31e91207ef6c0ed31ad"
+    },
+    {
+      "sequence": 204,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790250392491"
+        }
+      },
+      "at": "2026-09-26T05:16:40.460153+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 19755,
+      "reply_sha256": "b9a5e1599c7bd7f69f4768f9082ab5c5ae70a695ab20dc74a5239e406ddef8b9"
+    },
+    {
+      "sequence": 205,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790249419688"
+        }
+      },
+      "at": "2026-09-26T05:16:40.510418+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 14867,
+      "reply_sha256": "7ac7c25c37783b63d4c7937f8a6abdb3f6b83c24bfc3d1ce035d0e6bb8ee01fc"
+    },
+    {
+      "sequence": 206,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790247718742"
+        }
+      },
+      "at": "2026-09-26T05:16:40.564997+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 16041,
+      "reply_sha256": "245cd048960499ad9d5c91858c97cc6611fdbe2c9b24442f4357a9006397fd4b"
+    },
+    {
+      "sequence": 207,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790246260267"
+        }
+      },
+      "at": "2026-09-26T05:16:40.631205+00:00",
+      "http": 200,
+      "seconds": 0.057,
+      "wireBytes": 22159,
+      "reply_sha256": "4476d5257efa28ac3df91e6d3677e1546ebac771370a74f1a2d94ba4da788f6a"
+    },
+    {
+      "sequence": 208,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790245136165"
+        }
+      },
+      "at": "2026-09-26T05:16:40.771064+00:00",
+      "http": 200,
+      "seconds": 0.129,
+      "wireBytes": 16951,
+      "reply_sha256": "2fc249e7530659a6a80f701cc2dba1c6055656ba0d2e206fb26a8900565a0db6"
+    },
+    {
+      "sequence": 209,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790244092435"
+        }
+      },
+      "at": "2026-09-26T05:16:40.828601+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 16052,
+      "reply_sha256": "cb04c962524f399738b7a2b384c65a609abc1b4876b95a684d4c218ed7ee7983"
+    },
+    {
+      "sequence": 210,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790243400801"
+        }
+      },
+      "at": "2026-09-26T05:16:40.884134+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 17291,
+      "reply_sha256": "e7fbc5e5e926a8282cdf5eb434760830aa405f71c8b3a71e979faf6a3c2a392e"
+    },
+    {
+      "sequence": 211,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790242397001"
+        }
+      },
+      "at": "2026-09-26T05:16:40.944960+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 24205,
+      "reply_sha256": "4ab1f5a78995127eb78ad0793ad06d2223e0c0f8750a56c676dbcafb5cf69403"
+    },
+    {
+      "sequence": 212,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790241602465"
+        }
+      },
+      "at": "2026-09-26T05:16:41.003200+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 19113,
+      "reply_sha256": "52eb7de27a60e6ea788b61c4c9bd418233ee7c93ac8cc7e9a4f71b80f1645383"
+    },
+    {
+      "sequence": 213,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790240740277"
+        }
+      },
+      "at": "2026-09-26T05:16:41.062821+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 20383,
+      "reply_sha256": "ee21a9aa4ee14dcec555db53a48569c1ffdfe3740eb0c9117ce0791430e0c2e5"
+    },
+    {
+      "sequence": 214,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790240112541"
+        }
+      },
+      "at": "2026-09-26T05:16:41.122445+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 26251,
+      "reply_sha256": "c40e662ca89c2b7080b7e8f3032565fe0a46bf1d2c9d1049b19122d7e950587d"
+    },
+    {
+      "sequence": 215,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790239492205"
+        }
+      },
+      "at": "2026-09-26T05:16:41.255002+00:00",
+      "http": 200,
+      "seconds": 0.123,
+      "wireBytes": 19985,
+      "reply_sha256": "13762ffb6c454b639beecbdceed3dab4825e346e0f84f0d7f6d18f5de74e82aa"
+    },
+    {
+      "sequence": 216,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790238665556"
+        }
+      },
+      "at": "2026-09-26T05:16:41.311791+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 18449,
+      "reply_sha256": "74cd26d3df9358ea350c0fe7c7fd4acf466fd0388db99dacceaa3fb7cad659db"
+    },
+    {
+      "sequence": 217,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790237821731"
+        }
+      },
+      "at": "2026-09-26T05:16:41.369576+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 18266,
+      "reply_sha256": "816ed886f24e24e35cb8737ea891b74d1970361ab41bcea66348215c12d10e5d"
+    },
+    {
+      "sequence": 218,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790237382315"
+        }
+      },
+      "at": "2026-09-26T05:16:41.421948+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 13674,
+      "reply_sha256": "2ffe991e12b80313851a09b6d135634a6dbea997f5ba8ca2c2288f41a3f6323b"
+    },
+    {
+      "sequence": 219,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790237049893"
+        }
+      },
+      "at": "2026-09-26T05:16:41.474250+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 10654,
+      "reply_sha256": "faeb707e816eceadf3c6cc2f726646c6092e27a22f0c100b926fd3cf256b69cb"
+    },
+    {
+      "sequence": 220,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790236719471"
+        }
+      },
+      "at": "2026-09-26T05:16:41.528452+00:00",
+      "http": 200,
+      "seconds": 0.045,
+      "wireBytes": 26199,
+      "reply_sha256": "b24294caabef02fe5934624093043cca86dd59dd5463440494d4c6eac9f9f154"
+    },
+    {
+      "sequence": 221,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790235928898"
+        }
+      },
+      "at": "2026-09-26T05:16:41.582406+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 18788,
+      "reply_sha256": "2e01a6c591d71483ce702860983ccc13a237f8fd261eb39c9b80bcd535d0fdfa"
+    },
+    {
+      "sequence": 222,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790235291521"
+        }
+      },
+      "at": "2026-09-26T05:16:41.646106+00:00",
+      "http": 200,
+      "seconds": 0.053,
+      "wireBytes": 9948,
+      "reply_sha256": "b2cb32ed7336db944f20b3bac4c23dc359fecc61814c380ba9c5e3a8069ef774"
+    },
+    {
+      "sequence": 223,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790235004330"
+        }
+      },
+      "at": "2026-09-26T05:16:41.779098+00:00",
+      "http": 200,
+      "seconds": 0.122,
+      "wireBytes": 25133,
+      "reply_sha256": "1d1b2c3baf4330bf5a8317b8caa7be7c078bdd0e81a6ada9727a90b3e4b9d136"
+    },
+    {
+      "sequence": 224,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790233662256"
+        }
+      },
+      "at": "2026-09-26T05:16:41.842539+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 18383,
+      "reply_sha256": "81a670ea4cad314926dd44650de68379f10b1e810ff5423edc484515767c8dee"
+    },
+    {
+      "sequence": 225,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790232979614"
+        }
+      },
+      "at": "2026-09-26T05:16:41.902964+00:00",
+      "http": 200,
+      "seconds": 0.049,
+      "wireBytes": 20565,
+      "reply_sha256": "9f3e9b3fc70150cff1ad2149559bbc3998804a625e929b5a756a60cbaea06658"
+    },
+    {
+      "sequence": 226,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790231584575"
+        }
+      },
+      "at": "2026-09-26T05:16:41.957940+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 20935,
+      "reply_sha256": "0f9a61bbeeae948c94dd80d5bb4b5f93ce492310ebcbb3e23411c4ba354a6da0"
+    },
+    {
+      "sequence": 227,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790230394902"
+        }
+      },
+      "at": "2026-09-26T05:16:42.028227+00:00",
+      "http": 200,
+      "seconds": 0.059,
+      "wireBytes": 16817,
+      "reply_sha256": "64971ae0e6967b06a20a84fc3ba21b7d46dbba3c352697c55056d4bec57a9343"
+    },
+    {
+      "sequence": 228,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790228822875"
+        }
+      },
+      "at": "2026-09-26T05:16:42.080006+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 10938,
+      "reply_sha256": "a16508d1e5951ddde5d0a99732c8c928ee9fc9f8636b66dd5e19718de9ba5bd0"
+    },
+    {
+      "sequence": 229,
+      "method": "tools/call",
+      "params": {
+        "name": "list_news",
+        "arguments": {
+          "cursor": "1790233403947"
+        }
+      },
+      "at": "2026-09-26T05:16:42.125357+00:00",
+      "http": 200,
+      "seconds": 0.033,
+      "wireBytes": 5605,
+      "reply_sha256": "6afbd8bfae9c0054c578c42ae6f9a77b927ca0ebf4fc1e407fd02ecf5c96a689"
+    },
+    {
+      "sequence": 230,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "GST-Peak-Triple"
+        }
+      },
+      "at": "2026-09-26T05:16:42.526746+00:00",
+      "http": 200,
+      "seconds": 0.391,
+      "wireBytes": 223,
+      "reply_sha256": "021b69c56ddf0c2d02bebc6f1777e09bc159e9803355815a76c4e58d9ed8f793"
+    },
+    {
+      "sequence": 231,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "广生中霖"
+        }
+      },
+      "at": "2026-09-26T05:16:42.910036+00:00",
+      "http": 200,
+      "seconds": 0.381,
+      "wireBytes": 2089,
+      "reply_sha256": "254f9336a2ee7626626083494cc0b6139c913f1a4d347084a2e04de4b0f1b38b"
+    },
+    {
+      "sequence": 232,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "首例试验参与者"
+        }
+      },
+      "at": "2026-09-26T05:16:43.353412+00:00",
+      "http": 200,
+      "seconds": 0.442,
+      "wireBytes": 2821,
+      "reply_sha256": "6c8d0b647aae9cca28568f66e2dc18a53affc3c28a2fa21c124c9cc258fb2f9b"
+    },
+    {
+      "sequence": 233,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "入组"
+        }
+      },
+      "at": "2026-09-26T05:16:43.899850+00:00",
+      "http": 200,
+      "seconds": 0.544,
+      "wireBytes": 35531,
+      "reply_sha256": "5fab95e7bba29d1bb0ac98d7bb5a79ccd28ad3f6475dca58c2f4ad2f1429fbac"
+    },
+    {
+      "sequence": 234,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "赛意信息"
+        }
+      },
+      "at": "2026-09-26T05:16:43.945352+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 297,
+      "reply_sha256": "9517dfa48866e598f4d533c5b9bbbf87f41ddb0a59bd93f2d05ef8ad45d4e201"
+    },
+    {
+      "sequence": 235,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "昔日半导体龙头"
+        }
+      },
+      "at": "2026-09-26T05:16:43.994177+00:00",
+      "http": 200,
+      "seconds": 0.047,
+      "wireBytes": 1107,
+      "reply_sha256": "fc7a2b0f8c2d50b282ba62104f762e46df47e4cdf6816d4c46d7c12fe0ee3a41"
+    },
+    {
+      "sequence": 236,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "安靠智电"
+        }
+      },
+      "at": "2026-09-26T05:16:44.038694+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 297,
+      "reply_sha256": "21ad2deecafa6d7a5f1477a301ca017b7b45ae1228d3de182dbb1def0bd0e783"
+    },
+    {
+      "sequence": 237,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "CRO巨头"
+        }
+      },
+      "at": "2026-09-26T05:16:44.085458+00:00",
+      "http": 200,
+      "seconds": 0.044,
+      "wireBytes": 1047,
+      "reply_sha256": "4a8de2e55d1712f67711e299c97f3ecaaa84d69525c9da96c01066f1a08b3913"
+    },
+    {
+      "sequence": 238,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "联合化学"
+        }
+      },
+      "at": "2026-09-26T05:16:44.474673+00:00",
+      "http": 200,
+      "seconds": 0.387,
+      "wireBytes": 1849,
+      "reply_sha256": "5c9d2ecfdc5b6bd1b1492bef0eefcb3c581b152d598dd70f0e57096858470b87"
+    },
+    {
+      "sequence": 239,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "联合化学 减持"
+        }
+      },
+      "at": "2026-09-26T05:16:44.922801+00:00",
+      "http": 200,
+      "seconds": 0.446,
+      "wireBytes": 223,
+      "reply_sha256": "5d65c98193435d854df87a7168c805121dca9de74505041364a85d440a191bf0"
+    },
+    {
+      "sequence": 240,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "耐普矿机"
+        }
+      },
+      "at": "2026-09-26T05:16:45.338701+00:00",
+      "http": 200,
+      "seconds": 0.414,
+      "wireBytes": 2793,
+      "reply_sha256": "629272d1911da29f77cde0361bb2a977d908795d57c40f3857b0053cbd95c647"
+    },
+    {
+      "sequence": 241,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "耐普矿机"
+        }
+      },
+      "at": "2026-09-26T05:16:45.450163+00:00",
+      "http": 200,
+      "seconds": 0.11,
+      "wireBytes": 297,
+      "reply_sha256": "3af93699c06dcb6275117114cd56df2e308b2a7be67f084b74107cb50a8057c2"
+    },
+    {
+      "sequence": 242,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "思创医惠"
+        }
+      },
+      "at": "2026-09-26T05:16:45.846144+00:00",
+      "http": 200,
+      "seconds": 0.394,
+      "wireBytes": 223,
+      "reply_sha256": "02630af282a80b47b86c998c9e92f5e1f00609625b4e9191a8b9255e8a08fc0a"
+    },
+    {
+      "sequence": 243,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "汉嘉设计"
+        }
+      },
+      "at": "2026-09-26T05:16:46.234348+00:00",
+      "http": 200,
+      "seconds": 0.387,
+      "wireBytes": 223,
+      "reply_sha256": "002a06e679d883c7b97493ebb035e16650c94ec4238ee3f666e40dd68aa983c8"
+    },
+    {
+      "sequence": 244,
+      "method": "tools/call",
+      "params": {
+        "name": "list_flash",
+        "arguments": {
+          "cursor": "1790392530661"
+        }
+      },
+      "at": "2026-09-26T05:16:46.277251+00:00",
+      "http": 200,
+      "seconds": 0.038,
+      "wireBytes": 22251,
+      "reply_sha256": "58cc2668b4edef82ffe6a59ca6e85f0ddf838eab1d113f1546a2dd5ff663f785"
+    },
+    {
+      "sequence": 245,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "供应商"
+        }
+      },
+      "at": "2026-09-26T05:18:32.218345+00:00",
+      "http": 200,
+      "seconds": 0.55,
+      "wireBytes": 263255,
+      "reply_sha256": "7179c353fa152ba0fbbb1d2b1d7911a12889c1ec43db602c9d6c769c16452ef6"
+    },
+    {
+      "sequence": 246,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "供应商"
+        }
+      },
+      "at": "2026-09-26T05:18:32.268534+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 2939,
+      "reply_sha256": "09fced0c4e4aaf446e56fa1c3b3a1824a7d049a32adca15472d2c67968f8198e"
+    },
+    {
+      "sequence": 247,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "客户"
+        }
+      },
+      "at": "2026-09-26T05:18:32.760817+00:00",
+      "http": 200,
+      "seconds": 0.473,
+      "wireBytes": 235190,
+      "reply_sha256": "06814700eb9b14de1452ed8700272cfad195d691c2c3e027ff4aa138ebfc8471"
+    },
+    {
+      "sequence": 248,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "客户"
+        }
+      },
+      "at": "2026-09-26T05:18:32.796679+00:00",
+      "http": 200,
+      "seconds": 0.034,
+      "wireBytes": 3429,
+      "reply_sha256": "c16b86783a4e1d276969bfff352859e690039d9e8ec4dbaf477ca29b7f7ef398"
+    },
+    {
+      "sequence": 249,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "产能"
+        }
+      },
+      "at": "2026-09-26T05:18:33.282350+00:00",
+      "http": 200,
+      "seconds": 0.462,
+      "wireBytes": 263291,
+      "reply_sha256": "3a2996ffe50dab43a366de7c4a8a8800c6387187a6c5983347d693e01ffaf824"
+    },
+    {
+      "sequence": 250,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "产能"
+        }
+      },
+      "at": "2026-09-26T05:18:33.336156+00:00",
+      "http": 200,
+      "seconds": 0.05,
+      "wireBytes": 9611,
+      "reply_sha256": "f10f974e11d02bee4407387d0aa0f9459e5c667f8bb048425340b17cfeea3b67"
+    },
+    {
+      "sequence": 251,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "涨价"
+        }
+      },
+      "at": "2026-09-26T05:18:33.887719+00:00",
+      "http": 200,
+      "seconds": 0.522,
+      "wireBytes": 306694,
+      "reply_sha256": "f3c1914d7c5164a72e23f8a2d72c2103ec5742d7740ffb33cb064aedea89b455"
+    },
+    {
+      "sequence": 252,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "涨价"
+        }
+      },
+      "at": "2026-09-26T05:18:34.011802+00:00",
+      "http": 200,
+      "seconds": 0.118,
+      "wireBytes": 8889,
+      "reply_sha256": "3853ee9a45a6871f7c2bf3c03037ce549991f927e44ac51584b5fa3116d68d08"
+    },
+    {
+      "sequence": 253,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "停产"
+        }
+      },
+      "at": "2026-09-26T05:18:34.505686+00:00",
+      "http": 200,
+      "seconds": 0.453,
+      "wireBytes": 298476,
+      "reply_sha256": "32b13ab2eed84247122881b93413bafe932725b55e35081a5fd68c5a308a4f92"
+    },
+    {
+      "sequence": 254,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "停产"
+        }
+      },
+      "at": "2026-09-26T05:18:34.557471+00:00",
+      "http": 200,
+      "seconds": 0.048,
+      "wireBytes": 6531,
+      "reply_sha256": "f0b2583ff68f424f14293edb34b0a39098acadef684996362e080a6d585f9563"
+    },
+    {
+      "sequence": 255,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "获批"
+        }
+      },
+      "at": "2026-09-26T05:18:35.030641+00:00",
+      "http": 200,
+      "seconds": 0.441,
+      "wireBytes": 242623,
+      "reply_sha256": "b3195306b7eaddf92228c1d92be80eff566cdc0a17758b20c1a5090ce9534e5e"
+    },
+    {
+      "sequence": 256,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "获批"
+        }
+      },
+      "at": "2026-09-26T05:18:35.085126+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 1891,
+      "reply_sha256": "89ea2aae73301f713d0d44950f844375293af3f4b7a8c982f1449c6001329526"
+    },
+    {
+      "sequence": 257,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "并购"
+        }
+      },
+      "at": "2026-09-26T05:18:35.564260+00:00",
+      "http": 200,
+      "seconds": 0.446,
+      "wireBytes": 255359,
+      "reply_sha256": "466694a36195f1915f2e170da9f19aec771fc943a2827f5bbdb94ea8872f6d6b"
+    },
+    {
+      "sequence": 258,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "并购"
+        }
+      },
+      "at": "2026-09-26T05:18:35.606510+00:00",
+      "http": 200,
+      "seconds": 0.038,
+      "wireBytes": 3107,
+      "reply_sha256": "e08080e8c7669e811e2fcd76002ad6245fb25d4d674fa0fd2b355789b9a99e43"
+    },
+    {
+      "sequence": 259,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "诉讼"
+        }
+      },
+      "at": "2026-09-26T05:18:36.082481+00:00",
+      "http": 200,
+      "seconds": 0.441,
+      "wireBytes": 219298,
+      "reply_sha256": "861cdeb2a3ae2df74b9112825ce976eed24f417549e3d5ae0da6f4bd2292e1a6"
+    },
+    {
+      "sequence": 260,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "诉讼"
+        }
+      },
+      "at": "2026-09-26T05:18:36.130062+00:00",
+      "http": 200,
+      "seconds": 0.042,
+      "wireBytes": 1945,
+      "reply_sha256": "39906e6209df2e914d27579d5cf0da2c48f06ea35ea8494a2a8b13ca0aed53a2"
+    },
+    {
+      "sequence": 261,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "冻结"
+        }
+      },
+      "at": "2026-09-26T05:18:36.601399+00:00",
+      "http": 200,
+      "seconds": 0.435,
+      "wireBytes": 275607,
+      "reply_sha256": "2d7c66287f2e74b79484d664694cc3404620e4df36bfb538f51cada075e57e85"
+    },
+    {
+      "sequence": 262,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "冻结"
+        }
+      },
+      "at": "2026-09-26T05:18:36.647950+00:00",
+      "http": 200,
+      "seconds": 0.043,
+      "wireBytes": 4661,
+      "reply_sha256": "5e5727e8a80dd6b40e0779f3d81266ae2a8f5b9bb27add20c104444ebc22089f"
+    },
+    {
+      "sequence": 263,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "处罚"
+        }
+      },
+      "at": "2026-09-26T05:18:37.129728+00:00",
+      "http": 200,
+      "seconds": 0.444,
+      "wireBytes": 288126,
+      "reply_sha256": "25a18f1ee852986c9ac27bc9ebc025290c427a68ec441708f149f0749be9c29a"
+    },
+    {
+      "sequence": 264,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "处罚"
+        }
+      },
+      "at": "2026-09-26T05:18:37.172344+00:00",
+      "http": 200,
+      "seconds": 0.04,
+      "wireBytes": 297,
+      "reply_sha256": "98011a8744174f9ca39a8d519afd319b06a5eaea32baa4d4ad0d3d3d4d59deba"
+    },
+    {
+      "sequence": 265,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "退市"
+        }
+      },
+      "at": "2026-09-26T05:18:37.651259+00:00",
+      "http": 200,
+      "seconds": 0.438,
+      "wireBytes": 231981,
+      "reply_sha256": "6bc9ec3562527e9b8744ed82ccef78cbfec3951617c7efc6172ebf51a64e6ccf"
+    },
+    {
+      "sequence": 266,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "退市"
+        }
+      },
+      "at": "2026-09-26T05:18:37.697253+00:00",
+      "http": 200,
+      "seconds": 0.041,
+      "wireBytes": 1183,
+      "reply_sha256": "eeb27c36ab790e916360c148621a0980808924008e84a07c34f77716e598798b"
+    },
+    {
+      "sequence": 267,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "违约"
+        }
+      },
+      "at": "2026-09-26T05:18:38.185544+00:00",
+      "http": 200,
+      "seconds": 0.464,
+      "wireBytes": 202255,
+      "reply_sha256": "1395e9d04f299c7102504e8496c0c0c8b7066add84907d7ac989519967f7f267"
+    },
+    {
+      "sequence": 268,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "违约"
+        }
+      },
+      "at": "2026-09-26T05:18:38.226794+00:00",
+      "http": 200,
+      "seconds": 0.038,
+      "wireBytes": 2071,
+      "reply_sha256": "287ebf794d742d3be04fdf61384d4c701b3c4222bd1797a907cb7a0d3e7a988e"
+    },
+    {
+      "sequence": 269,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "政策"
+        }
+      },
+      "at": "2026-09-26T05:18:38.698905+00:00",
+      "http": 200,
+      "seconds": 0.434,
+      "wireBytes": 190970,
+      "reply_sha256": "08f52c9a063e318f9eb25bf9170c43493dc24fdfcfcd185ccff11313fb6d8673"
+    },
+    {
+      "sequence": 270,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "政策"
+        }
+      },
+      "at": "2026-09-26T05:18:38.748496+00:00",
+      "http": 200,
+      "seconds": 0.046,
+      "wireBytes": 8825,
+      "reply_sha256": "9e23e5c0347b45fc1c56f378c6a2bfb8d76ba15122226ccb23177eb229d0431e"
+    },
+    {
+      "sequence": 271,
+      "method": "tools/call",
+      "params": {
+        "name": "search_flash",
+        "arguments": {
+          "keyword": "回购"
+        }
+      },
+      "at": "2026-09-26T05:18:38.874705+00:00",
+      "http": 200,
+      "seconds": 0.086,
+      "wireBytes": 192146,
+      "reply_sha256": "801ce71eb6073d6ac42deb4c5be51ac51d74f3f842cbeae07cecac5603cae19b"
+    },
+    {
+      "sequence": 272,
+      "method": "tools/call",
+      "params": {
+        "name": "search_news",
+        "arguments": {
+          "keyword": "回购"
+        }
+      },
+      "at": "2026-09-26T05:18:38.930241+00:00",
+      "http": 200,
+      "seconds": 0.051,
+      "wireBytes": 8785,
+      "reply_sha256": "9fbd33082e26fb026d4f182393959158e8a6e0ae3d49690966b7cd09c720d970"
+    },
+    {
+      "sequence": 273,
+      "method": "tools/call",
+      "params": {
+        "name": "get_news",
+        "arguments": {
+          "id": "230994"
+        }
+      },
+      "at": "2026-09-26T05:18:39.006502+00:00",
+      "http": 200,
+      "seconds": 0.036,
+      "wireBytes": 36765,
+      "reply_sha256": "af4afd25bac556fdf97e68eb3014137fce47810a3174909d6992696dfff52f30"
+    }
+  ],
+  "quote_notes": {
+    "supported_code_count": 97,
+    "supports_examples": [
+      "XAUUSD",
+      "USOIL",
+      "COPPER",
+      "000001",
+      "399001",
+      "399006",
+      "000300"
+    ],
+    "absent_company_codes": [
+      "300436",
+      "300750",
+      "300308",
+      "601727"
+    ],
+    "get_kline_request_time": 1790363701,
+    "observed_kline_times": [
+      1790363700,
+      1790363640,
+      1790363580
+    ],
+    "note": "Schema says forward from time; observed three descending rows at/before time. Do not infer forward semantics without clarification."
+  },
+  "calendar_notes": {
+    "rows": 158,
+    "first_pub_time": "2026-09-21 07:01",
+    "last_pub_time": "2026-09-26 01:00",
+    "timezone_explicit": false,
+    "schema_scope": "current natural week"
+  },
+  "cleanup": {
+    "state": "complete",
+    "at_utc": "2026-09-26T05:23:45.848854+00:00",
+    "deleted_directory": "/tmp/neckline-jin10-audit-20260926-n_45ee_5",
+    "verified_owner_uid": 501,
+    "verified_open_handles": 0,
+    "before_bytes": 26865536,
+    "after_bytes": 0,
+    "deleted_file_count": 566,
+    "deleted_relative_paths": [
+      ".session.json",
+      ".token",
+      "__pycache__/probe.cpython-311.pyc",
+      "analyze.py",
+      "call-0001.json",
+      "call-0002.json",
+      "call-0003.json",
+      "call-0004.json",
+      "call-0005.json",
+      "call-0006.json",
+      "call-0007.json",
+      "call-0008.json",
+      "call-0009.json",
+      "call-0010.json",
+      "call-0011.json",
+      "call-0012.json",
+      "call-0013.json",
+      "call-0014.json",
+      "call-0015.json",
+      "call-0016.json",
+      "call-0017.json",
+      "call-0018.json",
+      "call-0019.json",
+      "call-0020.json",
+      "call-0021.json",
+      "call-0022.json",
+      "call-0023.json",
+      "call-0024.json",
+      "call-0025.json",
+      "call-0026.json",
+      "call-0027.json",
+      "call-0028.json",
+      "call-0029.json",
+      "call-0030.json",
+      "call-0031.json",
+      "call-0032.json",
+      "call-0033.json",
+      "call-0034.json",
+      "call-0035.json",
+      "call-0036.json",
+      "call-0037.json",
+      "call-0038.json",
+      "call-0039.json",
+      "call-0040.json",
+      "call-0041.json",
+      "call-0042.json",
+      "call-0043.json",
+      "call-0044.json",
+      "call-0045.json",
+      "call-0046.json",
+      "call-0047.json",
+      "call-0048.json",
+      "call-0049.json",
+      "call-0050.json",
+      "call-0051.json",
+      "call-0052.json",
+      "call-0053.json",
+      "call-0054.json",
+      "call-0055.json",
+      "call-0056.json",
+      "call-0057.json",
+      "call-0058.json",
+      "call-0059.json",
+      "call-0060.json",
+      "call-0061.json",
+      "call-0062.json",
+      "call-0063.json",
+      "call-0064.json",
+      "call-0065.json",
+      "call-0066.json",
+      "call-0067.json",
+      "call-0068.json",
+      "call-0069.json",
+      "call-0070.json",
+      "call-0071.json",
+      "call-0072.json",
+      "call-0073.json",
+      "call-0074.json",
+      "call-0075.json",
+      "call-0076.json",
+      "call-0077.json",
+      "call-0078.json",
+      "call-0079.json",
+      "call-0080.json",
+      "call-0081.json",
+      "call-0082.json",
+      "call-0083.json",
+      "call-0084.json",
+      "call-0085.json",
+      "call-0086.json",
+      "call-0087.json",
+      "call-0088.json",
+      "call-0089.json",
+      "call-0090.json",
+      "call-0091.json",
+      "call-0092.json",
+      "call-0093.json",
+      "call-0094.json",
+      "call-0095.json",
+      "call-0096.json",
+      "call-0097.json",
+      "call-0098.json",
+      "call-0099.json",
+      "call-0100.json",
+      "call-0101.json",
+      "call-0102.json",
+      "call-0103.json",
+      "call-0104.json",
+      "call-0105.json",
+      "call-0106.json",
+      "call-0107.json",
+      "call-0108.json",
+      "call-0109.json",
+      "call-0110.json",
+      "call-0111.json",
+      "call-0112.json",
+      "call-0113.json",
+      "call-0114.json",
+      "call-0115.json",
+      "call-0116.json",
+      "call-0117.json",
+      "call-0118.json",
+      "call-0119.json",
+      "call-0120.json",
+      "call-0121.json",
+      "call-0122.json",
+      "call-0123.json",
+      "call-0124.json",
+      "call-0125.json",
+      "call-0126.json",
+      "call-0127.json",
+      "call-0128.json",
+      "call-0129.json",
+      "call-0130.json",
+      "call-0131.json",
+      "call-0132.json",
+      "call-0133.json",
+      "call-0134.json",
+      "call-0135.json",
+      "call-0136.json",
+      "call-0137.json",
+      "call-0138.json",
+      "call-0139.json",
+      "call-0140.json",
+      "call-0141.json",
+      "call-0142.json",
+      "call-0143.json",
+      "call-0144.json",
+      "call-0145.json",
+      "call-0146.json",
+      "call-0147.json",
+      "call-0148.json",
+      "call-0149.json",
+      "call-0150.json",
+      "call-0151.json",
+      "call-0152.json",
+      "call-0153.json",
+      "call-0154.json",
+      "call-0155.json",
+      "call-0156.json",
+      "call-0157.json",
+      "call-0158.json",
+      "call-0159.json",
+      "call-0160.json",
+      "call-0161.json",
+      "call-0162.json",
+      "call-0163.json",
+      "call-0164.json",
+      "call-0165.json",
+      "call-0166.json",
+      "call-0167.json",
+      "call-0168.json",
+      "call-0169.json",
+      "call-0170.json",
+      "call-0171.json",
+      "call-0172.json",
+      "call-0173.json",
+      "call-0174.json",
+      "call-0175.json",
+      "call-0176.json",
+      "call-0177.json",
+      "call-0178.json",
+      "call-0179.json",
+      "call-0180.json",
+      "call-0181.json",
+      "call-0182.json",
+      "call-0183.json",
+      "call-0184.json",
+      "call-0185.json",
+      "call-0186.json",
+      "call-0187.json",
+      "call-0188.json",
+      "call-0189.json",
+      "call-0190.json",
+      "call-0191.json",
+      "call-0192.json",
+      "call-0193.json",
+      "call-0194.json",
+      "call-0195.json",
+      "call-0196.json",
+      "call-0197.json",
+      "call-0198.json",
+      "call-0199.json",
+      "call-0200.json",
+      "call-0201.json",
+      "call-0202.json",
+      "call-0203.json",
+      "call-0204.json",
+      "call-0205.json",
+      "call-0206.json",
+      "call-0207.json",
+      "call-0208.json",
+      "call-0209.json",
+      "call-0210.json",
+      "call-0211.json",
+      "call-0212.json",
+      "call-0213.json",
+      "call-0214.json",
+      "call-0215.json",
+      "call-0216.json",
+      "call-0217.json",
+      "call-0218.json",
+      "call-0219.json",
+      "call-0220.json",
+      "call-0221.json",
+      "call-0222.json",
+      "call-0223.json",
+      "call-0224.json",
+      "call-0225.json",
+      "call-0226.json",
+      "call-0227.json",
+      "call-0228.json",
+      "call-0229.json",
+      "call-0230.json",
+      "call-0231.json",
+      "call-0232.json",
+      "call-0233.json",
+      "call-0234.json",
+      "call-0235.json",
+      "call-0236.json",
+      "call-0237.json",
+      "call-0238.json",
+      "call-0239.json",
+      "call-0240.json",
+      "call-0241.json",
+      "call-0242.json",
+      "call-0243.json",
+      "call-0244.json",
+      "call-0245.json",
+      "call-0246.json",
+      "call-0247.json",
+      "call-0248.json",
+      "call-0249.json",
+      "call-0250.json",
+      "call-0251.json",
+      "call-0252.json",
+      "call-0253.json",
+      "call-0254.json",
+      "call-0255.json",
+      "call-0256.json",
+      "call-0257.json",
+      "call-0258.json",
+      "call-0259.json",
+      "call-0260.json",
+      "call-0261.json",
+      "call-0262.json",
+      "call-0263.json",
+      "call-0264.json",
+      "call-0265.json",
+      "call-0266.json",
+      "call-0267.json",
+      "call-0268.json",
+      "call-0269.json",
+      "call-0270.json",
+      "call-0271.json",
+      "call-0272.json",
+      "call-0273.json",
+      "check_gaps.py",
+      "cleanup_manifest.json",
+      "details.json",
+      "extend_matrix.py",
+      "final_checks.py",
+      "gap_checks.json",
+      "page_repeat.json",
+      "probe.py",
+      "public_page_checks.json",
+      "run_matrix.py",
+      "sample_companies.json",
+      "search_page2_半导体.json",
+      "search_page2_原油.json",
+      "searches.json",
+      "streams.json",
+      "summary.json",
+      "wire-0001.txt",
+      "wire-0002.txt",
+      "wire-0003.txt",
+      "wire-0004.txt",
+      "wire-0005.txt",
+      "wire-0006.txt",
+      "wire-0007.txt",
+      "wire-0008.txt",
+      "wire-0009.txt",
+      "wire-0010.txt",
+      "wire-0011.txt",
+      "wire-0012.txt",
+      "wire-0013.txt",
+      "wire-0014.txt",
+      "wire-0015.txt",
+      "wire-0016.txt",
+      "wire-0017.txt",
+      "wire-0018.txt",
+      "wire-0019.txt",
+      "wire-0020.txt",
+      "wire-0021.txt",
+      "wire-0022.txt",
+      "wire-0023.txt",
+      "wire-0024.txt",
+      "wire-0025.txt",
+      "wire-0026.txt",
+      "wire-0027.txt",
+      "wire-0028.txt",
+      "wire-0029.txt",
+      "wire-0030.txt",
+      "wire-0031.txt",
+      "wire-0032.txt",
+      "wire-0033.txt",
+      "wire-0034.txt",
+      "wire-0035.txt",
+      "wire-0036.txt",
+      "wire-0037.txt",
+      "wire-0038.txt",
+      "wire-0039.txt",
+      "wire-0040.txt",
+      "wire-0041.txt",
+      "wire-0042.txt",
+      "wire-0043.txt",
+      "wire-0044.txt",
+      "wire-0045.txt",
+      "wire-0046.txt",
+      "wire-0047.txt",
+      "wire-0048.txt",
+      "wire-0049.txt",
+      "wire-0050.txt",
+      "wire-0051.txt",
+      "wire-0052.txt",
+      "wire-0053.txt",
+      "wire-0054.txt",
+      "wire-0055.txt",
+      "wire-0056.txt",
+      "wire-0057.txt",
+      "wire-0058.txt",
+      "wire-0059.txt",
+      "wire-0060.txt",
+      "wire-0061.txt",
+      "wire-0062.txt",
+      "wire-0063.txt",
+      "wire-0064.txt",
+      "wire-0065.txt",
+      "wire-0066.txt",
+      "wire-0067.txt",
+      "wire-0068.txt",
+      "wire-0069.txt",
+      "wire-0070.txt",
+      "wire-0071.txt",
+      "wire-0072.txt",
+      "wire-0073.txt",
+      "wire-0074.txt",
+      "wire-0075.txt",
+      "wire-0076.txt",
+      "wire-0077.txt",
+      "wire-0078.txt",
+      "wire-0079.txt",
+      "wire-0080.txt",
+      "wire-0081.txt",
+      "wire-0082.txt",
+      "wire-0083.txt",
+      "wire-0084.txt",
+      "wire-0085.txt",
+      "wire-0086.txt",
+      "wire-0087.txt",
+      "wire-0088.txt",
+      "wire-0089.txt",
+      "wire-0090.txt",
+      "wire-0091.txt",
+      "wire-0092.txt",
+      "wire-0093.txt",
+      "wire-0094.txt",
+      "wire-0095.txt",
+      "wire-0096.txt",
+      "wire-0097.txt",
+      "wire-0098.txt",
+      "wire-0099.txt",
+      "wire-0100.txt",
+      "wire-0101.txt",
+      "wire-0102.txt",
+      "wire-0103.txt",
+      "wire-0104.txt",
+      "wire-0105.txt",
+      "wire-0106.txt",
+      "wire-0107.txt",
+      "wire-0108.txt",
+      "wire-0109.txt",
+      "wire-0110.txt",
+      "wire-0111.txt",
+      "wire-0112.txt",
+      "wire-0113.txt",
+      "wire-0114.txt",
+      "wire-0115.txt",
+      "wire-0116.txt",
+      "wire-0117.txt",
+      "wire-0118.txt",
+      "wire-0119.txt",
+      "wire-0120.txt",
+      "wire-0121.txt",
+      "wire-0122.txt",
+      "wire-0123.txt",
+      "wire-0124.txt",
+      "wire-0125.txt",
+      "wire-0126.txt",
+      "wire-0127.txt",
+      "wire-0128.txt",
+      "wire-0129.txt",
+      "wire-0130.txt",
+      "wire-0131.txt",
+      "wire-0132.txt",
+      "wire-0133.txt",
+      "wire-0134.txt",
+      "wire-0135.txt",
+      "wire-0136.txt",
+      "wire-0137.txt",
+      "wire-0138.txt",
+      "wire-0139.txt",
+      "wire-0140.txt",
+      "wire-0141.txt",
+      "wire-0142.txt",
+      "wire-0143.txt",
+      "wire-0144.txt",
+      "wire-0145.txt",
+      "wire-0146.txt",
+      "wire-0147.txt",
+      "wire-0148.txt",
+      "wire-0149.txt",
+      "wire-0150.txt",
+      "wire-0151.txt",
+      "wire-0152.txt",
+      "wire-0153.txt",
+      "wire-0154.txt",
+      "wire-0155.txt",
+      "wire-0156.txt",
+      "wire-0157.txt",
+      "wire-0158.txt",
+      "wire-0159.txt",
+      "wire-0160.txt",
+      "wire-0161.txt",
+      "wire-0162.txt",
+      "wire-0163.txt",
+      "wire-0164.txt",
+      "wire-0165.txt",
+      "wire-0166.txt",
+      "wire-0167.txt",
+      "wire-0168.txt",
+      "wire-0169.txt",
+      "wire-0170.txt",
+      "wire-0171.txt",
+      "wire-0172.txt",
+      "wire-0173.txt",
+      "wire-0174.txt",
+      "wire-0175.txt",
+      "wire-0176.txt",
+      "wire-0177.txt",
+      "wire-0178.txt",
+      "wire-0179.txt",
+      "wire-0180.txt",
+      "wire-0181.txt",
+      "wire-0182.txt",
+      "wire-0183.txt",
+      "wire-0184.txt",
+      "wire-0185.txt",
+      "wire-0186.txt",
+      "wire-0187.txt",
+      "wire-0188.txt",
+      "wire-0189.txt",
+      "wire-0190.txt",
+      "wire-0191.txt",
+      "wire-0192.txt",
+      "wire-0193.txt",
+      "wire-0194.txt",
+      "wire-0195.txt",
+      "wire-0196.txt",
+      "wire-0197.txt",
+      "wire-0198.txt",
+      "wire-0199.txt",
+      "wire-0200.txt",
+      "wire-0201.txt",
+      "wire-0202.txt",
+      "wire-0203.txt",
+      "wire-0204.txt",
+      "wire-0205.txt",
+      "wire-0206.txt",
+      "wire-0207.txt",
+      "wire-0208.txt",
+      "wire-0209.txt",
+      "wire-0210.txt",
+      "wire-0211.txt",
+      "wire-0212.txt",
+      "wire-0213.txt",
+      "wire-0214.txt",
+      "wire-0215.txt",
+      "wire-0216.txt",
+      "wire-0217.txt",
+      "wire-0218.txt",
+      "wire-0219.txt",
+      "wire-0220.txt",
+      "wire-0221.txt",
+      "wire-0222.txt",
+      "wire-0223.txt",
+      "wire-0224.txt",
+      "wire-0225.txt",
+      "wire-0226.txt",
+      "wire-0227.txt",
+      "wire-0228.txt",
+      "wire-0229.txt",
+      "wire-0230.txt",
+      "wire-0231.txt",
+      "wire-0232.txt",
+      "wire-0233.txt",
+      "wire-0234.txt",
+      "wire-0235.txt",
+      "wire-0236.txt",
+      "wire-0237.txt",
+      "wire-0238.txt",
+      "wire-0239.txt",
+      "wire-0240.txt",
+      "wire-0241.txt",
+      "wire-0242.txt",
+      "wire-0243.txt",
+      "wire-0244.txt",
+      "wire-0245.txt",
+      "wire-0246.txt",
+      "wire-0247.txt",
+      "wire-0248.txt",
+      "wire-0249.txt",
+      "wire-0250.txt",
+      "wire-0251.txt",
+      "wire-0252.txt",
+      "wire-0253.txt",
+      "wire-0254.txt",
+      "wire-0255.txt",
+      "wire-0256.txt",
+      "wire-0257.txt",
+      "wire-0258.txt",
+      "wire-0259.txt",
+      "wire-0260.txt",
+      "wire-0261.txt",
+      "wire-0262.txt",
+      "wire-0263.txt",
+      "wire-0264.txt",
+      "wire-0265.txt",
+      "wire-0266.txt",
+      "wire-0267.txt",
+      "wire-0268.txt",
+      "wire-0269.txt",
+      "wire-0270.txt",
+      "wire-0271.txt",
+      "wire-0272.txt",
+      "wire-0273.txt"
+    ],
+    "content_manifest_sha256": "4126f385a02aa472d0cb3f51c12c06a1d97b31d7664e175c9fd80f02057f69c8",
+    "retained": "Human report and compact evidence (queries, counts, hashes, source URLs); no token, MCP session identifier or full news corpus.",
+    "other_artifacts": "No matching task directory found in user temp; no cloud artifact created; no production file/state modified."
+  }
+}

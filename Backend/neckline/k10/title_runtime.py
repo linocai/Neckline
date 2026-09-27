@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -22,6 +23,23 @@ def _now() -> str:
 
 def _ref(document: DiscoveryDocument) -> dict[str, Any]:
     return {"documentId": document.document_id, "revision": document.revision}
+
+
+_COLLECTION_TITLE = re.compile(r"(?:公告精选|公告汇总|快讯汇总|新闻汇总|资讯合集|行业合集|要闻汇总|每日精选)")
+
+
+def _direct_body_reason(document: DiscoveryDocument) -> str | None:
+    """Body admission for inputs whose title cannot represent their events."""
+    metadata = document.metadata
+    kind = metadata.get("sourceKind") or metadata.get("contentKind")
+    title = metadata.get("title") or metadata.get("originalTitle")
+    if kind in {"raw_flash", "flash"} and (not isinstance(title, str) or not title.strip()):
+        if not (document.original_text or document.excerpt or "").strip():
+            raise TitleTriageProtocolError("无标题快讯缺少完整原文")
+        return "raw_flash 原文直接进入理解，未编造标题"
+    if kind == "collection" or (isinstance(title, str) and _COLLECTION_TITLE.search(title)):
+        return "合集主标题不能排除子事项，保留正文理解"
+    return None
 
 
 def _digest(value: Any) -> str:
@@ -165,6 +183,7 @@ def select_title_documents(
     guard: Callable[[], None] | None = None,
     progress: Callable[[Mapping[str, Any]], None] | None = None,
     known_subjects: Sequence[Mapping[str, Any]] = (),
+    concurrency_limit: int | None = None,
 ) -> tuple[DiscoveryDocument, ...]:
     """Freeze one immutable selection; resumption never acquires another quota.
 
@@ -179,6 +198,13 @@ def select_title_documents(
     if (isinstance(batch_concurrency, bool) or not isinstance(batch_concurrency, int)
             or batch_concurrency < 1):
         raise TitleTriageProtocolError("标题批次并发数无效")
+    if concurrency_limit is not None:
+        if isinstance(concurrency_limit, bool) or not isinstance(concurrency_limit, int) or concurrency_limit < 1:
+            raise TitleTriageProtocolError("标题调度并发上限无效")
+        # Morning discovery shares capacity with the parent-company reviews.
+        # This only narrows scheduling; the immutable policy, batches and
+        # paid-request identities remain exactly the same on continuation.
+        batch_concurrency = min(batch_concurrency, concurrency_limit)
     sources = tuple(sorted(documents, key=lambda doc: (doc.document_id, doc.revision)))
     input_refs = [_ref(doc) for doc in sources]
     by_ref = {(doc.document_id, doc.revision): doc for doc in sources}
@@ -189,7 +215,12 @@ def select_title_documents(
     duplicates = {(ref.document_id, ref.revision): (target.document_id, target.revision)
                   for ref, target in exact.duplicates.items()}
     titles = []
+    direct: list[tuple[DiscoveryDocument, str]] = []
     for document in exact.retained:
+        reason = _direct_body_reason(document)
+        if reason is not None:
+            direct.append((document, reason))
+            continue
         title = title_from_document_fields(
             document_id=document.document_id, revision=document.revision,
             source_key=document.metadata.get("sourceKey"), published_at=document.published_at,
@@ -339,11 +370,18 @@ def select_title_documents(
         batch_call=batch_call, reconcile_call=reconcile_call,
         batch_concurrency=batch_concurrency, checkpoint=progress, isolate_batch_failure=isolate_batch)
     final_items = selection.items
-    final_refs = tuple(item.ref for item in sorted(
+    selected_titles = tuple(item.ref for item in sorted(
         (item for item in final_items if item.disposition == "selected"),
         key=lambda item: item.selected_rank))
+    direct_refs = tuple((document.document_id, document.revision) for document, _ in direct)
+    final_refs = (*direct_refs, *selected_titles)
     batches = {title.ref: index // batch_size for index, title in enumerate(titles)}
     initial = {result.ref: result for result in selection.batch_results}
+    for rank, (document, reason) in enumerate(direct, start=1):
+        store.record_title_triage_item(task_id=task_id, document_id=document.document_id,
+            revision=document.revision, batch_index=0, disposition="protected",
+            matter_key="body-required", merged_ref=None, selection_rank=rank,
+            audit_reason=reason, created_at=_now(), db_path=db_path)
     for item in final_items:
         status = initial[item.ref].status
         disposition = ("no_value" if item.disposition == "no_value" else "merged" if item.disposition == "merged" else "protected" if status == "correction_or_denial"
@@ -352,12 +390,13 @@ def select_title_documents(
         store.record_title_triage_item(task_id=task_id, document_id=item.document_id, revision=item.revision,
             batch_index=batches[item.ref], disposition=disposition, matter_key=item.matter_key,
             merged_ref=None if item.merged_into is None else {"documentId": item.merged_into[0], "revision": item.merged_into[1]},
-            selection_rank=item.selected_rank, audit_reason=item.reason, created_at=_now(), db_path=db_path)
+            selection_rank=(item.selected_rank + len(direct) if item.selected_rank is not None else None),
+            audit_reason=item.reason, created_at=_now(), db_path=db_path)
     for ref, representative in duplicates.items():
-        if representative not in initial:
+        if representative not in initial and representative not in direct_refs:
             continue
         store.record_title_triage_item(task_id=task_id, document_id=ref[0], revision=ref[1],
-            batch_index=batches[representative], disposition="exact_duplicate", matter_key=None,
+            batch_index=batches.get(representative, 0), disposition="exact_duplicate", matter_key=None,
             merged_ref={"documentId": representative[0], "revision": representative[1]}, selection_rank=None,
             audit_reason="标题和正文完全相同，复用代表文章的筛选结果", created_at=_now(), db_path=db_path)
     selected_refs = [{"documentId": ref[0], "revision": ref[1]} for ref in final_refs]

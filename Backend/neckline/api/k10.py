@@ -1407,12 +1407,22 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             raise _not_found("原始资料不存在")
         if row[7] is None:
             body, next_cursor = None, None
+            content_kind = "excerpt" if isinstance(row[8], str) and row[8].strip() else "unavailable"
         else:
             text = _document_body(str(row[0]), row[7])
             body, next_cursor = text[offset:offset + limit], str(offset + limit) if offset + limit < len(text) else None
+            content_kind = "original"
+        metadata = _json(row[9], {})
+        event = metadata.get("eventTime") if isinstance(metadata, Mapping) else None
+        source_kind = metadata.get("sourceKind") if isinstance(metadata, Mapping) else None
+        if source_kind not in {"flash", "article"}:
+            source_kind = None
         return SourceDocumentPageOut(documentId=document_id, revision=int(row[3]), sourceKey=str(row[0]), externalId=str(row[1]), canonicalUrl=row[2],
-                                     title=_json(row[9], {}).get("title"), publishedAt=row[4], publishedPrecision=str(row[5]), fetchedAt=str(row[6]),
-                                     excerpt=row[8], body=body, page=PageMeta(nextCursor=next_cursor))
+                                     title=metadata.get("title"), originalTitle=metadata.get("originalTitle"),
+                                     originalPublishedText=metadata.get("originalPublishedText") or metadata.get("rawPubTime"),
+                                     sourceKind=source_kind, eventTime=event if isinstance(event, dict) else None,
+                                     publishedAt=row[4], publishedPrecision=str(row[5]), fetchedAt=str(row[6]),
+                                     excerpt=row[8], body=body, contentKind=content_kind, page=PageMeta(nextCursor=next_cursor))
 
     def v2_report_result(window, report_id, cursor, limit):
         from neckline.k10.v2_store import read_report
@@ -1425,13 +1435,54 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 raise _not_found("日报不存在")
             configured = configuration()
             ready = all(scope.state == "configured" for scope in configured.scopes)
-            return V2ReportEnvelope(schemaVersion=9, state="empty" if ready else "not_configured",
+            return V2ReportEnvelope(schemaVersion=10, state="empty" if ready else "not_configured",
                 reason=ApiFailure(reason="no_report" if ready else "not_configured", message="尚无日报" if ready else "今天没跑成 · 参数未配置"))
         delivery = report.get("delivery")
-        schema_version = 9 if (isinstance(delivery, Mapping)
-                                and delivery.get("contractVersion") == "k10-report-delivery-3.5.0-b78") or report.get("materials") is not None else 8
+        contract = delivery.get("contractVersion") if isinstance(delivery, Mapping) else None
+        if contract is None and report.get("status") in {"failed", "not_configured", "unavailable", "running", "queued", "retry_pending"}:
+            if any(report.get(key) for key in ("eveningCards", "updatedCards", "addedCards")):
+                raise _not_found("没有正式交付契约的内容不能作为推荐")
+            with _reader(db_path()) as conn:
+                row = conn.execute("SELECT error_json FROM k10_v2_report_runs WHERE report_id=?",
+                                   (report["reportId"],)).fetchone()
+            failure = _json(row[0], {}) if row else {}
+            if report["status"] == "retry_pending":
+                # This is the same new-start task waiting for its next slice,
+                # not an obsolete report. Keep durable status/error untouched.
+                return V2ReportEnvelope(schemaVersion=10, state="processing",
+                    report=V2ReportOut(**{**report, "status": "queued"}),
+                    reason=ApiFailure(reason=failure.get("reason") or "report_retry_pending",
+                                      message="报告等待继续处理"))
+            if report["status"] in {"running", "queued"}:
+                return V2ReportEnvelope(schemaVersion=10, state="processing", report=V2ReportOut(**report),
+                    reason=ApiFailure(reason="report_processing", message="报告正在处理中"))
+            return V2ReportEnvelope(schemaVersion=10,
+                state="not_configured" if report["status"] == "not_configured" else "failed",
+                report=V2ReportOut(**report), reason=ApiFailure(
+                    reason=failure.get("reason", report["status"]),
+                    message=failure.get("message", "今天没跑成 · 处理未完成")))
+        if contract != "k10-report-delivery-3.6.1-b92":
+            raise _not_found("B92 前报告已停用")
+        schema_version = 10
+        with _reader(db_path()) as conn:
+            coverage_row = conn.execute(
+                "SELECT s.coverage_json FROM k10_v2_report_runs r JOIN k10_scans s ON s.scan_id=r.scan_id "
+                "WHERE r.report_id=?", (report["reportId"],)
+            ).fetchone()
+        if coverage_row is not None:
+            scan_coverage = _json(coverage_row[0], {})
+            collected = scan_coverage.get("collectedInput") if isinstance(scan_coverage, Mapping) else None
+            if isinstance(collected, Mapping) and isinstance(collected.get("sourceCoverage"), Mapping):
+                report["sourceCoverage"] = dict(collected["sourceCoverage"])
         # Expand actual persisted source versions through the shared source DTO.
         refs = [ref for section in ("eveningCards", "updatedCards", "addedCards") for card in report[section] for ref in card["sourceRefs"]]
+        refs.extend(ref for section in ("eveningCards", "updatedCards", "addedCards") for card in report[section]
+                    for catalyst in card.get("catalysts", []) if isinstance(catalyst, Mapping)
+                    for ref in catalyst.get("sourceRefs", []) if isinstance(ref, Mapping))
+        review = report.get("morningReview")
+        if isinstance(review, Mapping):
+            refs.extend(ref for item in review.get("items", []) if isinstance(item, Mapping)
+                        for ref in item.get("sourceRefs", []) if isinstance(ref, Mapping))
         refs.extend(ref for change in report['lifecycleUpdates'] for ref in change['sourceRefs'])
         if isinstance(delivery, Mapping):
             refs.extend(ref for gap in delivery.get("gaps", []) if isinstance(gap, Mapping)
@@ -1443,6 +1494,15 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         for section in ("eveningCards", "updatedCards", "addedCards"):
             for card in report[section]:
                 card["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump() for ref in card["sourceRefs"]]
+                for catalyst in card.get("catalysts", []):
+                    if isinstance(catalyst, Mapping) and isinstance(catalyst.get("sourceRefs"), list):
+                        catalyst["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump()
+                                                  for ref in catalyst["sourceRefs"] if isinstance(ref, Mapping)]
+        if isinstance(review, Mapping):
+            for item in review.get("items", []):
+                if isinstance(item, Mapping) and isinstance(item.get("sourceRefs"), list):
+                    item["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump()
+                                          for ref in item["sourceRefs"] if isinstance(ref, Mapping)]
         for change in report['lifecycleUpdates']:
             change['sourceRefs'] = [_source_ref({**dict(ref), **dict(docs.get((ref.get('documentId'), ref.get('revision')), {}))}).model_dump() for ref in change['sourceRefs']]
         if isinstance(delivery, Mapping):

@@ -186,6 +186,21 @@ def test_real_writer_lock_releases_and_the_original_cli_task_completes_once(tmp_
         assert connection.execute(
             "SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','running','unknown')"
         ).fetchone()[0] == 0
+        # The lock is injected after an HTTP response is durably received but
+        # before its local input-usage audit can commit. Continuation must
+        # replay that exact receipt, write every audit row, and never turn the
+        # local SQLite wait into a semantic model failure.
+        audit_rows, audited_researches = connection.execute(
+            "SELECT count(*),count(DISTINCT item_key) FROM k10_v2_stage_input_usage "
+            "WHERE task_id=? AND operation='investigation_research_round'",
+            (flow.task_id,),
+        ).fetchone()
+        assert (audit_rows, audited_researches) == (84 * 2, 84)
+        assert connection.execute(
+            "SELECT count(*) FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND safe_error_code='model_execution_invalid'",
+            (flow.task_id,),
+        ).fetchone()[0] == 0
 
 
 def test_real_research_writer_lock_reaches_the_persistent_same_task_limit(tmp_path, monkeypatch):
@@ -201,7 +216,30 @@ def test_real_research_writer_lock_reaches_the_persistent_same_task_limit(tmp_pa
     attempts_after_worker: list[int] = []
     original_worker = fixture.run_once
     wire_inputs: list[bytes] = []
+    tavily_wire_inputs: list[bytes] = []
     original_respond = fixture.DeterministicTransport.respond
+    original_search_respond = fixture._TavilyWire.respond
+    original_tavily_settlement = store.settle_tavily_response_with_receipt
+    search_settlement_injected = False
+    search_settlement_observations: list[float] = []
+
+    def lock_first_received_search(**kwargs):
+        nonlocal search_settlement_injected
+        with gate:
+            should_lock = not search_settlement_injected
+            if should_lock:
+                search_settlement_injected = True
+        if should_lock:
+            # This is after the fixture Tavily wire returned its paid body.
+            # The gateway must retry only this atomic local settlement.
+            return _write_checkpoint_under_real_lock(
+                original_tavily_settlement, kwargs, search_settlement_observations)
+        return original_tavily_settlement(**kwargs)
+
+    def capture_search_wire(transport, request):
+        with gate:
+            tavily_wire_inputs.append(request.content)
+        return original_search_respond(transport, request)
 
     def capture_wire(transport, request):
         if transport._packet(request).get("action") == "research_round":
@@ -222,7 +260,23 @@ def test_real_research_writer_lock_reaches_the_persistent_same_task_limit(tmp_pa
         with gate:
             eligible = (kwargs.get("stage") == "model:investigation_research_round"
                         and kwargs.get("status") == "completed")
+            # The first paid research round can still be asking for evidence.
+            # Inject only after a sibling has durably reached a terminal
+            # research decision, so the partial-report assertion below tests
+            # an actual completed result rather than thread scheduling luck.
+            terminal_sibling = False
             if eligible and target_key is None:
+                with sqlite3.connect(kwargs["db_path"]) as connection:
+                    terminal_sibling = connection.execute(
+                        "SELECT 1 FROM k10_research_snapshot_revisions current "
+                        "WHERE current.task_id=? AND current.revision=("
+                        "SELECT MAX(latest.revision) FROM k10_research_snapshot_revisions latest "
+                        "WHERE latest.snapshot_id=current.snapshot_id) "
+                        "AND (current.execution_status<>'ok' "
+                        "OR current.research_status<>'continue_research') LIMIT 1",
+                        (kwargs["task_id"],),
+                    ).fetchone() is not None
+            if eligible and target_key is None and terminal_sibling:
                 target_key = kwargs["item_key"]
                 target_input = kwargs["input_sha256"]
             should_lock = eligible and kwargs["item_key"] == target_key and injected < 2
@@ -234,11 +288,15 @@ def test_real_research_writer_lock_reaches_the_persistent_same_task_limit(tmp_pa
 
     monkeypatch.setattr(fixture, "run_once", capture_worker)
     monkeypatch.setattr(fixture.DeterministicTransport, "respond", capture_wire)
+    monkeypatch.setattr(fixture._TavilyWire, "respond", capture_search_wire)
     monkeypatch.setattr(store, "record_execution_checkpoint", lock_each_research_completion)
+    monkeypatch.setattr(store, "settle_tavily_response_with_receipt", lock_first_received_search)
     flow = run_full_scale_flow(tmp_path, monkeypatch, name="persistent-research-lock",
                                expect_handler_failure=True, expected_continuation_codes=("sqlite_busy",))
     assert injected == len(observations) == 2
     assert all(duration >= sum(k10_schema._WRITE_BEGIN_BACKOFF_SECONDS) for duration in observations)
+    assert search_settlement_injected and len(search_settlement_observations) == 1
+    assert search_settlement_observations[0] >= sum(k10_schema._WRITE_BEGIN_BACKOFF_SECONDS)
     assert flow.task_status == "failed"
     assert flow.continuation_count == 1
     # Concurrent siblings can legitimately advance new inputs in the second
@@ -262,6 +320,13 @@ def test_real_research_writer_lock_reaches_the_persistent_same_task_limit(tmp_pa
         assert connection.execute(
             "SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','running','unknown')"
         ).fetchone() == (0,)
+        paid_search_count = connection.execute(
+            "SELECT count(*) FROM k10_external_attempts WHERE stage='search'"
+        ).fetchone()[0]
+        assert len(tavily_wire_inputs) == len(set(tavily_wire_inputs)) == paid_search_count
+        assert connection.execute(
+            "SELECT count(*) FROM k10_tavily_response_receipts"
+        ).fetchone()[0] == paid_search_count
         snapshot_statuses = connection.execute(
             "SELECT current.execution_status,current.research_status,count(*) FROM k10_research_snapshot_revisions current "
             "WHERE current.task_id=? AND current.revision=("
@@ -501,7 +566,11 @@ def test_morning_publication_waits_for_parent_owned_unsettled_attempt(tmp_path, 
     with write_connection(db_path) as conn:
         with pytest.raises(store.K10Conflict, match="未结算"):
             store.finish_task_with_publication(conn, task_id=parent_id, worker_id="parent-worker", stage="report_complete",
-                checkpoint={"scanId": scan_id}, finished_at=_NOW.isoformat())
+                # Supply a candidate terminal manifest so this isolated
+                # storage guard reaches the unsettled-attempt condition.
+                # A missing manifest must independently reject publication.
+                checkpoint={"scanId": scan_id, "delivery": {"outcome": "complete", "gaps": []}},
+                finished_at=_NOW.isoformat())
     assert store.get_task(task_id=parent_id, db_path=db_path).status == "running"
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT state FROM k10_external_attempts WHERE attempt_id=?",

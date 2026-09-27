@@ -10,7 +10,7 @@ from neckline.db import init_schema as init_shared_schema
 from neckline.k10 import store, verification
 from neckline.k10.delivery import runtime_contract
 from neckline.k10.discovery import ProviderThrottleYield
-from neckline.k10.schema import initialize_schema
+from neckline.k10.schema import SqliteWriteBusy, initialize_schema
 from neckline.k10.verification import TavilyEvidenceGateway
 from neckline.search.tavily import TavilySearchClient
 from tests.test_k10_verification import _bound_task, _event, _fetch_bound, NOW, COMPLETED_AT
@@ -143,6 +143,29 @@ def test_settlement_rolls_back_receipt_and_usage_together(tmp_path):
     # With no durable response the unknown paid call cannot be silently sent again.
     result = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
     assert result.state == "pending" and calls == ["/search"]
+
+
+def test_received_search_with_two_local_busy_settlements_remains_unknown_without_repost(tmp_path, monkeypatch):
+    path, _, gateway, calls, _, _ = setup_gateway(tmp_path)
+    settlement_attempts = 0
+
+    def blocked_settlement(**_kwargs):
+        nonlocal settlement_attempts
+        settlement_attempts += 1
+        raise SqliteWriteBusy("isolated receipt writer remains locked")
+
+    monkeypatch.setattr(store, "settle_tavily_response_with_receipt", blocked_settlement)
+    with pytest.raises(SqliteWriteBusy, match="writer remains locked"):
+        _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    assert settlement_attempts == 2 and calls == ["/search"]
+    assert rows(path, "k10_tavily_response_receipts") == []
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT state,search_requests,search_credits FROM k10_external_attempts").fetchone() == (
+            "started", None, None)
+    # A response known only to the interrupted process must not become a
+    # second paid wire after restart or a fresh gateway call.
+    pending = _fetch_bound(gateway, event=_event(), retrieved_at=NOW, cutoff_at=NOW)
+    assert pending.state == "pending" and calls == ["/search"]
 
 
 @pytest.mark.parametrize("corruption", ["payload", "ledger_credits", "ledger_state"])

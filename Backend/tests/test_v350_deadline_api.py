@@ -94,7 +94,7 @@ def test_morning_inflight_request_has_readonly_0920_result_from_real_producer(tm
                 before = client.get("/api/v1/k10/v2/reports/latest?window=morning")
                 assert before.status_code == 200
                 initial = before.json()
-                assert initial["schemaVersion"] == 9 and initial["reason"]["reason"] == "report_processing"
+                assert initial["schemaVersion"] == 10 and initial["reason"]["reason"] == "report_processing"
                 business_now[0] = deadline
                 response = client.get("/api/v1/k10/v2/reports/latest?window=morning")
                 assert response.status_code == 200

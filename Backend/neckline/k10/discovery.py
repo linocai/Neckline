@@ -398,11 +398,12 @@ class DiscoveryModel(Protocol):
     ) -> EventComparison:
         ...
 
-    def prioritize(self, *, candidates: Sequence["DiscoveryCandidate"]) -> Sequence[tuple[str, str]]:
-        """Return an evidence-grounded editorial order of ``(canonical_key, company_code)``.
+    def prioritize(self, *, candidates: Sequence["DiscoveryCandidate"]) -> Sequence[object]:
+        """Return selected companies and their retained catalyst identities.
 
-        This is not a score or probability.  The returned list must cover each distinct company
-        once, so no one company can consume several of the 30 evening places.
+        B90 choices are ``{companyCode, catalystKeys:[{canonicalKey, stageKey}]}``.
+        The protocol still accepts the older two-tuple form at the recovery
+        boundary, where it means the old all-catalysts company selection.
         """
         ...
 
@@ -472,6 +473,17 @@ def _require_recoverable_formal_ranks(frozen: Mapping[str, Any]) -> None:
             continue
         for row in rows:
             comparison = row.get("comparison") if isinstance(row, Mapping) else None
+            differences = comparison.get("differences") if isinstance(comparison, Mapping) else None
+            # B90 no longer manufactures an event-local rank.  Its final
+            # editor chooses an explicit company/catalyst subset after every
+            # natural-language assessment has completed, so a display position
+            # remains recoverable without pretending the assessment supplied a
+            # numeric ordering.  Older drafts still need their saved rank
+            # namespace because their public card semantics depend on it.
+            if (isinstance(differences, Mapping)
+                    and differences.get("recommendation") == "recommend"
+                    and isinstance(row.get("displayRank"), int)):
+                continue
             if (not isinstance(comparison, Mapping)
                     or comparison.get("rankNamespace") != "event"
                     or comparison.get("eventRank") != comparison.get("rank")
@@ -808,6 +820,7 @@ def run_discovery(
     understand_concurrency: int | None = None,
     document_batch_size: int | None = None,
     selected_source_refs: Sequence[EvidenceRef] | None = None,
+    source_ref_companions: Mapping[EvidenceRef, EvidenceRef] | None = None,
     investigate: InvestigationFunction | None = None,
     investigation_concurrency: int | None = None,
     research_input_checkpoint: Callable[[Sequence[EventDraft]], None] | None = None,
@@ -868,6 +881,12 @@ def run_discovery(
     source_refs_by_document: dict[EvidenceRef, set[EvidenceRef]] = {
         document.evidence_ref: {document.evidence_ref} for document in prepared_documents
     }
+    companions = source_ref_companions or {}
+    if any(body not in source_refs_by_document or not isinstance(parent, EvidenceRef)
+           for body, parent in companions.items()):
+        raise ValueError("正文与目录引用绑定无效")
+    for body, parent in companions.items():
+        source_refs_by_document[body].add(parent)
     for duplicate_ref, retained_ref in deduplication.duplicates.items():
         source_refs_by_document[retained_ref].add(duplicate_ref)
     screened_documents = prepared_documents
@@ -877,7 +896,7 @@ def run_discovery(
     register_documents = getattr(model, "register_documents", None)
     if callable(register_documents):
         register_documents(documents=prepared_documents)
-    available = {document.evidence_ref for document in documents}
+    available = {document.evidence_ref for document in documents} | set(companions.values())
     events: list[EventDraft] = []
     verified_events: list[EventVerification] = []
     all_candidates: list[DiscoveryCandidate] = []
@@ -1275,7 +1294,9 @@ def run_discovery(
                 disclosure = (comparison.differences.get("evidenceDisclosure")
                               if isinstance(comparison.differences, Mapping) else None)
                 completed_research_disclosure = False
-                if (isinstance(disclosure, Mapping) and comparison.differences.get("role") in {"primary", "alternative", "tied"}
+                if (isinstance(disclosure, Mapping) and (
+                        comparison.differences.get("recommendation") == "recommend"
+                        or comparison.differences.get("role") in {"primary", "alternative", "tied"})
                         and company_verification.state != "contradicted"):
                     try:
                         validate_evidence_disclosure(disclosure)
@@ -1296,8 +1317,9 @@ def run_discovery(
                     decision = {**decision, "kind": "needs_review", "reason": "重大反证尚待核实。" + decision["reason"]}
                 candidate = DiscoveryCandidate(event, company_verification, mapping, comparison, status, decision)
                 if decision["kind"] == "background":
-                    if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get('role') in {'pending', 'excluded'}:
-                        (pending if comparison.differences['role'] == 'pending' else excluded).append(candidate)
+                    if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get(
+                            'recommendation', comparison.differences.get('role')) in {'pending', 'exclude', 'excluded'}:
+                        (pending if comparison.differences.get('recommendation', comparison.differences.get('role')) == 'pending' else excluded).append(candidate)
                     else:
                         background.append(candidate)
                     continue
@@ -1327,11 +1349,17 @@ def run_discovery(
                     continue
                 if decision["kind"] not in NEW_KINDS:
                     updates.append(candidate)
-                    if configuration.get("configVersion") == "k10-v2" and decision["kind"] == "continuation" and status.eligible and comparison.differences.get("role") in {"primary", "alternative", "tied"} and comparison.rank is not None:
+                    if (configuration.get("configVersion") == "k10-v2" and decision["kind"] == "continuation"
+                            and status.eligible and (
+                                comparison.differences.get("recommendation") == "recommend"
+                                or comparison.differences.get("role") in {"primary", "alternative", "tied"})
+                            and (comparison.rank is not None or comparison.differences.get("recommendation") == "recommend")):
                         all_candidates.append(candidate)
                     continue
-                if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get('role') not in {'primary','alternative','tied'}:
-                    (pending if comparison.differences.get('role') == 'pending' else excluded).append(candidate)
+                if configuration.get('configVersion') == 'k10-v2' and not (
+                        comparison.differences.get('recommendation') == 'recommend'
+                        or comparison.differences.get('role') in {'primary', 'alternative', 'tied'}):
+                    (pending if comparison.differences.get('recommendation', comparison.differences.get('role')) == 'pending' else excluded).append(candidate)
                     continue
                 if status.eligible:
                     all_candidates.append(candidate)
@@ -1345,7 +1373,7 @@ def run_discovery(
     # admitted company. Continuations have already been separated from the new-company quota.
     # An empty formal set is a normal outcome: events, pending evidence, exclusions and
     # continuation/risk updates must still persist without spending a model call on ordering.
-    ordered_keys: tuple[tuple[str, str], ...] = ()
+    ordered_keys: tuple[object, ...] = ()
     if event_admission_closed:
         # Ranking is itself a provider operation.  Prior verified candidates remain
         # visible as pending work rather than consuming a final unreserved call.
@@ -1368,20 +1396,14 @@ def run_discovery(
         choices = getattr(model, "prioritize", None)
         if not callable(choices):
             raise ValueError("发现模型缺少跨事件公司比较")
-        # One company can retain several independently useful catalysts.  The
-        # final global ordering is nevertheless a company ordering, so choose
-        # a deterministic representative before asking the model to rank. The
-        # peer catalysts are reattached below under the representative's rank.
-        # This prevents a valid cross-event aggregation from becoming a whole
-        # report failure merely because a transport echoes the same company
-        # once for each catalyst.
+        # The final editor sees every useful catalyst under each company.  It
+        # may legitimately retain a subset, or return no companies at all;
+        # a report is not a quota-filling exercise.
         rank_inputs_by_company: dict[str, list[DiscoveryCandidate]] = {}
         for candidate in all_candidates:
             rank_inputs_by_company.setdefault(candidate.mapping.company_code, []).append(candidate)
-        rank_inputs = tuple(
-            min(values, key=lambda item: (item.event.canonical_key, item.event.stage_key))
-            for _company, values in sorted(rank_inputs_by_company.items())
-        )
+        rank_inputs = tuple(candidate for _company, values in sorted(rank_inputs_by_company.items())
+                            for candidate in sorted(values, key=lambda item: (item.event.canonical_key, item.event.stage_key)))
         try:
             if finalization_guard is not None:
                 finalization_guard()
@@ -1403,47 +1425,93 @@ def run_discovery(
     unique_by_company: dict[str, list[DiscoveryCandidate]] = {}
     for candidate in all_candidates:
         unique_by_company.setdefault(candidate.mapping.company_code, []).append(candidate)
-    expected = {(min(items, key=lambda item: (item.event.canonical_key, item.event.stage_key)).event.canonical_key, company)
-                for company, items in unique_by_company.items()}
-    selected_by_key: dict[tuple[str, str], DiscoveryCandidate] = {
-        (min(items, key=lambda item: (item.event.canonical_key, item.event.stage_key)).event.canonical_key, company):
-        min(items, key=lambda item: (item.event.canonical_key, item.event.stage_key))
-        for company, items in unique_by_company.items()
+    candidate_by_key: dict[tuple[str, str, str], DiscoveryCandidate] = {
+        (candidate.mapping.company_code, candidate.event.canonical_key, candidate.event.stage_key): candidate
+        for candidate in all_candidates
     }
+    # ``ordered`` preserves the model's editorial company order; the nested
+    # list is the exact retained catalyst subset for that company.  Old tuple
+    # receipts retain their former meaning (one anchor selected every peer),
+    # solely so paid B78 recovery stays byte-compatible.
+    ordered: list[tuple[str, list[DiscoveryCandidate]]] = []
     selected_companies: set[str] = set()
-    ordered: list[DiscoveryCandidate] = []
-    for key in ordered_keys:
-        # The global model is allowed to be verbose.  A row which does not
-        # name one of this frozen ranking's real event/company anchors cannot
-        # improve a candidate and must not turn an otherwise complete order
-        # into a zero-card report.  Likewise, retain the first *valid* row for
-        # a company: a duplicate has no additional business meaning.  This is
-        # deliberately before the completeness check below; a missing real
-        # company still blocks publication.
-        if not isinstance(key, tuple) or len(key) != 2 or key not in expected:
+    invalid_rows = 0
+    for choice in ordered_keys:
+        if isinstance(choice, Mapping):
+            company = choice.get("companyCode")
+            keys = choice.get("catalystKeys")
+            if not isinstance(company, str) or not company or not isinstance(keys, list) or not keys:
+                invalid_rows += 1
+                continue
+            retained: list[DiscoveryCandidate] = []
+            seen_catalysts: set[tuple[str, str]] = set()
+            for raw_key in keys:
+                if not isinstance(raw_key, Mapping):
+                    invalid_rows += 1
+                    continue
+                canonical_key, stage_key = raw_key.get("canonicalKey"), raw_key.get("stageKey")
+                if not isinstance(canonical_key, str) or not canonical_key or not isinstance(stage_key, str) or not stage_key:
+                    invalid_rows += 1
+                    continue
+                candidate = candidate_by_key.get((company, canonical_key, stage_key))
+                if candidate is None:
+                    invalid_rows += 1
+                    continue
+                identity = (canonical_key, stage_key)
+                if identity not in seen_catalysts:
+                    seen_catalysts.add(identity)
+                    retained.append(candidate)
+            if not retained:
+                invalid_rows += 1
+                continue
+        elif isinstance(choice, tuple) and len(choice) == 2 and all(isinstance(value, str) and value for value in choice):
+            canonical_key, company = choice
+            anchors = [candidate for candidate in unique_by_company.get(company, ())
+                       if candidate.event.canonical_key == canonical_key]
+            if not anchors:
+                invalid_rows += 1
+                continue
+            retained = list(unique_by_company[company])
+        else:
+            invalid_rows += 1
             continue
-        candidate = selected_by_key[key]
-        company = candidate.mapping.company_code
         if company in selected_companies:
+            # A duplicate cannot consume another card position.  Its extra
+            # catalysts are not merged in silently because the first choice is
+            # the frozen editorial selection.
             continue
         selected_companies.add(company)
-        ordered.append(candidate)
-    if selected_companies != set(unique_by_company):
-        raise ValueError("跨事件公司比较必须覆盖每个有证据公司")
-    # Morning offers every distinct new company for the user to decide on; no old candidate is
-    # overwritten.  Evening keeps the fixed maximum of 30 distinct companies.
+        ordered.append((company, retained))
+    if ordered_keys and not ordered:
+        # Do not relabel a non-empty malformed finalization as a normal zero
+        # recommendation.  It is an execution failure with a recoverable
+        # frozen input/receipt boundary.
+        raise ValueError("跨事件公司整理未返回任何有效选择")
+    # A normal ``choices: []`` has no missing company and produces a complete
+    # zero-recommendation delivery.  Unselected candidates remain durable
+    # research facts, but never become cards, windows or samples.
     selected: list[DiscoveryCandidate] = []
     deferred: list[DiscoveryCandidate] = []
-    for index, lead in enumerate(ordered, start=1):
-        peers = unique_by_company[lead.mapping.company_code]
+    for index, (_company, retained) in enumerate(ordered, start=1):
         seen_keys: set[str] = set()
-        for candidate in (lead, *(item for item in peers if item is not lead)):
+        for candidate in retained:
             key = str(candidate.opportunity["opportunityKey"])
             if key in seen_keys:
                 continue
             seen_keys.add(key)
             ranked = replace(candidate, display_rank=index)
             (deferred if phase == "evening" and index > max_evening_candidates else selected).append(ranked)
+    selected_identities = {
+        (candidate.mapping.company_code, candidate.event.canonical_key, candidate.event.stage_key)
+        for candidate in (*selected, *deferred)
+    }
+    # A final editor's omission is a normal conclusion, but the established
+    # event/company research must survive for materials, audit and a later
+    # related fact.  It is deliberately not a formal candidate/window/sample.
+    for candidate in all_candidates:
+        identity = (candidate.mapping.company_code, candidate.event.canonical_key, candidate.event.stage_key)
+        if identity not in selected_identities:
+            background.append(candidate)
     state = "partial" if issues else "completed"
     return DiscoveryRun(state, config, tuple(events), tuple(verified_events), tuple(selected), tuple(deferred),
                         tuple(pending), tuple(excluded), len({item.mapping.company_code for item in deferred}), tuple(updates), tuple(background),
@@ -1566,7 +1634,11 @@ class SqliteDiscoveryWriter:
             event_id=event.event_id, event_revision=event.revision,
             opportunity_key=str(candidate.opportunity["opportunityKey"]),
             catalyst_stage=candidate.event.stage_key,
-            category=str(candidate.comparison.differences["role"]),
+            # Formal sample category is program-owned publication state.  B90
+            # does not ask the researcher to restate it alongside the natural
+            # recommendation conclusion.
+            category=("primary" if candidate.comparison.differences.get("recommendation") == "recommend"
+                      else str(candidate.comparison.differences["role"])),
             comparison=comparison, evidence_refs=tuple(self._refs(candidate.comparison.evidence_refs)),
             source_marker="new", related_opportunity_id=candidate.opportunity.get("relatedOpportunityId"),
             display_rank=candidate.display_rank,

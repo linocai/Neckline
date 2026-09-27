@@ -43,6 +43,19 @@ struct K10DailyReportResponse: Codable, Equatable {
     let state: String
     let reason: K10Failure?
     var report: K10DailyReport?
+
+    var isReadableByCurrentApp: Bool {
+        guard schemaVersion == 10 else { return false }
+        guard let report else { return true }
+        if let delivery = report.delivery { return delivery.isReadableByCurrentApp }
+        // A new run can expose its current processing/failure state before
+        // formal delivery exists. No delivery-free state may carry cards.
+        guard report.eveningCards.isEmpty && report.updatedCards.isEmpty && report.addedCards.isEmpty else {
+            return false
+        }
+        if state == "processing" { return ["running", "queued"].contains(report.status) }
+        return ["failed", "not_configured"].contains(state)
+    }
 }
 
 struct K10DailyReport: Codable, Identifiable, Equatable {
@@ -70,6 +83,16 @@ struct K10DailyReport: Codable, Identifiable, Equatable {
     var materials: K10ReportMaterials? = nil
     var resultAvailableAt: String? = nil
     var deliveryDeadlineAt: String? = nil
+    /// Schema 10 distinguishes a complete, intentional empty selection from an
+    /// unfinished discovery run. Historical reports did not persist this truth.
+    var discovery: K10ReportDiscovery? = nil
+    /// B92 freezes the collection coverage seen by this report. Older reports
+    /// have no such snapshot, so absence must remain visible as unknown.
+    var sourceCoverage: K10ReportSourceCoverage? = nil
+    /// Morning reports retain every frozen parent-report target here. It is
+    /// intentionally separate from new cards: a completed review may find no
+    /// material change, and an unfinished review must remain visible.
+    var morningReview: K10MorningReview? = nil
     var id: String { reportId }
 }
 
@@ -112,6 +135,8 @@ struct K10ReportMaterialsPage: Codable, Equatable {
     let reportId: String
     var items: [K10ReportMaterial]
     var page: K10Page
+
+    var isReadableByCurrentApp: Bool { schemaVersion == 10 }
 }
 
 struct K10ReportDeliveryCounts: Codable, Equatable {
@@ -151,11 +176,47 @@ struct K10ReportDelivery: Codable, Equatable {
     let eligibleSetSha256: String
     let rankingInputSha256: String?
 
-    /// The B78 application reads the last public delivery contract and its own new contract.
-    /// A future contract must be presented as unknown until it has an explicit client mapping.
+    /// B92 starts with a fresh business database. Earlier delivery contracts belong
+    /// to the retired data set and must not become readable through this client.
     var isReadableByCurrentApp: Bool {
-        ["k10-report-delivery-3.4.0-b76", "k10-report-delivery-3.5.0-b78"].contains(contractVersion)
+        contractVersion == "k10-report-delivery-3.6.1-b92"
     }
+}
+
+/// The discovery result answers a product question, rather than inferring it
+/// from a non-empty card list. `no_recommendation` is valid only after a
+/// complete selection pass; `not_completed` must never be shown as a quiet day.
+struct K10ReportDiscovery: Codable, Equatable {
+    let state: String
+    let outcome: String
+    let companyCount: Int
+    let reasonCodes: [String]
+}
+
+/// The morning review channel is independent from overnight discovery. Its
+/// counts derive from the frozen parent report, not from the number of cards
+/// that happened to be published this morning.
+struct K10MorningReview: Codable, Equatable {
+    let state: String
+    let parentReportId: String?
+    let targetCompanyCount: Int
+    let targetReasonCount: Int
+    let items: [K10MorningReviewItem]
+}
+
+struct K10MorningReviewItem: Codable, Identifiable, Equatable {
+    let reviewId: String
+    let parentCardId: String?
+    let companyCode: String
+    let companyName: String?
+    let opportunityIds: [String]
+    let unreviewedOpportunityIds: [String]
+    let status: String
+    let outcome: String
+    let analysisText: String?
+    let checkedScope: String?
+    let sourceRefs: [K10SourceReference]
+    var id: String { reviewId }
 }
 
 struct K10IncompleteReview: Codable, Identifiable, Equatable {
@@ -227,13 +288,50 @@ struct K10CardCatalyst: Codable, Identifiable, Equatable {
     let classification: String
     let verificationStatus: String
     var lifecycleState: String? = nil
+    /// B90's natural language explanation stays with this catalyst rather than
+    /// being reduced to the card's legacy summary during aggregation.
+    var analysisText: String? = nil
+    /// These references are the exact sources used by this catalyst. Old cards
+    /// only have their card-level references and remain readable as history.
+    var sourceRefs: [K10SourceReference]? = nil
     var id: String { "\(eventId)#\(eventRevision)#\(opportunityId ?? companyWindowId)" }
 }
 struct K10SourceReference: Codable, Identifiable, Equatable {
     let documentId: String?; let factId: String?; let companyCode: String?; let tradeDate: String?; let revision: Int?; let sourceKey: String?; let title: String?; let url: String?
     let excerpt: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String?
     var collectedAt: String? = nil
+    var sourceKind: String? = nil
+    var originalTitle: String? = nil
+    var eventTime: K10EventTime? = nil
     var id: String { "\(factId ?? documentId ?? url ?? sourceKey ?? title ?? "source")#\(revision.map(String.init) ?? "unversioned")#\(tradeDate ?? publishedAt ?? fetchedAt ?? "undated")" }
+}
+struct K10EventTime: Codable, Equatable {
+    let value: String
+    let precision: String
+    let basisRef: String?
+}
+struct K10ReportCoverageGap: Codable, Equatable, Identifiable {
+    let startAt: String?
+    let endAt: String?
+    let reasonCode: String
+    var id: String { "\(startAt ?? "?")#\(endAt ?? "?")#\(reasonCode)" }
+}
+struct K10ReportCoverageSource: Codable, Equatable, Identifiable {
+    let sourceKey: String
+    let state: String
+    let requestedStartAt: String?
+    let requestedEndAt: String?
+    let coverageThrough: String?
+    let observedStartAt: String?
+    let observedEndAt: String?
+    let gaps: [K10ReportCoverageGap]
+    let limitations: [String]
+    var id: String { sourceKey }
+}
+struct K10ReportSourceCoverage: Codable, Equatable {
+    let inputFrozenAt: String?
+    let collectionTaskIds: [String]
+    let sources: [K10ReportCoverageSource]
 }
 struct K10Evidence: Codable, Identifiable, Equatable { let sourceRef: K10SourceReference; let claim: String; let relation: String?; let uncertainty: String?; var id: String { "\(sourceRef.id)#\(claim)" } }
 /// Optional only because B36/B38 history predates the B39 disclosure contract.
@@ -446,7 +544,57 @@ struct K10ResultsCohort: Codable, Identifiable, Equatable { let batchId: String;
 struct K10ResultsEventGroup: Codable, Identifiable, Equatable { let eventId: String; let headline: String?; let companyWindowIds: [String]; let opportunityIds: [String]; let companySampleCount: Int; let catalystCount: Int; let primary: [String: K10EvaluationMetrics]; var overlap: K10EvaluationMetrics? = nil; var id: String { eventId } }
 struct K10Results: Codable, Equatable { let schemaVersion: String; let state: String; let reason: K10Failure?; let asOf: String?; let primary: [String: K10EvaluationMetrics]; let overlap: K10EvaluationMetrics; let records: [K10Evaluation]; let cohorts: [K10ResultsCohort]?; let eventGroups: [K10ResultsEventGroup]?; var configurationState: String? = nil; var configurationMissing: [String]? = nil; var configurationErrors: [String]? = nil; var strategyVersion: String? = nil }
 
-struct K10DocumentPage: Codable, Equatable, Identifiable { let schemaVersion: String; let documentId: String; let revision: Int; let sourceKey: String; let externalId: String; let canonicalUrl: String?; let title: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String; let excerpt: String?; let body: String?; let page: K10Page; var id: String { "\(documentId)-\(revision)" } }
+struct K10DocumentPage: Codable, Equatable, Identifiable { let schemaVersion: String; let documentId: String; let revision: Int; let sourceKey: String; let externalId: String; let canonicalUrl: String?; let title: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String; let excerpt: String?; let body: String?; let page: K10Page; var contentKind: String? = nil; var sourceKind: String? = nil; var originalTitle: String? = nil; var originalPublishedText: String? = nil; var eventTime: K10EventTime? = nil; var id: String { "\(documentId)-\(revision)" } }
+struct K10CollectionConfiguration: Codable, Equatable {
+    let state: String
+    let configId: String?
+    let revision: Int?
+    let missing: [String]
+}
+struct K10CollectionControl: Codable, Equatable {
+    let state: String
+    let reasonCode: String?
+    let changedAt: String?
+}
+struct K10CollectionSourceStatus: Codable, Equatable, Identifiable {
+    let sourceKey: String
+    let state: String
+    let lastSuccessAt: String?
+    let coverageThrough: String?
+    let observedStartAt: String?
+    let observedEndAt: String?
+    let limitations: [String]
+    let credentialConfigured: Bool
+    var id: String { sourceKey }
+}
+struct K10CollectionSourceOutcome: Codable, Equatable, Identifiable {
+    let sourceKey: String
+    let state: String
+    let coverageThrough: String?
+    let observedStartAt: String?
+    let observedEndAt: String?
+    let limitations: [String]
+    var id: String { sourceKey }
+}
+struct K10CollectionRun: Codable, Equatable, Identifiable {
+    let taskId: String
+    let slotAt: String?
+    let status: String
+    let stage: String?
+    let startedAt: String?
+    let completedAt: String?
+    let sourceOutcomes: [K10CollectionSourceOutcome]
+    var id: String { taskId }
+}
+struct K10CollectionStatus: Codable, Equatable {
+    let schemaVersion: String
+    let configuration: K10CollectionConfiguration
+    let control: K10CollectionControl
+    let sources: [K10CollectionSourceStatus]
+    let activeTasks: [K10CollectionRun]
+    let latestRuns: [K10CollectionRun]
+}
+struct K10CollectionControlRequest: Encodable { let state: String }
 struct K10UsageTotals: Codable, Equatable { let calls: Int; let failed: Int; let usageUnavailable: Int; let promptTokens: Int?; let completionTokens: Int?; let totalTokens: Int?; let tavilyCredits: Int?; let durationMs: Int? }
 struct K10UsageDay: Codable, Equatable { let date: String; let totals: K10UsageTotals }
 struct K10UsageSummary: Codable, Equatable { let days: [K10UsageDay]; let totals: K10UsageTotals }

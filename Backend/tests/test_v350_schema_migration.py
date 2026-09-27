@@ -48,44 +48,21 @@ def _paid_historical_schema9(tmp_path: Path) -> tuple[Path, tuple[tuple[str, ...
     return db, task_rows, receipt_rows
 
 
-def test_schema9_forwards_to_10_without_rewriting_paid_ledger_rows(tmp_path):
-    db, before_tasks, before_receipts = _paid_historical_schema9(tmp_path)
-
-    assert schema.initialize_schema(db) == 10
-    assert schema.schema_version(db) == 10
+def test_pre_b92_schema9_cannot_forward_or_read_paid_history(tmp_path):
+    db, _tasks, _receipts = _paid_historical_schema9(tmp_path)
+    # Explicit historical snapshot has no new-start identity, regardless of
+    # how this isolated test originally constructed its schema and paid rows.
     with sqlite3.connect(db) as conn:
-        assert tuple(conn.execute(
-            "SELECT task_id,input_version,payload_json FROM k10_tasks ORDER BY task_id"
-        )) == before_tasks
-        assert tuple(conn.execute(
-            "SELECT attempt_id,task_id,request_sha256,payload_json,payload_sha256,received_at "
-            "FROM k10_model_response_receipts ORDER BY attempt_id"
-        )) == before_receipts
-        assert {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?,?)", _V10_TABLES
-        )} == set(_V10_TABLES)
-
-
-def test_schema9_to_10_failure_rolls_back_extensions_and_paid_ledger(tmp_path, monkeypatch):
-    db, before_tasks, before_receipts = _paid_historical_schema9(tmp_path)
-    original = schema._apply_v10
-
-    def interrupted(conn):
-        original(conn)
-        raise RuntimeError("injected b78 migration interruption")
-
-    monkeypatch.setattr(schema, "_apply_v10", interrupted)
-    with pytest.raises(RuntimeError, match="interruption"):
+        conn.execute("PRAGMA application_id=0")
+    from neckline.fresh_start import RetiredDataError
+    with pytest.raises(RetiredDataError):
         schema.initialize_schema(db)
-    with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (9,)
-        assert tuple(conn.execute(
-            "SELECT task_id,input_version,payload_json FROM k10_tasks ORDER BY task_id"
-        )) == before_tasks
-        assert tuple(conn.execute(
-            "SELECT attempt_id,task_id,request_sha256,payload_json,payload_sha256,received_at "
-            "FROM k10_model_response_receipts ORDER BY attempt_id"
-        )) == before_receipts
-        assert not {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?,?)", _V10_TABLES
-        )}
+    with pytest.raises(RetiredDataError):
+        with schema.read_connection(db):
+            pytest.fail("retired paid history exposed")
+
+
+def test_marked_noncurrent_schema_is_not_silently_migrated(tmp_path):
+    db, _tasks, _receipts = _paid_historical_schema9(tmp_path)
+    with pytest.raises(schema.SchemaUnavailable, match="旧版本迁移已退役"):
+        schema.initialize_schema(db)

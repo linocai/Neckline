@@ -13,8 +13,15 @@ from typing import Any, Mapping, Sequence
 
 LEGACY_REPORT_DELIVERY_CONTRACT = "k10-report-delivery-3.4.0-b76"
 LEGACY_RESEARCH_CONTRACT = "k10-research-3.4.0-b76"
-REPORT_DELIVERY_CONTRACT = "k10-report-delivery-3.5.0-b78"
-RESEARCH_CONTRACT = "k10-research-3.5.0-b78"
+# B78 remains a read/recovery boundary.  New work deliberately receives a
+# distinct contract rather than silently changing the meaning of an already
+# frozen task or report.
+B78_REPORT_DELIVERY_CONTRACT = "k10-report-delivery-3.5.0-b78"
+B78_RESEARCH_CONTRACT = "k10-research-3.5.0-b78"
+B90_REPORT_DELIVERY_CONTRACT = "k10-report-delivery-3.6.0-b90"
+B90_RESEARCH_CONTRACT = "k10-research-3.6.0-b90"
+REPORT_DELIVERY_CONTRACT = "k10-report-delivery-3.6.1-b92"
+RESEARCH_CONTRACT = "k10-research-3.6.1-b92"
 
 
 def canonical_json(value: Any) -> str:
@@ -38,6 +45,10 @@ def is_b76_runtime_contract(value: object) -> bool:
     """
     return isinstance(value, Mapping) and dict(value) in (
         runtime_contract(),
+        {"reportDelivery": B90_REPORT_DELIVERY_CONTRACT,
+         "research": B90_RESEARCH_CONTRACT},
+        {"reportDelivery": B78_REPORT_DELIVERY_CONTRACT,
+         "research": B78_RESEARCH_CONTRACT},
         {"reportDelivery": LEGACY_REPORT_DELIVERY_CONTRACT,
          "research": LEGACY_RESEARCH_CONTRACT},
     )
@@ -108,5 +119,5 @@ def delivery_manifest(*, outcome: str, ranking_scope: str, counts: Mapping[str, 
     }
 
 
-__all__ = ["LEGACY_REPORT_DELIVERY_CONTRACT", "LEGACY_RESEARCH_CONTRACT", "REPORT_DELIVERY_CONTRACT", "RESEARCH_CONTRACT", "canonical_json", "delivery_gap",
+__all__ = ["LEGACY_REPORT_DELIVERY_CONTRACT", "LEGACY_RESEARCH_CONTRACT", "B78_REPORT_DELIVERY_CONTRACT", "B78_RESEARCH_CONTRACT", "REPORT_DELIVERY_CONTRACT", "RESEARCH_CONTRACT", "canonical_json", "delivery_gap",
            "delivery_manifest", "digest", "is_b76_runtime_contract", "is_current_runtime_contract", "runtime_contract"]

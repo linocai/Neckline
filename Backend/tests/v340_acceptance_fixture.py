@@ -135,15 +135,44 @@ class _TavilyWire:
     _lock: Lock = field(default_factory=Lock)
 
     def respond(self, request: httpx.Request) -> httpx.Response:
-        if request.url.host != "api.tavily.com" or request.url.path != "/search":
+        if request.url.host != "api.tavily.com":
             raise AssertionError(f"unexpected offline Tavily request: {request.url!s}")
         payload = json.loads(request.content)
+        if request.url.path == "/extract":
+            urls = payload.get("urls")
+            if not isinstance(urls, list) or len(urls) != 1 or not isinstance(urls[0], str):
+                raise AssertionError(f"unexpected Tavily extract: {payload!r}")
+            url = urls[0]
+            try:
+                number = int(url.rstrip("/").rsplit("/", 1)[-1])
+            except ValueError as exc:
+                raise AssertionError(f"unexpected Tavily extract URL: {url!r}") from exc
+            with self._lock:
+                self.queries.append("extract:" + url)
+            return httpx.Response(200, json={
+                "request_id": f"fixture-tavily-extract-{number:03d}", "usage": {"credits": 1},
+                "results": [{
+                    "url": url,
+                    "raw_content": f"离线独立来源 {number:03d} 的完整原文：该资料仅用于晨间冻结理由复核。",
+                }],
+            })
+        if request.url.path != "/search":
+            raise AssertionError(f"unexpected offline Tavily request: {request.url!s}")
         query = payload.get("query")
-        if not isinstance(query, str) or not query.startswith("离线验收 event-"):
+        if not isinstance(query, str):
             raise AssertionError(f"unexpected Tavily query: {query!r}")
         with self._lock:
             self.queries.append(query)
-        number = _event_number(query.split(" ", 2)[1])
+        if query.startswith("离线验收 event-"):
+            number = _event_number(query.split(" ", 2)[1])
+        elif query.startswith("离线晨报 ") and query.endswith(" 独立核验"):
+            company = query.split(" ", 2)[1]
+            canonical_company = company.split(".", 1)[0]
+            if not canonical_company.isdigit():
+                raise AssertionError(f"unexpected B90 morning company query: {query!r}")
+            number = int(canonical_company[-3:])
+        else:
+            raise AssertionError(f"unexpected Tavily query: {query!r}")
         return httpx.Response(200, json={
             "request_id": f"fixture-tavily-{number:03d}", "usage": {"credits": 1},
             "results": [{
@@ -219,6 +248,30 @@ class DeterministicTransport:
         return refs[0]
 
     def respond(self, request: httpx.Request) -> httpx.Response:
+        wire = json.loads(request.content)
+        messages = wire.get("messages") if isinstance(wire, Mapping) else None
+        system = messages[0].get("content") if isinstance(messages, list) and messages else None
+        if isinstance(system, str) and system.startswith("K10 晨间复核。"):
+            content = messages[-1].get("content") if messages else ""
+            evidence = json.loads(content.split("<untrusted-evidence>\n", 1)[1].split("\n</untrusted-evidence>", 1)[0])
+            independent = evidence.get("independentVerificationDocuments")
+            company = evidence.get("original", {}).get("candidate", {}).get("companyCode")
+            if not isinstance(company, str) or not company:
+                reasons = evidence.get("parentReasons")
+                company = reasons[0].get("companyCode") if isinstance(reasons, list) and reasons and isinstance(reasons[0], Mapping) else None
+            assert isinstance(company, str) and company
+            if not independent:
+                self._record("morningReviewSearch", company)
+                return self._ok({
+                    "action": "search", "question": "是否有公司披露直接反证前一晚理由？",
+                    "query": f"离线晨报 {company} 独立核验", "rationale": "需要独立公司资料核验冻结理由。",
+                })
+            self._record("morningReview", company)
+            return self._ok({
+                "action": "conclude", "material": False, "reasonStatus": "current",
+                "observationStatus": "current", "summary": "隔夜独立资料未显示足以改变昨晚关联判断的新事实。",
+                "materialContraryEvidence": [],
+            })
         payload = self._packet(request)
         action = payload.get("action")
         packet = payload.get("evidencePacket") if isinstance(payload.get("evidencePacket"), Mapping) else {}
@@ -265,10 +318,12 @@ class DeterministicTransport:
                     "stopReason": "必要补查已完成", "resumeCondition": "新的公司公告",
                 },
                 "comparison": {"summary": "离线验收的事件比较。", "evidenceRefs": [ref], "historicalAssessments": []},
-                "companyAssessments": [{"companyCode": company, "role": "primary", "rank": 1,
-                    "summary": "独立完成的公司比较", "priorityReason": "事件关联已完成",
-                    "gap": "独立资料暂无新增", "rankChangeConditions": "后续公司公告",
-                    "twoDayReason": "新事件窗口", "evidenceDisclosure": {
+                "companyAssessments": [{"companyCode": company, "recommendation": "recommend",
+                    "analysisText": "离线资料显示该公司与本次事件存在可解释关联，独立资料暂无新增。", "sourceRefs": [ref],
+                    "identity": {"kind": "initial", "relatedOpportunityId": None,
+                                 "reason": "离线来源首次形成可读催化", "newFacts": "本次离线来源出现新事件",
+                                 "changedJudgment": None, "twoDayReason": "固定窗口内复核公开变化"},
+                    "evidenceDisclosure": {
                         "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown",
                         "originEvidenceRef": None, "unverifiedReasons": ["独立资料无新增"],
                         "conditionalAnalysis": "等待公司公开确认后复核。",
@@ -297,14 +352,19 @@ class DeterministicTransport:
             return self._ok({"kind": "initial", "relatedOpportunityId": None, "reason": "本次首次出现",
                              "newFacts": "本次离线来源出现新事件", "changedJudgment": None,
                              "twoDayReason": "固定窗口内可复核"})
-        if "candidates" in payload and isinstance(payload.get("output"), Mapping) and "choices" in payload["output"]:
+        if "companies" in payload and isinstance(payload.get("output"), Mapping) and "choices" in payload["output"]:
             self._record("prioritize")
             if self.refusal_operation == "prioritize":
                 return httpx.Response(400, json={"error": {
                     "code": "invalid_request_error", "message": "Content Exists Risk",
                 }})
-            return self._ok({"choices": [{"canonicalKey": row["canonicalKey"], "companyCode": row["companyCode"]}
-                                           for row in payload["candidates"]]})
+            return self._ok({"choices": [
+                {"companyCode": row["companyCode"], "catalystKeys": [
+                    {"canonicalKey": catalyst["canonicalKey"], "stageKey": catalyst["stageKey"]}
+                    for catalyst in row["catalysts"]
+                ]}
+                for row in payload["companies"]
+            ]})
 
         document_id = payload.get("documentId")
         if not isinstance(document_id, str):
@@ -373,7 +433,10 @@ def install_offline_transports(monkeypatch, *, refusal_event: int | None,
 
     monkeypatch.setattr(
         pipeline, "TavilyEvidenceGateway",
-        lambda **kwargs: RecordingTavilyEvidenceGateway(**kwargs, client=tavily_client, clock=lambda: fixture_run_at),
+        lambda **kwargs: RecordingTavilyEvidenceGateway(
+            **kwargs, client=tavily_client,
+            **({"clock": lambda: fixture_run_at} if "clock" not in kwargs else {}),
+        ),
     )
     original_research_outcome = pipeline._research_outcome
 
@@ -409,6 +472,12 @@ def _append_configuration(*, db_path: Path, fixture_now: datetime) -> tuple[str,
     )
     execution_id = "v340-acceptance-execution"
     execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    # This historical full-scale fixture exercises B90/B91 paid wires and
+    # immediate source ingestion. Pin that immutable execution contract even
+    # after the shipped configuration advances to B92 collected input.
+    execution["discovery"]["investigationPromptContractRevision"] = "k10-research-3.6.0-b90"
+    for field in ("reportInputContract", "collectionSourceKeys", "collectedInputBootstrapAt"):
+        execution["discovery"].pop(field, None)
     policy = execution["discovery"]["titleTriagePolicy"]
     store.append_title_triage_policy(
         policy_id=policy["policyId"], content=policy["content"], approval_state="approved",

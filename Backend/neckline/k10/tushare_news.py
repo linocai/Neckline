@@ -250,6 +250,7 @@ class TuShareMajorNewsAdapter:
                 fetched_at=fetched_at, fetch_version=FETCH_VERSION,
                 metadata={
                     "provider": "tushare", "source": source or None, "title": title,
+                    "originalTitle": title, "sourceKind": "article",
                     "rawPubTime": raw_pub_time,
                 },
             ))

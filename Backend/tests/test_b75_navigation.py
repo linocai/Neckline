@@ -149,16 +149,17 @@ def test_restored_partial_widget_is_invalidated_when_only_raw_body_has_navigatio
     from types import SimpleNamespace
     from neckline.k10.research_runtime import _Investigation
     from neckline.k10.discovery import EvidenceRef
-    from neckline.k10.research_contracts import Claim
+    from neckline.k10.research_contracts import Claim, B78_RESEARCH_ROUND_CONTRACT
     doc=replace(document(),excerpt='注册资本5000万元，双方各持股45%。')
     ref={'documentId':doc.document_id,'revision':1};key=EvidenceRef(doc.document_id,1)
     obj=object.__new__(_Investigation);obj.allowed={key};obj.documents={key:doc};obj.event=SimpleNamespace(source_refs=(key,))
     obj.state={'stageResults':[],'claims':[{'claimId':'c1','sourceRef':ref,'text':'双方各持股45%',
         'location':'paragraph:1','kind':'factual_assertion','novelty':'new_fact','decisionImpact':'合资关系','verificationStatus':'unverified'}]}
     obj.context={'canonicalKey':'navigation','stageKey':'stage','eventState':'reported','headline':'合资平台','eventKind':'news'}
-    obj.state['snapshot']=SimpleNamespace(news_cutoff_at='2026-09-15T21:00:00+08:00')
+    obj.state['snapshot']=SimpleNamespace(news_cutoff_at='2026-09-15T21:00:00+08:00',
+                                          prompt_contract_revision=B78_RESEARCH_ROUND_CONTRACT)
     obj._company_scope=lambda:{}
-    obj._b78_reusable_source_evidence=lambda:{'claims':[],'companyRelations':[]}
+    obj._b78_reusable_source_evidence=lambda *, as_of=None, max_rowid=None:{'claims':[],'companyRelations':[]}
     p=packet();p['claims']=obj.state['claims'];p['evidenceCards']=obj._b78_packet(claims=tuple(Claim.from_dict(row) for row in obj.state['claims']))['evidenceCards'];p.pop('fullTextDocuments')
     assert p['evidenceCards'][0].get('excerpt') is None
     stale={'sourceRef':ref,'indexVersion':material.INDEX_VERSION,'text':'操盘必读：旧局部片段'}

@@ -1,19 +1,22 @@
-"""B78 real CLI/worker/API acceptance with deterministic, network-denied replies.
+"""B90 real CLI/worker/API acceptance with deterministic, network-denied replies.
 
 The 1,089-member universe is unchanged.  A small title corpus crosses batch
 boundaries; this tests user results, not the old sequence of model stages.
 """
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from io import StringIO
 import json
 from pathlib import Path
 import socket
 import sqlite3
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
 
 from neckline.k10.delivery import REPORT_DELIVERY_CONTRACT
+from neckline.k10 import morning_runtime
 from . import v340_acceptance_fixture as base
 
 
@@ -23,7 +26,43 @@ SCENARIOS = ("complete", "partial", "materials", "empty", "zero")
 
 
 class DirectRoundTransport(base.DeterministicTransport):
+    # Only the two-report API loopback turns the second (morning-discovery)
+    # title path into a normal zero.  The evening parent remains populated;
+    # this keeps the test focused on frozen-parent review/API semantics rather
+    # than reusing an older event's research receipt across two business
+    # cutoffs.
+    loopback_morning_discovery_zero: ClassVar[bool] = False
+
     def respond(self, request):
+        # Morning review is deliberately a different wire shape from the
+        # discovery protocol: it receives one frozen parent-company packet
+        # and the independently frozen overnight documents.  Keep this reply
+        # here, at the exact MeteredProvider boundary, so the B90 loopback
+        # proves real review work rather than inserting a result row.
+        wire = json.loads(request.content)
+        system = wire["messages"][0]["content"]
+        message = wire["messages"][-1]["content"]
+        if "<untrusted-evidence>" in message:
+            evidence = json.loads(message.split("<untrusted-evidence>\n", 1)[1].split("\n</untrusted-evidence>", 1)[0])
+            independent = evidence.get("independentVerificationDocuments")
+            reasons = evidence.get("parentReasons")
+            company = reasons[0].get("companyCode") if isinstance(reasons, list) and reasons and isinstance(reasons[0], dict) else None
+            if not isinstance(company, str) or not company:
+                company = self.company_codes[0]
+            if not independent:
+                self._record("morningReviewSearch", company)
+                return self._ok({
+                    "action": "search", "question": "是否有公司披露直接反证前一晚理由？",
+                    "query": f"离线晨报 {company} 独立核验", "rationale": "需要独立公司资料核验冻结理由。",
+                })
+            self._record("morningReview", company)
+            return self._ok({
+                "action": "conclude", "material": False,
+                "reasonStatus": "current",
+                "observationStatus": "current",
+                "summary": "隔夜资料未显示足以改变昨晚关联判断的新事实。",
+                "materialContraryEvidence": [],
+            })
         payload = self._packet(request)
         action = payload.get("action")
         if action == "research_round":
@@ -48,10 +87,12 @@ class DirectRoundTransport(base.DeterministicTransport):
                 },
                 "comparison": {"summary": "仅为离线验收，送样不是订单。", "evidenceRefs": [ref],
                                "historicalAssessments": []},
-                "companyAssessments": [{"companyCode": code, "role": "primary", "rank": 1,
-                    "summary": "关联清楚，订单待核", "priorityReason": "与本次事件直接相关",
-                    "gap": "尚未确认订单", "rankChangeConditions": "公司公开披露",
-                    "twoDayReason": "观察公开信息变化", "evidenceDisclosure": {
+                "companyAssessments": [{"companyCode": code, "recommendation": "recommend",
+                    "analysisText": "消息显示送样进展，和该公司业务直接相关；订单仍待公司确认。", "sourceRefs": [ref],
+                    "identity": {"kind": "initial", "relatedOpportunityId": None,
+                                 "reason": "本次来源首次形成该公司的可读催化", "newFacts": "送样进展",
+                                 "changedJudgment": None, "twoDayReason": "观察公司是否确认订单"},
+                    "evidenceDisclosure": {
                         "verificationStatus": "unverified", "isRumor": True, "originStatus": "unknown",
                         "originEvidenceRef": None, "unverifiedReasons": ["未有公司确认"],
                         "conditionalAnalysis": "公司确认后复核。",
@@ -66,14 +107,15 @@ class DirectRoundTransport(base.DeterministicTransport):
         if "inputCount" in payload:
             self._record("titleGlobal")
             selected = sorted((row for row in payload["items"]
-                if self._number_from_title(row["title"]) < self.selected_event_count),
+                if not type(self).loopback_morning_discovery_zero
+                and self._number_from_title(row["title"]) < self.selected_event_count),
                 key=lambda row: self._number_from_title(row["title"]))
             return self._ok({"selectionComplete": True, "reviewedCount": len(payload["items"]),
                 "selected": [{"i": row["i"], "selectedRank": index + 1,
                               "reason": "新增事件值得核验"} for index, row in enumerate(selected)], "merged": []})
-        if "candidates" in payload and isinstance(payload.get("output"), dict) and "choices" in payload["output"]:
+        if "companies" in payload and isinstance(payload.get("output"), dict) and "choices" in payload["output"]:
             if self.refusal_event == 1:
-                codes = {row["companyCode"] for row in payload["candidates"]}
+                codes = {row["companyCode"] for row in payload["companies"]}
                 if codes != {self.company_codes[1]}:
                     self._record("forbidden:failed_company_in_final_ranking")
                     raise AssertionError("known failed company must be removed before final ranking")
@@ -100,6 +142,16 @@ class Acceptance:
     readiness: dict[str, Any]
     configuration: dict[str, Any]
     provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class B90Loopback:
+    """Real B90 evening + next-morning producer output for API consumers."""
+
+    database: Path
+    evening_report_id: str
+    morning_report_id: str
+    bindings: dict[str, Any]
 
 
 def explicit_bindings(database):
@@ -137,13 +189,15 @@ def read_actual_api(database):
             response = client.get(f"/api/v1/k10/v2/reports/{report_id}/materials")
             response.raise_for_status()
             material = response.json()
-            assert material["schemaVersion"] == 9 and material["reportId"] == report_id
+            assert material["schemaVersion"] == 10 and material["reportId"] == report_id
         assert client.get("/api/v1/k10/v2/reports/does-not-exist").status_code == 404
         assert client.get("/api/v1/k10/v2/reports/does-not-exist/materials").status_code == 404
     return envelope, material, readiness.json(), configuration
 
 
-def generate_acceptance(root: Path, monkeypatch, *, scenario: str) -> Acceptance:
+def generate_acceptance(root: Path, monkeypatch, *, scenario: str,
+                        trading_day=base.DAY, fixture_now=base.NOW,
+                        fixture_run_at=base.RUN_AT) -> Acceptance:
     if scenario not in SCENARIOS:
         raise ValueError("unsupported B78 acceptance scenario")
     root.mkdir(parents=True, exist_ok=True)
@@ -162,7 +216,8 @@ def generate_acceptance(root: Path, monkeypatch, *, scenario: str) -> Acceptance
                    "materials": {"refusal_operation": "prioritize", "expect_handler_failure": True},
                    "zero": {"selected_event_count": 0}}
         flow = base.run_full_scale_flow(root, monkeypatch, name=scenario,
-            **({"selected_event_count": EVENT_COUNT} | options[scenario]))
+            **({"selected_event_count": EVENT_COUNT, "trading_day": trading_day,
+                "fixture_now": fixture_now, "fixture_run_at": fixture_run_at} | options[scenario]))
         assert flow.task_status == ("failed" if scenario == "materials" else "completed"), {
             "taskStatus": flow.task_status, "taskId": flow.task_id,
             "calls": flow.calls, "gatewayTrace": flow.gateway_trace,
@@ -171,7 +226,7 @@ def generate_acceptance(root: Path, monkeypatch, *, scenario: str) -> Acceptance
         assert not any(key.startswith("forbidden:") for key in flow.calls), flow.calls
         assert not ({"research:plan_research", "research:assess_and_decide", "research:compare_companies"} & set(flow.calls))
     report, materials, readiness, configuration = read_actual_api(database)
-    assert report["schemaVersion"] == 9
+    assert report["schemaVersion"] == 10
     with sqlite3.connect(database) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_v2_universe_members").fetchone()[0] == 1089
         if flow:
@@ -217,6 +272,110 @@ def generate_acceptance(root: Path, monkeypatch, *, scenario: str) -> Acceptance
     return Acceptance(database, report, materials, readiness, configuration, provenance)
 
 
+def generate_b90_loopback(root: Path, monkeypatch, *, evening_day=base.DAY) -> B90Loopback:
+    """Run the current CLI/worker path for an evening and its next morning.
+
+    The companion API/Swift test consumes the returned database only through
+    FastAPI.  This helper does not fabricate a morning scan, a review work
+    item, or a report: the public CLI creates both execution bindings and the
+    production worker drives both handlers against deterministic transports.
+    """
+    evening_run_at = datetime(evening_day.year, evening_day.month, evening_day.day, 22, 0, tzinfo=base.SHANGHAI)
+    evening_now = datetime(evening_day.year, evening_day.month, evening_day.day, 12, 0, tzinfo=base.SHANGHAI)
+    evening = generate_acceptance(root, monkeypatch, scenario="complete", trading_day=evening_day,
+                                  fixture_now=evening_now, fixture_run_at=evening_run_at)
+    database = evening.database
+    evening_report = evening.report.get("report")
+    assert isinstance(evening_report, dict)
+    evening_report_id = evening_report.get("reportId")
+    assert isinstance(evening_report_id, str) and evening_report_id
+
+    monkeypatch.setattr(DirectRoundTransport, "loopback_morning_discovery_zero", True)
+
+    morning_day = evening_day + timedelta(days=1)
+    morning_run_at = datetime(morning_day.year, morning_day.month, morning_day.day, 8, 35, tzinfo=base.SHANGHAI)
+    bindings = explicit_bindings(database)
+    stdout = StringIO()
+    with base.redirect_stdout(stdout):
+        assert base.cli_main([
+            "enqueue", "--db", str(database), "--kind", "morning", "--trading-day", morning_day.isoformat(),
+            "--config-id", bindings["config_id"], "--config-revision", str(bindings["config_revision"]),
+            "--execution-config-id", bindings["execution_id"],
+            "--execution-config-revision", str(bindings["execution_revision"]),
+        ]) == 0
+    morning_task_id = stdout.getvalue().strip()
+    assert morning_task_id.startswith("task_")
+
+    # ``generate_acceptance`` has already installed the network-denied model
+    # and source wires.  Each B90 channel gets its own provider wrapper: the
+    # parent discovery and the independent frozen-parent review must not share
+    # mutable usage/retry context merely because they use the same isolated
+    # ledger and deterministic transport.
+    def resolve_fixture_provider(**_kwargs):
+        provider = base.MeteredProvider(
+            ledger_db=database, ledger_task="discovery", api_key="fixture", model="deepseek-v4-pro", name="fixture",
+            api_url="https://fixture.invalid/v1/chat/completions", read_timeout=1, use_streaming=False,
+        )
+        provider.max_attempts = 1
+        return base.ProviderResolution("configured", provider, "fixture", None)
+
+    monkeypatch.setattr(base.pipeline, "resolve_deepseek_v4_pro", resolve_fixture_provider)
+    # The parent invokes the review through its production module boundary;
+    # patch that resolver too so this remains a real review wire rather than a
+    # fixture configuration fallback before any provider call.
+    monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", resolve_fixture_provider)
+    parquet_dir = root / "parquet"
+    handlers = base.pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=parquet_dir)
+
+    def morning_handler(context):
+        return base.pipeline.production_scan_handler(
+            context, tushare_token="fixture-token", parquet_dir=parquet_dir,
+            now=lambda: morning_run_at,
+        )
+
+    handlers["morning_scan"] = morning_handler
+    terminal = None
+    for _pass in range(8):
+        terminal = base.run_once(
+            db_path=database, worker_id="b90-loopback", lease_for=timedelta(minutes=5), handlers=handlers,
+            # The worker owns both the business deadline and the lease clock
+            # for this isolated task.  Using the frozen 08:35 clock proves a
+            # completed review rather than the host date merely forcing a
+            # deadline fallback for this historic fixture date.
+            clock=lambda: morning_run_at, require_b76_contract=True,
+        )
+        assert terminal is not None and terminal.task_id == morning_task_id
+        if terminal.status != "queued":
+            break
+    else:
+        raise AssertionError("B90 morning CLI task did not terminalize after eight worker passes")
+    assert terminal is not None and terminal.status == "completed"
+
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT report_id,scan_id,status,available_at FROM k10_v2_report_runs "
+            "WHERE window_kind='morning' ORDER BY created_at DESC,report_id DESC LIMIT 1"
+        ).fetchone()
+        unresolved = connection.execute(
+            "SELECT COUNT(*) FROM k10_external_attempts WHERE task_id=? AND state IN ('started','running','unknown')",
+            (morning_task_id,),
+        ).fetchone()
+        review_statuses = connection.execute(
+            "SELECT status FROM k10_morning_review_work_items WHERE scan_id=? ORDER BY work_item_id",
+            (row[1],) if row is not None else ("missing",),
+        ).fetchall()
+    assert row is not None and row[2] in {"completed", "partial"} and row[3] is not None
+    assert unresolved == (0,)
+    assert review_statuses and all(status == "completed" for (status,) in review_statuses), review_statuses
+    morning_report_id = str(row[0])
+    return B90Loopback(
+        database=database,
+        evening_report_id=evening_report_id,
+        morning_report_id=morning_report_id,
+        bindings=bindings,
+    )
+
+
 @pytest.mark.parametrize("scenario", SCENARIOS)
-def test_b78_real_cli_worker_api_user_results(tmp_path, monkeypatch, scenario):
+def test_b90_real_cli_worker_api_user_results(tmp_path, monkeypatch, scenario):
     generate_acceptance(tmp_path, monkeypatch, scenario=scenario)

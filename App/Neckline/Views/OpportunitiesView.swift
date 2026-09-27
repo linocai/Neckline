@@ -61,6 +61,10 @@ struct OpportunitiesView: View {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                 header
                 reportNotices
+                if segment == "morning" {
+                    morningReviewSection
+                    morningDiscoverySection
+                }
                 #if os(macOS)
                 if !cards.isEmpty {
                     HStack(alignment: .top, spacing: NKSpace.pagePad) {
@@ -124,11 +128,14 @@ struct OpportunitiesView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
-                V3PageHeader(title: segment == "evening" ? "今晚的机会" : "晨间新增", subtitle: "K10-v2 · 每日选择 · 固定两日观察")
+                V3PageHeader(
+                    title: segment == "evening" ? "晚间消息与公司关联" : "晨间复核与新发现",
+                    subtitle: segment == "evening" ? "K10-v2 · 消息、关系与原件" : "昨晚名单的隔夜变化 · 隔夜新机会"
+                )
             }
             Picker("推荐来源", selection: $model.dailyWindow) {
-                Text("晚间推荐 · \(model.currentEveningCards.count)").tag("evening")
-                Text("晨间新增 · \(model.currentMorningCards.count)").tag("morning")
+                Text("晚报 · \(model.currentEveningCards.count)").tag("evening")
+                Text("晨报 · \(model.currentMorningCards.count)").tag("morning")
             }.pickerStyle(.segmented)
             if let report = selectedCard?.section == "updated" ? model.dailyMorning?.report : report {
                 Text("消息截至 \(k10DisplayTime(report.cutoffAt)) · \(availabilityText(for: report))")
@@ -141,7 +148,11 @@ struct OpportunitiesView: View {
     }
 
     private func availabilityText(for report: K10DailyReport) -> String {
-        if report.delivery?.outcome == "failed" { return "执行失败 · 详情可查看" }
+        if response?.state == "not_configured" { return "参数未配置" }
+        if response?.state == "processing" { return "正在处理 · 尚未发布" }
+        if response?.state == "failed" || report.delivery?.outcome == "failed" || report.status == "failed" {
+            return "执行失败 · 详情可查看"
+        }
         return "可查看 \(report.availableAt.map(k10DisplayTime) ?? "尚未发布")"
     }
 
@@ -165,8 +176,6 @@ struct OpportunitiesView: View {
             }
         } else if report?.delivery != nil {
             NoticeLine(icon: "questionmark.circle", text: "这份报告的交付协议尚未受当前版本支持，不能推断完整度。", tone: NK.amber)
-        } else if report != nil {
-            NoticeLine(icon: "questionmark.circle", text: "旧报告未记录完整度，请结合当时状态和资料缺口阅读。", tone: NK.textSecondary)
         }
         if !hasPublishedFormalDelivery, let report, let materials = report.materials {
             switch materials.state {
@@ -193,7 +202,7 @@ struct OpportunitiesView: View {
             NoticeLine(icon: "clock.badge.exclamationmark", text: "晨报最晚交付：\(k10DisplayTime(deadline))。到点后未能形成排序时只保留诊断或材料，不会补发正式推荐。", tone: NK.textSecondary)
         }
         if let report, report.delivery == nil, !["completed", "published", "available"].contains(report.status) {
-            NoticeLine(icon: "clock", text: "本轮状态：\(k10StatusText(report.status))，已完成内容可查看", tone: NK.amber)
+            NoticeLine(icon: "clock", text: "本轮状态：\(k10StatusText(report.status))，正式结果尚未发布", tone: NK.amber)
         }
     }
 
@@ -224,7 +233,7 @@ struct OpportunitiesView: View {
                 )
             }
         }
-        if let incomplete = report?.incompleteReviews, !incomplete.isEmpty {
+        if report?.morningReview == nil, let incomplete = report?.incompleteReviews, !incomplete.isEmpty {
             let groups = k10IncompleteReviewGroups(incomplete)
             VStack(alignment: .leading, spacing: 12) {
                 Text("晨间复核未完成（\(groups.count) 家）").font(NKFont.headline)
@@ -258,7 +267,10 @@ struct OpportunitiesView: View {
                 NoticeLine(icon: "exclamationmark.circle", text: gap, tone: NK.amber)
             }
         }
-        if !model.currentLifecycleUpdates.isEmpty {
+        if let coverage = report?.sourceCoverage {
+            ReportSourceCoverageCard(coverage: coverage)
+        }
+        if segment != "morning", !model.currentLifecycleUpdates.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 Text("机会变化").font(NKFont.headline)
                 ForEach(model.currentLifecycleUpdates) { update in
@@ -307,8 +319,93 @@ struct OpportunitiesView: View {
             segment: segment,
             currentMorningUpdateCount: model.currentMorningUpdates.count,
             hasEndedRecommendations: hasEndedRecommendations,
-            responseReason: response?.reason?.message
+            responseReason: response?.reason?.message,
+            discoveryState: report?.discovery?.state,
+            discoveryOutcome: report?.discovery?.outcome
         )
+    }
+
+    @ViewBuilder private var morningReviewSection: some View {
+        if let review = report?.morningReview {
+            let risks = (report?.lifecycleUpdates ?? []).filter { ["risk", "withdrawal"].contains($0.kind) }
+            let actionable = review.items.filter {
+                $0.status != "completed" || ["changed", "uncertain"].contains($0.outcome)
+            }.sorted {
+                let left = morningReviewPriority($0), right = morningReviewPriority($1)
+                if left != right { return left < right }
+                return $0.companyCode < $1.companyCode
+            }
+            let quiet = review.items.filter { $0.status == "completed" && $0.outcome == "no_material_change" }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    V3SectionTitle(title: "昨晚名单的隔夜变化", icon: "moon.stars")
+                    Spacer()
+                    Text("\(review.targetCompanyCount) 家 · \(review.targetReasonCount) 条原理由")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
+                if !risks.isEmpty {
+                    ForEach(risks) { DailyLifecycleUpdateRow(update: $0, model: model) }
+                }
+                if review.items.isEmpty, review.state == "unavailable", review.parentReportId == nil {
+                    Text("昨晚报告暂不可用，无法确认是否存在需要逐项复核的公司；这不是“没有变化”。")
+                        .font(NKFont.callout).foregroundStyle(NK.amber)
+                } else if review.items.isEmpty, review.state == "complete", review.targetCompanyCount == 0 {
+                    Text("昨晚没有形成推荐公司，因此没有需要逐项复核的名单。")
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                } else if actionable.isEmpty {
+                    Text(review.state == "complete"
+                        ? "昨晚名单已逐项检查，没有发现需要提示的隔夜变化。"
+                        : "晨间复核尚未提供可展示的单项结果，请结合下方缺口阅读。")
+                        .font(NKFont.callout).foregroundStyle(review.state == "complete" ? NK.textSecondary : NK.amber)
+                } else {
+                    ForEach(actionable) { MorningReviewRow(item: $0, model: model) }
+                }
+                if !quiet.isEmpty {
+                    DisclosureGroup("其余 \(quiet.count) 家没有关键变化") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            ForEach(quiet) { MorningReviewRow(item: $0, model: model, compact: true) }
+                        }.padding(.top, 4)
+                    }
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
+                if review.items.count < review.targetCompanyCount || review.state == "unavailable" {
+                    NoticeLine(
+                        icon: "exclamationmark.circle",
+                        text: "冻结的昨晚名单尚未全部形成可读复核结果；未完成的对象不会被当作没有变化。",
+                        tone: NK.amber
+                    )
+                }
+            }
+            .padding(NKSpace.cardPad)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
+        }
+    }
+
+    @ViewBuilder private var morningDiscoverySection: some View {
+        if let discovery = report?.discovery {
+            VStack(alignment: .leading, spacing: 7) {
+                V3SectionTitle(title: "隔夜新机会", icon: "sparkles")
+                switch (discovery.state, discovery.outcome) {
+                case ("complete", "recommendations"):
+                    Text("隔夜消息已经完成筛选，以下是新推荐或需要更新的公司。")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                case ("complete", "no_recommendation"):
+                    NoticeLine(icon: "checkmark.circle", text: "隔夜消息已经筛选完毕，没有形成新的推荐。", tone: NK.textSecondary)
+                case (_, "not_completed"), ("partial", _):
+                    NoticeLine(icon: "exclamationmark.circle", text: "隔夜新消息尚未完全处理；这不影响上方已完成的昨晚名单复核。", tone: NK.amber)
+                default:
+                    NoticeLine(icon: "questionmark.circle", text: "隔夜新机会的完成状态待核，请结合报告缺口阅读。", tone: NK.amber)
+                }
+            }
+        }
+    }
+
+    private func morningReviewPriority(_ item: K10MorningReviewItem) -> Int {
+        if item.outcome == "changed" { return 0 }
+        if item.status != "completed" { return 1 }
+        if item.outcome == "uncertain" { return 2 }
+        return 3
     }
 
     private var hasEndedRecommendations: Bool {
@@ -342,6 +439,50 @@ struct OpportunitiesView: View {
     private func move(_ direction: Int) {
         guard let card = selectedCard, let index = cards.firstIndex(where: { $0.id == card.id }) else { return }
         selectedCardID = cards[min(max(index + direction, 0), cards.count - 1)].id
+    }
+}
+
+private struct ReportSourceCoverageCard: View {
+    let coverage: K10ReportSourceCoverage
+
+    var body: some View {
+        DisclosureGroup("本次报告的采集范围 · \(coverage.sources.filter { !$0.gaps.isEmpty || ["partial", "unavailable", "failed"].contains($0.state) }.count) 项待核") {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("输入冻结：\(coverage.inputFrozenAt.map(k10DisplayTime) ?? "时间待核") · 采集任务 \(coverage.collectionTaskIds.count) 个")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                if coverage.sources.isEmpty {
+                    Text("未记录逐源采集范围，不能据此推断市场没有消息。")
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
+                }
+                ForEach(coverage.sources) { source in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(k10SourceText(source.sourceKey)) · \(k10StatusText(source.state))")
+                            .font(NKFont.callout.weight(.semibold))
+                        Text("请求：\(source.requestedStartAt.map(k10DisplayTime) ?? "起点待核") — \(source.requestedEndAt.map(k10DisplayTime) ?? "终点待核")")
+                        Text("实际观察：\(source.observedStartAt.map(k10DisplayTime) ?? "起点待核") — \(source.observedEndAt.map(k10DisplayTime) ?? "终点待核") · 覆盖至 \(source.coverageThrough.map(k10DisplayTime) ?? "待核")")
+                        ForEach(source.gaps) { gap in
+                            Text("缺口 \(gap.startAt.map(k10DisplayTime) ?? "起点待核") — \(gap.endAt.map(k10DisplayTime) ?? "终点待核")：\(k10ReasonText(gap.reasonCode))")
+                                .foregroundStyle(NK.amber)
+                        }
+                        ForEach(source.limitations, id: \.self) { limitation in
+                            Text(k10ReasonText(limitation)).foregroundStyle(NK.amber)
+                        }
+                    }
+                    .font(NKFont.caption)
+                    .foregroundStyle(NK.textSecondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                }
+                Text("完整仅指实际请求的来源与时段；报告截止后的采集空档另按以上缺口核对。")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+            .padding(.top, 6)
+        }
+        .font(NKFont.callout)
+        .padding(NKSpace.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.card))
     }
 }
 
@@ -545,6 +686,85 @@ private struct DailyLifecycleUpdateRow: View {
     }
 }
 
+/// B90 renders every frozen morning-review target independently from new
+/// opportunity cards. This keeps a real "no material change" distinct from a
+/// review that never started or could not finish.
+private struct MorningReviewRow: View {
+    let item: K10MorningReviewItem
+    @Bindable var model: AppModel
+    var compact = false
+
+    private var statusText: String {
+        switch item.status {
+        case "completed":
+            switch item.outcome {
+            case "changed": return "发现隔夜变化"
+            case "no_material_change": return "没有关键变化"
+            case "uncertain": return "仍有待核内容"
+            default: return "复核结论待说明"
+            }
+        case "partial": return "复核未完全完成"
+        case "failed": return "复核执行失败"
+        case "not_started": return "复核尚未开始"
+        default: return "复核状态待核"
+        }
+    }
+
+    private var tone: Color {
+        if item.outcome == "changed" { return NK.accent }
+        if item.status != "completed" || item.outcome == "uncertain" { return NK.amber }
+        return NK.textSecondary
+    }
+
+    private var hasReviewDetails: Bool {
+        let hasAnalysis = !(item.analysisText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let hasScope = !(item.checkedScope?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        return hasAnalysis || hasScope || item.status != "completed" || !item.unreviewedOpportunityIds.isEmpty || !item.sourceRefs.isEmpty
+    }
+
+    @ViewBuilder private var reviewDetails: some View {
+        if let analysis = item.analysisText?.trimmingCharacters(in: .whitespacesAndNewlines), !analysis.isEmpty {
+            Text(analysis).font(NKFont.callout).fixedSize(horizontal: false, vertical: true)
+        } else if item.status != "completed" {
+            Text("这不是“没有变化”的结论；该对象还没有形成可确认的复核结果。")
+                .font(NKFont.caption).foregroundStyle(NK.amber)
+        }
+        if let scope = item.checkedScope?.trimmingCharacters(in: .whitespacesAndNewlines), !scope.isEmpty {
+            Text("已检查：\(scope)").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+        }
+        if !item.unreviewedOpportunityIds.isEmpty {
+            Text("尚未覆盖 \(item.unreviewedOpportunityIds.count) 条原理由").font(NKFont.caption).foregroundStyle(NK.amber)
+        }
+        if !item.sourceRefs.isEmpty {
+            DisclosureGroup("复核依据（\(item.sourceRefs.count)）") {
+                ForEach(item.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+            }
+            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 4 : 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(item.companyName ?? item.companyCode).font(compact ? NKFont.callout : NKFont.headline)
+                Text(item.companyCode).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                Spacer()
+                Text(statusText).font(NKFont.caption.weight(.medium)).foregroundStyle(tone)
+            }
+            if compact, hasReviewDetails {
+                DisclosureGroup("查看复核说明与原件") {
+                    reviewDetails.padding(.top, 4)
+                }
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            } else if !compact {
+                reviewDetails
+            }
+        }
+        .padding(compact ? 0 : 10)
+        .background(compact ? Color.clear : tone.opacity(0.06), in: RoundedRectangle(cornerRadius: NKRadius.inner))
+    }
+}
+
 private struct DailyCompanyCard: View {
     let card: K10DailyCard
     @Bindable var model: AppModel
@@ -576,39 +796,59 @@ private struct DailyCompanyCard: View {
                         NoticeLine(icon: "exclamationmark.circle", text: "\(catalyst.headline)：\(lifecycleLabel(catalyst.lifecycleState))", tone: NK.amber)
                     }
                     Divider().overlay(NK.hairline)
-                    Text(card.catalysts.first(where: { $0.companyWindowId == card.companyWindowId })?.headline ?? card.summary).font(NKFont.headline).fixedSize(horizontal: false, vertical: true)
-                    dailyLine("building.2", card.allowsSelection ? "公司关联与比较" : "原推荐理由", card.summary)
-                    dailyLine("sparkle.magnifyingglass", card.allowsSelection ? "为什么关注两日" : "原两日观察依据", card.twoDayReason)
-                    dailyLine("chart.line.uptrend.xyaxis", "已有价格反应", card.priceReaction ?? "此报告未保存价格反应资料。")
-                    if let price = card.priceContext {
-                        DisclosureGroup("行情依据 · 截至 \(k10DisplayTime(price.asOf))") {
-                            ForEach(price.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
-                        }.font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    let preferredCatalyst = card.catalysts.first(where: { $0.companyWindowId == card.companyWindowId }) ?? card.catalysts.first
+                    let primaryCatalyst = preferredCatalyst?.analysisText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? preferredCatalyst
+                        : card.catalysts.first(where: { $0.analysisText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }) ?? preferredCatalyst
+                    if k10UsesNaturalCatalystDelivery(card), let primaryCatalyst {
+                        Text("事件概括").font(NKFont.caption.weight(.medium)).foregroundStyle(NK.textSecondary)
+                        Text(primaryCatalyst.headline).font(NKFont.headline).fixedSize(horizontal: false, vertical: true)
+                        Text(primaryCatalyst.analysisText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? primaryCatalyst.analysisText! : primaryCatalyst.summary)
+                            .font(NKFont.callout).fixedSize(horizontal: false, vertical: true)
+                        if let refs = primaryCatalyst.sourceRefs, !refs.isEmpty {
+                            Text("原件与来源").font(NKFont.caption.weight(.medium)).foregroundStyle(NK.textSecondary)
+                            ForEach(refs) { SourceReferenceLine(source: $0, model: model) }
+                        } else if !card.catalysts.contains(where: { !(($0.sourceRefs ?? []).isEmpty) }) {
+                            ForEach(card.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                        }
+                        let otherCatalysts = card.catalysts.filter { $0.id != primaryCatalyst.id }
+                        if !otherCatalysts.isEmpty {
+                            DisclosureGroup("其他关联消息（\(otherCatalysts.count)）") {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    ForEach(otherCatalysts) { catalyst in
+                                        catalystDetail(catalyst)
+                                    }
+                                }.padding(.top, 8)
+                            }.font(NKFont.callout).foregroundStyle(NK.accent)
+                        }
+                        Label("D1 \(k10DisplayTime(card.d1TradeDate)) · D2 \(k10DisplayTime(card.d2TradeDate))", systemImage: "calendar")
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    } else {
+                        Text(primaryCatalyst?.headline ?? card.summary).font(NKFont.headline).fixedSize(horizontal: false, vertical: true)
+                        dailyLine("building.2", card.allowsSelection ? "消息与公司关联" : "原推荐理由", card.summary)
+                        dailyLine("sparkle.magnifyingglass", card.allowsSelection ? "为什么关注两日" : "原两日观察依据", card.twoDayReason)
+                        dailyLine("chart.line.uptrend.xyaxis", "已有价格反应", card.priceReaction ?? "此报告未保存价格反应资料。")
+                        if let price = card.priceContext {
+                            DisclosureGroup("行情依据 · 截至 \(k10DisplayTime(price.asOf))") {
+                                ForEach(price.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                            }.font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        }
+                        Label("D1 \(k10DisplayTime(card.d1TradeDate)) · D2 \(k10DisplayTime(card.d2TradeDate))", systemImage: "calendar")
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        DisclosureGroup("消息、关联解释与原件（\(card.catalysts.count)）") {
+                            VStack(alignment: .leading, spacing: 14) {
+                                ForEach(card.catalysts) { catalyst in
+                                    catalystDetail(catalyst)
+                                }
+                                if !card.catalysts.contains(where: { !(($0.sourceRefs ?? []).isEmpty) }) {
+                                    ForEach(card.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                                }
+                            }.padding(.top, 10)
+                        }.font(NKFont.callout).foregroundStyle(NK.accent)
                     }
                     ForEach(card.uncertainty, id: \.self) { value in
                         NoticeLine(icon: "questionmark.circle", text: value, tone: NK.amber)
                     }
-                    Label("D1 \(k10DisplayTime(card.d1TradeDate)) · D2 \(k10DisplayTime(card.d2TradeDate))", systemImage: "calendar")
-                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    DisclosureGroup("催化、比较与原始依据（\(card.catalysts.count)）") {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(card.catalysts) { catalyst in
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(catalyst.headline).font(NKFont.headline)
-                                    Text(catalyst.summary).font(NKFont.callout)
-                                    if let lifecycle = catalyst.lifecycleState {
-                                        Text(lifecycleLabel(lifecycle)).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                                    }
-                                    Text("\(classificationText(catalyst.classification)) · \(catalyst.verificationStatus == "unverified" ? "未核实" : k10StatusText(catalyst.verificationStatus))")
-                                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                                    if let id = catalyst.opportunityId {
-                                        Button("查看完整比较与机会记录") { Task { await model.openOpportunity(id: id) } }.font(NKFont.caption).foregroundStyle(NK.accent)
-                                    }
-                                }
-                            }
-                            ForEach(card.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
-                        }.padding(.top, 10)
-                    }.font(NKFont.callout).foregroundStyle(NK.accent)
                 }
             }
         }
@@ -617,6 +857,28 @@ private struct DailyCompanyCard: View {
     private func lifecycleLabel(_ value: String?) -> String {
         ["active": "观察中", "risk": "存在重要风险", "withdrawn": "理由已撤回", "expired": "观察已到期"][value ?? ""] ?? "状态未知"
     }
+    @ViewBuilder private func catalystDetail(_ catalyst: K10CardCatalyst) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("事件概括").font(NKFont.caption.weight(.medium)).foregroundStyle(NK.textSecondary)
+            Text(catalyst.headline).font(NKFont.headline)
+            Text(catalyst.analysisText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? catalyst.analysisText! : catalyst.summary)
+                .font(NKFont.callout)
+            if let lifecycle = catalyst.lifecycleState {
+                Text(lifecycleLabel(lifecycle)).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+            Text("\(classificationText(catalyst.classification)) · \(catalyst.verificationStatus == "unverified" ? "未核实" : k10StatusText(catalyst.verificationStatus))")
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            if let id = catalyst.opportunityId {
+                Button("查看完整比较与机会记录") { Task { await model.openOpportunity(id: id) } }
+                    .font(NKFont.caption).foregroundStyle(NK.accent)
+            }
+            if let refs = catalyst.sourceRefs, !refs.isEmpty {
+                Text("本条原始依据").font(NKFont.caption.weight(.medium)).foregroundStyle(NK.textSecondary)
+                ForEach(refs) { SourceReferenceLine(source: $0, model: model) }
+            }
+        }
+    }
+
     private func dailyLine(_ icon: String, _ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon).foregroundStyle(NK.accent).frame(width: 18)

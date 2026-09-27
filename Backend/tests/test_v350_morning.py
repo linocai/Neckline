@@ -50,11 +50,12 @@ def test_morning_review_failure_stays_in_parent_and_keeps_evening_readable(tmp_p
         return base._REAL_HTTPX_CLIENT(**{**kwargs, "transport": httpx.MockTransport(refusals.respond)})
 
     monkeypatch.setattr(httpx, "Client", offline_client)
-    provider = MeteredProvider(ledger_db=db, ledger_task="morning", api_key="fixture",
-        model="deepseek-v4-pro", name="fixture", api_url="https://fixture.invalid/v1/chat/completions",
-        read_timeout=1, use_streaming=False)
-    provider.max_attempts = 1
-    resolution = lambda **kwargs: ProviderResolution("configured", provider, "fixture", None)
+    def resolution(**kwargs):
+        lane_provider = MeteredProvider(ledger_db=db, ledger_task="morning", api_key="fixture",
+            model="deepseek-v4-pro", name="fixture", api_url="https://fixture.invalid/v1/chat/completions",
+            read_timeout=1, use_streaming=False)
+        lane_provider.max_attempts = 1
+        return ProviderResolution("configured", lane_provider, "fixture", None)
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro", resolution)
     monkeypatch.setattr(morning_runtime, "resolve_deepseek_v4_pro", resolution)
     stdout = StringIO()
@@ -90,7 +91,7 @@ def test_morning_review_failure_stays_in_parent_and_keeps_evening_readable(tmp_p
         response.raise_for_status()
         payload = response.json()
         preserved = client.get("/api/v1/k10/v2/reports/latest?window=evening").json()["report"]
-    assert payload["schemaVersion"] == 9 and payload["state"] == "available"
+    assert payload["schemaVersion"] == 10 and payload["state"] == "available"
     report = payload["report"]
     assert report["windowKind"] == "morning" and report["status"] == "partial"
     assert report["availableAt"] and report["coverageGaps"] and report["incompleteReviews"]

@@ -374,7 +374,7 @@ def test_transient_delivery_retries_and_invalid_token_is_removed(tmp_path: Path)
 
 def test_no_devices_marks_the_logical_notification_sent(tmp_path: Path):
     db_path = _db(tmp_path)
-    _finish_task(db_path, kind="scan", payload={"windowKind": "morning", "scanId": "scan-1"})
+    _finish_task(db_path, kind="morning_scan", payload={"windowKind": "morning", "scanId": "scan-1"})
     notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
 
     assert dispatch_task_notifications(

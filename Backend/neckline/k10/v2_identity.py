@@ -10,7 +10,11 @@ IDENTITY_CONTRACT = 'k10-v2-identity-3.2.1'
 
 
 def recommendation_is_complete(*, comparison, verification) -> bool:
-    if comparison.differences.get('role') not in PUBLISHABLE_ROLES or verification.state == 'contradicted':
+    differences = comparison.differences
+    b90_recommendation = differences.get('recommendation')
+    if ((b90_recommendation != 'recommend' if b90_recommendation is not None
+         else differences.get('role') not in PUBLISHABLE_ROLES)
+            or verification.state == 'contradicted'):
         return False
     disclosure = comparison.differences.get('evidenceDisclosure')
     if disclosure is None:
@@ -38,6 +42,29 @@ def classify_identity(*, event, verification, mapping, comparison,
     complete = recommendation_is_complete(comparison=comparison, verification=verification)
     common = dict(reason=comparison.summary, newFacts=None, changedJudgment=None,
                   twoDayReason=None, relatedOpportunityId=None)
+    if "recommendation" in comparison.differences:
+        # B90 keeps system-derivable identity local.  Only an ambiguous link
+        # reaches the same research reply; it never opens a serial classifier.
+        supplied = comparison.differences.get("identity")
+        if complete and not previous:
+            raw = dict(common, kind="initial", newFacts=event.headline,
+                       twoDayReason=event.headline)
+        elif complete and len(same_stage := [old for old in previous
+                if old.get('canonicalKey') == event.canonical_key
+                and isinstance(old.get('catalystStage'), str) and old['catalystStage'].strip()
+                and normalize_catalyst_stage(old['catalystStage']) == normalize_catalyst_stage(event.stage_key)]) == 1:
+            raw = dict(common, kind="continuation", relatedOpportunityId=same_stage[0]['opportunityId'],
+                       newFacts=event.headline, twoDayReason=event.headline)
+        elif complete:
+            if not isinstance(supplied, Mapping):
+                raise ComparisonValidationError("B90 歧义旧机会缺少同轮身份结论", code="b90_identity_missing")
+            raw = dict(common, **dict(supplied))
+        else:
+            raw = dict(common, kind="background", reason=comparison.differences.get("analysisText", comparison.summary))
+        value = validate_classification(raw, canonical_key=event.canonical_key, stage_key=event.stage_key,
+                                        company_code=mapping.company_code, previous=previous)
+        validate_identity_role(value, comparison=comparison, verification=verification)
+        return value
     if complete and not previous:
         raw = dict(common, kind='initial', newFacts=event.headline,
                    twoDayReason=comparison.differences['twoDayReason'])
