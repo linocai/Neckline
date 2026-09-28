@@ -32,8 +32,17 @@ RUN_AT = datetime(2026, 9, 26, 22, 0, tzinfo=SHANGHAI)
 
 
 def _cli(*args: str) -> str:
+    from unittest.mock import patch
+    # Producer and handler share a frozen fixture clock. Otherwise a later
+    # calendar day makes collectionTaskIds vanish from the frozen report.
+    stamp = (datetime.fromisoformat(args[args.index("--slot") + 1])
+             if "--slot" in args else RUN_AT)
+    class ProducerClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return stamp.astimezone(tz)
     output = StringIO()
-    with redirect_stdout(output):
+    with redirect_stdout(output), patch("neckline.k10.cli.datetime", ProducerClock):
         assert cli_main(list(args)) == 0
     return output.getvalue().strip()
 

@@ -7512,13 +7512,11 @@ def production_scan_handler(
                                      leaseguard=discovery_leaseguard if b90_morning else context.require_lease,
                                      network_max_attempts=network_max_attempts,
                                      lease_owner=context.task.lease_owner,
-                                     # Morning discovery and review share the
-                                     # frozen business clock, not process
-                                     # construction time.  Otherwise a
-                                     # deterministic recovery can produce a
-                                     # research snapshot whose verification
-                                     # cutoff predates its morning input.
-                                     **({"clock": context.clock} if b90_morning else {}))
+                                     # Both channels use the worker's clock,
+                                     # including the transactional lease fence.
+                                     # A separate wall clock falsely expires
+                                     # deterministic collection/report replay.
+                                     lease_clock=context.clock, clock=context.clock)
     # The two morning channels may share durable document versions, never a
     # mutable gateway/client or a checkpoint identity.  In particular an
     # unfinished reason-bound check must not be mistaken for a cancellable

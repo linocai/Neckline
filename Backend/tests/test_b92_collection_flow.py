@@ -428,7 +428,14 @@ def test_known_refusal_and_handshake_failure_have_bounded_same_task_retry(
         ("failed", expected_code), ("succeeded", None)])
 
 
-def test_freeze_mixed_collection_revisions_keeps_exact_question_binding(tmp_path):
+def test_freeze_mixed_collection_revisions_keeps_exact_question_binding(tmp_path, monkeypatch):
+    # Keep producer creation and the explicit worker/freeze clocks in order;
+    # wall-clock execution after September 27 must not hide both input tasks.
+    class ProducerClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 26, 12, tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr("neckline.k10.cli.datetime", ProducerClock)
     database, config_id, first_revision = _configured(tmp_path)
     _run_slot(database, config_id, first_revision,
         "2026-09-25T08:00:00+08:00", "2026-09-25T00:00:00+08:00")
@@ -607,3 +614,73 @@ def test_freeze_only_consumes_terminal_refs_and_blocks_old_unknown_dependency(tm
                   if item["sourceKey"] == blocked["sourceKey"])
     assert any(gap["reasonCode"] == "prior_unknown_external_attempt" for gap in source["gaps"])
     assert store.freeze_collected_input(**freeze_args) == next_input
+
+
+@pytest.mark.parametrize('cursor_field', ['next_cursor', 'next_offset', 'cursor'])
+def test_b94_empty_terminal_cursor_recovers_same_task_without_rebilling(tmp_path, monkeypatch, cursor_field):
+    from neckline.k10 import jin10_normalize
+    database, config_id, revision = _configured(tmp_path)
+    class LastPageClient(FixtureJin10):
+        calls = []
+        def call_tool_raw(self, name, arguments):
+            self.calls.append((name, dict(arguments)))
+            last = bool(arguments)
+            item = {'id': name + str(last), 'url': 'https://jin10.com/' + name + str(last),
+                    'time': '2026-09-25T01:00:00+08:00' if last else '2026-09-25T07:00:00+08:00',
+                    'title': '目录' if name == 'list_news' else None,
+                    'content': '完整快讯' if name == 'list_flash' else None}
+            return {'structuredContent': {'status': 200, 'data': {
+                'items': [item], 'has_more': not last, cursor_field: '' if last else 'last-page'}}}
+    original = jin10_normalize._page
+    def before_fix(tool, structured):
+        if structured['data'].get(cursor_field) == '':
+            raise Jin10Error('page_cursor_invalid')
+        return original(tool, structured)
+    monkeypatch.setattr(jin10_normalize, '_page', before_fix)
+    task_id = _cli('enqueue-collection', '--db', str(database), '--slot', '2026-09-25T08:00:00+08:00',
+                   '--config-id', config_id, '--config-revision', str(revision))
+    clock = lambda: datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
+    handler = create_collection_handler(tushare_token='fixture-token', jin10_token='fixture-token',
+        client_factory=LastPageClient, tushare_request=_tushare)
+    kwargs = dict(db_path=database, task_id=task_id, worker_id='b94-terminal',
+        lease_for=timedelta(minutes=5), handlers={'collect_news': handler}, clock=clock,
+        require_b76_contract=True)
+    first = run_once(**kwargs)
+    assert first.status == 'failed'
+    calls = list(LastPageClient.calls)
+    assert len(calls) == 4
+    monkeypatch.setattr(jin10_normalize, '_page', original)
+    store.retry_task(task_id=task_id, expected_attempt_count=first.attempt_count,
+                     retried_at=clock().isoformat(), db_path=database)
+    recovered = run_once(**kwargs)
+    # Visible history stops after the requested start: a repaired parser is
+    # not proof of complete coverage and must not advance the watermark.
+    assert recovered.status == 'failed' and LastPageClient.calls == calls
+    checkpoint = store.task_execution_input(task_id=task_id, db_path=database)['checkpoint']
+    for source in ('jin10-flash', 'jin10-news'):
+        state = checkpoint['sources'][source]
+        assert len(state['documentRefs']) == 2 and state['pagesFetched'] == 2
+        assert state['errorCode'] == 'history_unavailable'
+        assert state['coverageThrough'] is None and state['gaps']
+        assert 'page_cursor_invalid' not in state['limitations']
+        assert store.latest_source_watermark(source_key=source, db_path=database) is None
+    with schema.read_connection(database) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM k10_external_attempts WHERE state IN ('started','unknown')").fetchone()[0] == 0
+    app = FastAPI()
+    app.include_router(create_router(db_path_provider=lambda: database,
+        require_token_dependency=lambda: None, current_collection_binding_provider=lambda: (config_id, revision, None)))
+    app.include_router(create_k10_router(db_path_provider=lambda: database,
+        require_token_dependency=lambda: None, parquet_dir_provider=lambda: tmp_path))
+    with TestClient(app) as client:
+        status = client.get('/api/v1/k10/collection/status').json()
+        assert all(s['state'] == 'partial' for s in status['sources'] if s['sourceKey'].startswith('jin10'))
+        ref = checkpoint['sources']['jin10-flash']['documentRefs'][-1]
+        response = client.get(f"/api/v1/k10/documents/{ref['documentId']}?revision={ref['revision']}")
+        assert response.status_code == 200 and response.json()['body'] == '完整快讯'
+
+
+@pytest.mark.parametrize('cursor,more', [('', True), (42, False), (False, False), ([], False)])
+def test_b94_terminal_cursor_fix_keeps_invalid_pagination_rejected(cursor, more):
+    from neckline.k10.jin10_normalize import _page
+    with pytest.raises(Jin10Error, match='page_cursor_invalid'):
+        _page('list_flash', {'data': {'items': [], 'next_cursor': cursor, 'has_more': more}})

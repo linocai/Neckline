@@ -158,3 +158,49 @@ def test_credentials_absent_are_visible_without_disabling_saved_configuration(tm
     assert all(not source["credentialConfigured"] for source in state["sources"])
     assert all(source["coverageThrough"] is None for source in state["sources"])
     assert state["latestRuns"] == []
+
+
+def test_b94_status_reads_project_large_paid_receipts_without_decoding_them(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from neckline.k10.schema import write_connection
+    fixture = generate_empty_collection(tmp_path)
+    output = StringIO()
+    with redirect_stdout(output):
+        assert main(['collection-control', '--db', str(fixture.database), '--state', 'open',
+                     '--config-id', fixture.config_id, '--config-revision', str(fixture.revision)]) == 0
+    with redirect_stdout(output := StringIO()):
+        assert main(['enqueue-collection', '--db', str(fixture.database),
+                     '--slot', '2026-09-28T20:00:00+08:00', '--config-id', fixture.config_id,
+                     '--config-revision', str(fixture.revision)]) == 0
+    task_id = output.getvalue().strip()
+    checkpoint = {'executionStartedAt': '2026-09-28T12:00:00+00:00',
+        'sources': {'jin10-flash': {'state': 'partial', 'coverageThrough': None,
+            'observedStartAt': '2026-09-26T20:00:00+08:00',
+            'observedEndAt': '2026-09-28T19:00:00+08:00',
+            'limitations': ['page_cursor_invalid'], 'documentRefs': [{'private': 'reference'}]}},
+        'toolReceipts': {'paid-reply': {'body': 'private-paid-reply' * 500000}}}
+    raw = json.dumps(checkpoint)
+    with write_connection(fixture.database) as conn:
+        conn.execute('UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?', (raw, task_id))
+    original_loads = json.loads
+    def bounded_loads(value, *args, **kwargs):
+        # Python must never expand the receipt or document-ref tree to render
+        # public task status; the old API and active-control readers fail here.
+        if isinstance(value, (str, bytes)):
+            assert len(value) < 65536, 'status read decoded the full paid checkpoint'
+        return original_loads(value, *args, **kwargs)
+    monkeypatch.setattr(json, 'loads', bounded_loads)
+    with client_for(fixture.database, (fixture.config_id, fixture.revision, None)) as client:
+        def read(_):
+            response = client.get('/api/v1/k10/collection/status', headers=AUTH)
+            assert response.status_code == 200
+            body = response.json()
+            source = next(s for s in body['sources'] if s['sourceKey'] == 'jin10-flash')
+            assert source['state'] == 'partial' and source['limitations'] == ['page_cursor_invalid']
+            assert 'private-paid-reply' not in response.text
+            control = store.run_control_execution_status(db_path=fixture.database)
+            assert control['activeTasks'][0]['executionStartedAt'] == checkpoint['executionStartedAt']
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(read, range(8)))
+    with sqlite3.connect(f'file:{fixture.database}?mode=ro', uri=True) as conn:
+        assert conn.execute('SELECT checkpoint_json FROM k10_tasks WHERE task_id=?', (task_id,)).fetchone()[0] == raw

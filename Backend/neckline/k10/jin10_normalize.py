@@ -25,17 +25,20 @@ def _page(tool_name: str, structured: Mapping[str, Any]) -> tuple[list[Mapping[s
     rows = data["items"]
     if any(not isinstance(row, Mapping) for row in rows):
         raise Jin10Error("page_item_invalid")
+    more = data.get("has_more")
+    if not isinstance(more, bool):
+        raise Jin10Error("page_has_more_missing")
+    # The live service uses an empty cursor on its final page. It is an
+    # end-of-pagination marker only when has_more is explicitly false.
     cursors = [(field, data[field]) for field in ("next_offset", "next_cursor", "cursor")
-               if field in data and data[field] is not None]
+               if field in data and data[field] is not None
+               and not (more is False and data[field] == "")]
     if any(not isinstance(value, str) or not value for _, value in cursors):
         raise Jin10Error("page_cursor_invalid")
     if len({value for _, value in cursors}) > 1:
         raise Jin10Error("page_cursor_conflict")
     cursor = cursors[0][1] if cursors else None
     cursor_field = "offset" if cursors and cursors[0][0] == "next_offset" else "cursor"
-    more = data.get("has_more")
-    if not isinstance(more, bool):
-        raise Jin10Error("page_has_more_missing")
     if more and cursor is None:
         raise Jin10Error("page_cursor_missing")
     return rows, cursor, more, cursor_field if cursor is not None else None

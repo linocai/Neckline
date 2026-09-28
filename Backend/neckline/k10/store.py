@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .schema import read_connection, require_schema, write_connection
+from .checkpoint_projection import (
+    CHECKPOINT_READ_LOCK, COLLECTION_SUMMARY_SQL, EXECUTION_SUMMARY_SQL, collection_summary,
+)
 from .config import validate_execution_config
 from .research_contracts import EvidenceDisclosure, ResearchContractError
 from .types import CompanyWindowObservation, DocumentVersion, EventRevision, Observation, OpportunityPublicationInput, PublicationBatch, Task
@@ -1550,12 +1553,13 @@ def run_control_execution_status(*, db_path: Path) -> dict[str, Any]:
                 "SELECT state,COUNT(*) FROM k10_external_attempts WHERE state IN ('started','unknown') GROUP BY state"
             )
         }
-        rows = conn.execute(
-            "SELECT task_id,status,stage,payload_json,checkpoint_json FROM k10_tasks "
-            "WHERE ("
-            "status IN ('queued','running') OR (status='failed' AND stage='paused')) "
-            "ORDER BY created_at,task_id"
-        ).fetchall()
+        with CHECKPOINT_READ_LOCK:
+            rows = conn.execute(
+                f"SELECT task_id,status,stage,payload_json,{EXECUTION_SUMMARY_SQL} FROM k10_tasks "
+                "WHERE ("
+                "status IN ('queued','running') OR (status='failed' AND stage='paused')) "
+                "ORDER BY created_at,task_id"
+            ).fetchall()
     active: list[dict[str, Any]] = []
     for task_id, status, stage, payload_raw, checkpoint_raw in rows:
         try:
@@ -3136,18 +3140,19 @@ def freeze_collected_input(
                  or datetime.fromisoformat(str(item[5])) > datetime.fromisoformat(prior_cutoff))
         ]
         refs.sort(key=lambda item: (item["fetchedAt"], item["documentId"], item["revision"]))
-        task_rows = conn.execute(
-            "SELECT task_id,checkpoint_json FROM k10_tasks WHERE kind='collect_news' "
-            "AND julianday(created_at)<=julianday(?) "
-            "ORDER BY julianday(json_extract(payload_json,'$.slotAt')) DESC,created_at DESC,task_id DESC",
-            (frozen_text,)
-        ).fetchall()
+        with CHECKPOINT_READ_LOCK:
+            task_rows = conn.execute(
+                f"SELECT task_id,{COLLECTION_SUMMARY_SQL} FROM k10_tasks WHERE kind='collect_news' "
+                "AND julianday(created_at)<=julianday(?) "
+                "ORDER BY julianday(json_extract(payload_json,'$.slotAt')) DESC,created_at DESC,task_id DESC",
+                (frozen_text,)
+            ).fetchall()
         outcomes: list[dict[str, Any]] = []
         task_ids: list[str] = []
         for key in keys:
             source = None
             for task_id, raw in task_rows:
-                checkpoint = json.loads(raw)
+                checkpoint = collection_summary(raw)
                 sources = checkpoint.get("sources") if isinstance(checkpoint, dict) else None
                 candidate = sources.get(key) if isinstance(sources, dict) else None
                 if isinstance(candidate, dict):

@@ -11,6 +11,9 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException
 
 from neckline.k10 import store
+from neckline.k10.checkpoint_projection import (
+    CHECKPOINT_READ_LOCK, COLLECTION_SUMMARY_SQL, collection_summary,
+)
 from neckline.k10.collection_config import SOURCE_KEYS, validate_collection_config
 from neckline.k10.schema import SchemaUnavailable, read_connection, require_schema
 from .collection_schemas import (
@@ -76,9 +79,9 @@ def create_router(*, db_path_provider: Callable[[], Path],
 
     def _status() -> CollectionStatusOut:
         path = db_path_provider()
-        with _reader(path) as conn:
+        with CHECKPOINT_READ_LOCK, _reader(path) as conn:
             rows = conn.execute(
-                "SELECT task_id,status,stage,payload_json,checkpoint_json,created_at,updated_at "
+                f"SELECT task_id,status,stage,payload_json,{COLLECTION_SUMMARY_SQL},created_at,updated_at "
                 "FROM k10_tasks WHERE kind='collect_news' ORDER BY created_at DESC,task_id DESC LIMIT 20"
             ).fetchall()
         config, configuration = _binding(path)
@@ -86,7 +89,7 @@ def create_router(*, db_path_provider: Callable[[], Path],
         runs: list[CollectionRunOut] = []
         for row in rows:
             try:
-                payload, checkpoint = json.loads(row[3]), json.loads(row[4])
+                payload, checkpoint = json.loads(row[3]), collection_summary(row[4])
             except (TypeError, ValueError):
                 payload, checkpoint = {}, {}
             sources = checkpoint.get("sources") if isinstance(checkpoint, dict) else None

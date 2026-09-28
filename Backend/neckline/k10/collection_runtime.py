@@ -145,6 +145,12 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
                     obtained_at=context.clock(), question="scheduled_collection",
                     target=source_key, db_path=context.db_path, leaseguard=context.require_lease)
                 page_refs = result["documentRefs"]
+                if state.get("errorCode") == "page_cursor_invalid":
+                    # A parser repair can consume the already-paid final page.
+                    # Retire only the resolved parser error, not coverage gaps.
+                    state["errorCode"] = None
+                    state["limitations"] = [value for value in state.get("limitations", [])
+                                            if value != "page_cursor_invalid"]
                 # A credential can disappear after a paid reply but before
                 # this page checkpoint. Replay the settled reply locally even
                 # with no token, and do not duplicate refs if a later restart
