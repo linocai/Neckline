@@ -137,7 +137,9 @@ def test_b82_keeps_an_only_invalid_choice_blocked(raw):
 
 @pytest.mark.parametrize("raw, message", [
     ({"selected": [{"i": 4, "reason": "陌生输入"}], "merged": []}, "陌生"),
-    ({"selected": [{"i": 0, "reason": "保留"}], "merged": [{"i": 1, "into": 1, "reason": "自合并"}]}, "合并"),
+    # Persisted canonical ledgers remain strict; only wire hints are sanitized.
+    ({"selected": [{"i": 0, "selectedRank": 1, "reason": "保留"}],
+      "merged": [{"i": 1, "into": 1, "reason": "自合并"}], "notSelected": [2, 3]}, "合并"),
     ({"selectionComplete": False, "selected": [], "merged": []}, "未明确完成"),
     ([], "必须是对象"),
 ])

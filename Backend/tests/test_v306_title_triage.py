@@ -352,7 +352,7 @@ def test_compact_global_declaration_generates_the_full_not_selected_complement_w
     ({"selectionComplete": False, "reviewedCount": 2, "selected": [], "merged": []}, "未明确完成"),
     ({"selectionComplete": True, "reviewedCount": 2,
       "selected": [{"i": 7, "selectedRank": 1, "reason": "越界"}], "merged": []}, "陌生"),
-    ({"selectionComplete": True, "reviewedCount": 2,
+    ({"notSelected": [],
       "selected": [{"i": 0, "selectedRank": 1, "reason": "保留"}],
       "merged": [{"i": 1, "into": 1, "reason": "自合并"}]}, "合并"),
 ])

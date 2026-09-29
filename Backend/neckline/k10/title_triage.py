@@ -510,7 +510,10 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
             index = indexed(row, merged_keys)
             target = indexed(row, merged_keys, key="into")
             if index == target or index in selected_indices:
-                raise TitleTriageProtocolError("全局标题合并 refIndex 无效")
+                # These optional edges cannot replace an explicit selection
+                # or merge a source into itself. Discard only the edge, after
+                # validating both references; retain the source's own audit.
+                continue
             if index in covered:
                 # Retain the first effective merge edge. A later duplicate
                 # cannot destabilize a usable title decision.
