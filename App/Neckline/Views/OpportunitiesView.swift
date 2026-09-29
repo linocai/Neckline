@@ -28,6 +28,8 @@ struct OpportunitiesView: View {
     private var hasPublishedFormalDelivery: Bool {
         guard let report, report.availableAt != nil,
               let delivery, delivery.isReadableByCurrentApp else { return false }
+        if delivery.outcome == "partial", delivery.rankingScope == "none",
+           report.discovery?.outcome == "not_completed" { return false }
         return ["complete", "partial"].contains(delivery.outcome)
     }
 
@@ -171,11 +173,16 @@ struct OpportunitiesView: View {
                     delivery: delivery,
                     reportStatus: report.status,
                     incompleteReviewCount: report.incompleteReviews?.count ?? 0,
+                    discoveryOutcome: report.discovery?.outcome,
+                    readableMaterialCount: report.materials?.state == "available" ? report.materials?.count ?? 0 : 0,
                     model: model
                 )
             }
         } else if report?.delivery != nil {
             NoticeLine(icon: "questionmark.circle", text: "这份报告的交付协议尚未受当前版本支持，不能推断完整度。", tone: NK.amber)
+        }
+        if let evidence = report?.notificationEvidence {
+            NoticeLine(icon: "bell", text: k10NotificationEvidenceText(evidence), tone: NK.textSecondary)
         }
         if !hasPublishedFormalDelivery, let report, let materials = report.materials {
             switch materials.state {
@@ -578,13 +585,18 @@ private struct ReportDeliveryCard: View {
     let delivery: K10ReportDelivery
     let reportStatus: String
     let incompleteReviewCount: Int
+    let discoveryOutcome: String?
+    let readableMaterialCount: Int
     @Bindable var model: AppModel
 
     private var presentation: K10DeliveryPresentation {
         k10DeliveryPresentation(
             outcome: delivery.outcome,
             reportStatus: reportStatus,
-            incompleteReviewCount: incompleteReviewCount
+            incompleteReviewCount: incompleteReviewCount,
+            rankingScope: delivery.rankingScope,
+            discoveryOutcome: discoveryOutcome,
+            readableMaterialCount: readableMaterialCount
         )
     }
 

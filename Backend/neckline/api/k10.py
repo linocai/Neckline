@@ -1438,6 +1438,9 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             return V2ReportEnvelope(schemaVersion=10, state="empty" if ready else "not_configured",
                 reason=ApiFailure(reason="no_report" if ready else "not_configured", message="尚无日报" if ready else "今天没跑成 · 参数未配置"))
         delivery = report.get("delivery")
+        from neckline.k10.notifications import report_notification_evidence
+        report["notificationEvidence"] = report_notification_evidence(
+            report_id=report["reportId"], db_path=db_path())
         contract = delivery.get("contractVersion") if isinstance(delivery, Mapping) else None
         if contract is None and report.get("status") in {"failed", "not_configured", "unavailable", "running", "queued", "retry_pending"}:
             if any(report.get(key) for key in ("eveningCards", "updatedCards", "addedCards")):

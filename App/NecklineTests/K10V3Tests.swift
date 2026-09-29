@@ -2635,3 +2635,70 @@ extension K10V3Tests {
     try XCTUnwrap(image.pngData()).write(to: URL(fileURLWithPath: root).appendingPathComponent("ios-\(name).png"))
     #endif
 }
+
+extension K10V3Tests {
+    func testV362IncompleteResearchIsNotAnEmptyRecommendation() {
+        let partial = k10DeliveryPresentation(outcome: "partial", reportStatus: "partial", incompleteReviewCount: 0,
+            rankingScope: "none", discoveryOutcome: "not_completed", readableMaterialCount: 228)
+        XCTAssertEqual(partial.title, "研究未完成")
+        XCTAssertTrue(partial.message.contains("部分材料可读"))
+        XCTAssertTrue(partial.message.contains("不能据此判断没有机会"))
+        let unavailable = k10DeliveryPresentation(outcome: "partial", reportStatus: "partial", incompleteReviewCount: 0,
+            rankingScope: "none", discoveryOutcome: "not_completed")
+        XCTAssertFalse(unavailable.message.contains("材料可读"))
+        let ranked = k10DeliveryPresentation(outcome: "partial", reportStatus: "partial", incompleteReviewCount: 0,
+            rankingScope: "eligible", discoveryOutcome: "recommendations")
+        XCTAssertEqual(ranked.title, "部分完成")
+        let complete = k10OpportunityEmptyPresentation(responseState: "available", hasReportLoadError: false,
+            reportStatus: "completed", deliveryOutcome: "complete", segment: "morning", currentMorningUpdateCount: 0,
+            hasEndedRecommendations: false, responseReason: nil, discoveryState: "complete", discoveryOutcome: "no_recommendation")
+        XCTAssertEqual(complete.title, "隔夜没有新的推荐")
+    }
+
+    func testV362NotificationAcceptanceNeverClaimsDeviceDisplay() throws {
+        let unknown = try JSONDecoder().decode(K10NotificationEvidence.self, from: Data(
+            #"{"state":"unknown","acceptedDeviceCount":null,"registeredDeviceCount":null,"deviceDisplayState":"unverified"}"#.utf8))
+        XCTAssertNil(unknown.acceptedDeviceCount)
+        XCTAssertTrue(k10NotificationEvidenceText(unknown).contains("状态未确认"))
+        XCTAssertEqual(k10DeliveryGapReasonText("response_empty"), "模型回复缺少最终答案")
+        for (state, accepted, expected) in [("no_registered_devices", 0, "没有已注册"),
+                                           ("queued", 0, "等待发送"), ("failed", 0, "推送失败"),
+                                           ("apns_accepted", 1, "设备是否显示尚未验证"),
+                                           ("partial", 1, "其余未确认"), ("apns_accepted", 0, "状态未确认")] {
+            let evidence = K10NotificationEvidence(state: state, acceptedDeviceCount: accepted,
+                registeredDeviceCount: accepted, deviceDisplayState: "unverified")
+            let text = k10NotificationEvidenceText(evidence)
+            XCTAssertTrue(text.contains(expected), text)
+            XCTAssertFalse(text.contains("已送达"))
+        }
+    }
+
+    @MainActor func testV362ActualAPIReportAndNativeScreen() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let root = env["NK_V362_API_DIR"], let renderRoot = env["NK_V362_RENDER_DIR"] else {
+            if env["NK_V362_REQUIRE_API"] == "1" { return XCTFail("Actual FastAPI responses and native output paths required") }
+            throw XCTSkip("Set NK_V362_API_DIR and NK_V362_RENDER_DIR for actual API acceptance")
+        }
+        let url = URL(fileURLWithPath: root).appendingPathComponent("partial.json")
+        let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Data(contentsOf: url))
+        XCTAssertTrue(response.isReadableByCurrentApp)
+        let report = try XCTUnwrap(response.report)
+        let delivery = try XCTUnwrap(report.delivery)
+        XCTAssertEqual(delivery.outcome, "partial")
+        XCTAssertEqual(delivery.rankingScope, "none")
+        XCTAssertEqual(report.discovery?.outcome, "not_completed")
+        XCTAssertGreaterThan(report.materials?.count ?? 0, 0)
+        let evidence = try XCTUnwrap(report.notificationEvidence)
+        XCTAssertEqual(evidence.state, "no_registered_devices")
+        XCTAssertEqual(evidence.acceptedDeviceCount, 0)
+        XCTAssertEqual(evidence.deviceDisplayState, "unverified")
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {})
+        model.state = .ready
+        model.dailyWindow = report.windowKind
+        if report.windowKind == "morning" { model.dailyMorning = response } else { model.dailyEvening = response }
+        try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "v362-partial")
+        model.dailyMorning = nil
+        model.dailyEvening = nil
+        try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "v362-empty")
+    }
+}

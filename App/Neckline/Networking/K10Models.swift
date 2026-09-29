@@ -93,7 +93,15 @@ struct K10DailyReport: Codable, Identifiable, Equatable {
     /// intentionally separate from new cards: a completed review may find no
     /// material change, and an unfinished review must remain visible.
     var morningReview: K10MorningReview? = nil
+    var notificationEvidence: K10NotificationEvidence? = nil
     var id: String { reportId }
+}
+
+struct K10NotificationEvidence: Codable, Equatable {
+    let state: String
+    let acceptedDeviceCount: Int?
+    let registeredDeviceCount: Int?
+    let deviceDisplayState: String
 }
 
 struct K10ReportMaterials: Codable, Equatable {

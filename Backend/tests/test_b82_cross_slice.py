@@ -642,6 +642,19 @@ def _run_cross_slice_morning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(
         pipeline._CheckpointedDiscoveryModel, "advance_research_round", settle_twenty_nine_then_yield,
     )
+    original_research_outcome = pipeline._research_outcome
+    resuming = [False]
+
+    def freeze_first_slice_admission(**kwargs):
+        # An empty review set now lends the second frozen slot to discovery.
+        # Keep this corruption/closeout fixture's admitted prefix explicit:
+        # a sibling may be scheduled before event-028's yield is observed,
+        # but it must not create event-029's snapshot in this first slice.
+        if not resuming[0] and kwargs["event"].canonical_key >= "event-029":
+            raise DiscoverySliceYield()
+        return original_research_outcome(**kwargs)
+
+    monkeypatch.setattr(pipeline, "_research_outcome", freeze_first_slice_admission)
     output = StringIO()
     with redirect_stdout(output):
         assert cli_main([
@@ -675,6 +688,7 @@ def _run_cross_slice_morning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     if corruption is not None:
         _corrupt_cross_snapshot_binding(database=database, snapshots=snapshots, mode=corruption)
     business_clock[0] = research_closeout_at
+    resuming[0] = True
     with sqlite3.connect(database) as connection:
         due = datetime.fromisoformat(connection.execute(
             "SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?", (task_id,),

@@ -843,6 +843,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
     @staticmethod
     def _decode_understand(raw: Mapping[str, Any], *, require_claims: bool = False,
                           full_text: bool = False,
+                          frozen_source_ref: EvidenceRef | None = None,
                           preserve_frozen_claim_ids: bool = False) -> tuple[tuple[EventDraft, ...], bool]:
         needs_full = raw.get("needsFullText", False)
         if not isinstance(needs_full, bool):
@@ -872,6 +873,11 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             if not isinstance(raw_claims, list):
                 raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid")
             raw_refs = row.get("sourceRefs")
+            # The caller has already read this unique frozen source. Restore
+            # omitted bookkeeping only; explicit malformed/foreign references
+            # still pass through strict validation and are never overwritten.
+            if "sourceRefs" not in row and frozen_source_ref is not None:
+                raw_refs = [_ref_payload(frozen_source_ref)]
             if preserve_frozen_claim_ids:
                 # B81 paid understand receipts used provider-supplied claim IDs
                 # as part of the persisted research context.  Replaying one
@@ -921,7 +927,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     from .research_runtime import normalize_body_claims
                     claims = normalize_body_claims(
                         raw_claims=raw_claims, allowed_source_refs=refs,
-                        fallback_source_ref=refs[0] if len(refs) == 1 else None,
+                        fallback_source_ref=frozen_source_ref if refs == (frozen_source_ref,) else None,
                     )
                 except ResearchContractError as exc:
                     if exc.field_name == "events[].claims[].sourceRef" and "不属于当前正文" in str(exc):
@@ -929,7 +935,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
                 except Exception as exc:
                     raise PipelineError("理解输出 claims 无效", code="understand_json_contract_invalid") from exc
-            if len(refs) != 1 or any(claim.source_ref != _ref_payload(refs[0]) for claim in claims):
+            if (len(refs) != 1 or (frozen_source_ref is not None and refs != (frozen_source_ref,))
+                    or any(claim.source_ref != _ref_payload(refs[0]) for claim in claims)):
                 raise PipelineError("理解命题引用不属于当前正文", code="understand_reference_invalid")
             facts = {**dict(row["facts"]), "researchClaims": [claim.to_dict() for claim in claims]}
             if full_text and needs_full:
@@ -981,12 +988,20 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                     or not isinstance(request["location"], str) or not request["location"].strip()):
                 raise PipelineError("原文局部读取请求无效", code="understand_json_contract_invalid")
             return {"sourceRead": {"location": request["location"]}}
+        # Structural reads deliberately leave top-level text empty. Only
+        # nonempty, located fragments establish what has actually been read.
+        visible = {part["locator"] for part in material.get("readResults", [])
+                   if isinstance(part, Mapping)
+                   and isinstance(part.get("locator"), str) and part["locator"].strip()
+                   and isinstance(part.get("text"), str) and part["text"].strip()}
+        body_read = (bool(isinstance(material.get("text"), str) and material["text"].strip())
+                     if material["textMode"] == "full_text" else bool(visible))
         events, needs_full = self._decode_understand(
             raw, require_claims=self._uses_investigation_contract(),
             full_text=material["textMode"] == "full_text",
+            frozen_source_ref=document.evidence_ref if body_read else None,
             preserve_frozen_claim_ids=bool(getattr(self._thread_usage, "preserve_frozen_claim_ids", False)),
         )
-        visible = {part["locator"] for part in material.get("readResults", []) if isinstance(part.get("text"), str)}
         if material["textMode"] != "full_text" and events and not visible:
             raise PipelineError("未读原文不能从目录编造事件", code="understand_reference_invalid")
         for event in events:
@@ -2316,7 +2331,7 @@ class _CheckpointedDiscoveryModel:
                 elif operation.startswith("investigation_") and usage.get("validationErrors"):
                     safe = "investigation_json_contract_invalid"
                 error_type = (JsonRepairError if "json" in safe
-                              else ModelNetworkError if safe.startswith("provider_") or safe in {"response_empty", "response_filtered"}
+                              else ModelNetworkError if safe.startswith("provider_") or safe == "response_filtered"
                               else SemanticValidationError)
                 raise error_type(code=safe, input_tokens=usage.get("inputTokens"),
                                  output_tokens=usage.get("outputTokens"), total_tokens=usage.get("totalTokens")) from exc
@@ -2397,7 +2412,7 @@ class _CheckpointedDiscoveryModel:
             # Truncation gets the bound single JSON repair with compact output
             # and thinking disabled, keeping the approved capacity unchanged.
             retryable = ("json" in code or code.startswith("provider_")
-                         or code in {"response_empty", "response_filtered", "model_network_failed"})
+                         or code in {"response_filtered", "model_network_failed"})
             if code == "rate_limited" and result.attempt_count < int(self._policy["networkMaxAttempts"]):
                 explicit = getattr(getattr(self._base, "_thread_usage", None), "retry_after_seconds", None)
                 delay = explicit if explicit is not None else self._policy["retryBackoffSeconds"][min(result.attempt_count - 1, len(self._policy["retryBackoffSeconds"]) - 1)]
@@ -4199,13 +4214,13 @@ def _morning_budget(configuration: Mapping[str, Any]) -> Mapping[str, Any] | Non
     return {"maxAttempts": policy["maxAttempts"]}
 
 
-def _b90_morning_parallelism(*, execution_profile: Mapping[str, Any]) -> tuple[int, int]:
+def _b90_morning_parallelism(*, execution_profile: Mapping[str, Any], reviews_pending: bool = True) -> tuple[int, int]:
     """Split the one frozen deep-read budget between discovery and reviews.
 
     A B90 morning must name at least two slots in its immutable execution
-    profile.  One share is never borrowed by discovery, so frozen-parent
-    companies keep progressing even during a large overnight discovery load;
-    together both shares are exactly ``deepReadConcurrency``.  This is a
+    profile. Frozen-parent companies keep their fair share until all review
+    targets are durably terminal. Empty/settled review sets lend their unused
+    share to discovery's next slice. This is a
     scheduling split, not a strategy threshold or a new config default.
     """
     payload = execution_profile.get("payload") if isinstance(execution_profile, Mapping) else None
@@ -4214,7 +4229,17 @@ def _b90_morning_parallelism(*, execution_profile: Mapping[str, Any]) -> tuple[i
     if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 2:
         raise PipelineError("B90 晨报共享深读并发必须在冻结配置中明确至少两个槽", code="morning_parallelism_invalid")
     review_slots = max(1, capacity // 2)
-    return capacity - review_slots, review_slots
+    return (capacity - review_slots if reviews_pending else capacity), review_slots
+
+
+def _b90_reviews_pending(*, scan_id: str, cutoff_at: datetime, db_path: Path) -> bool:
+    snapshot = _freeze_b90_morning_parent(scan_id=scan_id, cutoff_at=cutoff_at, db_path=db_path)
+    targets = snapshot.get("targets")
+    if not isinstance(targets, list):
+        return True  # an unproven work set never frees reserved capacity
+    return any(not isinstance(target, Mapping) or _b90_terminal_review_item(
+        scan_id=scan_id, review_id=target.get("reviewId"), db_path=db_path) is None
+        for target in targets)
 
 
 def _morning_finalization_reserve(*, configuration: Mapping[str, Any],
@@ -7500,6 +7525,7 @@ def production_scan_handler(
     if b90_morning:
         discovery_deep_read_limit, review_concurrency = _b90_morning_parallelism(
             execution_profile=execution_profile,
+            reviews_pending=_b90_reviews_pending(scan_id=scan_id, cutoff_at=cutoff, db_path=context.db_path),
         )
 
     def discovery_leaseguard() -> None:

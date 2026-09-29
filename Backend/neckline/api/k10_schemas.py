@@ -1030,7 +1030,15 @@ class V2ReportMaterialsEnvelope(K10Model):
     page: PageMeta
 
 
+class NotificationEvidenceOut(K10Model):
+    state: Literal["no_registered_devices", "queued", "apns_accepted", "partial", "failed", "unknown"]
+    acceptedDeviceCount: int | None = Field(default=None, ge=0)
+    registeredDeviceCount: int | None = Field(default=None, ge=0)
+    deviceDisplayState: Literal["unverified"] = "unverified"
+
+
 class V2ReportOut(K10Model):
+    notificationEvidence: NotificationEvidenceOut | None = None
     coverageGaps: list[str] = Field(default_factory=list)
     sourceCoverage: dict[str, object] | None = None
     incompleteReviews: list[V2IncompleteReviewOut] = Field(default_factory=list)

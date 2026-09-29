@@ -759,6 +759,48 @@ def get_notification(*, notification_id: str, db_path: Path) -> Notification | N
     return _notification(row) if row is not None else None
 
 
+def report_notification_evidence(*, report_id: str, db_path: Path) -> dict[str, Any]:
+    """Read acceptance evidence without treating outbox ``sent`` as delivery.
+
+    The device count is current, not a reconstructed historical fan-out target.
+    Accepted rows only prove APNs acceptance; device display is unobservable.
+    """
+    result = {"state": "unknown", "acceptedDeviceCount": None,
+              "registeredDeviceCount": None, "deviceDisplayState": "unverified"}
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('devices','k10_task_notifications','k10_notification_deliveries')")}
+        if "devices" in tables:
+            result["registeredDeviceCount"] = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+        if not {"k10_task_notifications", "k10_notification_deliveries"} <= tables:
+            return result
+        row = conn.execute(
+            "SELECT n.notification_id,n.status,n.last_error,n.blocked_reason "
+            "FROM k10_task_notifications n JOIN k10_scan_execution_bindings b ON b.task_id=n.task_id "
+            "JOIN k10_v2_report_runs r ON r.scan_id=b.scan_id WHERE r.report_id=? "
+            "AND (json_extract(n.deep_link_json,'$.reportId')=r.report_id "
+            "OR json_extract(n.deep_link_json,'$.scanId')=r.scan_id) "
+            "ORDER BY n.created_at DESC,n.notification_id DESC LIMIT 1", (report_id,),
+        ).fetchone()
+        if row is None:
+            return result
+        accepted = conn.execute("SELECT COUNT(*) FROM k10_notification_deliveries WHERE notification_id=?",
+                                (row[0],)).fetchone()[0]
+    result["acceptedDeviceCount"] = accepted
+    if accepted:
+        result["state"] = "apns_accepted" if row[1] == "sent" else "partial"
+    elif row[2] == "no_registered_devices":
+        result["state"] = "no_registered_devices"
+    elif row[3]:
+        result["state"] = "failed"
+    elif row[1] in {"queued", "sending"}:
+        result["state"] = "queued"
+    # Historic sent-without-acceptance has no durable target proof. Keep it
+    # unknown rather than inferring success or a past device count from today.
+    return result
+
+
 def _device_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -797,6 +839,7 @@ def _finish_delivery(
     *, db_path: Path, notification_id: str, worker_id: str, now_text: str,
     delivered: Sequence[str], transient_error: bool, retry_policy: NotificationRetryPolicy,
     blocked_reason: str | None = None,
+    no_registered_devices: bool = False,
 ) -> None:
     with write_connection(db_path) as conn:
         _require_notifications_schema(conn)
@@ -823,7 +866,7 @@ def _finish_delivery(
             retry_at = datetime.fromisoformat(now_text) + timedelta(seconds=delay_seconds)
             status, next_attempt_at, last_error = "queued", _utc_text(retry_at), "delivery_retry_needed"
         else:
-            status, next_attempt_at, last_error = "sent", None, None
+            status, next_attempt_at, last_error = "sent", None, "no_registered_devices" if no_registered_devices else None
         conn.execute(
             "UPDATE k10_task_notifications SET status=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=?,"
             "next_attempt_at=?,blocked_reason=? "
@@ -951,6 +994,7 @@ def dispatch_task_notifications(
             db_path=db_path, notification_id=notification.notification_id, worker_id=worker_id,
             now_text=_utc_text(clock() if clock is not None else now), delivered=delivered_now,
             transient_error=transient_error, retry_policy=retry_policy, blocked_reason=blocked_reason,
+            no_registered_devices=not current_tokens and not delivered_already,
         )
         dispatched += 1
     return dispatched

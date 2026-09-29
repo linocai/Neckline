@@ -10,8 +10,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "3.6.1"
-    CURRENT_PROJECT_VERSION: "93"
+    MARKETING_VERSION: "3.6.2"
+    CURRENT_PROJECT_VERSION: "94"
     K10_SYNTHETIC_UI: "NO"
     # One reusable QA bundle per platform; release builds keep the empty suffix.
     NK_BUNDLE_SUFFIX: ""
@@ -48,7 +48,7 @@ targets:
         # 同时含 `PRODUCT_NAME = Neckline;` 与 `MARKETING_VERSION`」——xcodegen 不把顶层 base
         # 下放到 target 块,只写顶层,该块就没有 MARKETING_VERSION、守门直接挂。
         # 重复值必须与顶层一致(单测同时断言两处相等,漂了会红)。
-        MARKETING_VERSION: "3.6.1"
+        MARKETING_VERSION: "3.6.2"
         # 推送 entitlement 仅 iOS 应用(真机/模拟器);macOS 不开推送(平台分叉,同 LinoN 姿势)。
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Neckline/Neckline.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements
@@ -67,7 +67,7 @@ targets:
         # 安装后通知栏、Dock 与系统缓存命中旧图标。
         # ⚠ 改名要同步:本行 / `Assets.xcassets/<名>.appiconset` 目录名 /
         # `xcodegen generate` 重生成的 pbxproj。版本治理测试会按版本和Build动态推导图标名。
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV361B93
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV362B94
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

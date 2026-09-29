@@ -371,6 +371,56 @@ def load_research_round_state(*, snapshot_id: str, db_path: Path) -> dict[str, A
     return {"snapshot": snapshot, "rounds": rounds}
 
 
+def read_terminal_outcome(*, snapshot_id: str, task_id: str, context_sha256: str,
+                          profile_sha256: str, db_path: Path) -> Mapping[str, Any] | None:
+    """Project only the derived terminal summary, never decode round packets."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT revision,task_id,context_sha256,research_status,execution_status,"
+            "json_extract(snapshot_json,'$.terminalOutcome') FROM k10_research_snapshot_revisions "
+            "WHERE snapshot_id=? ORDER BY revision DESC LIMIT 1", (snapshot_id,),
+        ).fetchone()
+    if (row is None or row[1] != task_id or row[2] != context_sha256 or row[4] != "ok"
+            or row[3] == "continue_research" or not isinstance(row[5], str)):
+        return None
+    try:
+        value = json.loads(row[5])
+        outcome = value["outcome"]
+        if (value["version"] != 1 or value["revision"] != row[0] or value["profileSha256"] != profile_sha256
+                or not isinstance(outcome, Mapping) or value["sha256"] != sha256(_json(outcome).encode()).hexdigest()):
+            return None
+        return outcome
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def persist_terminal_outcome(*, snapshot_id: str, revision: int, profile_sha256: str,
+                             outcome: Mapping[str, Any], db_path: Path,
+                             lease_guard: LeaseGuard | None = None) -> None:
+    """Cache a local derivative before aggregation; keep raw rounds immutable.
+
+    A missing summary (including interruption between round and summary writes)
+    falls back to the exact existing recovery path. No new snapshot, round,
+    provider attempt or schema is introduced by this optional JSON projection.
+    """
+    clean = _safe_json(outcome, field="终态研究摘要")
+    envelope = {"version": 1, "revision": revision, "profileSha256": profile_sha256,
+                "sha256": sha256(_json(clean).encode()).hexdigest(), "outcome": clean}
+    with write_connection(db_path) as conn:
+        require_schema(conn)
+        _guard(lease_guard)
+        row = conn.execute(
+            "SELECT revision,research_status,execution_status FROM k10_research_snapshot_revisions "
+            "WHERE snapshot_id=? ORDER BY revision DESC LIMIT 1", (snapshot_id,),
+        ).fetchone()
+        if row is None or row[0] != revision or row[1] == "continue_research" or row[2] != "ok":
+            raise K10Conflict("研究终态摘要与快照不一致")
+        conn.execute("UPDATE k10_research_snapshot_revisions SET snapshot_json="
+                     "json_set(snapshot_json,'$.terminalOutcome',json(?)) WHERE snapshot_id=? AND revision=?",
+                     (_json(envelope), snapshot_id, revision))
+
+
 def _evidence_update(value: Mapping[str, Any]) -> tuple[str, str, int, str, str, Mapping[str, Any]]:
     value = validate_evidence_update(value)
     claim_id = value["claimId"]

@@ -6,7 +6,7 @@ claims, attributable excerpts and explicitly admitted additional full texts.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -39,7 +39,8 @@ from .investigation_prompts import request_spec as investigation_request_spec
 from .research_material import admit_material
 from .research_store import (append_research_round, create_research_snapshot, load_prior_research_evidence,
                              freeze_research_input_boundary,
-                             load_research_round_state, mark_research_round_failed, read_research_state)
+                             load_research_round_state, mark_research_round_failed, read_research_state,
+                             read_terminal_outcome, persist_terminal_outcome)
 from .schema import SqliteWriteBusy
 
 def _now() -> datetime:
@@ -2089,6 +2090,41 @@ class _Investigation:
         return self._run_b78()
 
 
+def _terminal_outcome_payload(outcome: InvestigationOutcome) -> dict[str, Any]:
+    # Additional bodies already live in append-only source versions. The
+    # summary keeps only their references, not another copy of source text.
+    value = asdict(replace(outcome, verification=replace(outcome.verification, documents=())))
+    value["verification"]["documents"] = [_ref(doc) for doc in outcome.verification.documents]
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _terminal_outcome_from_payload(value: Mapping[str, Any], *, documents, db_path) -> InvestigationOutcome:
+    def refs(values):
+        return tuple(EvidenceRef(row["document_id"], row["revision"]) for row in values)
+    verification = value["verification"]
+    restored_docs = dict(documents)
+    missing = [ref for ref in verification["documents"]
+               if EvidenceRef(ref["documentId"], ref["revision"]) not in restored_docs]
+    if missing:
+        for row in store.load_document_versions(refs=missing, db_path=db_path):
+            ref = EvidenceRef(row["documentId"], row["revision"])
+            restored_docs[ref] = DiscoveryDocument(ref.document_id, ref.revision, row.get("publishedAt"),
+                row["fetchedAt"], row.get("originalText"), row.get("excerpt"), row.get("metadata", {}))
+    comparison = value["comparison"]
+    return InvestigationOutcome(
+        Verification(verification["state"], verification["summary"], refs(verification["evidence_refs"]),
+            verification["coverage"], tuple(restored_docs[EvidenceRef(ref["documentId"], ref["revision"])]
+                                             for ref in verification["documents"])),
+        tuple(CompanyMappingDraft(**{**row, "relation_evidence": refs(row["relation_evidence"])})
+              for row in value["mappings"]),
+        EventComparison(comparison["summary"], {
+            code: CandidateComparison(**{**row, "evidence_refs": refs(row["evidence_refs"]),
+                                          "historical_cases": tuple(row["historical_cases"])})
+            for code, row in comparison["candidates"].items()}, refs(comparison["evidence_refs"])),
+        value["snapshot_id"],
+    )
+
+
 def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDraft,
                      documents: Mapping[EvidenceRef, DiscoveryDocument], execution_profile: Mapping[str, Any],
                      cutoff_at: datetime, db_path: Path, created_at: datetime,
@@ -2101,6 +2137,23 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
                      new_external_admission_guard: Callable[[], None] | None = None) -> InvestigationOutcome:
     runtime: _Investigation | None = None
     try:
+        identity = "research_" + _hash([task_id, event.canonical_key, event.stage_key,
+            event.event_state, [_ref(ref) for ref in event.source_refs]])[:32]
+        context_digest = research_context_digest(event=event, cutoff_at=cutoff_at, cutoff_inclusive=cutoff_inclusive)
+        profile_digest = _hash({"execution": execution_profile, "runtimeContract": runtime_contract})
+        if leaseguard is not None:
+            leaseguard()
+        cached = read_terminal_outcome(snapshot_id=identity, task_id=task_id, context_sha256=context_digest,
+                                       profile_sha256=profile_digest, db_path=db_path)
+        if cached is not None and set(event.source_refs) <= set(documents):
+            try:
+                outcome = _terminal_outcome_from_payload(cached, documents=documents, db_path=db_path)
+            except (KeyError, TypeError, ValueError):
+                outcome = None  # incomplete projection uses the original strict recovery path
+            if outcome is not None and outcome.snapshot_id == identity:
+                if snapshot_created is not None:
+                    snapshot_created(identity)
+                return outcome
         # Snapshot creation and its caller's durable coverage checkpoint are
         # research writes too. Keep a bounded SQLite contention distinct all
         # the way to the worker even if it happens before ``run`` starts.
@@ -2110,7 +2163,12 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
             allow_failed_resume=allow_failed_resume, runtime_contract=runtime_contract,
             new_research_admission_guard=new_research_admission_guard,
             new_external_admission_guard=new_external_admission_guard)
-        return runtime.run()
+        outcome = runtime.run()
+        if runtime.snapshot.execution_status == "ok" and runtime.snapshot.research_status != "continue_research":
+            persist_terminal_outcome(snapshot_id=runtime.identity, revision=runtime.snapshot.revision,
+                profile_sha256=profile_digest, outcome=_terminal_outcome_payload(outcome), db_path=db_path,
+                lease_guard=leaseguard)
+        return outcome
     except SqliteWriteBusy as exc:
         # Preserve the storage identity until the real worker boundary.  A
         # generic discovery slice is unbounded by design; translating a

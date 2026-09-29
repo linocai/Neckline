@@ -254,8 +254,20 @@ func k10ShowsOpportunityEmptyState(segment: String, currentMorningUpdateCount: I
 func k10DeliveryPresentation(
     outcome: String,
     reportStatus: String,
-    incompleteReviewCount: Int
+    incompleteReviewCount: Int,
+    rankingScope: String? = nil,
+    discoveryOutcome: String? = nil,
+    readableMaterialCount: Int = 0
 ) -> K10DeliveryPresentation {
+    if outcome == "partial", rankingScope == "none", discoveryOutcome == "not_completed" {
+        return K10DeliveryPresentation(
+            title: "研究未完成",
+            message: readableMaterialCount > 0
+                ? "部分材料可读，尚未形成正式推荐；不能据此判断没有机会。"
+                : "尚未形成正式推荐；不能据此判断没有机会。",
+            tone: .caution
+        )
+    }
     if outcome == "complete", reportStatus == "partial" {
         if incompleteReviewCount > 0 {
             return K10DeliveryPresentation(
@@ -324,6 +336,7 @@ func k10DeliveryGapReasonText(_ value: String) -> String {
         "model_output_invalid": "模型回复格式无效",
         "model_response_unreadable": "模型回复无法读取",
         "model_response_incomplete": "模型回复不完整",
+        "response_empty": "模型回复缺少最终答案",
         "network_retry_exhausted": "网络重试已用尽",
         "source_unavailable": "资料来源暂不可用",
         "source_collection_partial": "该来源采集不完整，详见采集范围",
@@ -406,4 +419,21 @@ func k10LifecycleFactLines(_ content: [String: K10Value]) -> [String] {
         }
     }
     return lines(.object(content))
+}
+
+func k10NotificationEvidenceText(_ evidence: K10NotificationEvidence) -> String {
+    switch evidence.state {
+    case "no_registered_devices":
+        return "推送未发送：没有已注册的设备。"
+    case "apns_accepted" where (evidence.acceptedDeviceCount ?? 0) > 0:
+        return "Apple推送服务已接受向\(evidence.acceptedDeviceCount ?? 0)台设备的请求；设备是否显示尚未验证。"
+    case "partial" where (evidence.acceptedDeviceCount ?? 0) > 0:
+        return "部分推送请求已被Apple接受（\(evidence.acceptedDeviceCount ?? 0)台）；其余未确认，设备显示未验证。"
+    case "failed":
+        return "推送失败，未确认设备收到通知。"
+    case "queued":
+        return "推送等待发送，尚未确认设备收到通知。"
+    default:
+        return "推送交付状态未确认，设备显示未验证。"
+    }
 }

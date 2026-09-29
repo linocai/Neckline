@@ -31,7 +31,7 @@ _OPERATIONS = frozenset({
 _JSON_CODES = frozenset({"json_invalid", "json_root_invalid", "response_json_invalid", "response_structure_invalid"})
 _NETWORK_CODES = frozenset({
     "rate_limited", "provider_configuration", "provider_dependency", "provider_transport", "provider_http_error",
-    "response_empty", "response_filtered", "provider_tool_limit",
+    "response_filtered", "provider_tool_limit",
 })
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _UNSAFE_RESULT_KEYS = frozenset({"prompt", "rawResponse", "raw_response", "originalText", "original_text"})
@@ -165,9 +165,13 @@ def _normal_json(value: Any) -> Mapping[str, Any] | list[Any]:
     return normalized
 
 
-def _safe_provider_failure(result: LLMResult) -> ModelNetworkError:
+def _safe_provider_failure(result: LLMResult) -> ModelOperationError:
     code = _safe_code(result.error_code, fallback="model_network_failed")
-    return ModelNetworkError(code=code, input_tokens=result.prompt_tokens,
+    # An HTTP reply with no final answer is a settled output failure. Retrying
+    # the transport cannot recover its missing answer and must not consume a
+    # new wire or turn the terminal diagnostic into a network outage.
+    error = SemanticValidationError if code == "response_empty" else ModelNetworkError
+    return error(code=code, input_tokens=result.prompt_tokens,
                              output_tokens=result.completion_tokens, total_tokens=result.total_tokens)
 
 
@@ -277,6 +281,9 @@ def _reserve(
         prior_elapsed = int(row[4]) if row is not None else 0
         prior_input, prior_output = (row[5], row[6]) if row is not None else (None, None)
         previous_code = str(row[8]) if row is not None and isinstance(row[8], str) else None
+        if previous_code == "response_empty":
+            return _Reservation("failed", prior_attempts, prior_network, prior_repairs, prior_elapsed, prior_input, prior_output,
+                                previous_code)
         is_json_retry = previous_code is not None and (previous_code in _JSON_CODES or "json" in previous_code)
         if is_json_retry and (prior_repairs >= repair_limit or prior_network >= network_limit):
             return _Reservation("failed", prior_attempts, prior_network, prior_repairs, prior_elapsed, prior_input, prior_output,
