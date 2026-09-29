@@ -9,7 +9,7 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 - Neckline is the production A-share application: Swift clients plus the Python service.
 - Strategy research, backtests, evaluation, calibration, and experiment history belong in `/Users/linotsai/Lino/whynotme`.
 - Production code must never import `whynotme`. The research laboratory may depend on stable Neckline runtime contracts in one direction only.
-- Production backend is **K10-v2 / Neckline 3.6.1 Build95 / internal and public Schema10**, backend-only release set **v3.6.1-b95**, runtime `f5db9c3631e147f1b7940830625263a87818ac71`, since 2026-09-29. Mac installed/iOS prepared artifacts remain Build93. B92 is the fresh business-data boundary; K9/K8 and pre-B92 historical runtime compatibility are retired. Git history and version records preserve engineering history, not a runtime data fallback.
+- Production backend is **K10-v2 / Neckline 3.6.2 Build94 / internal and public Schema10**, release set **v3.6.2-b94**, runtime `47e15ce06c8fb9021aaedaf8c42310ebe291ce19`, since 2026-09-29. Mac installed/iOS prepared artifacts are 3.6.2 Build94; final iOS installation remains user-operated through Xcode. B92 is the fresh business-data boundary; K9/K8 and pre-B92 historical runtime compatibility are retired. Git history and version records preserve engineering history, not a runtime data fallback.
 - K10-v2 is a pure stock selector. Complete trade plans, buy/sell price confirmation, holding/exit policy and profit settlement are retired, not pending prerequisites. Track every formally published candidate over its fixed D1/D2 window. The approved publication, selection, overlap and evaluation rules live in `PROJECT_PLAN.md`; never infer a new opportunity from a refreshed card or reset its window after a user action.
 
 ## Repository map
@@ -23,7 +23,7 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 ## Working rules
 
 - **B92全新数据起点（2026-09-26用户裁决）：** B92前报告、任务、原件、账本、行情、缓存及旧数据恢复集全部退役，不得读取、迁移、恢复或当作上下文。2026-09-27 B93发布已切换新库，旧生产与本地业务存储已清除。固定1,089家公司资料/策略从已批准静态输入重新登记；新起点以后历史可按具体问题使用，无消息年龄硬门槛。
-- **当前发布与绑定：** B95标题协调容错快修已上线，用户明确不用重跑旧任务；Mac/iOS制品与安装状态见PROJECT_PLAN及`archive/v3.6.1-b92_execution.md`第12节。新库run/execution/collection revision均为1，固定策略快照`k10-v2-20260909`，执行与报告契约绑定B92；不得照抄旧B82 revision2。`DB_PATH=K10_DB_PATH`与`PARQUET_DIR=K10_PARQUET_DIR`必须指向同一新起点存储。交易日历重新取得，当前覆盖2026–2027。
+- **当前发布与绑定：** 3.6.2（94）执行/来源容错与交付证据修复已上线，保留B95标题协调修复，用户明确不用重跑旧任务；Mac已安装94、iOS已签名待用户Xcode安装，证据见PROJECT_PLAN及`archive/v3.6.2-b94_execution.md`第11节。新库run/execution/collection revision均为1，固定策略快照`k10-v2-20260909`，执行与报告契约绑定B92；不得照抄旧B82 revision2。`DB_PATH=K10_DB_PATH`与`PARQUET_DIR=K10_PARQUET_DIR`必须指向同一新起点存储。交易日历重新取得，当前覆盖2026–2027。
 - **运行状态（2026-09-28 17:26用户明确恢复）：** 采集与报告control均open/user_opened；晨晚报、采集及两行情timer active/enabled，API/worker active。正常生产资讯、研究、核验、行情及完成/失败通知已获授权。旧9月22专用心跳保持PAUSED，不恢复旧任务。模型、Tavily和金十凭据已重新登记并核验加载；TuShare/鉴权/APNs独立凭据保留，新客户端重新注册设备。
 - **外呼边界：** 正常定时生产已恢复，不扩大到额外供应商余额/权限探针、测试推送或旧任务恢复。普通测试仍为隔离库与确定性transport。采集自然日08:00/20:00，晚报对应交易日前一自然日21:00，晨报交易日08:30/09:20截止；不补跑错过的旧窗口。
 - 历史B81–B89运行与故障仅见`archive/v3.5.1-b82_execution.md`；其保留旧业务和恢复旧任务条款已被全新起点裁决取代。资料仍保留draft/provenance状态，未排序材料不冒充正式推荐或D1/D2样本。
@@ -62,7 +62,7 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 - User retired optional off-host/S3 automatic backup on 2026-09-13. Its scripts, configuration and timer are removed; do not recreate them. Release rollback snapshots and local Schema recovery are separate and remain required.
 - A task is not complete until its local user-temp, `/tmp` and relevant cloud artifacts are inventoried, ownership/open handles checked, disposable files removed, and before/after usage plus retained recovery points verified. Include pytest batches, `mkdtemp` isolation directories, reviewer/reproducer databases, QA copies and SQLite WAL/SHM files. Never delete other projects' shared pytest directories by prefix alone.
 - Successful tests should not retain their full databases: use pytest `-o tmp_path_retention_policy=failed` pending the tracked fixture/config cleanup. Closed reproductions retain regression source and concise evidence, not every database copy. Preserve independent writable databases; reduce fixture payloads without weakening full-pool and real CLI/worker/API coverage.
-- 当前数据恢复集为`/opt/neckline/releases/v3.6.1-b95/recovery`：保留切换前已校验的新起点快照（含用户新设置、最新付费回执与晨报检查点），B95不可变后端制品在上级目录。B94/B93不可变代码包保留作代码回退；B94旧快照与B93发布时空起点快照已被替代并回收。旧B81/B82/B89数据恢复集已清除；任何时候不得回灌旧历史。新业务写入后不得用发布时快照整库覆盖，需先核对新写与外呼状态，必要时前向修复。
+- 当前数据恢复集为`/opt/neckline/releases/v3.6.2-b94/recovery`：保留切换前已校验的新起点快照（含用户最新设置、全部本地模型回执与晨报终态），不可变制品在上级目录。B95/B94/B93代码包保留作代码回退；B95旧数据快照及更早发布快照已被当前恢复点替代回收。旧B81/B82/B89数据恢复集已清除；任何时候不得回灌旧历史。新业务写入后不得用发布时快照整库覆盖，需先核对新写与外呼状态，必要时前向修复。
 
 - Future release closure must remove rehearsal/restore-check databases and their sidecars, check redundant pre/post copies for reuse/compression, and retire superseded recovery points after verifying the retained set. Cleanup applies on success and after closed failures; retained incident data needs a reason and deletion condition. Per-release cleanup and snapshot deduplication are executed; shared release-rollback retention and fixture lifecycle tooling remain tracked work. This does not reintroduce the retired off-host backup feature.
 
