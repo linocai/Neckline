@@ -351,9 +351,16 @@ def test_real_morning_empty_frozen_reviews_lend_six_slots_without_new_capacity(t
     assert not thread.is_alive() and not faults
     assert results[0].status == "completed" and peak <= 6
     with base.actual_api(database, **binding) as client:
-        report = client.get("/api/v1/k10/v2/reports/latest?window=morning").json()["report"]
+        response = client.get("/api/v1/k10/v2/reports/latest?window=morning").json()
+        report = response["report"]
     assert report["morningReview"]["targetCompanyCount"] == 0
     assert report["delivery"]["outcome"] == "complete"
+    if export_dir := os.environ.get("NK_V363_API_DIR"):
+        destination = Path(export_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "zero-parent.json").write_text(
+            json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
 
 
 @pytest.mark.parametrize("omit_event_source", [False, True])

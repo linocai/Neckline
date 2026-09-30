@@ -75,6 +75,7 @@ func k10AnomalyReasonText(_ value: String) -> String {
     return fields.isEmpty ? "不同来源数值存在冲突" : "不同来源的\(fields)数值存在冲突"
 }
 func k10CoverageGapText(_ value: String) -> String {
+    if value == "morning_parent_unavailable" { return "昨晚正式报告不可用，无法复核原有推荐理由" }
     if value.hasPrefix("morning_source_") { return "晨间资料覆盖不完整，复核结论仍有资料缺口" }
     if value.hasPrefix("morning_review_") { return "部分晨间复核尚未完成，已完成内容保留" }
     let known = [
@@ -86,6 +87,24 @@ func k10CoverageGapText(_ value: String) -> String {
     if let translated = known[value] { return translated }
     if value.unicodeScalars.contains(where: { $0.value >= 0x4E00 && $0.value <= 0x9FFF }) { return value }
     return "存在未说明的资料缺口"
+}
+
+func k10MorningDiscoveryIncompleteText(reviewState: String?) -> String {
+    switch reviewState {
+    case "complete":
+        return "隔夜新消息尚未完全处理；这不影响上方已完成的昨晚名单复核。"
+    case "unavailable":
+        return "隔夜新消息尚未完全处理；昨晚报告不可用，名单复核也未完成。"
+    default:
+        return "隔夜新消息尚未完全处理；昨晚名单的复核状态请见上方，已确认内容分别保留。"
+    }
+}
+
+func k10MorningReviewIncompleteText(parentReportId: String?) -> String {
+    guard parentReportId != nil else {
+        return "昨晚报告不可用，无法确定复核名单；不能视为没有变化。"
+    }
+    return "冻结的昨晚名单尚未全部形成可读复核结果；未完成的对象不会被当作没有变化。"
 }
 
 func k10VisibleCoverageGapTexts(_ values: [String], responseReason: String?) -> [String] {
@@ -332,6 +351,7 @@ func k10DeliveryGapReasonText(_ value: String) -> String {
         "provider_http_429": "模型服务限流",
         "morning_review_failed": "部分晨间复核未完成",
         "morning_review_not_configured": "晨间复核参数未配置",
+        "morning_parent_unavailable": "昨晚正式报告不可用，无法复核原有推荐理由",
         "not_configured": "参数未配置",
         "model_output_invalid": "模型回复格式无效",
         "model_response_unreadable": "模型回复无法读取",

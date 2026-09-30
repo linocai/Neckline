@@ -2151,8 +2151,9 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
             except (KeyError, TypeError, ValueError):
                 outcome = None  # incomplete projection uses the original strict recovery path
             if outcome is not None and outcome.snapshot_id == identity:
-                if snapshot_created is not None:
-                    snapshot_created(identity)
+                # The snapshot itself is the durable fact. A cached read must
+                # not register it again through the caller's mutable coverage
+                # checkpoint on every continuation.
                 return outcome
         # Snapshot creation and its caller's durable coverage checkpoint are
         # research writes too. Keep a bounded SQLite contention distinct all

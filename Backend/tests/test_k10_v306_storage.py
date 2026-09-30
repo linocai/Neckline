@@ -11,6 +11,7 @@ from neckline.k10 import store
 from neckline.k10.config import validate_execution_config
 from neckline.k10 import schema
 from neckline.k10.schema import SCHEMA_VERSION, initialize_schema, schema_version
+from neckline.fresh_start import RetiredDataError
 from tests.k10_v306_fixture import append_approved_execution_profile
 
 
@@ -174,7 +175,7 @@ def test_v306_schema_has_no_unpublished_budget_tables(tmp_path):
     assert not {"k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs"} & names
 
 
-def test_v306_forwards_schema_four_and_removes_unreleased_schema_five_tables(tmp_path):
+def test_pre_b92_schema_five_database_is_rejected_without_mutation(tmp_path):
     path = tmp_path / "schema-five.sqlite"
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
@@ -184,17 +185,17 @@ def test_v306_forwards_schema_four_and_removes_unreleased_schema_five_tables(tmp
         schema._apply_v4(conn)
         for version in range(1, 5):
             conn.execute("INSERT INTO k10_schema_migrations VALUES(?,?)", (version, NOW))
-        # These tables model the never-released Schema 5 surface.  Their
-        # contents must not survive the direct 5→6 cleanup.
+        # This legacy Schema 5 fixture predates the B92 fresh-start boundary.
         conn.execute("CREATE TABLE k10_screening_template_revisions(id TEXT)")
         conn.execute("CREATE TABLE k10_task_execution_spend_reservations(id TEXT)")
         conn.execute("CREATE TABLE k10_screening_runs(id TEXT)")
         conn.execute("INSERT INTO k10_schema_migrations VALUES(5,?)", (NOW,))
-    assert initialize_schema(path) == SCHEMA_VERSION
+    with pytest.raises(RetiredDataError, match="B92"):
+        initialize_schema(path)
     with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA application_id").fetchone()[0] == 0
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert not {"k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs"} & names
-        assert {"k10_run_controls", "k10_fact_cache", "k10_v2_title_triage_manifests"} <= names
+        assert {"k10_screening_template_revisions", "k10_task_execution_spend_reservations", "k10_screening_runs"} <= names
 
 
 def test_v306_retired_discovery_cannot_be_claimed_reopened_or_reenqueued(tmp_path):

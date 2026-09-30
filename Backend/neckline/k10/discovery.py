@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .config import ConfigurationStatus, validate_run_config
@@ -828,6 +829,12 @@ def run_discovery(
     finalization_guard: Callable[[], None] | None = None,
     finalization_pending_codes: Sequence[str] = (),
     fatal_issue_codes: Sequence[str] = (),
+    research_terminal: Callable[[EventDraft], bool] | None = None,
+    assembled_events: Mapping[str, Mapping[str, Any]] | None = None,
+    assembly_checkpoint: Callable[[EventDraft, Mapping[str, Any]], None] | None = None,
+    company_checkpoint: Callable[[EventDraft, str, Mapping[str, Any]], None] | None = None,
+    assembled_aggregate: Mapping[str, Any] | None = None,
+    aggregate_checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> DiscoveryRun:
     """执行可注入发现链；仅晚间可生成最多 30 条新候选。
 
@@ -863,6 +870,13 @@ def run_discovery(
                 raise exc
             raise ValueError(code) from exc
         return code
+
+    def needs_output_repair(issue: DiscoveryIssue) -> bool:
+        # A completed fragment would permanently replay a failed classifier
+        # even after an explicitly authorized output repair. Keep successful
+        # sibling companies frozen, but leave this unit and its parent open.
+        return issue.stage == "classify" and (
+            issue.code == "response_truncated" or "json" in issue.code)
     # V3 title triage freezes body admission before this module is permitted to
     # touch readable source text.  The caller must provide exactly those real
     # source revisions, never a larger list that this routine silently filters.
@@ -1087,6 +1101,75 @@ def run_discovery(
     understood = [event for document in screened_documents
                   for event in understood_by_ref.get(document.evidence_ref, ())]
     merged_events = _merge_same_event_sources(understood)
+    cached_assembly = assembled_events or {}
+
+    def assembly_key(event: EventDraft) -> str:
+        return _event_execution_unit_id(event)
+
+    def restore_assembly(event: EventDraft, saved: Mapping[str, Any]) -> None:
+        if saved.get("version") != 1 or saved.get("input") != freeze_event_drafts((event,)):
+            raise ValueError("事件组装检查点与冻结输入不匹配")
+        frozen = saved.get("run")
+        if not isinstance(frozen, Mapping):
+            raise ValueError("事件组装检查点无效")
+        fragment = thaw_discovery_run(frozen=frozen, configuration=configuration)
+        if len(fragment.events) != 1 or len(fragment.background) < saved.get("candidateCount", -1):
+            raise ValueError("事件组装检查点候选无效")
+        candidate_count = saved["candidateCount"]
+        events.extend(fragment.events)
+        if saved.get("hasVerification"):
+            verified_events.extend(fragment.verifications)
+        all_candidates.extend(fragment.background[:candidate_count])
+        background.extend(fragment.background[candidate_count:])
+        pending.extend(fragment.metadata_pending)
+        excluded.extend(fragment.excluded)
+        updates.extend(fragment.updates)
+        issues.extend(fragment.issues)
+        counts["eventFailed"] += int(fragment.document_counts.get("eventFailed", 0))
+
+    def freeze_assembly(event: EventDraft, before: tuple[int, ...]) -> Mapping[str, Any]:
+        event_at, verified_at, candidates_at, pending_at, excluded_at, updates_at, background_at, issues_at, failures_at = before
+        fragment = DiscoveryRun("completed", config, tuple(events[event_at:]), tuple(verified_events[verified_at:]),
+            (), (), tuple(pending[pending_at:]), tuple(excluded[excluded_at:]), 0,
+            tuple(updates[updates_at:]), tuple(all_candidates[candidates_at:] + background[background_at:]),
+            tuple(issues[issues_at:]), {"eventFailed": counts["eventFailed"] - failures_at})
+        return {"version": 1, "input": freeze_event_drafts((event,)),
+                "candidateCount": len(all_candidates) - candidates_at,
+                "hasVerification": bool(verified_events[verified_at:]), "run": freeze_discovery_run(fragment)}
+
+    def company_input(event: EventDraft, code: str) -> Mapping[str, Any]:
+        return {"event": freeze_event_drafts((event,)), "companyCode": code}
+
+    def restore_company(event: EventDraft, code: str, saved: Mapping[str, Any]) -> None:
+        if saved.get("version") != 1 or saved.get("input") != company_input(event, code):
+            raise ValueError("公司组装检查点与冻结输入不匹配")
+        frozen = saved.get("run")
+        candidate_count = saved.get("candidateCount")
+        if not isinstance(frozen, Mapping) or not isinstance(candidate_count, int) or candidate_count < 0:
+            raise ValueError("公司组装检查点无效")
+        fragment = thaw_discovery_run(frozen=frozen, configuration=configuration)
+        if len(fragment.events) != 1 or len(fragment.background) < candidate_count:
+            raise ValueError("公司组装检查点候选无效")
+        # A thawed company fragment owns a distinct Python EventDraft object.
+        # Rebind every recovered candidate to this slice's one derived event so
+        # the final event-level freeze retains exact referential identity.
+        all_candidates.extend(replace(item, event=event) for item in fragment.background[:candidate_count])
+        background.extend(replace(item, event=event) for item in fragment.background[candidate_count:])
+        pending.extend(replace(item, event=event) for item in fragment.metadata_pending)
+        excluded.extend(replace(item, event=event) for item in fragment.excluded)
+        updates.extend(replace(item, event=event) for item in fragment.updates)
+        issues.extend(fragment.issues)
+        counts["eventFailed"] += int(fragment.document_counts.get("eventFailed", 0))
+
+    def freeze_company(event: EventDraft, code: str, before: tuple[int, ...]) -> Mapping[str, Any]:
+        candidates_at, pending_at, excluded_at, updates_at, background_at, issues_at, failures_at = before
+        fragment = DiscoveryRun("completed", config, (event,), (), (), (),
+            tuple(pending[pending_at:]), tuple(excluded[excluded_at:]), 0,
+            tuple(updates[updates_at:]), tuple(all_candidates[candidates_at:] + background[background_at:]),
+            tuple(issues[issues_at:]), {"eventFailed": counts["eventFailed"] - failures_at})
+        return {"version": 1, "input": company_input(event, code),
+                "candidateCount": len(all_candidates) - candidates_at,
+                "run": freeze_discovery_run(fragment)}
     # Persist the exact research-unit set before admitting the first
     # verification/model request.  A writer can later be contended after only
     # some snapshots have been created; the terminal diagnostic must still
@@ -1094,13 +1177,43 @@ def run_discovery(
     # reached a durable snapshot.
     if research_input_checkpoint is not None:
         research_input_checkpoint(tuple(merged_events))
+    aggregate_restored = assembled_aggregate is not None
+    if assembled_aggregate is not None:
+        if (assembled_aggregate.get("version") != 1
+                or assembled_aggregate.get("input") != freeze_event_drafts(merged_events)):
+            raise ValueError("预排序组装检查点与冻结输入不匹配")
+        frozen = assembled_aggregate.get("run")
+        candidate_count = assembled_aggregate.get("candidateCount")
+        if not isinstance(frozen, Mapping) or not isinstance(candidate_count, int) or candidate_count < 0:
+            raise ValueError("预排序组装检查点无效")
+        fragment = thaw_discovery_run(frozen=frozen, configuration=configuration)
+        if len(fragment.events) != len(merged_events) or len(fragment.background) < candidate_count:
+            raise ValueError("预排序组装检查点候选无效")
+        events.extend(fragment.events)
+        verified_events.extend(fragment.verifications)
+        all_candidates.extend(fragment.background[:candidate_count])
+        background.extend(fragment.background[candidate_count:])
+        pending.extend(fragment.metadata_pending)
+        excluded.extend(fragment.excluded)
+        updates.extend(fragment.updates)
+        issues.extend(fragment.issues)
+        counts["eventFailed"] += int(fragment.document_counts.get("eventFailed", 0))
+        # The frozen aggregate is one validated phase boundary. Replaying its
+        # 2,099 individual event fragments before another ranking attempt can
+        # otherwise consume the whole next slice without doing new work.
+        merged_events = ()
     research_results: dict[int, InvestigationOutcome | Exception] = {}
     if investigate is not None and investigation_concurrency is not None and investigation_concurrency > 1:
         # Only independent events overlap. Each event retains its sequential
         # question/evidence/comparison state machine and durable checkpoints.
         with ThreadPoolExecutor(max_workers=investigation_concurrency) as executor:
             research_futures = {}
-            remaining = iter(merged_events)
+            # A durable terminal derivative has already paid for its exact
+            # research input. Do not submit it or spend the slice guard merely
+            # to rediscover that fact on every continuation.
+            remaining = iter(event for event in merged_events
+                             if assembly_key(event) not in cached_assembly
+                             and not (research_terminal is not None and research_terminal(event)))
             def submit_next() -> bool:
                 event = next(remaining, None)
                 if event is None:
@@ -1128,247 +1241,290 @@ def run_discovery(
                     submit_next()
     event_admission_closed = False
     for event in merged_events:
-            events.append(event)  # an understood event remains auditable if later stages fail
+            source_event = event
+            saved = cached_assembly.get(assembly_key(source_event))
+            if saved is not None:
+                restore_assembly(source_event, saved)
+                continue
+            before = (len(events), len(verified_events), len(all_candidates), len(pending), len(excluded),
+                      len(updates), len(background), len(issues), counts["eventFailed"])
             try:
-                if leaseguard is not None:
-                    leaseguard()
-                if investigate is None:
-                    verification = verify(event)
-                    mappings = ()
-                    event_comparison = None
-                else:
-                    researched = research_results[id(event)] if id(event) in research_results else investigate(event)
-                    if isinstance(researched, Exception):
-                        raise researched
-                    if not isinstance(researched, InvestigationOutcome):
-                        raise ValueError("研究回调结果无效")
-                    verification, mappings, event_comparison = (researched.verification, researched.mappings,
-                                                                  researched.comparison)
-                available.update(document.evidence_ref for document in verification.documents)
-                _validate_refs(verification.evidence_refs, available, label="重点核验")
-                coverage_state = verification.coverage.get("state") if isinstance(verification.coverage, Mapping) else None
-                if coverage_state == "pending":
-                    # A bounded independent-evidence request that has not run is a visible
-                    # pending item, not permission to spend map/compare/classify calls on a
-                    # self-certified event.  The append-only event survives for retry.
-                    verified_events.append(EventVerification(event, verification))
-                    issue = DiscoveryIssue("verify", "verification_pending", canonical_key=event.canonical_key,
-                                           execution_unit_id=_event_execution_unit_id(event))
-                    issues.append(issue)
-                    if checkpoint is not None:
-                        checkpoint({"stage": issue.stage, "state": "pending", "code": issue.code,
-                                    "canonicalKey": event.canonical_key})
-                    continue
-                if investigate is None:
-                    if leaseguard is not None:
-                        leaseguard()
-                    mappings = tuple(model.map_companies(event=event, verification=verification))
-            except Exception as exc:
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
-                    raise
-                code = issue_code_or_raise(exc)
-                if code in _PENDING_ADMISSION_CODES:
-                    record_pending_event(stage="verify_or_map", code=code, event=event)
-                    event_admission_closed = True
-                    break
-                counts["eventFailed"] += 1
-                issue = DiscoveryIssue("verify_or_map", code, canonical_key=event.canonical_key,
-                                       execution_unit_id=_event_execution_unit_id(event))
-                issues.append(issue)
-                if checkpoint is not None:
-                    checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
-                                "canonicalKey": event.canonical_key})
-                continue
-            if not mappings:
-                verified_events.append(EventVerification(event, verification))
-                continue
-            if len({mapping.company_code for mapping in mappings}) != len(mappings):
-                raise ValueError("同一事件的公司映射不得重复")
-            try:
-                if event_comparison is None:
-                    comparer = getattr(model, "compare_event", None)
-                    if not callable(comparer):
-                        raise ValueError("发现模型缺少同事件整体公司比较")
-                    if leaseguard is not None:
-                        leaseguard()
-                    event_comparison = comparer(event=event, verification=verification, mappings=mappings)
-                _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
-            except Exception as exc:
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
-                    raise
-                code = issue_code_or_raise(exc)
-                if code in _PENDING_ADMISSION_CODES:
-                    record_pending_event(stage="compare", code=code, event=event)
-                    event_admission_closed = True
-                    break
-                counts["eventFailed"] += 1
-                issue = DiscoveryIssue("compare", code, canonical_key=event.canonical_key,
-                                       execution_unit_id=_event_execution_unit_id(event))
-                issues.append(issue)
-                if checkpoint is not None:
-                    checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
-                                "canonicalKey": event.canonical_key})
-                continue
-            try:
-                event_candidates = event_comparison.candidates
-                validate_event_comparison(
-                    summary=event_comparison.summary, comparisons={
-                        code: {"summary": item.summary, "differences": item.differences, "rank": item.rank}
-                        for code, item in event_candidates.items()
-                    }, company_codes=tuple(mapping.company_code for mapping in mappings),
-                )
-                _reject_uncalibrated_prediction(event_comparison.summary, path="eventComparison.summary")
-                _reject_uncalibrated_prediction({
-                    code: {"summary": item.summary, "differences": item.differences}
-                    for code, item in event_candidates.items()
-                }, path="eventComparison.candidates")
-                event_candidates = {
-                    code: replace(item, rank_namespace="event", event_rank=item.rank)
-                    for code, item in event_candidates.items()
-                }
-                event = replace(event, derived_facts={**event.derived_facts, "eventComparison": {
-                    "summary": event_comparison.summary,
-                    "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
-                                     for ref in event_comparison.evidence_refs],
-                }})
-            except Exception as exc:
-                if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
-                    raise
-                counts["eventFailed"] += 1
-                issue = DiscoveryIssue("compare", issue_code_or_raise(exc), canonical_key=event.canonical_key,
-                                       execution_unit_id=_event_execution_unit_id(event))
-                issues.append(issue)
-                if checkpoint is not None:
-                    checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
-                                "canonicalKey": event.canonical_key})
-                continue
-            events[-1] = event
-            verified_events.append(EventVerification(event, verification))
-            for mapping in mappings:
+                events.append(event)  # an understood event remains auditable if later stages fail
                 try:
-                    _validate_refs(mapping.relation_evidence, available, label="公司映射")
                     if leaseguard is not None:
                         leaseguard()
-                    comparison = event_candidates[mapping.company_code]
-                    company_verification = verification
-                    if comparison.research_snapshot_id is not None:
-                        company_state = comparison.differences.get('evidenceDisclosure', {}).get('verificationStatus')
-                        company_verification = replace(verification, state=company_state if company_state in {'verified','contradicted'} else 'needs_review')
-
-                    _validate_refs(comparison.evidence_refs, available, label="候选比较")
-                    status = (metadata.eligibility(mapping.company_code) if hasattr(metadata, "eligibility") else
-                              evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at)))
-                    classifier = getattr(model, "classify_opportunity", None)
-                    prior = tuple(old for old in previous_opportunities if old.get("companyCode") == mapping.company_code)
-                    if configuration.get('configVersion') == 'k10-v2':
-                        from .v2_identity import classify_identity
-                        decision = classify_identity(event=event, verification=company_verification, mapping=mapping,
-                            comparison=comparison, previous=prior, classifier=classifier)
+                    if investigate is None:
+                        verification = verify(event)
+                        mappings = ()
+                        event_comparison = None
                     else:
-                        if not callable(classifier):
-                            raise ValueError("发现模型缺少机会延续/新催化分类")
-                        decision = validate_classification(
-                            classifier(event=event, verification=company_verification, mapping=mapping,
-                                       comparison=comparison, previous=prior),
-                            canonical_key=event.canonical_key, stage_key=event.stage_key,
-                            company_code=mapping.company_code, previous=prior,
-                        )
-                    _reject_uncalibrated_prediction(decision, path="classification")
+                        researched = research_results[id(event)] if id(event) in research_results else investigate(event)
+                        if isinstance(researched, Exception):
+                            raise researched
+                        if not isinstance(researched, InvestigationOutcome):
+                            raise ValueError("研究回调结果无效")
+                        verification, mappings, event_comparison = (researched.verification, researched.mappings,
+                                                                      researched.comparison)
+                    available.update(document.evidence_ref for document in verification.documents)
+                    _validate_refs(verification.evidence_refs, available, label="重点核验")
+                    coverage_state = verification.coverage.get("state") if isinstance(verification.coverage, Mapping) else None
+                    if coverage_state == "pending":
+                        # A bounded independent-evidence request that has not run is a visible
+                        # pending item, not permission to spend map/compare/classify calls on a
+                        # self-certified event.  The append-only event survives for retry.
+                        verified_events.append(EventVerification(event, verification))
+                        issue = DiscoveryIssue("verify", "verification_pending", canonical_key=event.canonical_key,
+                                               execution_unit_id=_event_execution_unit_id(event))
+                        issues.append(issue)
+                        if checkpoint is not None:
+                            checkpoint({"stage": issue.stage, "state": "pending", "code": issue.code,
+                                        "canonicalKey": event.canonical_key})
+                        continue
+                    if investigate is None:
+                        if leaseguard is not None:
+                            leaseguard()
+                        mappings = tuple(model.map_companies(event=event, verification=verification))
                 except Exception as exc:
                     if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                         raise
                     code = issue_code_or_raise(exc)
                     if code in _PENDING_ADMISSION_CODES:
-                        record_pending_event(stage="classify", code=code, event=event,
-                                             company_code=mapping.company_code)
+                        record_pending_event(stage="verify_or_map", code=code, event=event)
                         event_admission_closed = True
                         break
                     counts["eventFailed"] += 1
-                    issue = DiscoveryIssue("classify", code, canonical_key=event.canonical_key,
+                    issue = DiscoveryIssue("verify_or_map", code, canonical_key=event.canonical_key,
                                            execution_unit_id=_event_execution_unit_id(event))
                     issues.append(issue)
                     if checkpoint is not None:
                         checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
-                                    "canonicalKey": event.canonical_key, "companyCode": mapping.company_code})
+                                    "canonicalKey": event.canonical_key})
                     continue
-                disclosure = (comparison.differences.get("evidenceDisclosure")
-                              if isinstance(comparison.differences, Mapping) else None)
-                completed_research_disclosure = False
-                if (isinstance(disclosure, Mapping) and (
-                        comparison.differences.get("recommendation") == "recommend"
-                        or comparison.differences.get("role") in {"primary", "alternative", "tied"})
-                        and company_verification.state != "contradicted"):
-                    try:
-                        validate_evidence_disclosure(disclosure)
-                        completed_research_disclosure = True
-                    except ComparisonValidationError:
-                        pass
-                if decision["kind"] in NEW_KINDS and company_verification.state != "verified" and not completed_research_disclosure:
-                    # A model cannot promote a source document into a formal opportunity by
-                    # calling it ``initial``/``material_stage``/``independent`` while the
-                    # independent check is still unresolved or has found contrary evidence.
-                    # For a linked old opportunity this remains an update/risk record; for a
-                    # first-seen item it is retained as pending below.
-                    prefix = ("重点核验已发现反证，不能作为新机会发布。"
-                              if company_verification.state == "contradicted"
-                              else "重点核验尚未完成，不能作为新机会发布。")
-                    decision = {**decision, "kind": "needs_review", "reason": prefix + decision["reason"]}
-                if decision["kind"] == "invalidated" and company_verification.state not in {"verified", "contradicted"}:
-                    decision = {**decision, "kind": "needs_review", "reason": "重大反证尚待核实。" + decision["reason"]}
-                candidate = DiscoveryCandidate(event, company_verification, mapping, comparison, status, decision)
-                if decision["kind"] == "background":
-                    if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get(
-                            'recommendation', comparison.differences.get('role')) in {'pending', 'exclude', 'excluded'}:
-                        (pending if comparison.differences.get('recommendation', comparison.differences.get('role')) == 'pending' else excluded).append(candidate)
-                    else:
-                        background.append(candidate)
+                if not mappings:
+                    verified_events.append(EventVerification(event, verification))
                     continue
-                if decision["kind"] == "needs_review" and decision.get("relatedOpportunityId") is None:
-                    related = _open_event_opportunities(
-                        previous=previous_opportunities, company_code=mapping.company_code,
-                        canonical_key=event.canonical_key,
+                if len({mapping.company_code for mapping in mappings}) != len(mappings):
+                    raise ValueError("同一事件的公司映射不得重复")
+                try:
+                    if event_comparison is None:
+                        comparer = getattr(model, "compare_event", None)
+                        if not callable(comparer):
+                            raise ValueError("发现模型缺少同事件整体公司比较")
+                        if leaseguard is not None:
+                            leaseguard()
+                        event_comparison = comparer(event=event, verification=verification, mappings=mappings)
+                    _validate_refs(event_comparison.evidence_refs, available, label="事件比较")
+                except Exception as exc:
+                    if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
+                        raise
+                    code = issue_code_or_raise(exc)
+                    if code in _PENDING_ADMISSION_CODES:
+                        record_pending_event(stage="compare", code=code, event=event)
+                        event_admission_closed = True
+                        break
+                    counts["eventFailed"] += 1
+                    issue = DiscoveryIssue("compare", code, canonical_key=event.canonical_key,
+                                           execution_unit_id=_event_execution_unit_id(event))
+                    issues.append(issue)
+                    if checkpoint is not None:
+                        checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                    "canonicalKey": event.canonical_key})
+                    continue
+                try:
+                    event_candidates = event_comparison.candidates
+                    validate_event_comparison(
+                        summary=event_comparison.summary, comparisons={
+                            code: {"summary": item.summary, "differences": item.differences, "rank": item.rank}
+                            for code, item in event_candidates.items()
+                        }, company_codes=tuple(mapping.company_code for mapping in mappings),
                     )
-                    if related:
-                        # Do not guess which old window a known risk belongs to.  Each still
-                        # open formal opportunity receives the same conservative lifecycle
-                        # update, while the source event remains one append-only revision.
-                        for old in related:
-                            updates.append(replace(candidate, opportunity={
-                                **decision,
-                                "relatedOpportunityId": old["opportunityId"],
-                                "reason": "模型未关联旧机会；按同事件同公司补记风险。" + decision["reason"],
-                            }))
-                        continue
-                    # First-seen unresolved evidence is retained as a pending mapping/event,
-                    # never a formal candidate.  A hard universe exclusion remains an exclusion
-                    # even when its event's evidence also needs review.
-                    if status.eligible or status.state == "insufficient_metadata":
-                        pending.append(candidate)
-                    else:
-                        excluded.append(candidate)
+                    _reject_uncalibrated_prediction(event_comparison.summary, path="eventComparison.summary")
+                    _reject_uncalibrated_prediction({
+                        code: {"summary": item.summary, "differences": item.differences}
+                        for code, item in event_candidates.items()
+                    }, path="eventComparison.candidates")
+                    event_candidates = {
+                        code: replace(item, rank_namespace="event", event_rank=item.rank)
+                        for code, item in event_candidates.items()
+                    }
+                    event = replace(event, derived_facts={**event.derived_facts, "eventComparison": {
+                        "summary": event_comparison.summary,
+                        "evidenceRefs": [{"documentId": ref.document_id, "revision": ref.revision}
+                                         for ref in event_comparison.evidence_refs],
+                    }})
+                except Exception as exc:
+                    if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
+                        raise
+                    counts["eventFailed"] += 1
+                    issue = DiscoveryIssue("compare", issue_code_or_raise(exc), canonical_key=event.canonical_key,
+                                           execution_unit_id=_event_execution_unit_id(event))
+                    issues.append(issue)
+                    if checkpoint is not None:
+                        checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                    "canonicalKey": event.canonical_key})
                     continue
-                if decision["kind"] not in NEW_KINDS:
-                    updates.append(candidate)
-                    if (configuration.get("configVersion") == "k10-v2" and decision["kind"] == "continuation"
-                            and status.eligible and (
+                events[-1] = event
+                verified_events.append(EventVerification(event, verification))
+                for mapping in mappings:
+                    company_key = assembly_key(source_event) + "@" + mapping.company_code
+                    saved_company = cached_assembly.get(company_key)
+                    if saved_company is not None:
+                        restore_company(event, mapping.company_code, saved_company)
+                        continue
+                    company_before = (len(all_candidates), len(pending), len(excluded),
+                                      len(updates), len(background), len(issues), counts["eventFailed"])
+                    try:
+                        try:
+                            _validate_refs(mapping.relation_evidence, available, label="公司映射")
+                            if leaseguard is not None:
+                                leaseguard()
+                            comparison = event_candidates[mapping.company_code]
+                            company_verification = verification
+                            if comparison.research_snapshot_id is not None:
+                                company_state = comparison.differences.get('evidenceDisclosure', {}).get('verificationStatus')
+                                company_verification = replace(verification, state=company_state if company_state in {'verified','contradicted'} else 'needs_review')
+
+                            _validate_refs(comparison.evidence_refs, available, label="候选比较")
+                            status = (metadata.eligibility(mapping.company_code) if hasattr(metadata, "eligibility") else
+                                      evaluate_company(metadata.lookup(company_code=mapping.company_code, as_of=cutoff_at)))
+                            classifier = getattr(model, "classify_opportunity", None)
+                            prior = tuple(old for old in previous_opportunities if old.get("companyCode") == mapping.company_code)
+                            if configuration.get('configVersion') == 'k10-v2':
+                                from .v2_identity import classify_identity
+                                decision = classify_identity(event=event, verification=company_verification, mapping=mapping,
+                                    comparison=comparison, previous=prior, classifier=classifier)
+                            else:
+                                if not callable(classifier):
+                                    raise ValueError("发现模型缺少机会延续/新催化分类")
+                                decision = validate_classification(
+                                    classifier(event=event, verification=company_verification, mapping=mapping,
+                                               comparison=comparison, previous=prior),
+                                    canonical_key=event.canonical_key, stage_key=event.stage_key,
+                                    company_code=mapping.company_code, previous=prior,
+                                )
+                            _reject_uncalibrated_prediction(decision, path="classification")
+                        except Exception as exc:
+                            if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
+                                raise
+                            code = issue_code_or_raise(exc)
+                            if code in _PENDING_ADMISSION_CODES:
+                                record_pending_event(stage="classify", code=code, event=event,
+                                                     company_code=mapping.company_code)
+                                event_admission_closed = True
+                                break
+                            counts["eventFailed"] += 1
+                            issue = DiscoveryIssue("classify", code, canonical_key=event.canonical_key,
+                                                   execution_unit_id=_event_execution_unit_id(event))
+                            issues.append(issue)
+                            if checkpoint is not None:
+                                checkpoint({"stage": issue.stage, "state": "failed", "code": issue.code,
+                                            "canonicalKey": event.canonical_key, "companyCode": mapping.company_code})
+                            continue
+                        disclosure = (comparison.differences.get("evidenceDisclosure")
+                                      if isinstance(comparison.differences, Mapping) else None)
+                        completed_research_disclosure = False
+                        if (isinstance(disclosure, Mapping) and (
                                 comparison.differences.get("recommendation") == "recommend"
                                 or comparison.differences.get("role") in {"primary", "alternative", "tied"})
-                            and (comparison.rank is not None or comparison.differences.get("recommendation") == "recommend")):
-                        all_candidates.append(candidate)
-                    continue
-                if configuration.get('configVersion') == 'k10-v2' and not (
-                        comparison.differences.get('recommendation') == 'recommend'
-                        or comparison.differences.get('role') in {'primary', 'alternative', 'tied'}):
-                    (pending if comparison.differences.get('recommendation', comparison.differences.get('role')) == 'pending' else excluded).append(candidate)
-                    continue
-                if status.eligible:
-                    all_candidates.append(candidate)
-                elif status.state == "insufficient_metadata":
-                    pending.append(candidate)
-                else:
-                    excluded.append(candidate)
-            if event_admission_closed:
-                break
+                                and company_verification.state != "contradicted"):
+                            try:
+                                validate_evidence_disclosure(disclosure)
+                                completed_research_disclosure = True
+                            except ComparisonValidationError:
+                                pass
+                        if decision["kind"] in NEW_KINDS and company_verification.state != "verified" and not completed_research_disclosure:
+                            # A model cannot promote a source document into a formal opportunity by
+                            # calling it ``initial``/``material_stage``/``independent`` while the
+                            # independent check is still unresolved or has found contrary evidence.
+                            # For a linked old opportunity this remains an update/risk record; for a
+                            # first-seen item it is retained as pending below.
+                            prefix = ("重点核验已发现反证，不能作为新机会发布。"
+                                      if company_verification.state == "contradicted"
+                                      else "重点核验尚未完成，不能作为新机会发布。")
+                            decision = {**decision, "kind": "needs_review", "reason": prefix + decision["reason"]}
+                        if decision["kind"] == "invalidated" and company_verification.state not in {"verified", "contradicted"}:
+                            decision = {**decision, "kind": "needs_review", "reason": "重大反证尚待核实。" + decision["reason"]}
+                        candidate = DiscoveryCandidate(event, company_verification, mapping, comparison, status, decision)
+                        if decision["kind"] == "background":
+                            if configuration.get('configVersion') == 'k10-v2' and comparison.differences.get(
+                                    'recommendation', comparison.differences.get('role')) in {'pending', 'exclude', 'excluded'}:
+                                (pending if comparison.differences.get('recommendation', comparison.differences.get('role')) == 'pending' else excluded).append(candidate)
+                            else:
+                                background.append(candidate)
+                            continue
+                        if decision["kind"] == "needs_review" and decision.get("relatedOpportunityId") is None:
+                            related = _open_event_opportunities(
+                                previous=previous_opportunities, company_code=mapping.company_code,
+                                canonical_key=event.canonical_key,
+                            )
+                            if related:
+                                # Do not guess which old window a known risk belongs to.  Each still
+                                # open formal opportunity receives the same conservative lifecycle
+                                # update, while the source event remains one append-only revision.
+                                for old in related:
+                                    updates.append(replace(candidate, opportunity={
+                                        **decision,
+                                        "relatedOpportunityId": old["opportunityId"],
+                                        "reason": "模型未关联旧机会；按同事件同公司补记风险。" + decision["reason"],
+                                    }))
+                                continue
+                            # First-seen unresolved evidence is retained as a pending mapping/event,
+                            # never a formal candidate.  A hard universe exclusion remains an exclusion
+                            # even when its event's evidence also needs review.
+                            if status.eligible or status.state == "insufficient_metadata":
+                                pending.append(candidate)
+                            else:
+                                excluded.append(candidate)
+                            continue
+                        if decision["kind"] not in NEW_KINDS:
+                            updates.append(candidate)
+                            if (configuration.get("configVersion") == "k10-v2" and decision["kind"] == "continuation"
+                                    and status.eligible and (
+                                        comparison.differences.get("recommendation") == "recommend"
+                                        or comparison.differences.get("role") in {"primary", "alternative", "tied"})
+                                    and (comparison.rank is not None or comparison.differences.get("recommendation") == "recommend")):
+                                all_candidates.append(candidate)
+                            continue
+                        if configuration.get('configVersion') == 'k10-v2' and not (
+                                comparison.differences.get('recommendation') == 'recommend'
+                                or comparison.differences.get('role') in {'primary', 'alternative', 'tied'}):
+                            (pending if comparison.differences.get('recommendation', comparison.differences.get('role')) == 'pending' else excluded).append(candidate)
+                            continue
+                        if status.eligible:
+                            all_candidates.append(candidate)
+                        elif status.state == "insufficient_metadata":
+                            pending.append(candidate)
+                        else:
+                            excluded.append(candidate)
+                    finally:
+                        if (sys.exc_info()[0] is None and not event_admission_closed
+                                and company_checkpoint is not None
+                                and not any(needs_output_repair(issue)
+                                            for issue in issues[company_before[5]:])):
+                            company_checkpoint(source_event, mapping.company_code,
+                                freeze_company(event, mapping.company_code, company_before))
+                if event_admission_closed:
+                    break
+            finally:
+                # A partial event must never be called completed after a lease
+                # or slice exception. A normal continue/break runs this block
+                # after all event-local effects have been validated.
+                if (sys.exc_info()[0] is None and assembly_checkpoint is not None
+                        and not any(issue.code in _PENDING_ADMISSION_CODES | {"verification_pending"}
+                                    or needs_output_repair(issue)
+                                    for issue in issues[before[7]:])):
+                    # Comparison decorates the output event with derived facts.
+                    # Recovery must bind to the original merged research input.
+                    assembly_checkpoint(source_event, freeze_assembly(source_event, before))
+    if (aggregate_checkpoint is not None and not aggregate_restored and not event_admission_closed
+            and not any(issue.code == "verification_pending" or needs_output_repair(issue)
+                        for issue in issues)):
+        fragment = DiscoveryRun("completed", config, tuple(events), tuple(verified_events),
+            (), (), tuple(pending), tuple(excluded), 0, tuple(updates),
+            tuple(all_candidates + background), tuple(issues), {"eventFailed": counts["eventFailed"]})
+        aggregate_checkpoint({"version": 1, "input": freeze_event_drafts(merged_events),
+                              "candidateCount": len(all_candidates),
+                              "run": freeze_discovery_run(fragment)})
     # Rank companies once, while retaining every formally recommended catalyst for each
     # admitted company. Continuations have already been separated from the new-company quota.
     # An empty formal set is a normal outcome: events, pending evidence, exclusions and

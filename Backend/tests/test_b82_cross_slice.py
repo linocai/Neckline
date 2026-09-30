@@ -271,20 +271,25 @@ def _scan_for_task(*, database: Path, task_id: str) -> tuple[str, str, dict[str,
 
 
 def _replace_running_snapshot_with_foreign(*, database: Path, task_id: str, foreign_snapshot_id: str) -> str:
-    scan_id, status, coverage = _scan_for_task(database=database, task_id=task_id)
+    _, status, _ = _scan_for_task(database=database, task_id=task_id)
     assert status == "running"
-    snapshot_ids = coverage.get("researchSnapshotIds")
-    assert isinstance(snapshot_ids, list) and snapshot_ids
+    snapshot_ids = [item["snapshotId"] for item in _latest_snapshots(database=database, task_id=task_id)]
+    assert snapshot_ids
     local_snapshot_id = snapshot_ids[0]
-    assert isinstance(local_snapshot_id, str) and local_snapshot_id != foreign_snapshot_id
-    coverage["researchSnapshotIds"] = [
-        foreign_snapshot_id if snapshot_id == local_snapshot_id else snapshot_id
-        for snapshot_id in snapshot_ids
-    ]
+    assert local_snapshot_id != foreign_snapshot_id
     with sqlite3.connect(database) as connection:
+        # Snapshot facts now own the persisted identity. A running scan's
+        # coverage list is only a phase-boundary projection, so mutating it
+        # would no longer exercise the cross-task binding guard.
+        foreign = connection.execute(
+            "SELECT snapshot_json FROM k10_research_snapshot_revisions "
+            "WHERE snapshot_id=? AND revision=1", (foreign_snapshot_id,),
+        ).fetchone()
+        assert foreign is not None
         connection.execute(
-            "UPDATE k10_scans SET coverage_json=? WHERE scan_id=? AND status='running'",
-            (json.dumps(coverage, ensure_ascii=False, sort_keys=True, separators=(",", ":")), scan_id),
+            "UPDATE k10_research_snapshot_revisions SET snapshot_json=? "
+            "WHERE snapshot_id=? AND task_id=?",
+            (foreign[0], local_snapshot_id, task_id),
         )
     return local_snapshot_id
 
@@ -435,6 +440,10 @@ def test_b82_execution_unit_rejects_foreign_task_snapshot_for_same_public_event(
         ).fetchone() == (0,)
         report = connection.execute(
             "SELECT available_at FROM k10_v2_report_runs WHERE scan_id=?", (scan_id,)).fetchone()
+        assert connection.execute(
+            "SELECT COUNT(*) FROM k10_external_attempts WHERE task_id=? "
+            "AND state IN ('started','running','unknown')", (second_task_id,),
+        ).fetchone() == (0,)
     assert report is None or report[0] is None
 
 
@@ -518,15 +527,12 @@ def _corrupt_cross_snapshot_binding(*, database: Path, snapshots: dict[str, dict
     first = snapshots["event-000"]
     if mode == "missing":
         with sqlite3.connect(database) as connection:
-            row = connection.execute("SELECT coverage_json FROM k10_scans WHERE status='running'").fetchone()
-            assert row is not None
-            coverage = json.loads(row[0])
-            ids = list(coverage["researchSnapshotIds"])
-            ids.append("research_missing_b82_control")
-            coverage["researchSnapshotIds"] = ids
+            # The fact row names a snapshot that has no matching validated
+            # body. This is the authoritative identity boundary after the
+            # large-coverage projection was retired.
             connection.execute(
-                "UPDATE k10_scans SET coverage_json=? WHERE status='running'",
-                (json.dumps(coverage, ensure_ascii=False, sort_keys=True, separators=(",", ":")),),
+                "UPDATE k10_research_snapshot_revisions SET snapshot_id=? WHERE snapshot_id=?",
+                ("research_missing_b82_control", first["snapshotId"]),
             )
         return
 

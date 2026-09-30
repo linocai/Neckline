@@ -2673,6 +2673,76 @@ extension K10V3Tests {
         }
     }
 
+    func testV363MissingParentHasReadableGapReason() {
+        XCTAssertEqual(k10DeliveryGapReasonText("morning_parent_unavailable"),
+                       "昨晚正式报告不可用，无法复核原有推荐理由")
+        XCTAssertEqual(k10CoverageGapText("morning_parent_unavailable"),
+                       k10DeliveryGapReasonText("morning_parent_unavailable"))
+        for state in ["unavailable", "partial", "running"] {
+            XCTAssertFalse(k10MorningDiscoveryIncompleteText(reviewState: state).contains("已完成的昨晚名单复核"))
+        }
+        XCTAssertTrue(k10MorningDiscoveryIncompleteText(reviewState: "complete").contains("已完成的昨晚名单复核"))
+        XCTAssertFalse(k10MorningReviewIncompleteText(parentReportId: nil).contains("冻结的昨晚名单"))
+        XCTAssertTrue(k10MorningReviewIncompleteText(parentReportId: "readable-parent").contains("冻结的昨晚名单"))
+    }
+
+    @MainActor func testV363ActualAPIMorningParentStatesAndNativeScreens() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let root = env["NK_V363_API_DIR"], let renderRoot = env["NK_V363_RENDER_DIR"] else {
+            if env["NK_V363_REQUIRE_API"] == "1" {
+                return XCTFail("Actual FastAPI morning responses and native output paths required")
+            }
+            throw XCTSkip("Set NK_V363_API_DIR and NK_V363_RENDER_DIR for actual API acceptance")
+        }
+        var otherGapReasons: [[String]] = []
+        for (name, parentState) in [("parent-unavailable", "unavailable"),
+                                    ("zero-parent", "complete")] {
+            let url = URL(fileURLWithPath: root).appendingPathComponent(name + ".json")
+            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: Data(contentsOf: url))
+            XCTAssertTrue(response.isReadableByCurrentApp)
+            let report = try XCTUnwrap(response.report)
+            XCTAssertEqual(report.windowKind, "morning")
+            XCTAssertEqual(report.morningReview?.state, parentState)
+            XCTAssertEqual(report.morningReview?.targetCompanyCount, 0)
+            XCTAssertEqual(k10MorningDiscoveryIncompleteText(reviewState: report.morningReview?.state)
+                .contains("已完成的昨晚名单复核"), parentState == "complete")
+            let delivery = try XCTUnwrap(report.delivery)
+            // The real 08:00 collection cannot cover the 08:00–08:30 tail.
+            // A complete zero-recommendation parent clears only the review gap.
+            XCTAssertEqual(delivery.outcome, "partial")
+            XCTAssertEqual(report.status, "partial")
+            otherGapReasons.append(delivery.gaps.filter { $0.reasonCode != "morning_parent_unavailable" }
+                .map(\.reasonCode).sorted())
+            XCTAssertEqual(delivery.gaps.contains { $0.reasonCode == "morning_parent_unavailable" },
+                           parentState == "unavailable")
+            if parentState == "unavailable" {
+                XCTAssertTrue(k10MorningReviewIncompleteText(parentReportId: report.morningReview?.parentReportId)
+                    .contains("无法确定复核名单"))
+                let gap = try XCTUnwrap(delivery.gaps.first { $0.reasonCode == "morning_parent_unavailable" })
+                XCTAssertEqual(gap.unitId, report.reportId)
+                XCTAssertEqual(delivery.gaps.filter { $0.reasonCode == "morning_parent_unavailable" }.count, 1)
+                XCTAssertGreaterThan(try XCTUnwrap(report.materials).count, 0)
+            }
+            let model = AppModel(serviceFactory: { nil }, cacheClearer: {})
+            model.state = .ready
+            model.dailyWindow = "morning"
+            model.dailyMorning = response
+            try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "v363-" + name)
+            if parentState == "unavailable" {
+                let materialsURL = URL(fileURLWithPath: root).appendingPathComponent(name + "-materials.json")
+                let materials = try JSONDecoder().decode(K10ReportMaterialsPage.self, from: Data(contentsOf: materialsURL))
+                XCTAssertTrue(materials.isReadableByCurrentApp)
+                XCTAssertEqual(materials.reportId, report.reportId)
+                XCTAssertEqual(materials.items.count, report.materials?.count)
+                XCTAssertTrue(materials.items.allSatisfy { !$0.eventTitle.isEmpty && !$0.facts.isEmpty && !$0.sourceRefs.isEmpty })
+                model.reportMaterials = materials
+                try await renderB81View(ReportMaterialsSheet(report: report, model: model),
+                                       root: renderRoot, name: "v363-parent-materials")
+            }
+        }
+        XCTAssertEqual(otherGapReasons[0], otherGapReasons[1], "Matched source inputs must preserve the same non-parent gaps")
+    }
+
     @MainActor func testV362ActualAPIReportAndNativeScreen() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let root = env["NK_V362_API_DIR"], let renderRoot = env["NK_V362_RENDER_DIR"] else {

@@ -395,6 +395,44 @@ def read_terminal_outcome(*, snapshot_id: str, task_id: str, context_sha256: str
         return None
 
 
+def task_research_facts(*, task_id: str, db_path: Path) -> dict[str, tuple[str, str | None]]:
+    """Project latest snapshot identities and terminal profile markers in one read.
+
+    The full terminal derivative is validated by ``read_terminal_outcome``
+    before event assembly consumes it. This small projection merely prevents
+    completed units from exhausting another slice's admission guard.
+    """
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            "SELECT r.snapshot_id,r.context_sha256,CASE WHEN r.execution_status='ok' "
+            "AND r.research_status<>'continue_research' THEN "
+            "json_extract(r.snapshot_json,'$.terminalOutcome.profileSha256') END "
+            "FROM k10_research_snapshot_revisions r JOIN ("
+            "SELECT snapshot_id,MAX(revision) revision FROM k10_research_snapshot_revisions "
+            "WHERE task_id=? GROUP BY snapshot_id) latest "
+            "ON latest.snapshot_id=r.snapshot_id AND latest.revision=r.revision "
+            "WHERE r.task_id=? ORDER BY r.snapshot_id", (task_id, task_id),
+        ).fetchall()
+    return {str(snapshot_id): (str(context), profile if isinstance(profile, str) else None)
+            for snapshot_id, context, profile in rows}
+
+
+def failed_research_snapshot_ids(*, task_id: str, db_path: Path) -> dict[str, int]:
+    """Find only failed latest revisions before loading their dependency evidence."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            "SELECT r.snapshot_id,r.revision FROM k10_research_snapshot_revisions r JOIN ("
+            "SELECT snapshot_id,MAX(revision) revision FROM k10_research_snapshot_revisions "
+            "WHERE task_id=? GROUP BY snapshot_id) latest "
+            "ON latest.snapshot_id=r.snapshot_id AND latest.revision=r.revision "
+            "WHERE r.task_id=? AND r.execution_status<>'ok' ORDER BY r.snapshot_id",
+            (task_id, task_id),
+        ).fetchall()
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
 def persist_terminal_outcome(*, snapshot_id: str, revision: int, profile_sha256: str,
                              outcome: Mapping[str, Any], db_path: Path,
                              lease_guard: LeaseGuard | None = None) -> None:

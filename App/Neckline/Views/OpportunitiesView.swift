@@ -378,7 +378,7 @@ struct OpportunitiesView: View {
                 if review.items.count < review.targetCompanyCount || review.state == "unavailable" {
                     NoticeLine(
                         icon: "exclamationmark.circle",
-                        text: "冻结的昨晚名单尚未全部形成可读复核结果；未完成的对象不会被当作没有变化。",
+                        text: k10MorningReviewIncompleteText(parentReportId: review.parentReportId),
                         tone: NK.amber
                     )
                 }
@@ -400,7 +400,7 @@ struct OpportunitiesView: View {
                 case ("complete", "no_recommendation"):
                     NoticeLine(icon: "checkmark.circle", text: "隔夜消息已经筛选完毕，没有形成新的推荐。", tone: NK.textSecondary)
                 case (_, "not_completed"), ("partial", _):
-                    NoticeLine(icon: "exclamationmark.circle", text: "隔夜新消息尚未完全处理；这不影响上方已完成的昨晚名单复核。", tone: NK.amber)
+                    NoticeLine(icon: "exclamationmark.circle", text: k10MorningDiscoveryIncompleteText(reviewState: report?.morningReview?.state), tone: NK.amber)
                 default:
                     NoticeLine(icon: "questionmark.circle", text: "隔夜新机会的完成状态待核，请结合报告缺口阅读。", tone: NK.amber)
                 }

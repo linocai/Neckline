@@ -3069,22 +3069,23 @@ def freeze_collected_input(
                 raise K10Conflict("上次正式资料边界无效")
         terminal: set[tuple[str, int]] = set()
         blocked: set[tuple[str, int]] = set()
-        # Only durable terminal judgements count as consumed. Unknown and
-        # failed versions remain eligible in the next evening.
+        # Only explicit durable terminal judgements count as consumed. Morning
+        # parent-review background never advances new-discovery consumption.
         previously_present: set[tuple[str, int]] = set()
         for prior in conn.execute(
-            "SELECT s.scan_id,s.coverage_json FROM k10_scans s JOIN k10_v2_report_runs r ON r.scan_id=s.scan_id "
-            "WHERE s.window_kind='evening' AND r.available_at IS NOT NULL "
+            "SELECT s.scan_id,s.window_kind,s.coverage_json FROM k10_scans s JOIN k10_v2_report_runs r ON r.scan_id=s.scan_id "
+            "WHERE s.window_kind IN ('evening','morning') AND r.available_at IS NOT NULL "
             "AND r.status IN ('completed','partial') AND julianday(s.cutoff_at)<julianday(?)", (cutoff,)
         ):
-            item = json.loads(prior[1])
+            item = json.loads(prior[2])
             previous_input = item.get("collectedInput") if isinstance(item, dict) else None
             previous_refs = (previous_input.get("inputDocumentRefs") if isinstance(previous_input, dict)
                              else None)
             if isinstance(previous_refs, list):
-                previously_present.update((ref["documentId"], ref["revision"]) for ref in previous_refs
-                                          if isinstance(ref, dict) and isinstance(ref.get("documentId"), str)
-                                          and isinstance(ref.get("revision"), int))
+                if prior[1] == "evening":
+                    previously_present.update((ref["documentId"], ref["revision"]) for ref in previous_refs
+                                              if isinstance(ref, dict) and isinstance(ref.get("documentId"), str)
+                                              and isinstance(ref.get("revision"), int))
                 unsettled = conn.execute(
                     "SELECT 1 FROM k10_scan_execution_bindings b "
                     "JOIN k10_external_attempts a ON a.task_id=b.task_id "
@@ -3265,7 +3266,54 @@ def list_scans(*, window_kind: Optional[str], db_path: Path) -> list[dict[str, A
 
 
 def get_scan(*, scan_id: str, db_path: Path) -> Optional[dict[str, Any]]:
-    return next((item for item in list_scans(window_kind=None, db_path=db_path) if item["scanId"] == scan_id), None)
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT scan_id,window_kind,cutoff_at,status,coverage_json,config_id,config_revision,created_at,completed_at "
+            "FROM k10_scans WHERE scan_id=?", (scan_id,),
+        ).fetchone()
+    return None if row is None else {
+        "scanId": row[0], "windowKind": row[1], "cutoffAt": row[2], "status": row[3],
+        "coverage": json.loads(row[4]), "configId": row[5], "configRevision": row[6],
+        "createdAt": row[7], "completedAt": row[8],
+    }
+
+
+def public_scan_projection(*, scan_id: str | None, window_kind: str | None,
+                           db_path: Path) -> Optional[dict[str, Any]]:
+    """Only the coverage fields rendered by the scan API; no execution tree."""
+    if (scan_id is None) == (window_kind is None):
+        raise ValueError("scan_id 或 window_kind 必须且只能指定一个")
+    raw = "CASE WHEN json_valid(coverage_json) THEN coverage_json ELSE '{}' END"
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        row = conn.execute(
+            "SELECT scan_id,window_kind,cutoff_at,status,config_id,config_revision,created_at,completed_at,"
+            f"json_extract({raw},'$.status'),json_extract({raw},'$.state'),"
+            f"json_extract({raw},'$.gaps'),json_extract({raw},'$.sourceOutcomes'),"
+            f"json_extract({raw},'$.sourceReplay') FROM k10_scans WHERE "
+            + ("scan_id=?" if scan_id is not None else "window_kind=?")
+            + ("" if scan_id is not None else " ORDER BY julianday(cutoff_at) DESC,scan_id DESC LIMIT 1"),
+            (scan_id if scan_id is not None else window_kind,),
+        ).fetchone()
+    if row is None:
+        return None
+    coverage: dict[str, Any] = {}
+    for key, value in (("status", row[8]), ("state", row[9])):
+        if value is not None:
+            coverage[key] = value
+    for key, value in (("gaps", row[10]), ("sourceOutcomes", row[11]), ("sourceReplay", row[12])):
+        if value is not None:
+            coverage[key] = json.loads(value)
+    return {"scanId": row[0], "windowKind": row[1], "cutoffAt": row[2], "status": row[3],
+            "coverage": coverage, "configId": row[4], "configRevision": row[5],
+            "createdAt": row[6], "completedAt": row[7]}
+
+
+def scan_exists(*, scan_id: str, db_path: Path) -> bool:
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        return conn.execute("SELECT 1 FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone() is not None
 
 
 def _state_in_connection(conn, candidate_id: str) -> str:
@@ -3745,7 +3793,10 @@ def claim_tasks(
             "((t.status='queued' AND (r.not_before_at IS NULL OR r.not_before_at <= ?)) "
             "OR (t.status='running' AND t.lease_until < ?)) "
             + protocol_where +
-            " ORDER BY CASE t.kind WHEN 'morning_scan' THEN 0 WHEN 'evening_scan' THEN 1 ELSE 2 END, t.created_at,t.task_id LIMIT ?",
+            " ORDER BY CASE WHEN t.kind='morning_scan' THEN 0 ELSE 1 END, "
+            "julianday(CASE WHEN t.status='running' THEN t.lease_until "
+            "WHEN r.task_id IS NOT NULL THEN r.updated_at ELSE t.created_at END), "
+            "julianday(t.created_at),t.task_id LIMIT ?",
             (now_text, now_text, *protocol_values, limit),
         ).fetchall()
         task_ids = [str(row[0]) for row in rows]
@@ -3957,111 +4008,98 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
     with read_connection(db_path) as conn:
         require_schema(conn)
         scan = conn.execute(
-            "SELECT s.status,s.coverage_json,s.config_id,s.config_revision,c.content_sha256,b.task_id,"
+            "SELECT s.status,"
+            "json_extract(CASE WHEN json_valid(s.coverage_json) THEN s.coverage_json ELSE '{}' END,'$.receivedTitleCount'),"
+            "json_type(CASE WHEN json_valid(s.coverage_json) THEN s.coverage_json ELSE '{}' END,'$.receivedTitleCount'),"
+            "json_extract(CASE WHEN json_valid(s.coverage_json) THEN s.coverage_json ELSE '{}' END,'$.executionState'),"
+            "json_extract(CASE WHEN json_valid(s.coverage_json) THEN s.coverage_json ELSE '{}' END,'$.pipelineState'),"
+            "json_extract(CASE WHEN json_valid(s.coverage_json) THEN s.coverage_json ELSE '{}' END,'$.factCacheHits'),"
+            "s.config_id,s.config_revision,c.content_sha256,b.task_id,"
             "b.execution_config_id,b.execution_config_revision,b.execution_content_sha256,b.binding_kind,t.stage,t.status "
             "FROM k10_scans s LEFT JOIN k10_run_config_revisions c ON c.config_id=s.config_id AND c.revision=s.config_revision "
             "LEFT JOIN k10_scan_execution_bindings b ON b.scan_id=s.scan_id LEFT JOIN k10_tasks t ON t.task_id=b.task_id "
             "WHERE s.scan_id=?", (scan_id,),
         ).fetchone()
-        if scan is None or scan[5] is None:
+        if scan is None or scan[9] is None:
             return None
-        task_id = str(scan[5])
-        try:
-            coverage = json.loads(scan[1])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            coverage = {}
+        task_id = str(scan[9])
         manifest = conn.execute(
-            "SELECT input_refs_json,input_count,title_status,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
+            "SELECT input_count,title_status,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
         ).fetchone()
         items = conn.execute(
-            "SELECT disposition,selection_rank FROM k10_v2_title_triage_items WHERE task_id=?", (task_id,),
+            "SELECT disposition,selection_rank IS NULL,COUNT(*) FROM k10_v2_title_triage_items "
+            "WHERE task_id=? GROUP BY disposition,selection_rank IS NULL", (task_id,),
         ).fetchall()
-        selection = conn.execute("SELECT selected_refs_json FROM k10_v2_title_selection_manifests WHERE task_id=?", (task_id,)).fetchone()
+        selection = conn.execute(
+            "SELECT json_array_length(CASE WHEN json_valid(selected_refs_json) THEN selected_refs_json ELSE '[]' END) "
+            "FROM k10_v2_title_selection_manifests WHERE task_id=?", (task_id,),
+        ).fetchone()
         articles = conn.execute(
-            "SELECT admission_kind,state FROM k10_v2_article_admissions WHERE task_id=?", (task_id,),
+            "SELECT admission_kind,state,COUNT(*) FROM k10_v2_article_admissions "
+            "WHERE task_id=? GROUP BY admission_kind,state", (task_id,),
         ).fetchall()
         checkpoints = conn.execute(
-            "SELECT stage,status,safe_error_code,safe_error_ref,result_json FROM k10_execution_item_checkpoints WHERE task_id=?", (task_id,),
+            "SELECT DISTINCT stage,safe_error_code,safe_error_ref FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND status='failed' AND safe_error_code IS NOT NULL", (task_id,),
         ).fetchall()
-        tavily_checkpoint_results = conn.execute(
-            "SELECT result_json FROM k10_execution_item_checkpoints "
-            "WHERE task_id=? AND stage='tavily_evidence' AND status='completed'",
+        checkpoint_titles = conn.execute(
+            "SELECT COALESCE(SUM(CASE "
+            "WHEN json_type(result_json,'$.itemCount')='integer' AND json_extract(result_json,'$.itemCount')>=0 "
+            "THEN json_extract(result_json,'$.itemCount') "
+            "WHEN json_type(result_json,'$.processedCount')='integer' AND json_extract(result_json,'$.processedCount')>=0 "
+            "THEN json_extract(result_json,'$.processedCount') "
+            "WHEN json_type(result_json,'$.items')='array' THEN json_array_length(result_json,'$.items') "
+            "ELSE 0 END),0) FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND stage='model:titleBatch' AND status='completed' AND json_valid(result_json)",
             (task_id,),
-        ).fetchall()
+        ).fetchone()[0]
+        tavily_excerpts = conn.execute(
+            "WITH refs AS (SELECT DISTINCT "
+            "json_extract(CASE WHEN json_valid(j.value) THEN j.value ELSE '{}' END,'$.documentId') AS document_id,"
+            "json_extract(CASE WHEN json_valid(j.value) THEN j.value ELSE '{}' END,'$.revision') AS revision "
+            "FROM k10_execution_item_checkpoints c,"
+            "json_each(CASE WHEN json_valid(c.result_json) THEN c.result_json ELSE '{}' END,'$.documentRefs') j "
+            "WHERE c.task_id=? AND c.stage='tavily_evidence' AND c.status='completed' "
+            "AND json_extract(CASE WHEN json_valid(c.result_json) THEN c.result_json ELSE '{}' END,"
+            "'$.coverage.requestState')='completed' "
+            "AND json_type(CASE WHEN json_valid(j.value) THEN j.value ELSE '{}' END,'$.documentId')='text' "
+            "AND json_type(CASE WHEN json_valid(j.value) THEN j.value ELSE '{}' END,'$.revision')='integer' "
+            "AND json_extract(CASE WHEN json_valid(j.value) THEN j.value ELSE '{}' END,'$.revision')>=1) "
+            "SELECT COUNT(*) FROM refs JOIN k10_source_document_versions v "
+            "ON v.document_id=refs.document_id AND v.revision=refs.revision "
+            "JOIN k10_source_documents d ON d.document_id=v.document_id "
+            "WHERE d.source_key='tavily_verification' AND v.excerpt IS NOT NULL "
+            "AND length(trim(v.excerpt))>0", (task_id,),
+        ).fetchone()[0]
         attempts = conn.execute(
             "SELECT state,COUNT(*) FROM k10_external_attempts WHERE task_id=? GROUP BY state", (task_id,),
         ).fetchall()
         retry = conn.execute("SELECT not_before_at FROM k10_task_retry_schedules WHERE task_id=?", (task_id,)).fetchone()
         retirement = conn.execute("SELECT reason_code,retired_at FROM k10_discovery_retirements WHERE scan_id=?", (scan_id,)).fetchone()
-    coverage = coverage if isinstance(coverage, Mapping) else {}
-    tavily_refs: set[tuple[str, int]] = set()
-    for (raw_result,) in tavily_checkpoint_results:
-        try:
-            result = json.loads(raw_result)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        if not isinstance(result, Mapping):
-            continue
-        receipt = result.get("coverage")
-        if not isinstance(receipt, Mapping) or receipt.get("requestState") != "completed":
-            continue
-        for raw_ref in result.get("documentRefs", ()):
-            if (isinstance(raw_ref, Mapping) and isinstance(raw_ref.get("documentId"), str)
-                    and not isinstance(raw_ref.get("revision"), bool) and isinstance(raw_ref.get("revision"), int)
-                    and raw_ref["revision"] >= 1):
-                tavily_refs.add((raw_ref["documentId"], raw_ref["revision"]))
-    tavily_excerpts = 0
-    if tavily_refs:
-        clauses = ",".join("(?,?)" for _ in tavily_refs)
-        values = tuple(value for ref in tavily_refs for value in ref)
-        with read_connection(db_path) as conn:
-            tavily_excerpts = int(conn.execute(
-                "SELECT COUNT(*) FROM k10_source_document_versions v "
-                "JOIN k10_source_documents d ON d.document_id=v.document_id "
-                "WHERE d.source_key='tavily_verification' AND v.excerpt IS NOT NULL "
-                "AND length(trim(v.excerpt))>0 AND (v.document_id,v.revision) IN (" + clauses + ")",
-                values,
-            ).fetchone()[0])
-    input_refs = [] if manifest is None else json.loads(manifest[0])
-    title_covered = len(items)
-    exact_duplicate_count = sum(1 for row in items if row[0] == "exact_duplicate")
-    checkpoint_titles = 0
-    for stage, status, _, _, result_json in checkpoints:
-        if stage != "model:titleBatch" or status != "completed":
-            continue
-        try:
-            result = json.loads(result_json)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        if isinstance(result, Mapping):
-            count = result.get("itemCount", result.get("processedCount"))
-            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
-                checkpoint_titles += count
-            elif isinstance(result.get("items"), list):
-                checkpoint_titles += len(result["items"])
-    received = coverage.get("receivedTitleCount")
-    if isinstance(received, bool) or not isinstance(received, int) or received < 0:
-        received = len(input_refs) if manifest is not None else None
-    exact = len(input_refs) if manifest is not None else None
+    title_covered = sum(int(row[2]) for row in items)
+    exact_duplicate_count = sum(int(row[2]) for row in items if row[0] == "exact_duplicate")
+    received = scan[1] if scan[2] == "integer" and isinstance(scan[1], int) and scan[1] >= 0 else None
+    if received is None:
+        received = int(manifest[0]) if manifest is not None else None
+    exact = int(manifest[0]) if manifest is not None else None
     triaged = (title_covered - exact_duplicate_count) if title_covered else (min(checkpoint_titles, exact) if exact is not None else None)
-    selected = 0 if selection is None else len(json.loads(selection[0]))
-    title_incomplete = (manifest is not None and manifest[2] == "partial") or (
-        coverage.get("executionState") == "title_incomplete"
-        or coverage.get("pipelineState") in {"title_incomplete", "partial"}
+    selected = 0 if selection is None else int(selection[0])
+    title_incomplete = (manifest is not None and manifest[1] == "partial") or (
+        scan[3] == "title_incomplete" or scan[4] in {"title_incomplete", "partial"}
     )
     title_counts = None if manifest is None else {
         "received": received, "exactDeduplicated": exact_duplicate_count, "triaged": triaged,
-        "merged": sum(1 for row in items if row[0] == "merged"),
-        "notSelected": sum(1 for row in items if row[0] != "exact_duplicate" and row[1] is None),
-        "protected": sum(1 for row in items if row[0] == "protected"),
+        "merged": sum(int(row[2]) for row in items if row[0] == "merged"),
+        "notSelected": sum(int(row[2]) for row in items if row[0] != "exact_duplicate" and row[1]),
+        "protected": sum(int(row[2]) for row in items if row[0] == "protected"),
         "partial": max(0, exact - title_covered) if title_incomplete else 0,
     }
     article_counts = None if manifest is None else {
-        "limit": None, "selected": selected, "admitted": len(articles),
-        "completed": sum(1 for row in articles if row[1] == "completed"),
-        "missingBody": sum(1 for row in articles if row[1] == "missing_body"),
+        "limit": None, "selected": selected, "admitted": sum(int(row[2]) for row in articles),
+        "completed": sum(int(row[2]) for row in articles if row[1] == "completed"),
+        "missingBody": sum(int(row[2]) for row in articles if row[1] == "missing_body"),
         "tavilyExcerpt": tavily_excerpts,
-        "tavilyFullArticle": sum(1 for row in articles if row[0] == "tavily_full_article"),
+        "tavilyFullArticle": sum(int(row[2]) for row in articles if row[0] == "tavily_full_article"),
     }
     attempt_counts = {"started": 0, "succeeded": 0, "failed": 0, "unknown": 0}
     for state, count in attempts:
@@ -4069,13 +4107,13 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
             attempt_counts[str(state)] = int(count)
     failures: list[dict[str, str]] = []
     seen_failures: set[tuple[str, str, str]] = set()
-    for stage, status, code, ref, _ in checkpoints:
-        if status == "failed" and isinstance(code, str):
+    for stage, code, ref in checkpoints:
+        if isinstance(code, str):
             key = (str(stage), code, str(ref or ""))
             if key not in seen_failures:
                 failures.append({"stage": key[0], "code": key[1], "ref": key[2]})
                 seen_failures.add(key)
-    for kind, state in articles:
+    for kind, state, _count in articles:
         if state == "failed":
             key = ("article", "body_failed", str(kind))
             if key not in seen_failures:
@@ -4088,11 +4126,11 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
         state = "partial"
     elif control["state"] == "closed" and raw_state in {"queued", "running"}:
         state = "paused"
-    execution_state = coverage.get("executionState")
-    pipeline_state = coverage.get("pipelineState")
+    execution_state = scan[3]
+    pipeline_state = scan[4]
     if retirement is not None:
         stage = "retired"
-    elif retry is not None and str(scan[11]) == "queued":
+    elif retry is not None and str(scan[15]) == "queued":
         stage = "recovery"
     elif raw_state == "completed":
         stage = "published"
@@ -4105,14 +4143,14 @@ def execution_progress_for_scan(*, scan_id: str, db_path: Path) -> Optional[dict
     elif raw_state == "completed":
         stage = "published"
     else:
-        stage = str(scan[10])
+        stage = str(scan[14])
     return {
         "state": state, "stage": stage, "titleCounts": title_counts, "articleCounts": article_counts,
-        "attemptCounts": attempt_counts, "factCacheHits": coverage.get("factCacheHits") if isinstance(coverage.get("factCacheHits"), int) else None,
+        "attemptCounts": attempt_counts, "factCacheHits": scan[5] if isinstance(scan[5], int) else None,
         "safeFailures": failures, "coverageStatus": "complete" if state == "completed" and not failures else "partial",
-        "nextRetryAt": None if retry is None or str(scan[11]) != "queued" else retry[0],
-        "strategyBinding": None if scan[2] is None or scan[3] is None else {"configId": scan[2], "revision": int(scan[3]), "contentSha256": scan[4]},
-        "executionBinding": {"configId": scan[6], "revision": scan[7], "contentSha256": scan[8], "bindingKind": scan[9]},
+        "nextRetryAt": None if retry is None or str(scan[15]) != "queued" else retry[0],
+        "strategyBinding": None if scan[6] is None or scan[7] is None else {"configId": scan[6], "revision": int(scan[7]), "contentSha256": scan[8]},
+        "executionBinding": {"configId": scan[10], "revision": scan[11], "contentSha256": scan[12], "bindingKind": scan[13]},
         "runControl": {"state": "ready" if control["state"] == "open" else "paused", "reasonCode": control["reasonCode"],
                        "changedAt": control["changedAt"], "executionState": control["executionState"],
                        "inFlightCount": control["inFlightCount"], "unknownCount": control["unknownCount"],

@@ -1098,15 +1098,15 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.get("/scans/latest", response_model=ScanOut)
     def latest_scan(window: str = Query(..., pattern="^(evening|morning)$")) -> ScanOut:
         path = db_path()
-        scans = store.list_scans(window_kind=window, db_path=path)
-        if not scans:
+        scan = store.public_scan_projection(scan_id=None, window_kind=window, db_path=path)
+        if scan is None:
             raise _not_found("没有该窗口 K10 扫描")
-        return _scan(scans[0], store.list_publication_batches(db_path=path), path=path)
+        return _scan(scan, store.list_publication_batches(db_path=path), path=path)
 
     @router.get("/scans/{scan_id}", response_model=ScanOut)
     def get_scan(scan_id: str) -> ScanOut:
         path = db_path()
-        value = store.get_scan(scan_id=scan_id, db_path=path)
+        value = store.public_scan_projection(scan_id=scan_id, window_kind=None, db_path=path)
         if value is None:
             raise _not_found("K10 扫描不存在")
         return _scan(value, store.list_publication_batches(db_path=path), path=path)
@@ -1114,7 +1114,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.get("/scans/{scan_id}/research-summary", response_model=ResearchSummaryOut)
     def scan_research_summary(scan_id: str) -> ResearchSummaryOut:
         path = db_path()
-        if store.get_scan(scan_id=scan_id, db_path=path) is None:
+        if not store.scan_exists(scan_id=scan_id, db_path=path):
             raise _not_found("K10 扫描不存在")
         summary = research_store.research_summary_for_scan(scan_id=scan_id, db_path=path)
         if summary is None:
@@ -1127,7 +1127,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
     @router.get("/scans/{scan_id}/assessments", response_model=ResearchAssessmentListOut)
     def scan_research_assessments(scan_id: str) -> ResearchAssessmentListOut:
         path = db_path()
-        if store.get_scan(scan_id=scan_id, db_path=path) is None:
+        if not store.scan_exists(scan_id=scan_id, db_path=path):
             raise _not_found("K10 扫描不存在")
         items = research_store.list_research_assessments(scan_id=scan_id, db_path=path)
         return ResearchAssessmentListOut(scanId=scan_id, items=[_research_assessment(item) for item in items])

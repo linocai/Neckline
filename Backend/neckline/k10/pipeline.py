@@ -5470,6 +5470,15 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
     """
     targets = _morning_target_items(scan_id=scan_id, cutoff_at=cutoff_at, db_path=parent.db_path,
                                     morning_refs=morning_refs, review_matches=review_matches)
+    try:
+        scan = store.get_scan(scan_id=scan_id, db_path=parent.db_path)
+    except SchemaUnavailable:
+        scan = None
+    scan_coverage = scan.get("coverage") if isinstance(scan, Mapping) else {}
+    frozen_parent = (scan_coverage.get("b90MorningParent")
+                     if isinstance(scan_coverage, Mapping) else None)
+    parent_unavailable = (isinstance(frozen_parent, Mapping)
+                          and frozen_parent.get("state") == "unavailable")
     report_items: list[dict[str, Any]] = []
     runnable: list[dict[str, Any]] = []
     settled_work_item_ids: list[str] = []
@@ -5537,6 +5546,8 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
     work_item_ids = list(dict.fromkeys([*settled_work_item_ids, *runnable_work_item_ids]))
     if settled_incomplete and review_state == "completed":
         review_state = "partial"
+    if parent_unavailable:
+        review_state = "unavailable"
     known = {item.get("opportunityId") for item in report_items}
     for target in targets:
         if target.get("opportunityId") not in known:
@@ -5566,6 +5577,7 @@ def _assemble_morning_report(*, parent: TaskContext, scan_id: str, cutoff_at: da
     coverage_status = ("complete" if source_status == "complete" and review_state == "completed"
                        and not needs_review and not failed_items and not additional_gaps else "partial")
     gaps: list[str] = []
+    if parent_unavailable: gaps.append("morning_parent_unavailable")
     if source_status != "complete": gaps.append("morning_source_" + source_status)
     if review_state != "completed": gaps.append("morning_review_" + review_state)
     if needs_review and not source_only_uncertainty: gaps.append("needs_review_items")
@@ -5620,6 +5632,23 @@ def _morning_delivery_for_report(*, delivery: Mapping[str, Any], report: Mapping
     }
     coverage = report.get("coverage") if isinstance(report.get("coverage"), Mapping) else {}
     review_state = coverage.get("reviewState")
+    if "morning_parent_unavailable" in coverage.get("gaps", ()):
+        # Delivery is attached to the public v2 report, whose identity is
+        # report_<scanId>; the private morning-review artifact has another ID.
+        key = ("morning_review", "report", "report_" + str(report["scanId"]),
+               "morning_parent_unavailable")
+        if key not in existing:
+            gaps.append(delivery_gap(
+                stage="morning_review", unit_kind="report", unit_id=key[2],
+                reason_code=key[3],
+                message="昨晚正式报告不可用，无法复核原有推荐理由；本次新发现单独呈现。",
+                company_scope_known=False,
+            ))
+        result["outcome"] = "partial"
+        if result.get("rankingScope") == "all_processed":
+            result["rankingScope"] = "completed_subset"
+        result["gaps"] = gaps
+        return result
     groups = report.get("groups") if isinstance(report.get("groups"), Mapping) else {}
     has_incomplete_item = any(
         isinstance(item, Mapping) and (
@@ -5948,6 +5977,66 @@ def _b92_jin10_client_factory(*, db_path: Path,
         return Jin10Client(token=token or None, endpoint=endpoint, protocol_version=protocol,
                            timeout_seconds=float(timeout))
     return create
+
+
+def _discovery_slice_progress(*, task_id: str, db_path: Path,
+                              research_input_count: int | None = None) -> Mapping[str, Any]:
+    """Persist a small diagnostic based on durable work, never retry count.
+
+    It is private task state. The same counters on a no-op continuation retain
+    the prior last-change timestamp; paid replies and document trees stay in
+    their existing ledgers rather than entering this checkpoint.
+    """
+    from .research_store import task_research_facts
+    with read_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT json_extract(checkpoint_json,'$.executionProgress') "
+            "FROM k10_tasks WHERE task_id=?", (task_id,),
+        ).fetchone()
+        stages = dict(conn.execute(
+            "SELECT stage,COUNT(*) FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND status='completed' AND stage IN "
+            "('model:titleBatch','model:understand','research_input_boundary',"
+            "'discovery_assemble','discovery_assemble_company','discovery_pre_rank',"
+            "'discovery_dependencies','model:prioritize') "
+            "GROUP BY stage", (task_id,),
+        ).fetchall())
+        failures = conn.execute(
+            "SELECT COUNT(*) FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND status='failed'", (task_id,),
+        ).fetchone()[0]
+    try:
+        previous = json.loads(row[0]) if row is not None and isinstance(row[0], str) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        previous = {}
+    if not isinstance(previous, Mapping):
+        previous = {}
+    terminal = sum(profile is not None for _context, profile in
+                   task_research_facts(task_id=task_id, db_path=db_path).values())
+    counts = {
+        "titleBatches": int(stages.get("model:titleBatch", 0)),
+        "understoodDocuments": int(stages.get("model:understand", 0)),
+        "researchInputs": max(int(stages.get("research_input_boundary", 0)),
+                              research_input_count or 0),
+        "researchTerminal": terminal,
+        "assembledEvents": int(stages.get("discovery_assemble", 0)),
+        "assembledCompanies": int(stages.get("discovery_assemble_company", 0)),
+        "preRankFrozen": int(stages.get("discovery_pre_rank", 0)),
+        "dependenciesFrozen": int(stages.get("discovery_dependencies", 0)),
+        "rankReplies": int(stages.get("model:prioritize", 0)),
+        "failedItems": int(failures),
+    }
+    prior_counts = previous.get("counts") if isinstance(previous.get("counts"), Mapping) else {}
+    delta = {key: value - int(prior_counts.get(key, 0)) for key, value in counts.items()}
+    actual_change = any(value > 0 for value in delta.values())
+    expected = counts["researchInputs"]
+    phase = ("title_or_read" if expected == 0 else
+             "research" if counts["researchTerminal"] < expected else
+             "assembly" if counts["assembledEvents"] < expected else "finalization")
+    now_text = _text(datetime.now(timezone.utc))
+    return {"phase": phase, "counts": counts, "sliceDelta": delta,
+            "sliceFinishedAt": now_text,
+            "lastActualChangeAt": now_text if actual_change else previous.get("lastActualChangeAt")}
 
 
 def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,Any], db_path: Path,
@@ -6668,6 +6757,41 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             researched_unit_refs: dict[str, set[tuple[str, int]]] = {}
             failed_research_unit_refs: dict[str, set[tuple[str, int]]] = {}
             snapshot_unit_ids: dict[str, str] = {}
+            from .research_runtime import research_context_digest
+            from .research_store import task_research_facts
+            research_facts = (task_research_facts(task_id=str(task_id), db_path=db_path)
+                              if title_enabled and task_id is not None else {})
+            research_profile_hash = store._hash({"execution": execution_profile or {},
+                                                 "runtimeContract": runtime_contract})
+            assembly_binding = {"taskId": task_id, "cutoffAt": _text(cutoff_at),
+                                "configurationSha256": store._hash(configuration),
+                                "executionSha256": store._hash(execution_profile or {}),
+                                "runtimeContractSha256": store._hash(runtime_contract)}
+            assembled_events: dict[str, Mapping[str, Any]] = {}
+            for row in (store.completed_execution_items(task_id=str(task_id), item_kind="event",
+                        stage="discovery_assemble", db_path=db_path)
+                        if title_enabled and task_id is not None else ()):
+                result = row.get("result")
+                if (isinstance(result, Mapping) and isinstance(result.get("input"), list)
+                        and row["inputSha256"] == store._hash({**assembly_binding, "input": result["input"]})):
+                    assembled_events[row["itemKey"]] = result
+            for row in (store.completed_execution_items(task_id=str(task_id), item_kind="event",
+                        stage="discovery_assemble_company", db_path=db_path)
+                        if title_enabled and task_id is not None else ()):
+                result = row.get("result")
+                if (isinstance(result, Mapping) and isinstance(result.get("input"), Mapping)
+                        and row["inputSha256"] == store._hash({**assembly_binding, "input": result["input"]})):
+                    assembled_events[row["itemKey"]] = result
+            assembled_aggregate = None
+            for row in (store.completed_execution_items(task_id=str(task_id), item_kind="global",
+                        stage="discovery_pre_rank", db_path=db_path)
+                        if title_enabled and task_id is not None else ()):
+                result = row.get("result")
+                if (row["itemKey"] != "pre_rank" or not isinstance(result, Mapping)
+                        or not isinstance(result.get("input"), list)
+                        or row["inputSha256"] != store._hash({**assembly_binding, "input": result["input"]})):
+                    raise PipelineError("预排序组装检查点无效", code="discovery_aggregate_invalid")
+                assembled_aggregate = result
 
             def record_research_input(events: Sequence[EventDraft]) -> None:
                 """Freeze every research unit before its first external admission.
@@ -6685,6 +6809,12 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     prior = running_coverage.get("researchInputUnitIds")
                     if prior is not None and prior != unit_ids:
                         raise PipelineError("研究输入清单不可覆盖", code="research_input_invalid")
+                    for event in events:
+                        unit_id = _research_unit_id(event)
+                        researched_unit_refs[unit_id] = {(ref.document_id, ref.revision) for ref in event.source_refs}
+                        snapshot_unit_ids[_research_id(task_id=str(task_id), event=event)] = unit_id
+                    if prior == unit_ids:
+                        return
                     running_coverage["researchInputUnitIds"] = list(unit_ids)
                     running_coverage["researchEventCount"] = len(unit_ids)
                     store.update_running_scan_coverage(
@@ -6729,7 +6859,51 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     if snapshot_id not in snapshot_ids:
                         snapshot_ids.append(snapshot_id)
                     running_coverage["executionState"] = "investigation"
-                    store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
+                    # The snapshot is already durable in the research store.
+                    # Materialize its coverage list only at a phase boundary,
+                    # never as a full multi-MB scan rewrite per event/cache hit.
+
+            def research_terminal(event: EventDraft) -> bool:
+                fact = research_facts.get(_research_id(task_id=str(task_id), event=event))
+                return bool(fact is not None and fact[1] == research_profile_hash
+                            and fact[0] == research_context_digest(
+                                event=event, cutoff_at=cutoff_at,
+                                cutoff_inclusive=window.cutoff_inclusive))
+
+            def record_assembly(event: EventDraft, fragment: Mapping[str, Any]) -> None:
+                unit_id = _research_unit_id(event)
+                input_sha = store._hash({**assembly_binding, "input": fragment["input"]})
+                store.record_execution_checkpoint(
+                    task_id=str(task_id), item_kind="event", item_key=unit_id,
+                    stage="discovery_assemble", input_sha256=input_sha, status="completed",
+                    attempt_count=1, network_attempt_count=0, repair_attempt_count=0,
+                    elapsed_ms=0, input_tokens=None, output_tokens=None, result=fragment,
+                    safe_error_code=None, safe_error_ref=None, updated_at=_text(_now()),
+                    db_path=db_path, leaseguard=leaseguard)
+                assembled_events[unit_id] = fragment
+            def record_assembly_company(event: EventDraft, code: str,
+                                        fragment: Mapping[str, Any]) -> None:
+                unit_id = _research_unit_id(event) + "@" + code
+                input_sha = store._hash({**assembly_binding, "input": fragment["input"]})
+                store.record_execution_checkpoint(
+                    task_id=str(task_id), item_kind="event", item_key=unit_id,
+                    stage="discovery_assemble_company", input_sha256=input_sha,
+                    status="completed", attempt_count=1, network_attempt_count=0,
+                    repair_attempt_count=0, elapsed_ms=0, input_tokens=None,
+                    output_tokens=None, result=fragment, safe_error_code=None,
+                    safe_error_ref=None, updated_at=_text(_now()), db_path=db_path,
+                    leaseguard=leaseguard)
+                assembled_events[unit_id] = fragment
+            def record_pre_rank(fragment: Mapping[str, Any]) -> None:
+                store.record_execution_checkpoint(
+                    task_id=str(task_id), item_kind="global", item_key="pre_rank",
+                    stage="discovery_pre_rank",
+                    input_sha256=store._hash({**assembly_binding, "input": fragment["input"]}),
+                    status="completed", attempt_count=1, network_attempt_count=0,
+                    repair_attempt_count=0, elapsed_ms=0, input_tokens=None,
+                    output_tokens=None, result=fragment, safe_error_code=None,
+                    safe_error_ref=None, updated_at=_text(_now()), db_path=db_path,
+                    leaseguard=leaseguard)
             def investigate(event: EventDraft) -> InvestigationOutcome:
                 # The dependency boundary is frozen at research admission. A
                 # later pre-ranking check must use these exact event refs, not
@@ -6756,7 +6930,40 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         }
                     raise
             def pre_ranking_exclusions(candidates: Sequence[Any]) -> set[str]:
-                snapshot_ids = running_coverage.get("researchSnapshotIds", [])
+                from .research_store import failed_research_snapshot_ids
+                failed_revisions = failed_research_snapshot_ids(task_id=str(task_id), db_path=db_path)
+                snapshot_ids = tuple(failed_revisions)
+                with read_connection(db_path) as conn:
+                    failed_article_items = conn.execute(
+                        "SELECT item_key,input_sha256 FROM k10_execution_item_checkpoints "
+                        "WHERE task_id=? AND stage='understand' AND status='failed' ORDER BY item_key",
+                        (task_id,),
+                    ).fetchall()
+                title_failures = running_coverage.get("titleFailures")
+                dependency_input = {**assembly_binding,
+                    "candidates": [(candidate.mapping.company_code,
+                                    sorted(_candidate_ref_keys(candidate))) for candidate in candidates],
+                    "failedResearchRevisions": failed_revisions,
+                    "failedArticleItems": [list(row) for row in failed_article_items],
+                    "titleFailures": title_failures}
+                dependency_sha = store._hash(dependency_input)
+                dependency_key = "dependencies:" + dependency_sha[:32]
+                for prior in store.completed_execution_items(task_id=str(task_id), item_kind="global",
+                        stage="discovery_dependencies", db_path=db_path):
+                    if prior["itemKey"] != dependency_key:
+                        continue
+                    cached = prior["result"]
+                    if (prior["inputSha256"] != dependency_sha or not isinstance(cached, Mapping)
+                            or not isinstance(cached.get("excluded"), list)
+                            or any(not isinstance(code, str) for code in cached["excluded"])
+                            or any(not isinstance(cached.get(key), Mapping) for key in (
+                                "researchDependencyExclusions", "titleDependencyExclusions",
+                                "articleDependencyExclusions"))):
+                        raise PipelineError("研究依赖排除检查点无效", code="research_dependency_invalid")
+                    for key in ("researchDependencyExclusions", "titleDependencyExclusions",
+                                "articleDependencyExclusions"):
+                        running_coverage[key] = cached[key]
+                    return set(cached["excluded"])
                 dependencies = _failed_research_dependency_codes(
                     # The store is the durable authority for an execution
                     # status.  Passing every current snapshot as an explicit
@@ -6764,7 +6971,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     # failed after a later event crossed morning closeout.
                     # ``_failed_research_dependency_codes`` reads each
                     # snapshot and includes only non-``ok`` revisions here.
-                    snapshot_ids=snapshot_ids if isinstance(snapshot_ids, list) else (), db_path=db_path,
+                    snapshot_ids=snapshot_ids, db_path=db_path,
                 )
                 dependencies = {snapshot_unit_ids[snapshot_id]: set(codes)
                                 for snapshot_id, codes in dependencies.items()
@@ -6773,26 +6980,23 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 # B78 direct rounds do not write the retired stage table.  A
                 # failed direct snapshot still contributes its exact admitted
                 # title refs as a pre-ranking dependency boundary.
-                if isinstance(snapshot_ids, list):
-                    from .research_store import read_research_snapshot
-                    for snapshot_id in snapshot_ids:
-                        if not isinstance(snapshot_id, str) or not snapshot_id:
-                            continue
-                        snapshot = read_research_snapshot(snapshot_id=snapshot_id, db_path=db_path)
-                        if snapshot is None or snapshot.execution_status == "ok":
-                            continue
-                        unit_id = snapshot_unit_ids.get(snapshot_id)
-                        if unit_id is None:
-                            raise PipelineError("研究快照未绑定本轮执行单元", code="research_dependency_invalid")
-                        failed_units.add(unit_id)
-                        dependencies.setdefault(unit_id, set()).update(
-                            _title_scope_for_refs(
-                                task_id=task_id,
-                                refs=[{"documentId": document_id, "revision": revision}
-                                      for document_id, revision in researched_unit_refs.get(unit_id, set())],
-                                db_path=db_path,
-                            )
+                from .research_store import read_research_snapshot
+                for snapshot_id in snapshot_ids:
+                    snapshot = read_research_snapshot(snapshot_id=snapshot_id, db_path=db_path)
+                    if snapshot is None or snapshot.execution_status == "ok":
+                        continue
+                    unit_id = snapshot_unit_ids.get(snapshot_id)
+                    if unit_id is None:
+                        raise PipelineError("研究快照未绑定本轮执行单元", code="research_dependency_invalid")
+                    failed_units.add(unit_id)
+                    dependencies.setdefault(unit_id, set()).update(
+                        _title_scope_for_refs(
+                            task_id=task_id,
+                            refs=[{"documentId": document_id, "revision": revision}
+                                  for document_id, revision in researched_unit_refs.get(unit_id, set())],
+                            db_path=db_path,
                         )
+                    )
                 for unit_id, refs in failed_research_unit_refs.items():
                     failed_units.add(unit_id)
                     dependencies.setdefault(unit_id, set()).update(
@@ -6810,19 +7014,12 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 }
                 failed_ref_keys.update(failed_research_unit_refs)
                 named_codes = set().union(*dependencies.values()) if dependencies else set()
-                title_failures = running_coverage.get("titleFailures")
                 title_failed_refs = [ref for gap in title_failures if isinstance(gap, Mapping)
                                      for ref in gap.get("inputRefs", ()) if isinstance(ref, Mapping)] if isinstance(title_failures, list) else []
                 title_codes = _title_scope_for_refs(task_id=task_id, refs=title_failed_refs, db_path=db_path)
                 named_codes.update(title_codes)
                 failed_article_refs: list[dict[str, Any]] = []
-                with read_connection(db_path) as conn:
-                    failed_article_rows = conn.execute(
-                        "SELECT item_key FROM k10_execution_item_checkpoints "
-                        "WHERE task_id=? AND stage='understand' AND status='failed'",
-                        (task_id,),
-                    ).fetchall()
-                for (item_key,) in failed_article_rows:
+                for item_key, _input_sha in failed_article_items:
                     document = document_by_key.get(item_key)
                     if document is not None:
                         failed_article_refs.append(_ref_payload(document.evidence_ref))
@@ -6851,6 +7048,17 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     "companyCodes": sorted(article_codes),
                     "scopeKnown": bool(article_codes) if failed_article_refs else True,
                 }
+                store.record_execution_checkpoint(
+                    task_id=str(task_id), item_kind="global", item_key=dependency_key,
+                    stage="discovery_dependencies", input_sha256=dependency_sha,
+                    status="completed", attempt_count=1, network_attempt_count=0,
+                    repair_attempt_count=0, elapsed_ms=0, input_tokens=None, output_tokens=None,
+                    result={"excluded": sorted(excluded),
+                            "researchDependencyExclusions": running_coverage["researchDependencyExclusions"],
+                            "titleDependencyExclusions": running_coverage["titleDependencyExclusions"],
+                            "articleDependencyExclusions": running_coverage["articleDependencyExclusions"]},
+                    safe_error_code=None, safe_error_ref=None, updated_at=_text(_now()),
+                    db_path=db_path, leaseguard=leaseguard)
                 return excluded
             configured_deep_read = profile_payload["discovery"]["deepReadConcurrency"] if title_enabled else None
             deep_read_concurrency = (
@@ -6878,6 +7086,12 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                 # unclassified raw operation failure) leaves a
                                 # durable request outcome uncertain.  It must
                                 # stop this task rather than publish a subset.
+                                research_terminal=research_terminal if title_enabled else None,
+                                assembled_events=assembled_events if title_enabled else None,
+                                assembly_checkpoint=record_assembly if title_enabled else None,
+                                company_checkpoint=record_assembly_company if title_enabled else None,
+                                assembled_aggregate=assembled_aggregate if title_enabled else None,
+                                aggregate_checkpoint=record_pre_rank if title_enabled else None,
                                 fatal_issue_codes=(
                                     "research_storage_unavailable",
                                     "investigation_execution_failed",
@@ -6886,6 +7100,9 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                     "provider_authorization_failed",
                                 ) if b76_delivery else ())
             if run.state in {"completed", "partial"}:
+                if title_enabled:
+                    running_coverage["researchSnapshotIds"] = list(task_research_facts(
+                        task_id=str(task_id), db_path=db_path))
                 if title_enabled:
                     running_coverage["factCacheHits"] = int(getattr(model, "fact_cache_hits", 0))
                 running_coverage = {**running_coverage, "discoveryDraft": freeze_discovery_run(run),
@@ -6931,7 +7148,11 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 status="failed", pipeline_state="deadline", coverage_extra={**running_coverage, "executionState": "deadline"})
             return TaskResult("failed", "deadline", {"scanId": scan_id, "safeErrorCode": "DISCOVERY_DEADLINE"},
                               "服务限流，无法在本次任务完成时限内重试")
-        return TaskResult("failed", "discovery_slice", {"scanId": scan_id, "ingestionState": ingestion.state},
+        diagnostic = (_discovery_slice_progress(task_id=str(task_id), db_path=db_path,
+                      research_input_count=running_coverage.get("researchEventCount"))
+                      if task_id is not None and title_enabled else None)
+        return TaskResult("failed", "discovery_slice", {"scanId": scan_id, "ingestionState": ingestion.state,
+                          **({"executionProgress": diagnostic} if diagnostic is not None else {})},
                           "发现任务分片继续", retry_at=_now() + timedelta(seconds=delay),
                           retry_kind="failure" if isinstance(yielded, ProviderThrottleYield) else "continuation", safe_error_code="rate_limited" if isinstance(yielded, ProviderThrottleYield) else "DISCOVERY_SLICE")
     except FrozenDiscoveryDraftCompatibilityError as exc:
@@ -6947,6 +7168,10 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
     except store.K10Conflict:
         # Lost ownership leaves the running scan plus its last durable checkpoint for the next
         # worker; it must never be finalized by the expired owner.
+        raise
+    except SqliteWriteBusy:
+        # A transient write contention after a paid ranking result is a
+        # continuation, not permission to terminalize this frozen scan.
         raise
     except Exception:
         if leaseguard is not None:
@@ -7042,7 +7267,10 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         snapshot_id for snapshot_id, event in expected_by_snapshot.items()
                         if _research_unit_id(event) not in closeout_skipped_unit_ids or snapshot_id in by_snapshot
                     }
-                    snapshots_valid = (task_identity_valid and len(by_snapshot) == len(snapshots)
+                    snapshots_valid = (task_identity_valid
+                                       and all(snapshot.snapshot_id == requested_id
+                                               for requested_id, snapshot in zip(snapshot_ids, snapshots))
+                                       and len(by_snapshot) == len(snapshots)
                                        and set(by_snapshot) == expected_snapshot_ids)
                     if snapshots_valid:
                         try:
