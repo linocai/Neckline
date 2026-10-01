@@ -3486,7 +3486,29 @@ def _failed_research_dependency_codes(*, snapshot_ids: Sequence[object], db_path
 
 def _candidate_ref_keys(candidate: Any) -> set[tuple[str, int]]:
     refs = (*candidate.event.source_refs, *candidate.mapping.relation_evidence, *candidate.comparison.evidence_refs)
-    return {(ref.document_id, ref.revision) for ref in refs}
+    keys = {(ref.document_id, ref.revision) for ref in refs}
+    differences = candidate.comparison.differences
+    if isinstance(differences, Mapping):
+        assessment_refs = differences.get("sourceRefs")
+        for ref in assessment_refs if isinstance(assessment_refs, (list, tuple)) else ():
+            if isinstance(ref, Mapping) and isinstance(ref.get("documentId"), str) and type(ref.get("revision")) is int:
+                keys.add((ref["documentId"], ref["revision"]))
+    return keys
+
+
+def _document_dependency_codes(*, task_id: str | None, refs: Sequence[Mapping[str, Any]],
+                               candidates: Sequence[Any], db_path: Path) -> set[str]:
+    """Exclude named companies and companies actually consuming a failed source.
+
+    An absent title hint means unknown scope, not a dependency on every stock.
+    Keep that uncertainty in the gap while preserving independent research.
+    """
+    codes = _title_scope_for_refs(task_id=task_id, refs=refs, db_path=db_path)
+    keys = {(ref["documentId"], ref["revision"]) for ref in refs
+            if isinstance(ref.get("documentId"), str) and type(ref.get("revision")) is int}
+    codes.update(candidate.mapping.company_code for candidate in candidates
+                 if keys & _candidate_ref_keys(candidate))
+    return codes
 
 
 def _title_scope_for_refs(*, task_id: str | None, refs: Sequence[Mapping[str, Any]] | Sequence[EvidenceRef],
@@ -3627,7 +3649,8 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
     failed_gap_indexes: dict[str, int] = {}
     excluded_codes: set[str] = set()
     title_scope_unknown = False
-    body_scope_unknown = False
+    all_candidates = (*run.candidates, *run.deferred, *run.metadata_pending,
+                      *run.excluded, *run.updates, *run.background)
 
     # Source collection is an independently disclosed dependency.  A partial
     # source cannot be silently upgraded to a complete recommendation report
@@ -3642,7 +3665,9 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
             if not isinstance(raw, Mapping):
                 raise PipelineError("来源 partial 结果无效", code="source_coverage_invalid")
             source_key = raw.get("sourceKey")
-            complete = raw.get("complete")
+            # B92 collection uses an explicit state; older frozen inputs use
+            # a boolean. Never let a stale boolean override a current state.
+            complete = raw.get("state") == "completed" if "state" in raw else raw.get("complete") is True
             if not isinstance(source_key, str) or not source_key:
                 raise PipelineError("来源 partial 缺少 sourceKey", code="source_coverage_invalid")
             if complete is True:
@@ -3681,15 +3706,15 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
             refs = _morning_refs([raw["documentRef"]])
             if len(refs) != 1:
                 raise PipelineError("入选文章正文引用无效", code="selected_body_gap_invalid")
-            codes = _title_scope_for_refs(task_id=task_id, refs=refs, db_path=db_path)
+            codes = _document_dependency_codes(task_id=task_id, refs=refs,
+                                               candidates=all_candidates, db_path=db_path)
             excluded_codes.update(codes)
-            if not codes:
-                body_scope_unknown = True
             gaps.append(delivery_gap(
                 stage="understand", unit_kind="document",
                 unit_id=f"{refs[0]['documentId']}@{refs[0]['revision']}",
                 reason_code=str(raw.get("reason") or "article_body_unavailable"),
-                message="入选文章的正文未完整取得，相关公司不参与本轮聚合推荐。",
+                message=("入选文章的正文未完整取得，相关公司不参与本轮聚合推荐。" if codes else
+                         "入选文章的正文未完整取得，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"),
                 source_refs=refs, company_codes=sorted(codes), company_scope_known=bool(codes),
             ))
 
@@ -3730,7 +3755,9 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
         failed_gap_indexes[unit_id] = len(gaps)
         gaps.append(delivery_gap(
             stage="research", unit_kind="event", unit_id=unit_id,
-            reason_code="research_execution_failed", message="该事件的研究执行未完成，相关公司不参与本轮聚合推荐。",
+            reason_code="research_execution_failed",
+            message=("该事件的研究执行未完成，相关公司不参与本轮聚合推荐。" if codes else
+                     "该事件的研究执行未完成，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"),
             source_refs=refs, event_ids=[_event_id(event.canonical_key)], company_codes=sorted(codes),
             company_scope_known=bool(codes),
         ))
@@ -3760,13 +3787,16 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
             refs = [dict(ref) for ref in raw_refs if isinstance(ref, Mapping)]
             if len(refs) != len(raw_refs):
                 raise PipelineError("标题失败范围不可读取", code="title_failure_scope_invalid")
-            codes = _title_scope_for_refs(task_id=task_id, refs=refs, db_path=db_path)
+            codes = _document_dependency_codes(task_id=task_id, refs=refs,
+                                               candidates=all_candidates, db_path=db_path)
             excluded_codes.update(codes)
             if not codes:
                 title_scope_unknown = True
             gaps.append(delivery_gap(
                 stage="title_triage", unit_kind="document", unit_id=f"title_batch_{batch_index}",
-                reason_code=reason, message="该批标题未完成，相关公司不参与本轮聚合推荐。",
+                reason_code=reason,
+                message=("该批标题未完成，相关公司不参与本轮聚合推荐。" if codes else
+                         "该批标题未完成，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"),
                 source_refs=refs, company_codes=sorted(codes), company_scope_known=bool(codes),
             ))
     recorded_dependencies = coverage.get("researchDependencyExclusions")
@@ -3844,14 +3874,15 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
         codes.update(known_title_scope(event))
         if issue.stage == "understand" and issue.document_ref is not None:
             body_refs = [_ref_payload(issue.document_ref)]
-            codes.update(_title_scope_for_refs(task_id=task_id, refs=body_refs, db_path=db_path))
+            codes.update(_document_dependency_codes(task_id=task_id, refs=body_refs,
+                                                   candidates=all_candidates, db_path=db_path))
             excluded_codes.update(codes)
-            if not codes:
-                body_scope_unknown = True
             gaps.append(delivery_gap(
                 stage="understand", unit_kind="document",
                 unit_id=f"{issue.document_ref.document_id}@{issue.document_ref.revision}",
-                reason_code=issue.code, message="该篇正文未完成理解，相关公司不参与本轮聚合推荐。",
+                reason_code=issue.code,
+                message=("该篇正文未完成理解，相关公司不参与本轮聚合推荐。" if codes else
+                         "该篇正文未完成理解，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"),
                 source_refs=body_refs, company_codes=sorted(codes), company_scope_known=bool(codes),
             ))
             continue
@@ -3870,7 +3901,9 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
                 gaps[index] = delivery_gap(
                     stage=issue.stage, unit_kind="event", unit_id=unit_id,
                     reason_code=issue.code,
-                    message=("该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。"
+                    message=("该事件研究未完成，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"
+                             if not codes else
+                             "该事件的研究执行被供应商内容策略拒绝，相关公司不参与本轮聚合推荐。"
                              if issue.code == "content_policy_refused"
                              else "该事件的研究执行未完成，相关公司不参与本轮聚合推荐。"),
                     source_refs=refs, event_ids=[] if event is None else [_event_id(event.canonical_key)], company_codes=sorted(codes),
@@ -3953,14 +3986,13 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
     unprocessed_unit_ids.intersection_update(known_unit_ids)
     event_failed = len(failed_unit_ids)
     event_unprocessed = len(unprocessed_unit_ids - failed_unit_ids)
-    # A locally failed event with an unknown company scope can still share its
-    # event evidence with a surviving candidate, so it blocks ordering.  A
-    # title-only gap has no admitted event/candidate yet: it must be disclosed
-    # and the report is only a completed subset, but cannot erase independent
-    # completed companies merely because that title lacked a company hint.
-    ranking_safe = not body_scope_unknown and not any(
+    # Local failures remove their durable company/source dependencies BEFORE
+    # ranking. Unknown scope remains disclosed and prevents an all-processed
+    # claim, but is not a global veto. Foreign/ambiguous event identities are
+    # still integrity failures: their dependency boundary cannot be trusted.
+    ranking_safe = not any(
         isinstance(gap, Mapping) and gap.get("unitKind") == "event"
-        and gap.get("companyScopeKnown") is not True for gap in gaps
+        and gap.get("unitId") not in by_unit for gap in gaps
     )
     # A partial result with no remaining candidate did not perform a priority
     # decision.  It is still a truthful report, but has no ranking input.
@@ -6941,11 +6973,13 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                     ).fetchall()
                 title_failures = running_coverage.get("titleFailures")
                 dependency_input = {**assembly_binding,
+                    "dependencyContract": "scoped-failures-b96",
                     "candidates": [(candidate.mapping.company_code,
                                     sorted(_candidate_ref_keys(candidate))) for candidate in candidates],
                     "failedResearchRevisions": failed_revisions,
                     "failedArticleItems": [list(row) for row in failed_article_items],
-                    "titleFailures": title_failures}
+                    "titleFailures": title_failures,
+                    "articleBodyGaps": running_coverage.get("articleBodyGaps")}
                 dependency_sha = store._hash(dependency_input)
                 dependency_key = "dependencies:" + dependency_sha[:32]
                 for prior in store.completed_execution_items(task_id=str(task_id), item_kind="global",
@@ -7016,14 +7050,19 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                 named_codes = set().union(*dependencies.values()) if dependencies else set()
                 title_failed_refs = [ref for gap in title_failures if isinstance(gap, Mapping)
                                      for ref in gap.get("inputRefs", ()) if isinstance(ref, Mapping)] if isinstance(title_failures, list) else []
-                title_codes = _title_scope_for_refs(task_id=task_id, refs=title_failed_refs, db_path=db_path)
+                title_codes = _document_dependency_codes(task_id=task_id, refs=title_failed_refs,
+                                                         candidates=candidates, db_path=db_path)
                 named_codes.update(title_codes)
                 failed_article_refs: list[dict[str, Any]] = []
                 for item_key, _input_sha in failed_article_items:
                     document = document_by_key.get(item_key)
                     if document is not None:
                         failed_article_refs.append(_ref_payload(document.evidence_ref))
-                article_codes = _title_scope_for_refs(task_id=task_id, refs=failed_article_refs, db_path=db_path)
+                failed_article_refs.extend(gap["documentRef"]
+                    for gap in running_coverage.get("articleBodyGaps") or ()
+                    if isinstance(gap, Mapping) and isinstance(gap.get("documentRef"), Mapping))
+                article_codes = _document_dependency_codes(task_id=task_id, refs=failed_article_refs,
+                                                           candidates=candidates, db_path=db_path)
                 named_codes.update(article_codes)
                 affected_by_unit = {unit_id: set(codes) for unit_id, codes in dependencies.items()}
                 excluded: set[str] = set()

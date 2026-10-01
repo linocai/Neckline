@@ -2755,17 +2755,20 @@ extension K10V3Tests {
         let report = try XCTUnwrap(response.report)
         let delivery = try XCTUnwrap(report.delivery)
         XCTAssertEqual(delivery.outcome, "partial")
-        XCTAssertEqual(delivery.rankingScope, "none")
+        XCTAssertEqual(delivery.rankingScope, "completed_subset")
+        XCTAssertGreaterThan(report.eveningCards.count, 0)
         XCTAssertEqual(report.discovery?.outcome, "not_completed")
         XCTAssertGreaterThan(report.materials?.count ?? 0, 0)
         let evidence = try XCTUnwrap(report.notificationEvidence)
         XCTAssertEqual(evidence.state, "no_registered_devices")
         XCTAssertEqual(evidence.acceptedDeviceCount, 0)
         XCTAssertEqual(evidence.deviceDisplayState, "unverified")
-        let model = AppModel(serviceFactory: { nil }, cacheClearer: {})
+        let reportClock = try XCTUnwrap(ISO8601DateFormatter().date(from: try XCTUnwrap(report.availableAt)))
+        let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, clock: { reportClock })
         model.state = .ready
         model.dailyWindow = report.windowKind
         if report.windowKind == "morning" { model.dailyMorning = response } else { model.dailyEvening = response }
+        XCTAssertGreaterThan(model.currentEveningCards.count, 0)
         try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "v362-partial")
         model.dailyMorning = nil
         model.dailyEvening = nil

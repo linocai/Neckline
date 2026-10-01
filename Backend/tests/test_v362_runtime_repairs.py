@@ -160,10 +160,22 @@ def test_real_cli_keeps_valid_peer_when_novelty_missing_and_recovers_omitted_sou
     flow = base.run_full_scale_flow(tmp_path, monkeypatch, name="v362-body", selected_event_count=3)
     assert flow.task_status == "completed"
     assert flow.calls["understand"] == 4  # one existing repair for missing novelty
+    # Read at this report's business time; do not turn every fixture card into
+    # expired history when the wall calendar advances beyond its D2 window.
+    original_state = store._opportunity_state
+    monkeypatch.setattr(store, "_opportunity_state", lambda conn, opportunity_id, *, as_of=None:
+        original_state(conn, opportunity_id, as_of=as_of or base.RUN_AT))
     envelope, materials, _, _ = read_actual_api(flow.db_path)
     report = envelope["report"]
     assert report["delivery"]["outcome"] == "partial"
-    assert report["delivery"]["rankingScope"] == ("completed_subset" if known_scope else "none")
+    assert report["delivery"]["rankingScope"] == "completed_subset"
+    assert report["delivery"]["counts"]["publishedCompanies"] > 0
+    assert report["eveningCards"], "independent completed companies must actually be readable"
+    assert all(card["canSelect"] for card in report["eveningCards"])
+    body_gaps = [gap for gap in report["delivery"]["gaps"] if gap["stage"] == "understand"]
+    assert body_gaps and body_gaps[0]["companyScopeKnown"] is known_scope
+    if not known_scope:
+        assert "影响公司范围尚未确认" in body_gaps[0]["message"]
     assert report["discovery"]["outcome"] == "not_completed"
     assert materials["items"], "unaffected readable source facts must remain materials"
     with sqlite3.connect(flow.db_path) as conn:
