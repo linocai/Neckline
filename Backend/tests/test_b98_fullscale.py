@@ -269,4 +269,3 @@ def test_b92_collected_14469_inputs_2099_events_continue_to_readable_partial(tmp
         "originalRefCount": len(original_refs), "rankInputCount": len(transport.rank_input_codes),
         "researchWireCount": len(research_wires), "reportStatus": report["status"],
     }, ensure_ascii=False, separators=(",", ":")))
-
