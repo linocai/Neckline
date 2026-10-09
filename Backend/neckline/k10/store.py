@@ -31,6 +31,29 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def private_response_json(value: Any) -> str:
+    """Preserve provider JSON code points without changing existing UTF-8 hashes.
+
+    A JSON escape may denote an unpaired surrogate. It belongs in the private
+    paid receipt even when business parsing cannot consume it. Escape only
+    those code points; ordinary responses retain their established encoding.
+    """
+    return _json(value).encode("utf-8", errors="backslashreplace").decode("utf-8")
+
+
+def task_checkpoint_json(value: Mapping[str, Any]) -> str:
+    """Keep exact tool receipts writable across every task checkpoint update."""
+    raw = _json(value)
+    try:
+        raw.encode("utf-8")
+    except UnicodeEncodeError:
+        # This exception is private-receipt-only, not permission to persist
+        # invalid canonical results or runtime identity outside that field.
+        _json({key: item for key, item in value.items() if key != "toolReceipts"}).encode("utf-8")
+        return raw.encode("utf-8", errors="backslashreplace").decode("utf-8")
+    return raw
+
+
 def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
@@ -473,7 +496,7 @@ def bind_selected_body_revision(
         if old is None:
             bindings[key] = binding
             conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?",
-                         (_json(checkpoint), task_id))
+                         (task_checkpoint_json(checkpoint), task_id))
         return binding
 
 
@@ -867,7 +890,7 @@ def settle_tool_attempt(*, task_id: str, attempt_id: str, attempt_key: str,
                 raise K10Conflict("工具回执重复")
             receipts[attempt_key] = {"inputSha256": input_sha256, "result": dict(result),
                                       "receivedAt": settled_at}
-            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (task_checkpoint_json(checkpoint), task_id))
         conn.execute(
             "UPDATE k10_external_attempts SET state=?,error_code=?,settled_at=? WHERE attempt_id=?",
             (outcome, safe_error_code, settled_at, attempt_id),
@@ -890,7 +913,7 @@ def record_tool_question_link(*, task_id: str, input_sha256: str, question: str,
         if link not in related:
             related.append(link)
             conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?",
-                         (_json(checkpoint), task_id))
+                         (task_checkpoint_json(checkpoint), task_id))
 
 
 def _same_report_provider_terminal(conn, *, task_id: str, service: str) -> tuple[str, str] | None:
@@ -998,7 +1021,7 @@ def _receipt_payload(payload: Mapping[str, Any]) -> tuple[str, str]:
                 or not isinstance(metadata.get("rendererRevision"), str) or not metadata["rendererRevision"]
                 or (metadata.get("repairFeedback") is not None and not isinstance(metadata.get("repairFeedback"), Mapping))):
             raise ValueError("模型响应回执重放元数据无效")
-    canonical = _json(dict(payload))
+    canonical = private_response_json(dict(payload))
     return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -1196,7 +1219,7 @@ def settle_model_response_attempt(
             checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
             checkpoint["providerFailureReceipt"] = {"attemptId": attempt_id, "stage": stage,
                 "errorCode": error_code, "receivedAt": settled_at, "retryAfterSeconds": retry_after_seconds}
-            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (task_checkpoint_json(checkpoint), task_id))
     return {"state": outcome, "attemptId": attempt_id}
 
 
@@ -1280,7 +1303,7 @@ def record_external_result_failure(*, task_id: str, attempt_id: str | None, db_p
             return
         checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
         checkpoint["knownFailedResultAttemptIds"] = sorted(set(checkpoint.get("knownFailedResultAttemptIds", [])) | {attempt_id})
-        conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+        conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (task_checkpoint_json(checkpoint), task_id))
 
 
 def settle_external_attempt(
@@ -1330,7 +1353,7 @@ def settle_external_attempt(
             checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
             checkpoint["providerFailureReceipt"] = {"attemptId": attempt_id, "stage": stage,
                 "errorCode": error_code, "receivedAt": settled_at, "retryAfterSeconds": retry_after_seconds}
-            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (task_checkpoint_json(checkpoint), task_id))
     return {"state": outcome, "attemptId": attempt_id}
 
 
@@ -1349,7 +1372,7 @@ def _tavily_receipt_payload(payload: Mapping[str, Any]) -> tuple[str, str]:
             or not isinstance(payload["obtainedAt"], str) or not payload["obtainedAt"]
             or not isinstance(payload["response"], Mapping)):
         raise ValueError("Tavily 回执字段无效")
-    canonical = _json(dict(payload))
+    canonical = private_response_json(dict(payload))
     return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -1691,7 +1714,7 @@ def _bind_task_execution_conn(conn, *, task_id: str, execution_config_id: str, e
         checkpoint_row = conn.execute('SELECT checkpoint_json FROM k10_tasks WHERE task_id=?', (task_id,)).fetchone()
         checkpoint = json.loads(checkpoint_row[0] or '{}')
         checkpoint['contextProtocol'] = PROTOCOL
-        conn.execute('UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?', (_json(checkpoint), task_id))
+        conn.execute('UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?', (task_checkpoint_json(checkpoint), task_id))
     return {"configId": execution_config_id, "revision": execution_config_revision,
             "contentSha256": str(profile[0]), "bindingKind": binding_kind, "payload": json.loads(profile[1])}
 
@@ -2124,7 +2147,7 @@ def save_collection_source_checkpoint(*, task_id: str, worker_id: str, source_ke
         sources[source_key] = dict(source_state)
         checkpoint["collectionContract"] = "k10-collection-3.6.1-b92"
         conn.execute("UPDATE k10_tasks SET checkpoint_json=?,updated_at=? WHERE task_id=?",
-                     (_json(checkpoint), now, task_id))
+                     (task_checkpoint_json(checkpoint), now, task_id))
         if watermark_through is not None:
             watermark = _utc_instant(watermark_through)
             watermark_id = "watermark_" + hashlib.sha256(
@@ -4231,7 +4254,7 @@ def finish_task(
         changed = conn.execute(
             "UPDATE k10_tasks SET status=?,stage=?,checkpoint_json=?,error_text=?,lease_owner=NULL,lease_until=NULL,"
             "updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
-            (status, stage, _json(checkpoint), error_text, now_text, task_id, worker_id, now_text),
+            (status, stage, task_checkpoint_json(checkpoint), error_text, now_text, task_id, worker_id, now_text),
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务租约已失效或不属于当前 worker")
@@ -4447,7 +4470,7 @@ def finish_task_with_publication(
         "UPDATE k10_tasks SET status='completed',stage=?,checkpoint_json=?,error_text=NULL,"
         "lease_owner=NULL,lease_until=NULL,updated_at=? "
         "WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until>=?",
-        (stage, _json(checkpoint), finished_at, task_id, worker_id, finished_at),
+        (stage, task_checkpoint_json(checkpoint), finished_at, task_id, worker_id, finished_at),
     ).rowcount
     if changed != 1:
         raise K10Conflict("任务租约已失效或不属于当前 worker")
@@ -4503,7 +4526,7 @@ def schedule_task_retry(
         changed = conn.execute(
             "UPDATE k10_tasks SET status='queued',stage='retry_scheduled',checkpoint_json=?,error_text=?,"
             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
-            (_json(checkpoint), safe_error_code, now_text, task_id, worker_id),
+            (task_checkpoint_json(checkpoint), safe_error_code, now_text, task_id, worker_id),
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务重试排程未取得当前租约")
@@ -4626,7 +4649,7 @@ def ensure_task_execution_started(
         stored["executionStartedAt"] = now_text
         changed = conn.execute(
             "UPDATE k10_tasks SET checkpoint_json=?,updated_at=? WHERE task_id=? AND status='running' AND lease_owner=? AND lease_until >= ?",
-            (_json(stored), now_text, task_id, worker_id, now_text),
+            (task_checkpoint_json(stored), now_text, task_id, worker_id, now_text),
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务执行起点未取得当前租约")
@@ -4725,7 +4748,7 @@ def retry_task(
                     "previousAttemptCount": int(expected_attempt_count),
                     "previousStage": prior[3],
                 }
-            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (_json(checkpoint), task_id))
+            conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?", (task_checkpoint_json(checkpoint), task_id))
         if execution_binding is not None:
             _attach_missing_execution_conn(conn,task_id=task_id,execution_binding=execution_binding,bound_at=retried_at)
         conn.execute("DELETE FROM k10_task_retry_schedules WHERE task_id=?", (task_id,))
@@ -4942,7 +4965,7 @@ def authorize_discovery_recovery(
             "UPDATE k10_tasks SET status='queued',stage='recovery_authorized',checkpoint_json=?,error_text=NULL,"
             "lease_owner=NULL,lease_until=NULL,updated_at=? WHERE task_id=? AND attempt_count=? "
             "AND status=?",
-            (_json(updated_checkpoint), authorized_at, task_id, int(attempt_count), task_status),
+            (task_checkpoint_json(updated_checkpoint), authorized_at, task_id, int(attempt_count), task_status),
         ).rowcount
         if changed != 1:
             raise K10Conflict("任务不是可恢复的当前失败版本")

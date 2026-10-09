@@ -115,9 +115,10 @@ def resolve_deepseek_v4_pro(
             return ProviderResolution("not_configured", None, record.name, "模型连接缺少有效端点、模型名称或 API Key")
         binding = {"name": record.name, "endpoint": endpoint, "model": selected_model}
         if conn is not None and checkpoint.get("providerBinding") is None:
+            from .store import task_checkpoint_json
             checkpoint["providerBinding"] = binding
             conn.execute("UPDATE k10_tasks SET checkpoint_json=? WHERE task_id=?",
-                         (json.dumps(checkpoint, ensure_ascii=False), task_id))
+                         (task_checkpoint_json(checkpoint), task_id))
     provider = MeteredProvider(
         ledger_db=db_path, ledger_task=task,
         api_key=record.api_key, model=selected_model, name=record.name, api_url=endpoint,

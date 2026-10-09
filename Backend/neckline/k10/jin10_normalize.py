@@ -93,6 +93,14 @@ def _document(tool_name: str, item: Mapping[str, Any], obtained_at: datetime) ->
     precision = "exact" if published is not None else "unknown"
     body = text if text else None
     excerpt = intro or title if body is None else intro
+    # The complete paid response is already durable. Only fields consumed by
+    # this source item must be UTF-8; unrelated provider fields remain private.
+    try:
+        for value in (external_id, url, title, body, excerpt, provider_id, raw_time):
+            if isinstance(value, str):
+                value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise Jin10Error("item_text_invalid") from exc
     return SourceDocumentInput(
         external_id=external_id, canonical_url=url, original_text=body,
         excerpt=excerpt, published_at=published, published_precision=precision,

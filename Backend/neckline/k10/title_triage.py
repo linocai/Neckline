@@ -16,6 +16,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from typing import Callable, Mapping, Protocol, Sequence
 
 
@@ -193,8 +194,14 @@ class TitleSelection:
             raise TitleTriageProtocolError("标题入选顺序与逐条结果不一致")
 
 
+@dataclass(frozen=True, slots=True)
+class TitleBatchOutcome:
+    results: tuple[TitleTriageResult, ...]
+    failed_refs: tuple[tuple[str, int], ...]
+
+
 class BatchCall(Protocol):
-    def __call__(self, items: tuple[TitleDTO, ...]) -> Sequence[TitleTriageResult]: ...
+    def __call__(self, items: tuple[TitleDTO, ...]) -> Sequence[TitleTriageResult] | TitleBatchOutcome: ...
 
 
 class ReconcileCall(Protocol):
@@ -312,6 +319,100 @@ def validate_batch_result(raw: Mapping[str, object], items: Sequence[TitleDTO]) 
     canonical = normalize_batch_result(raw, items)
     return _validate_batch(batch=_validate_items(items),
                            results=tuple(_batch_result_from_mapping(row) for row in canonical["items"]))
+
+
+def isolate_batch_response(raw: Mapping[str, object], items: Sequence[TitleDTO]) -> dict[str, object]:
+    """Decode new indexed wire rows independently; input identity stays local."""
+    frozen = _validate_items(items)
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("items"), list):
+        raise TitleTriageProtocolError("标题批次 JSON 必须只含 items 数组")
+    accepted: dict[int, dict[str, object]] = {}
+    rejected = 0
+    for row in raw["items"]:
+        index = row.get("i") if isinstance(row, Mapping) else None
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(frozen):
+            rejected += 1
+            continue
+        if index in accepted:
+            rejected += 1
+            continue
+        item = frozen[index]
+        candidate = {"documentId": item.document_id, "revision": item.revision,
+                     **{key: row.get(key) for key in ("status", "matterKey", "stageKey", "reason")},
+                     **({"companyCodes": row["companyCodes"]} if "companyCodes" in row else {})}
+        try:
+            # Validate only consumed fields before hashing/storing derivatives;
+            # paid wire is retained separately for exact local replay.
+            json.dumps(candidate, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if "companyCodes" in candidate and not isinstance(candidate["companyCodes"], list):
+                raise TitleTriageProtocolError("标题公司线索格式无效")
+            _batch_result_from_mapping(candidate)
+        except (TitleTriageProtocolError, TypeError, ValueError, UnicodeError, OverflowError):
+            rejected += 1
+            continue
+        accepted[index] = candidate
+    rows = [accepted[index] for index in sorted(accepted)]
+    missing = [{"documentId": item.document_id, "revision": item.revision}
+               for index, item in enumerate(frozen) if index not in accepted]
+    if not rejected and not missing:
+        return {"items": rows}
+    return {"items": rows, "failedRefs": missing, "rejectedCount": rejected + len(missing)}
+
+
+def validate_canonical_batch_result(raw: Mapping[str, object], items: Sequence[TitleDTO]) -> TitleBatchOutcome:
+    """Verify an exact successful/failed partition, never repair stored rows."""
+    frozen = _validate_items(items)
+    if not isinstance(raw, Mapping):
+        raise TitleTriageProtocolError("标题批次检查点必须是对象")
+    if set(raw) == {"items"}:
+        # Existing full checkpoints retain their strict, complete coverage.
+        required = {"documentId", "revision", "status", "matterKey", "stageKey", "reason"}
+        if (not isinstance(raw["items"], list)
+                or any(not isinstance(row, Mapping) or set(row) - {"companyCodes"} != required
+                       or ("companyCodes" in row and not isinstance(row["companyCodes"], list))
+                       for row in raw["items"])):
+            raise TitleTriageProtocolError("标题批次检查点引用格式无效")
+        try:
+            json.dumps(raw, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError, OverflowError) as exc:
+            raise TitleTriageProtocolError("标题批次检查点文本无效") from exc
+        return TitleBatchOutcome(validate_batch_result(raw, frozen), ())
+    if (set(raw) != {"items", "failedRefs", "rejectedCount"}
+            or not isinstance(raw["items"], list) or not isinstance(raw["failedRefs"], list)
+            or isinstance(raw["rejectedCount"], bool) or not isinstance(raw["rejectedCount"], int)
+            or raw["rejectedCount"] < max(1, len(raw["failedRefs"]))):
+        raise TitleTriageProtocolError("标题批次部分检查点无效")
+    try:
+        json.dumps(raw, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, OverflowError) as exc:
+        raise TitleTriageProtocolError("标题批次部分检查点文本无效") from exc
+    required = {"documentId", "revision", "status", "matterKey", "stageKey", "reason"}
+    results = []
+    for row in raw["items"]:
+        if (not isinstance(row, Mapping) or set(row) - {"companyCodes"} != required
+                or ("companyCodes" in row and not isinstance(row["companyCodes"], list))):
+            raise TitleTriageProtocolError("标题批次部分检查点条目无效")
+        results.append(_batch_result_from_mapping(row))
+    failed = []
+    for row in raw["failedRefs"]:
+        if (not isinstance(row, Mapping) or set(row) != {"documentId", "revision"}
+                or not isinstance(row["documentId"], str) or not row["documentId"]
+                or isinstance(row["revision"], bool) or not isinstance(row["revision"], int)
+                or row["revision"] < 1):
+            raise TitleTriageProtocolError("标题批次失败引用无效")
+        failed.append((row["documentId"], row["revision"]))
+    return _validate_batch_outcome(frozen, TitleBatchOutcome(tuple(results), tuple(failed)))
+
+
+def _validate_batch_outcome(batch: tuple[TitleDTO, ...], outcome: TitleBatchOutcome) -> TitleBatchOutcome:
+    expected = {item.ref for item in batch}
+    refs = [result.ref for result in outcome.results]
+    failed = list(outcome.failed_refs)
+    if (len(set(refs)) != len(refs) or len(set(failed)) != len(failed)
+            or set(refs) & set(failed) or set(refs) | set(failed) != expected):
+        raise TitleTriageProtocolError("标题批次成功与失败范围未完整且唯一覆盖输入")
+    parsed = _validate_batch(batch=tuple(item for item in batch if item.ref in set(refs)), results=outcome.results)
+    return TitleBatchOutcome(parsed, tuple(sorted(failed)))
 
 
 def _global_participants(items: tuple[TitleDTO, ...], results: tuple[TitleTriageResult, ...]) -> tuple[tuple[int, TitleDTO, TitleTriageResult], ...]:
@@ -818,12 +919,14 @@ def triage_titles(
         raise TitleTriageProtocolError("标题 policy batchSize 无效")
     batches = tuple(frozen[start:start + raw_batch_size] for start in range(0, len(frozen), raw_batch_size))
 
-    def run_batch(index: int, batch: tuple[TitleDTO, ...]) -> tuple[int, tuple[TitleTriageResult, ...]]:
-        return index, _validate_batch(batch=batch, results=batch_call(batch))
+    def run_batch(index: int, batch: tuple[TitleDTO, ...]) -> tuple[int, TitleBatchOutcome]:
+        value = batch_call(batch)
+        outcome = value if isinstance(value, TitleBatchOutcome) else TitleBatchOutcome(tuple(value), ())
+        return index, _validate_batch_outcome(batch, outcome)
 
     # Deterministic batch order survives both completion order and local gaps.
     # The caller alone decides whether a failure has a safe, durable boundary.
-    completed: dict[int, tuple[TitleTriageResult, ...]] = {}
+    completed: dict[int, TitleBatchOutcome] = {}
     isolated: set[int] = set()
     executor = ThreadPoolExecutor(max_workers=min(batch_concurrency, max(1, len(batches))))
     pending: dict[object, int] = {}
@@ -875,14 +978,15 @@ def triage_titles(
     for index, batch in enumerate(batches):
         if index in isolated:
             continue
-        parsed = completed[index]
+        parsed = completed[index].results
         results.extend(parsed)
         if checkpoint is not None:
-            checkpoint({"stage": "title_triage_batch", "state": "completed", "inputRefs": [
+            checkpoint({"stage": "title_triage_batch", "state": "partial" if completed[index].failed_refs else "completed", "inputRefs": [
                 {"documentId": item.document_id, "revision": item.revision} for item in batch],
                 "resultRefs": [{"documentId": item.document_id, "revision": item.revision} for item in parsed]})
     ordered_results = tuple(sorted(results, key=lambda result: result.ref))
-    eligible_items = tuple(item for index, batch in enumerate(batches) if index not in isolated for item in batch)
+    eligible_refs = {result.ref for result in ordered_results}
+    eligible_items = tuple(item for batch in batches for item in batch if item.ref in eligible_refs)
     if len(ordered_results) != len(eligible_items):
         raise TitleTriageProtocolError("标题批次合并未完整覆盖输入")
     input_count = len(frozen)

@@ -49,8 +49,9 @@ def test_raw_json_fault_preserves_independent_delivery(stage, fault, tmp_path, m
         if unit != victim[0]:
             return response
         value = json.loads(response.json()['choices'][0]['message']['content'])
-        # Optional extra data is still external model JSON: validate it before
-        # any domain parser, hash, or durable checkpoint gets a chance to fail.
+        # B102 title rows isolate consumed fields before canonical validation;
+        # unused root notes must not discard otherwise complete title results.
+        # Other operations retain their existing content validation boundary.
         if fault == 'high_surrogate':
             value['wireNote'] = '\ud800'
         elif fault == 'low_surrogate_key':
@@ -67,7 +68,7 @@ def test_raw_json_fault_preserves_independent_delivery(stage, fault, tmp_path, m
         tmp_path, monkeypatch, wire=mixed_wire('control'))
     assert injected and task[1] == 'completed' and report['status'] == 'partial'
     assert report['resultAvailableAt'] and report['delivery']['gaps']
-    assert len(materials['items']) == (4 if stage == 'prioritize' else 3)
+    assert len(materials['items']) == (4 if stage in {'prioritize', 'titleBatch'} else 3)
     if stage == 'prioritize':
         assert report['delivery']['rankingScope'] == 'none' and not report['eveningCards']
     else:
@@ -76,7 +77,12 @@ def test_raw_json_fault_preserves_independent_delivery(stage, fault, tmp_path, m
     with sqlite3.connect(f'file:{db}?mode=ro', uri=True) as conn:
         assert conn.execute("SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','running','unknown')").fetchone()[0] == 0
         operation = 'investigation_research_round' if stage == 'investigation' else stage
-        if stage != 'prioritize':
+        if stage == 'titleBatch':
+            rows = conn.execute("SELECT status,result_json FROM k10_execution_item_checkpoints WHERE task_id=? AND stage='model:titleBatch'", (task[0],)).fetchall()
+            assert len(rows) == 1 and rows[0][0] == 'completed'
+            assert set(json.loads(rows[0][1])) == {'items'}
+            assert not any(g['stage'] == 'title_triage' for g in report['delivery']['gaps'])
+        elif stage != 'prioritize':
             failed = conn.execute("SELECT safe_error_code FROM k10_execution_item_checkpoints WHERE task_id=? AND stage=? AND status='failed'", (task[0], 'model:' + operation)).fetchall()
             assert failed and all(code in {'model_result_not_json', 'model_json_repair_exhausted'} for (code,) in failed)
         else:

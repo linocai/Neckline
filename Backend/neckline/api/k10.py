@@ -1545,6 +1545,17 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         report["notificationEvidence"] = report_notification_evidence(
             report_id=report["reportId"], db_path=db_path())
         contract = delivery.get("contractVersion") if isinstance(delivery, Mapping) else None
+        deadline_reason = None
+        if report.get("status") in {"queued", "running", "retry_pending"}:
+            deadline = report.get("deliveryDeadlineAt")
+            try:
+                deadline_at = datetime.fromisoformat(deadline.replace("Z", "+00:00")) if isinstance(deadline, str) else None
+            except ValueError:
+                deadline_at = None
+            if deadline_at is not None and deadline_at.tzinfo is not None and datetime.now(timezone.utc) >= deadline_at:
+                deadline_reason = ApiFailure(reason="delivery_deadline_reached",
+                    message=("晨报已到 09:20 交付时限，本轮仍在排队，尚未开始处理。" if report["status"] == "queued"
+                             else "晨报已到 09:20 交付时限；正在结算的调用不会被重发。"))
         if contract is None and report.get("status") in {"failed", "not_configured", "unavailable", "running", "queued", "retry_pending"}:
             if any(report.get(key) for key in ("eveningCards", "updatedCards", "addedCards")):
                 raise _not_found("没有正式交付契约的内容不能作为推荐")
@@ -1557,11 +1568,11 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 # not an obsolete report. Keep durable status/error untouched.
                 return V2ReportEnvelope(schemaVersion=10, state="processing",
                     report=V2ReportOut(**{**report, "status": "queued"}),
-                    reason=ApiFailure(reason=failure.get("reason") or "report_retry_pending",
+                    reason=deadline_reason or ApiFailure(reason=failure.get("reason") or "report_retry_pending",
                                       message="报告等待继续处理"))
             if report["status"] in {"running", "queued"}:
                 return V2ReportEnvelope(schemaVersion=10, state="processing", report=V2ReportOut(**report),
-                    reason=ApiFailure(reason="report_processing", message="报告正在处理中"))
+                    reason=deadline_reason or ApiFailure(reason="report_processing", message="报告正在处理中"))
             return V2ReportEnvelope(schemaVersion=10,
                 state="not_configured" if report["status"] == "not_configured" else "failed",
                 report=V2ReportOut(**report), reason=ApiFailure(
@@ -1618,16 +1629,10 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 gap["sourceRefs"] = [_source_ref({**dict(ref), **dict(docs.get((ref.get("documentId"), ref.get("revision")), {}))}).model_dump()
                                      for ref in gap["sourceRefs"] if isinstance(ref, Mapping)]
         if report['status'] in {'queued', 'running'}:
-            deadline = report.get("deliveryDeadlineAt")
-            try:
-                deadline_at = datetime.fromisoformat(deadline.replace("Z", "+00:00")) if isinstance(deadline, str) else None
-            except ValueError:
-                deadline_at = None
-            if deadline_at is not None and deadline_at.tzinfo is not None and datetime.now(timezone.utc) >= deadline_at:
+            if deadline_reason is not None:
                 return V2ReportEnvelope(
                     schemaVersion=schema_version, state='available', report=V2ReportOut(**report),
-                    reason=ApiFailure(reason='delivery_deadline_reached',
-                                      message=('晨报已到 09:20 交付时限，本轮仍在排队，尚未开始处理。' if report['status'] == 'queued' else '晨报已到 09:20 交付时限；正在结算的调用不会被重发。')),
+                    reason=deadline_reason,
                 )
             return V2ReportEnvelope(schemaVersion=schema_version, state='available', report=V2ReportOut(**report),
                 reason=ApiFailure(reason='report_queued' if report['status'] == 'queued' else 'report_processing', message='本轮报告正在排队。' if report['status'] == 'queued' else '正在处理本轮报告，已完成内容会保留。'))

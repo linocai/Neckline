@@ -11,7 +11,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "3.7.0"
-    CURRENT_PROJECT_VERSION: "101"
+    CURRENT_PROJECT_VERSION: "102"
     K10_SYNTHETIC_UI: "NO"
     # One reusable QA bundle per platform; release builds keep the empty suffix.
     NK_BUNDLE_SUFFIX: ""
@@ -67,7 +67,7 @@ targets:
         # 安装后通知栏、Dock 与系统缓存命中旧图标。
         # ⚠ 改名要同步:本行 / `Assets.xcassets/<名>.appiconset` 目录名 /
         # `xcodegen generate` 重生成的 pbxproj。版本治理测试会按版本和Build动态推导图标名。
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV370B101
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV370B102
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

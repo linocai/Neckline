@@ -3188,3 +3188,50 @@ extension K10V3Tests {
         }
     }
 }
+
+extension K10V3Tests {
+    @MainActor func testB102ActualLocalFaultsAndDeadlineRemainReadable() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let root = env["NK_B102_API_DIR"], let renderRoot = env["NK_B102_RENDER_DIR"] else {
+            if env["NK_B102_REQUIRE_ACTUAL_API"] == "1" { return XCTFail("B102 actual FastAPI artifacts required") }
+            throw XCTSkip("Set NK_B102_API_DIR and NK_B102_RENDER_DIR for actual API acceptance")
+        }
+        try FileManager.default.createDirectory(atPath: renderRoot, withIntermediateDirectories: true)
+        for name in ["get_news_control", "get_news_unused_surrogate_after_receipt",
+                     "title_sibling_after_gap", "tavily_receipt_unused_surrogate_after_receipt",
+                     "b92_morning_inflight_deadline"] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + ".json"))
+            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
+            XCTAssertTrue(response.isReadableByCurrentApp, name)
+            let report = try XCTUnwrap(response.report, name)
+            let deadline = name == "b92_morning_inflight_deadline"
+            let clockText = try XCTUnwrap(deadline ? report.deliveryDeadlineAt : report.availableAt, name)
+            let clock = try XCTUnwrap(ISO8601DateFormatter().date(from: clockText), name)
+            if deadline {
+                XCTAssertEqual(response.state, "processing")
+                XCTAssertEqual(response.reason?.reason, "delivery_deadline_reached")
+                XCTAssertTrue(response.reason?.message.contains("09:20") ?? false)
+                XCTAssertNil(report.delivery)
+                XCTAssertNil(report.availableAt)
+                XCTAssertTrue(report.eveningCards.isEmpty && report.addedCards.isEmpty)
+            } else {
+                XCTAssertEqual(response.state, "available", name)
+                XCTAssertEqual(report.status, "partial", name)
+                XCTAssertEqual(report.delivery?.rankingScope, "completed_subset", name)
+                XCTAssertEqual(report.eveningCards.count, 3, name)
+                let materialData = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + "-materials.json"))
+                let page = try JSONDecoder().decode(K10ReportMaterialsPage.self, from: materialData)
+                XCTAssertTrue(page.isReadableByCurrentApp, name)
+                XCTAssertEqual(page.reportId, report.reportId, name)
+                XCTAssertEqual(page.items.count, name == "title_sibling_after_gap" ? 3 : 4, name)
+                XCTAssertTrue(page.items.allSatisfy { !$0.sourceRefs.isEmpty && !$0.facts.isEmpty }, name)
+            }
+            let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, clock: { clock })
+            model.state = .ready
+            model.dailyWindow = report.windowKind
+            if deadline { model.dailyMorning = response } else { model.dailyEvening = response }
+            if !deadline { XCTAssertEqual(model.currentEveningCards.count, 3, name) }
+            try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "b102-" + name)
+        }
+    }
+}

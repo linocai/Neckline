@@ -13,7 +13,8 @@ from .failure_scope import local_model_failure_code
 from .discovery import DiscoveryDocument, deduplicate_documents
 from .title_triage import (
     TitleTriageProtocolError, batch_request_spec, reconcile_request_spec,
-    normalize_batch_result, normalize_reconcile_result, title_from_document_fields, triage_titles, validate_batch_result,
+    isolate_batch_response, validate_canonical_batch_result,
+    normalize_reconcile_result, title_from_document_fields, triage_titles,
     validate_reconcile_result, validate_canonical_reconcile_result, isolate_reconcile_response,
 )
 
@@ -279,6 +280,7 @@ def select_title_documents(
     restored_gaps = tuple(saved_gaps.values())
 
     title_policy = {**approved, "batchSize": batch_size}
+    title_positions = {item.ref: index for index, item in enumerate(titles)}
     compact_reconcile_contract = _uses_b82_compact_reconcile_contract(execution_profile)
     # Known subjects are separate trusted routing context, never old article bodies.
     context = [{key: item[key] for key in ("companyCode", "headline")
@@ -308,7 +310,7 @@ def select_title_documents(
     def batch_call(items):
         refs = [{"documentId": item.document_id, "revision": item.revision} for item in items]
         for gap in restored_gaps:
-            if gap["batchRefs"] == refs:
+            if gap["batchRefs"] == refs and gap.get("partial") is not True:
                 raise _FrozenTitleGap(gap["reasonCode"])
         instruction, payload = batch_request_spec(items, title_policy)
         binding = getattr(model, "_company_profiles_binding", None)
@@ -338,9 +340,36 @@ def select_title_documents(
         def normalize(value):
             if allowed_codes is not None:
                 value = _filter_company_hints(value, allowed_codes)
-            return normalize_batch_result(value, items)
-        raw = operation("titleBatch", instruction, payload, normalize)
-        results = validate_batch_result(raw, items)
+            return isolate_batch_response(value, items)
+        def canonical(value):
+            validate_canonical_batch_result(value, items)
+            return dict(value)
+        raw = operation("titleBatch", instruction, payload, normalize, canonical_validate=canonical)
+        outcome = validate_canonical_batch_result(raw, items)
+        results = outcome.results
+        if raw.get("rejectedCount"):
+            # The completed model checkpoint atomically contains both valid
+            # rows and failed refs. Rebuild this gap on resume before admitting
+            # any selection, even after a crash between the two durable writes.
+            batch_index = title_positions[items[0].ref] // batch_size
+            affected = set(outcome.failed_refs)
+            affected |= {ref for ref, target in duplicates.items() if target in affected}
+            value = {"batchIndex": batch_index, "batchRefs": refs,
+                     "partial": True, "reasonCode": "title_batch_partial",
+                     "rejectedCount": raw["rejectedCount"],
+                     "inputRefs": [{"documentId": ref[0], "revision": ref[1]} for ref in sorted(affected)]}
+            old = saved_gaps.get(batch_index)
+            if old is not None and old != value:
+                raise TitleTriageProtocolError("标题失败范围不可静默改写")
+            if old is None:
+                store.record_execution_checkpoint(task_id=task_id, item_kind="global",
+                    item_key=f"title-batch-gap:{batch_index}", stage="title_batch_gap",
+                    input_sha256=_digest(value), status="completed", attempt_count=0,
+                    network_attempt_count=0, repair_attempt_count=0, elapsed_ms=0,
+                    input_tokens=None, output_tokens=None, result=value,
+                    safe_error_code=None, safe_error_ref=None, updated_at=_now(),
+                    db_path=db_path, leaseguard=guard)
+                saved_gaps[batch_index] = value
         if binding is not None:
             from .schema import write_connection
             with write_connection(db_path) as conn:
@@ -349,7 +378,7 @@ def select_title_documents(
                     codes = set(result.company_codes) | (set(json.loads(existing[0])) if existing else set())
                     conn.execute("INSERT INTO k10_v2_title_company_hints VALUES (?,?,?,?) ON CONFLICT(task_id,document_id,revision) DO UPDATE SET company_codes_json=excluded.company_codes_json",
                                  (task_id,result.document_id,result.revision,json.dumps(sorted(codes))))
-        return results
+        return outcome
 
     def reconcile_call(items, results, limit):
         instruction, payload = reconcile_request_spec(

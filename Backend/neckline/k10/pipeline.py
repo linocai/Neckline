@@ -701,7 +701,7 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         return result
 
     @staticmethod
-    def _parse_json_result(result: LLMResult) -> Mapping[str, Any]:
+    def _parse_json_result(result: LLMResult, *, defer_content_validation: bool = False) -> Mapping[str, Any]:
         if not result.ok:
             code = result.error_code if isinstance(result.error_code, str) and re.fullmatch(r"[a-z0-9_]{3,64}", result.error_code) else "model_failed"
             raise PipelineError("DeepSeek 结构化调用失败", code=code)
@@ -709,10 +709,11 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         except (TypeError, ValueError, RecursionError) as exc: raise PipelineError("DeepSeek 未返回有效 JSON", code="json_invalid") from exc
         if not isinstance(parsed, Mapping): raise PipelineError("DeepSeek JSON 根必须是对象", code="json_root_invalid")
         from .model_execution import SemanticValidationError, validate_model_json
-        try:
-            validate_model_json(parsed)
-        except SemanticValidationError as exc:
-            raise PipelineError("DeepSeek 返回不可持久化的 JSON 内容", code=exc.code) from exc
+        if not defer_content_validation:
+            try:
+                validate_model_json(parsed)
+            except SemanticValidationError as exc:
+                raise PipelineError("DeepSeek 返回不可持久化的 JSON 内容", code=exc.code) from exc
         # DeepSeek's structured response may place the requested object under a sole
         # ``output`` key.  This is the only accepted wrapper: mixed roots remain invalid
         # rather than silently dropping model fields or relaxing later schema checks.
@@ -721,8 +722,10 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
         return parsed
 
     def _json(self, *, operation: str, payload: Mapping[str, Any],
-              model_options: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
-        parsed = self._parse_json_result(self._request_json(operation=operation, payload=payload, model_options=model_options))
+              model_options: Mapping[str, Any] | None = None,
+              defer_content_validation: bool = False) -> Mapping[str, Any]:
+        parsed = self._parse_json_result(self._request_json(operation=operation, payload=payload, model_options=model_options),
+                                         defer_content_validation=defer_content_validation)
         self._thread_usage.last_candidate = parsed
         return parsed
 
@@ -1993,7 +1996,8 @@ class _CheckpointedDiscoveryModel:
             # Apply the same sole-output envelope normalization as the other
             # structured operations before strict per-title validation.
             invoke = lambda: self._base._json(operation=instruction, payload=payload,
-                                             model_options=self._base._model_options(stage))
+                                             model_options=self._base._model_options(stage),
+                                             defer_content_validation=stage == "titleBatch")
         else:
             callback = getattr(self._base, stage, None)
             if not callable(callback):

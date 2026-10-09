@@ -91,7 +91,8 @@ def _exact_settled_reply(*, task_id: str, attempt_id: str, attempt_key: str,
         receipt = checkpoint["toolReceipts"][attempt_key]
         return (isinstance(receipt, dict) and set(receipt) == {"inputSha256", "result", "receivedAt"}
                 and receipt["inputSha256"] == input_hash and receipt["receivedAt"] == settled_at
-                and isinstance(receipt["result"], Mapping) and _digest(receipt["result"]) == _digest(raw))
+                and isinstance(receipt["result"], Mapping)
+                and store.private_response_json(receipt["result"]) == store.private_response_json(raw))
     except (TypeError, ValueError, KeyError, json.JSONDecodeError):
         return False
 
