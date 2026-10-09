@@ -145,8 +145,22 @@ def _policy_limits(policy: Mapping[str, Any]) -> tuple[int, int]:
     return network, repairs
 
 
+def validate_model_json(value: Any) -> None:
+    """Validate external/derived JSON before domain use or completed writes.
+
+    JSON escapes can decode into lone surrogates; Python also accepts NaN and
+    infinity. Neither belongs in a UTF-8 JSON checkpoint or a later request.
+    Only content serialization is inside this boundary, never storage/leases.
+    """
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (UnicodeError, ValueError, TypeError, OverflowError, RecursionError) as exc:
+        raise SemanticValidationError(code="model_result_not_json") from exc
+
+
 def _normal_json(value: Any) -> Mapping[str, Any] | list[Any]:
     """Reject non-JSON and persistence-prohibited fields before completion."""
+    validate_model_json(value)
     def visit(item: Any) -> Any:
         if isinstance(item, Mapping):
             keys = {str(key) for key in item}
@@ -183,7 +197,7 @@ def _parse_invocation(value: Any) -> tuple[Any, int | None, int | None, int | No
             raise _safe_provider_failure(value)
         try:
             parsed = json.loads(value.content)
-        except (TypeError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             raise JsonRepairError(code="model_json_invalid", input_tokens=value.prompt_tokens,
                                   output_tokens=value.completion_tokens, total_tokens=value.total_tokens) from exc
         if not isinstance(parsed, (Mapping, list)):

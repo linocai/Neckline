@@ -457,8 +457,10 @@ def test_b82_cli_worker_fastapi_handoff(tmp_path: Path, monkeypatch: pytest.Monk
     )
     materials_latest, materials_payload = _api_projection(materials_flow.db_path, window="evening")
     materials_report = materials_latest["report"]
-    assert materials_flow.task_status == "failed"
-    assert materials_report["status"] == "failed" and materials_report["availableAt"] is None
+    assert materials_flow.task_status == "completed"
+    assert materials_report["status"] == "partial" and materials_report["availableAt"] is None
+    assert materials_report["resultAvailableAt"] and materials_report["delivery"]["rankingScope"] == "none"
+    assert materials_report["discovery"]["outcome"] == "not_completed" and materials_report["delivery"]["gaps"]
     assert _formal_card_count(materials_report) == 0 and materials_payload["items"]
     assert materials_report["materials"]["state"] == "available"
     materials = _record(

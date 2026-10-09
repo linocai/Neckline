@@ -292,16 +292,18 @@ def mark_research_round_failed(
         if latest is None:
             raise K10Conflict("研究快照不存在")
         current = _snapshot(latest[1])
+        replay = conn.execute(
+            "SELECT input_sha256,input_packet_json,result_json,context_results_json,tool_evidence_json "
+            "FROM k10_research_round_results WHERE snapshot_id=? AND revision=?",
+            (snapshot_id, current.revision),
+        ).fetchone()
+        if (replay is not None and tuple(replay) == (input_sha256, _json(packet), _json(clean_result), "[]", "[]")
+                and current.execution_status == "failed"
+                and expected_revision in {current.revision, current.revision - 1}):
+            return current
+        if current.execution_status == "failed":
+            raise K10Conflict("已记录的研究失败不可静默改写")
         if current.revision != expected_revision:
-            replay = conn.execute(
-                "SELECT input_sha256,result_json,context_results_json,tool_evidence_json "
-                "FROM k10_research_round_results WHERE snapshot_id=? AND revision=?",
-                (snapshot_id, current.revision),
-            ).fetchone()
-            if (replay is not None and replay[0] == input_sha256 and replay[1] == _json(clean_result)
-                    and replay[2] == "[]" and replay[3] == "[]"
-                    and current.execution_status == "failed"):
-                return current
             raise K10Conflict("研究快照已被其他执行者推进")
         next_snapshot = ResearchSnapshot(
             snapshot_id=current.snapshot_id, task_id=current.task_id, event_id=current.event_id,

@@ -145,6 +145,20 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
                     obtained_at=context.clock(), question="scheduled_collection",
                     target=source_key, db_path=context.db_path, leaseguard=context.require_lease)
                 page_refs = result["documentRefs"]
+                rejected = result["coverage"].get("rejectedItems", [])
+                if rejected:
+                    prior_rejected = list(state.get("rejectedItems", []))
+                    for item in rejected:
+                        gap = {**item, "pageFingerprint": fingerprint}
+                        if gap not in prior_rejected:
+                            prior_rejected.append(gap)
+                    state["rejectedItems"] = prior_rejected
+                    state["limitations"] = list(dict.fromkeys([*state.get("limitations", []), "source_item_invalid"]))
+                    state["gaps"] = list(state.get("gaps", []))
+                    item_gap = {"startAt": start.isoformat(), "endAt": slot.isoformat(),
+                                "reasonCode": "source_item_invalid"}
+                    if item_gap not in state["gaps"]:
+                        state["gaps"].append(item_gap)
                 if state.get("errorCode") == "page_cursor_invalid":
                     # A parser repair can consume the already-paid final page.
                     # Retire only the resolved parser error, not coverage gaps.
@@ -189,12 +203,15 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
                     oldest = state.get("observedStartAt")
                     if not oldest or _instant(str(oldest)) > start:
                         state.update(state="partial", errorCode="history_unavailable",
-                                     gaps=[{"startAt": start.isoformat(), "endAt": oldest or slot.isoformat(),
+                                     gaps=[*state.get("gaps", []), {"startAt": start.isoformat(), "endAt": oldest or slot.isoformat(),
                                             "reasonCode": "history_unavailable"}])
                         _save(context, source_key, state)
                     else:
-                        state.update(state="completed", coverageThrough=slot.isoformat(), errorCode=None)
-                        _save(context, source_key, state, watermark_through=slot.isoformat())
+                        state.update(state="partial" if state.get("rejectedItems") else "completed",
+                                     coverageThrough=None if state.get("rejectedItems") else slot.isoformat(),
+                                     errorCode="source_item_invalid" if state.get("rejectedItems") else None)
+                        _save(context, source_key, state,
+                              watermark_through=None if state.get("rejectedItems") else slot.isoformat())
                     return state
                 if next_cursor == cursor:
                     state.update(state="partial", errorCode="cursor_not_advanced")

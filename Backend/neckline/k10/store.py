@@ -331,7 +331,7 @@ def freeze_title_selection_manifest(
         durable_failed: set[tuple[str, int]] = set()
         gap_rows = conn.execute(
             "SELECT input_sha256,status,result_json FROM k10_execution_item_checkpoints "
-            "WHERE task_id=? AND stage='title_batch_gap'", (task_id,)
+            "WHERE task_id=? AND stage IN ('title_batch_gap','title_reconcile_gap','title_source_gap')", (task_id,)
         ).fetchall()
         for digest, status, raw in gap_rows:
             try:
@@ -691,6 +691,46 @@ def retire_interrupted_discovery(
     return {"scanId": scan_id, "taskId": task_id, "reasonCode": reason_code, "retiredAt": retired_at}
 
 
+_MODEL_EXTERNAL_STAGES = frozenset({
+    "titleBatch", "titleReconcile", "lightweight", "fullText", "understand", "verify",
+    "map", "compare", "classify", "companyComparison", "prioritize", "investigation",
+    "analysisPro", "analysisCon", "morning",
+})
+
+
+def _external_attempt_service(*, stage: str, attempt_key: str) -> str | None:
+    """Resolve the actual wire channel; an unrecognised stage is not a model.
+
+    Model reservations use the provider: namespace, including future stages.
+    Historical attempts predate that namespace, so their known spend stages
+    remain explicit. Tool stages always retain their own service identity.
+    """
+    if stage in {"search", "extract"}:
+        return "tavily"
+    if stage.startswith("jin10:"):
+        return "jin10"
+    if stage.startswith("tushare:"):
+        return "tushare"
+    if stage in _MODEL_EXTERNAL_STAGES or attempt_key.startswith("provider:"):
+        return "model"
+    return None
+
+
+def _task_provider_terminal(conn, *, task_id: str, service: str | None,
+                            authorized: set[str]) -> tuple[str, str] | None:
+    if service is None:
+        return None
+    rows = conn.execute(
+        "SELECT attempt_id,error_code,stage,attempt_key FROM k10_external_attempts "
+        "WHERE task_id=? AND state='failed' AND settled_at IS NOT NULL "
+        "AND error_code IN ('insufficient_balance','provider_authorization_failed') ORDER BY rowid",
+        (task_id,),
+    )
+    return next(((str(attempt), str(code)) for attempt, code, stage, key in rows
+                 if attempt not in authorized
+                 and _external_attempt_service(stage=str(stage), attempt_key=str(key)) == service), None)
+
+
 def begin_external_attempt(
     *, task_id: str, stage: str, item_key: str, attempt_key: str, input_sha256: str,
     started_at: str, db_path: Path,
@@ -711,23 +751,26 @@ def begin_external_attempt(
             return {"state": "not_configured", "reason": config_error, "attemptId": None}
         checkpoint = json.loads(conn.execute("SELECT checkpoint_json FROM k10_tasks WHERE task_id=?", (task_id,)).fetchone()[0])
         authorized = set(checkpoint.get("authorizedRetryAttemptIds", []))
-        terminal = next((row for row in conn.execute(
-            "SELECT attempt_id,error_code FROM k10_external_attempts "
-            "WHERE task_id=? AND error_code IN ('insufficient_balance','provider_authorization_failed')", (task_id,)
-        ) if row[0] not in authorized), None)
-        if terminal is not None:
-            return {"state": "terminal", "reason": terminal[1], "attemptId": terminal[0]}
-        sibling_terminal = _same_report_provider_terminal(conn, task_id=task_id, service="tavily")
-        if sibling_terminal is not None:
-            return {"state": "terminal", "reason": sibling_terminal[1], "attemptId": sibling_terminal[0]}
         old = conn.execute(
             "SELECT attempt_id,state,input_sha256 FROM k10_external_attempts WHERE task_id=? AND attempt_key=?", (task_id, attempt_key),
         ).fetchone()
         if old is not None:
             if old[2] != input_sha256:
                 raise K10Conflict("同一外部调用 attempt_key 不可对应不同输入")
-            old_state = str(old[1])
-            return {"state": "pending_outcome" if old_state == "started" else "reused", "reason": None, "attemptId": old[0]}
+            if old[1] == "succeeded":
+                # A later refusal cannot make an already settled local result
+                # disappear. This return never reserves another wire request.
+                return {"state": "reused", "reason": None, "attemptId": old[0]}
+            if old[1] in {"started", "unknown"}:
+                return {"state": "pending_outcome", "reason": None, "attemptId": old[0]}
+        service = _external_attempt_service(stage=stage, attempt_key=attempt_key)
+        terminal = _task_provider_terminal(conn, task_id=task_id, service=service, authorized=authorized)
+        if terminal is None and service in {"model", "tavily"}:
+            terminal = _same_report_provider_terminal(conn, task_id=task_id, service=service)
+        if terminal is not None:
+            return {"state": "terminal", "reason": terminal[1], "attemptId": terminal[0]}
+        if old is not None:
+            return {"state": "reused", "reason": None, "attemptId": old[0]}
         if stage in {"analysisPro", "analysisCon", "morning"}:
             uncertain = next((row for row in conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown','succeeded')", (task_id, stage, item_key)) if row[0] not in authorized), None)
             if uncertain is not None:
@@ -896,18 +939,19 @@ def _same_report_provider_terminal(conn, *, task_id: str, service: str) -> tuple
             return None
         provider_binding = {key: str(candidate[key]) for key in ("name", "endpoint", "model")}
     rows = conn.execute(
-        "SELECT t.task_id,t.checkpoint_json,a.attempt_id,a.error_code "
+        "SELECT t.task_id,t.checkpoint_json,a.attempt_id,a.error_code,a.stage,a.attempt_key "
         "FROM k10_tasks t JOIN k10_task_execution_bindings b ON b.task_id=t.task_id "
         "JOIN k10_external_attempts a ON a.task_id=t.task_id "
         "WHERE t.kind='morning_review' AND json_extract(t.payload_json,'$.parentScanId')=? "
         "AND b.execution_config_id=? AND b.execution_config_revision=? AND b.execution_content_sha256=? "
+        "AND a.state='failed' AND a.settled_at IS NOT NULL "
         "AND a.error_code IN ('insufficient_balance','provider_authorization_failed') "
-        "AND (CASE WHEN a.stage='search' THEN 'tavily' ELSE 'model' END)=? "
         "ORDER BY a.rowid",
-        (parent_scan_id, current[3], current[4], current[5], service),
+        (parent_scan_id, current[3], current[4], current[5]),
     ).fetchall()
-    for sibling_task_id, sibling_checkpoint_json, attempt_id, error_code in rows:
-        if sibling_task_id == task_id:
+    for sibling_task_id, sibling_checkpoint_json, attempt_id, error_code, stage, attempt_key in rows:
+        if (sibling_task_id == task_id
+                or _external_attempt_service(stage=str(stage), attempt_key=str(attempt_key)) != service):
             continue
         try:
             sibling_checkpoint = json.loads(sibling_checkpoint_json)
@@ -977,16 +1021,6 @@ def _model_attempt_admission(conn, *, task_id: str, stage: str, item_key: str, a
             return {"state": "retired", "reason": retired[0], "attemptId": None}
     checkpoint = json.loads(task[0])
     authorized = set(checkpoint.get("authorizedRetryAttemptIds", []))
-    if not receipt_only:
-        terminal = next((row for row in conn.execute(
-            "SELECT attempt_id,error_code FROM k10_external_attempts "
-            "WHERE task_id=? AND error_code IN ('insufficient_balance','provider_authorization_failed')", (task_id,)
-        ) if row[0] not in authorized), None)
-        if terminal is not None:
-            return {"state": "terminal", "reason": terminal[1], "attemptId": terminal[0]}
-        sibling_terminal = _same_report_provider_terminal(conn, task_id=task_id, service="model")
-        if sibling_terminal is not None:
-            return {"state": "terminal", "reason": sibling_terminal[1], "attemptId": sibling_terminal[0]}
 
     # Receipt lookup is always keyed by the same task, stage and *exact wire
     # hash*, not by the parser contract that happened to consume the first
@@ -1063,6 +1097,14 @@ def _model_attempt_admission(conn, *, task_id: str, stage: str, item_key: str, a
     if old is not None:
         if old[2] != input_sha256:
             raise K10Conflict("同一外部调用 attempt_key 不可对应不同输入")
+    # Known refusals govern new requests only. Exact paid responses and
+    # unresolved request identities above keep their original local outcome.
+    terminal = _task_provider_terminal(conn, task_id=task_id, service="model", authorized=authorized)
+    if terminal is None:
+        terminal = _same_report_provider_terminal(conn, task_id=task_id, service="model")
+    if terminal is not None:
+        return {"state": "terminal", "reason": terminal[1], "attemptId": terminal[0]}
+    if old is not None:
         return {"state": "pending_outcome" if old[1] == "started" else "reused", "reason": None, "attemptId": old[0]}
     if stage in {"analysisPro", "analysisCon", "morning"}:
         uncertain = next((row for row in conn.execute("SELECT attempt_id FROM k10_external_attempts WHERE task_id=? AND stage=? AND item_key=? AND state IN ('started','unknown','succeeded')", (task_id, stage, item_key)) if row[0] not in authorized), None)
@@ -3049,7 +3091,9 @@ def freeze_collected_input(
         scan_rows = conn.execute(
             "SELECT s.scan_id,s.coverage_json,s.created_at FROM k10_scans s "
             "JOIN k10_v2_report_runs r ON r.scan_id=s.scan_id "
-            "WHERE s.scan_id<>? AND s.window_kind='evening' AND r.available_at IS NOT NULL "
+            "LEFT JOIN k10_v2_report_delivery_metadata m ON m.report_id=r.report_id "
+            "WHERE s.scan_id<>? AND s.window_kind='evening' "
+            "AND (r.available_at IS NOT NULL OR m.result_available_at IS NOT NULL) "
             "AND r.status IN ('completed','partial') "
             "AND julianday(s.cutoff_at)<julianday(?) "
             "ORDER BY julianday(s.cutoff_at) DESC,s.created_at DESC LIMIT 1",
@@ -3074,7 +3118,9 @@ def freeze_collected_input(
         previously_present: set[tuple[str, int]] = set()
         for prior in conn.execute(
             "SELECT s.scan_id,s.window_kind,s.coverage_json FROM k10_scans s JOIN k10_v2_report_runs r ON r.scan_id=s.scan_id "
-            "WHERE s.window_kind IN ('evening','morning') AND r.available_at IS NOT NULL "
+            "LEFT JOIN k10_v2_report_delivery_metadata m ON m.report_id=r.report_id "
+            "WHERE s.window_kind IN ('evening','morning') "
+            "AND (r.available_at IS NOT NULL OR m.result_available_at IS NOT NULL) "
             "AND r.status IN ('completed','partial') AND julianday(s.cutoff_at)<julianday(?)", (cutoff,)
         ):
             item = json.loads(prior[2])

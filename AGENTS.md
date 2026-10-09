@@ -24,8 +24,8 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 
 - **B92全新数据起点（2026-09-26用户裁决）：** B92前报告、任务、原件、账本、行情、缓存及旧数据恢复集全部退役，不得读取、迁移、恢复或当作上下文。2026-09-27 B93发布已切换新库，旧生产与本地业务存储已清除。固定1,089家公司资料/策略从已批准静态输入重新登记；新起点以后历史可按具体问题使用，无消息年龄硬门槛。
 - **当前发布与绑定：** 3.6.3（96）局部失败隔离与来源状态修复已上线，沿用95跨片进度修复；Mac已安装96、iOS同版已签名待用户Xcode安装，证据见PROJECT_PLAN及`archive/v3.6.3-b95_execution.md`第10节。未重跑旧任务；原29日晚报已失败，不改写为交付成功。新库run/execution/collection revision均为1，固定策略快照`k10-v2-20260909`，执行与报告契约绑定B92；不得照抄旧B82 revision2。`DB_PATH=K10_DB_PATH`与`PARQUET_DIR=K10_PARQUET_DIR`必须指向同一新起点存储。交易日历重新取得，当前覆盖2026–2027。
-- **运行状态（2026-09-28 17:26用户明确恢复）：** 采集与报告control均open/user_opened；晨晚报、采集及两行情timer active/enabled，API/worker active。正常生产资讯、研究、核验、行情及完成/失败通知已获授权。旧9月22专用心跳保持PAUSED，不恢复旧任务。模型、Tavily和金十凭据已重新登记并核验加载；TuShare/鉴权/APNs独立凭据保留，新客户端重新注册设备。
-- **外呼边界：** 正常定时生产已恢复，不扩大到额外供应商余额/权限探针、测试推送或旧任务恢复。普通测试仍为隔离库与确定性transport。采集自然日08:00/20:00，晚报对应交易日前一自然日21:00，晨报交易日08:30/09:20截止；不补跑错过的旧窗口。
+- **运行状态（2026-10-08 20:00用户明确暂停）：** 修复期间采集与报告control均closed/user_paused，仅用户明确要求后恢复；晨晚报、采集及两行情timer active/enabled，API/worker active。当前暂停覆盖9月28日的采集/报告恢复授权；行情沿用既有授权。旧9月22专用心跳保持PAUSED，不恢复旧任务。模型、Tavily和金十凭据已重新登记并核验加载；TuShare/鉴权/APNs独立凭据保留，新客户端重新注册设备。
+- **外呼边界：** 当前采集与报告按用户要求暂停，不扩大到额外供应商余额/权限探针、测试推送或旧任务恢复。普通测试仍为隔离库与确定性transport。采集自然日08:00/20:00，晚报对应交易日前一自然日21:00，晨报交易日08:30/09:20截止；不补跑错过的旧窗口。
 - 历史B81–B89运行与故障仅见`archive/v3.5.1-b82_execution.md`；其保留旧业务和恢复旧任务条款已被全新起点裁决取代。资料仍保留draft/provenance状态，未排序材料不冒充正式推荐或D1/D2样本。
 
 - Run backend commands from `Backend/` and app commands from `App/`.
@@ -53,6 +53,7 @@ Global workflow authority: `/Users/linotsai/.codex/AGENTS.md`. Follow its curren
 - Company retrieval consumes business values with real Latin token boundaries, never serialized JSON keys. A shortened request must retain a durable visible-source manifest; the complete local database is not the model evidence whitelist.
 - Model-output resilience: discard out-of-pool optional hints, collapse repeated source selections, and ignore unused merge hints without invalidating usable selections. Derivable bookkeeping belongs to the system. Preserve paid rejected replies privately for exact-input revalidation; invalid evidence or unknown source references must never become invented facts. A fixed/restarted task is not completion: verify the actual report and its requested delivery.
 - **2026-10-01局部失败裁决：** 标题、正文或已绑定研究单元失败，只排除持久化关联公司与实际消费失败原件的公司，并在排序前完成排除；公司范围未知须保留缺口，不得直接清空独立完成的全体推荐。按completed_subset交付，不能声称全量完整；事件身份损坏、引用越界等完整性保护保留。
+- **2026-10-08再次明确：** 模型输出的坏引用/坏条目必须剔除并记录缺口，不能与冻结输入或持久化身份损坏混为一谈而终止整报。全局模型步骤失败也应跳过其依赖部分，继续独立可用的研究与交付；坏引用不得变成事实。验收必须覆盖故障注入后仍有可读结果、缺口持久化及中断续跑不重复外呼，不能用无故障小样本代替。
 - The strategy layer has **no default values**. If the parameter pack is missing or invalid, the report says "今天没跑成 · 参数未配置" and no listing is produced. Never introduce a fallback, a sample value, or a "just for now" number — a default that ships is a strategy change nobody was told about.
 - Never show a bare `vN` on strategy-bearing UI where system, strategy, contract, and append-only revision versions coexist. Name the namespace explicitly (for example `K10-v1.4` and `分析第 1 版`), and verify those labels on the exact detail/history screen before release.
 - Opportunity home prioritizes current opportunities. Expiry notices, ended recommendations and obsolete risks belong in default-collapsed history; never let them occupy the first screen above current cards. Keep current risk/withdrawal notices visible and preserve the original records. Native acceptance must verify the first screen with populated history, not merely that every record can render. Use the fixed D2 deadline to archive ended-window notices; withdrawal is a retained lifecycle fact and does not become an expiry label.

@@ -218,7 +218,7 @@ def generate_acceptance(root: Path, monkeypatch, *, scenario: str,
         flow = base.run_full_scale_flow(root, monkeypatch, name=scenario,
             **({"selected_event_count": EVENT_COUNT, "trading_day": trading_day,
                 "fixture_now": fixture_now, "fixture_run_at": fixture_run_at} | options[scenario]))
-        assert flow.task_status == ("failed" if scenario == "materials" else "completed"), {
+        assert flow.task_status == "completed", {
             "taskStatus": flow.task_status, "taskId": flow.task_id,
             "calls": flow.calls, "gatewayTrace": flow.gateway_trace,
         }
@@ -245,13 +245,15 @@ def generate_acceptance(root: Path, monkeypatch, *, scenario: str,
         assert value["deliveryDeadlineAt"] is None
         assert delivery["counts"]["titleInput"] == TITLE_COUNT
         assert delivery["counts"]["titleProcessed"] == TITLE_COUNT
-        assert delivery["outcome"] == {"partial": "partial", "materials": "failed"}.get(scenario, "complete"), {
+        assert delivery["outcome"] == {"partial": "partial", "materials": "partial"}.get(scenario, "complete"), {
             "scenario": scenario, "delivery": delivery,
             "calls": {} if flow is None else flow.calls,
         }
         if scenario == "materials":
             assert value["availableAt"] is None and value["eveningCards"] == []
             assert value["materials"]["state"] == "available" and materials["items"]
+            assert value["resultAvailableAt"] and delivery["rankingScope"] == "none"
+            assert value["discovery"]["outcome"] == "not_completed" and delivery["gaps"]
             for item in materials["items"]:
                 assert not ({"rank", "cardId", "companyWindowId", "selection", "d1TradeDate", "d2TradeDate"} & set(item))
         else:

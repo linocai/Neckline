@@ -81,11 +81,12 @@ def test_real_cli_http_refusal_is_not_auto_bypassed(tmp_path, monkeypatch, statu
         return real_client(**{**kwargs, 'transport':httpx.MockTransport(intercept)})
     monkeypatch.setattr(e2e, '_HTTPX_CLIENT', client)
     db, tid, first, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True, cli_entry=True)
-    if status == 400:
+    if status in {400, 403}:
         # An event-local refusal is published as an honest partial report. It
         # cannot be reopened into another paid request after publication.
-        assert first.status == 'completed' and len(refused_wires) == 2
-        assert refused_wires[0] == refused_wires[1]
+        assert first.status == 'completed' and len(refused_wires) == (2 if status == 400 else 1)
+        if status == 400:
+            assert refused_wires[0] == refused_wires[1]
         report = api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
         assert report['status'] == 'partial' and report['coverageGaps']
         handlers = pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet')
@@ -94,7 +95,9 @@ def test_real_cli_http_refusal_is_not_auto_bypassed(tmp_path, monkeypatch, statu
             recover_scan(db_path=db,scan_id=store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['scanId'],
                 execution_config_id='b39-execution',execution_config_revision=1,
                 confirmed_input_sha256=frozen_scan_input_sha256(scan_id=store.task_execution_input(task_id=tid,db_path=db)['checkpoint']['scanId'],db_path=db),now=e2e.RUN_AT)
-        assert len(refused_wires) == 2
+        assert len(refused_wires) == (2 if status == 400 else 1)
+        assert report["delivery"]["rankingScope"] == "none" and report["resultAvailableAt"]
+        assert not report["eveningCards"] and report["discovery"]["outcome"] == "not_completed"
         return
     assert first.status == 'failed' and len(refused_wires) == 1
     original = store.task_execution_input(task_id=tid,db_path=db)

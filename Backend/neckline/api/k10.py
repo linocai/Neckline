@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 
 from neckline.k10 import SchemaUnavailable, validate_execution_config, validate_run_config
 from neckline.k10 import research_store, store
@@ -263,7 +264,58 @@ def _market_snapshot_source_ref(value: Mapping[str, Any]) -> SourceReference | N
     )
 
 
-def _document_reference_map(conn: Any, refs: list[Mapping[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+_DISPLAY_METADATA_WARNING = "部分资料的标题或时间说明损坏，已省略异常字段；可继续查看已保存原文。"
+
+
+def _display_text_valid(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _display_metadata(raw: Any) -> tuple[dict[str, Any], bool]:
+    """Decode optional presentation fields without touching source identity/body.
+
+    This does not validate or repair research input, receipts or frozen state.
+    Readers disclose omissions, and never write a replacement to the database.
+    """
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}, True
+    if not isinstance(value, Mapping):
+        return {}, True
+    result: dict[str, Any] = {}
+    invalid = False
+    for key in ("title", "originalTitle", "originalPublishedText", "rawPubTime"):
+        field = value.get(key)
+        if field is None or _display_text_valid(field):
+            result[key] = field
+        else:
+            invalid = True
+    kind = value.get("sourceKind")
+    if kind in (None, "flash", "article"):
+        result["sourceKind"] = kind
+    else:
+        invalid = True
+    event = value.get("eventTime")
+    if event is None:
+        result["eventTime"] = None
+    elif (isinstance(event, Mapping) and _display_text_valid(event.get("value"))
+          and _display_text_valid(event.get("precision"))
+          and (event.get("basisRef") is None or _display_text_valid(event.get("basisRef")))):
+        result["eventTime"] = {key: event.get(key) for key in ("value", "precision", "basisRef")}
+    else:
+        invalid = True
+    return result, invalid
+
+
+def _document_reference_map(conn: Any, refs: list[Mapping[str, Any]], *,
+                            read_warnings: list[str] | None = None) -> dict[tuple[str, int], dict[str, Any]]:
     """Load only the document revisions named by a presentation reference."""
     result: dict[tuple[str, int], dict[str, Any]] = {}
     for ref in refs:
@@ -277,11 +329,61 @@ def _document_reference_map(conn: Any, refs: list[Mapping[str, Any]]) -> dict[tu
         ).fetchone()
         if row is None:
             continue
-        metadata = _json(row[6], {})
+        metadata, invalid = _display_metadata(row[6])
+        if invalid and read_warnings is not None and _DISPLAY_METADATA_WARNING not in read_warnings:
+            read_warnings.append(_DISPLAY_METADATA_WARNING)
         result[(document_id, revision)] = {"documentId": document_id, "revision": revision, "sourceKey": row[0],
             "url": row[1], "publishedAt": row[2], "publishedPrecision": row[3], "fetchedAt": row[4],
             "excerpt": row[5], "title": metadata.get("title") if isinstance(metadata, Mapping) else None}
     return result
+
+
+def _material_source_reference_map(
+    conn: Any, refs: list[Mapping[str, Any]],
+) -> tuple[dict[tuple[str, int], dict[str, Any]], dict[tuple[str, int], str]]:
+    """Isolate display metadata by exact source revision for material readers.
+
+    Database/identity failures remain request failures. Only JSON/display DTO
+    faults from an existing source revision become a per-consumer read gap.
+    Other API readers keep their existing source projection behavior.
+    """
+    documents: dict[tuple[str, int], dict[str, Any]] = {}
+    rejected: dict[tuple[str, int], str] = {}
+    for ref in refs:
+        key = (ref["documentId"], ref["revision"])
+        if key in documents or key in rejected:
+            continue
+        row = conn.execute(
+            "SELECT d.source_key,d.canonical_url,v.published_at,v.published_precision,v.fetched_at,v.excerpt,v.metadata_json "
+            "FROM k10_source_documents d JOIN k10_source_document_versions v ON v.document_id=d.document_id "
+            "WHERE d.document_id=? AND v.revision=?", key,
+        ).fetchone()
+        if row is None:
+            rejected[key] = "material_source_unavailable"
+            continue
+        try:
+            metadata = json.loads(row[6])
+        except (TypeError, json.JSONDecodeError):
+            rejected[key] = "material_projection_invalid"
+            continue
+        if not isinstance(metadata, Mapping):
+            rejected[key] = "material_projection_invalid"
+            continue
+        if metadata.get("title") is not None and not _display_text_valid(metadata["title"]):
+            rejected[key] = "material_projection_invalid"
+            continue
+        try:
+            source = _source_ref({"documentId": key[0], "revision": key[1], "sourceKey": row[0],
+                "url": row[1], "publishedAt": row[2], "publishedPrecision": row[3], "fetchedAt": row[4],
+                "excerpt": row[5], "title": metadata.get("title")})
+        except ValidationError:
+            rejected[key] = "material_projection_invalid"
+            continue
+        if (source.documentId, source.revision) != key:
+            rejected[key] = "material_projection_invalid"
+            continue
+        documents[key] = source.model_dump()
+    return documents, rejected
 
 
 def _hydrate_source_ref(value: Mapping[str, Any], documents: Mapping[tuple[str, int], Mapping[str, Any]]) -> SourceReference:
@@ -1412,7 +1514,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             text = _document_body(str(row[0]), row[7])
             body, next_cursor = text[offset:offset + limit], str(offset + limit) if offset + limit < len(text) else None
             content_kind = "original"
-        metadata = _json(row[9], {})
+        metadata, invalid_metadata = _display_metadata(row[9])
         event = metadata.get("eventTime") if isinstance(metadata, Mapping) else None
         source_kind = metadata.get("sourceKind") if isinstance(metadata, Mapping) else None
         if source_kind not in {"flash", "article"}:
@@ -1422,7 +1524,8 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                                      originalPublishedText=metadata.get("originalPublishedText") or metadata.get("rawPubTime"),
                                      sourceKind=source_kind, eventTime=event if isinstance(event, dict) else None,
                                      publishedAt=row[4], publishedPrecision=str(row[5]), fetchedAt=str(row[6]),
-                                     excerpt=row[8], body=body, contentKind=content_kind, page=PageMeta(nextCursor=next_cursor))
+                                     excerpt=row[8], body=body, contentKind=content_kind, page=PageMeta(nextCursor=next_cursor),
+                                     readWarnings=[_DISPLAY_METADATA_WARNING] if invalid_metadata else [])
 
     def v2_report_result(window, report_id, cursor, limit):
         from neckline.k10.v2_store import read_report
@@ -1491,7 +1594,7 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
             refs.extend(ref for gap in delivery.get("gaps", []) if isinstance(gap, Mapping)
                         for ref in gap.get("sourceRefs", []) if isinstance(ref, Mapping))
         with _reader(db_path()) as conn:
-            docs = _document_reference_map(conn, refs)
+            docs = _document_reference_map(conn, refs, read_warnings=report.setdefault("coverageGaps", []))
             failure_row = conn.execute('SELECT error_json FROM k10_v2_report_runs WHERE report_id=?', (report['reportId'],)).fetchone()
             failure = _json(failure_row[0], {}) if failure_row else {}
         for section in ("eveningCards", "updatedCards", "addedCards"):
@@ -1595,22 +1698,38 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
                 if isinstance(relation, Mapping):
                     refs.extend(ref for ref in relation.get("sourceRefs", []) if isinstance(ref, Mapping))
         with _reader(db_path()) as conn:
-            documents = _document_reference_map(conn, refs)
+            documents, rejected_sources = _material_source_reference_map(conn, refs)
+        visible_items = []
+        read_gaps = list(payload["readGaps"])
         for item in payload["items"]:
-            item["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
-                                  for ref in item.get("sourceRefs", []) if isinstance(ref, Mapping)]
-            for fact in item.get("facts", []):
-                if isinstance(fact, Mapping):
+            from neckline.k10.materials import material_gap, material_refs
+            bad_sources = [rejected_sources[(ref["documentId"], ref["revision"])]
+                           for ref in material_refs(item)
+                           if (ref["documentId"], ref["revision"]) in rejected_sources]
+            if bad_sources:
+                read_gaps.append(material_gap(report_id=report_id, material_id=item["materialId"],
+                    stage="materials_read", reason_code=bad_sources[0]))
+                continue
+            try:
+                item["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
+                                      for ref in item["sourceRefs"]]
+                for fact in item["facts"]:
                     fact["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
-                                          for ref in fact.get("sourceRefs", []) if isinstance(ref, Mapping)]
-            for relation in item.get("companyRelations", []):
-                if isinstance(relation, Mapping):
+                                          for ref in fact["sourceRefs"]]
+                for relation in item["companyRelations"]:
                     relation["sourceRefs"] = [_hydrate_source_ref(ref, documents).model_dump()
-                                              for ref in relation.get("sourceRefs", []) if isinstance(ref, Mapping)]
+                                              for ref in relation["sourceRefs"]]
+                visible_items.append(V2ReportMaterialOut(**item))
+            except ValidationError:
+                # Derived source display metadata may also be unreadable. It
+                # cannot turn the other scanned rows into a response failure.
+                read_gaps.append(material_gap(report_id=report_id, material_id=item["materialId"],
+                    stage="materials_read", reason_code="material_projection_invalid"))
         return V2ReportMaterialsEnvelope(
             reportId=payload["reportId"],
-            items=[V2ReportMaterialOut(**item) for item in payload["items"]],
+            items=visible_items,
             page=PageMeta(nextCursor=payload["nextCursor"]),
+            readGaps=read_gaps,
         )
 
     @router.get("/v2/reports/{report_id}", response_model=V2ReportEnvelope)

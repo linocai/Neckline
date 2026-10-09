@@ -62,6 +62,7 @@ def test_explicit_incomplete_global_review_remains_rejected():
 
 
 def test_official_recovery_reuses_duplicate_paid_title_result_and_publishes(tmp_path, monkeypatch):
+    from tests.title_failure_fixture import legacy_title_failure
     original = title_runtime.normalize_reconcile_result
     def duplicate(value):
         if "selectionComplete" in value and value["selected"]:
@@ -70,7 +71,8 @@ def test_official_recovery_reuses_duplicate_paid_title_result_and_publishes(tmp_
         raise TitleTriageProtocolError("全局标题输出 refIndex 重复")
     edit_responses(monkeypatch, duplicate)
     monkeypatch.setattr(title_runtime, "normalize_reconcile_result", old_strict)
-    db, task_id, task, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+    with legacy_title_failure(monkeypatch):
+        db, task_id, task, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
     assert task.status == "failed" and calls.count("titleGlobal") == 2
     monkeypatch.setattr(title_runtime, "normalize_reconcile_result", original)
     scan = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]

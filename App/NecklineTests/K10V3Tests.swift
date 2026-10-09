@@ -1638,6 +1638,26 @@ private actor ControlledK10Service: K10Servicing {
     private var dailySelections: [String: String] = [:]
     private var dailyPageFailure: K10APIError?
     private var dailyActionResponse: K10SelectionAction?
+    private var materialsReplies: [Result<K10ReportMaterialsPage, K10APIError>] = []
+    private var materialsGate: RefreshGate?
+    private var materialsRequests: [String] = []
+    private var documentOverride: K10DocumentPage?
+    func setDocumentOverride(_ page: K10DocumentPage) { documentOverride = page }
+
+    func setMaterialsReplies(_ replies: [Result<K10ReportMaterialsPage, K10APIError>], gate: RefreshGate? = nil) {
+        materialsReplies = replies
+        materialsGate = gate
+    }
+    func materialRequestLog() -> [String] { materialsRequests }
+    func reportMaterials(id: String, cursor: String?) async throws -> K10ReportMaterialsPage {
+        materialsRequests.append(id + "#" + (cursor ?? "first"))
+        let reply = materialsReplies.isEmpty ? nil : materialsReplies.removeFirst()
+        let gate = materialsGate
+        materialsGate = nil
+        if let gate { await gate.wait() }
+        if let reply { return try reply.get() }
+        return try await fixture.reportMaterials(id: id, cursor: cursor)
+    }
 
     init(batchID: String, empty: Bool = false, dailyGates: [String: RefreshGate] = [:], healthGate: RefreshGate? = nil, publicationGate: RefreshGate? = nil, opportunityGate: RefreshGate? = nil, analysisChainGate: RefreshGate? = nil, healthFailure: K10APIError? = nil, firstPublicationFailure: K10APIError? = nil, analysisChainCancellation: Bool = false, firstAnalysisChainRevision: Int? = nil, laterAnalysisChainRevision: Int? = nil) {
         self.batchID = batchID
@@ -1748,7 +1768,10 @@ private actor ControlledK10Service: K10Servicing {
         analysisRevision += 1
         return K10AnalysisRequestResult(schemaVersion: "k10-api-v2", requestId: "request-\(analysisRevision)", companyWindowId: companyWindowID, observationId: "observation-1", analysisJobId: "analysis-job-\(analysisRevision)", revision: analysisRevision, parentRevision: analysisRevision - 1, inputCutoffAt: "2026-09-07T09:00:00+08:00", replayed: false)
     }
-    func document(id: String, revision: Int?, offset: Int, limit: Int) async throws -> K10DocumentPage { try await fixture.document(id: id, revision: revision, offset: offset, limit: limit) }
+    func document(id: String, revision: Int?, offset: Int, limit: Int) async throws -> K10DocumentPage {
+        if let documentOverride, documentOverride.documentId == id, documentOverride.revision == revision { return documentOverride }
+        return try await fixture.document(id: id, revision: revision, offset: offset, limit: limit)
+    }
     func job(id: String) async throws -> K10Job { try await fixture.job(id: id) }
     func retryJob(id: String, expectedAttemptCount: Int) async throws -> K10Job { retryCalls += 1; return try await fixture.retryJob(id: id, expectedAttemptCount: expectedAttemptCount) }
     func results() async throws -> K10Results { try await fixture.results() }
@@ -2605,7 +2628,7 @@ extension K10V3Tests {
     }
 }
 
-@MainActor private func renderB81View<V: View>(_ view: V, root: String, name: String) async throws {
+@MainActor private func renderB81View<V: View>(_ view: V, root: String, name: String, scrollToBottom: Bool = false) async throws {
     #if os(macOS)
     let host = NSHostingView(rootView: view.frame(width: 720, height: 920))
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 920), styleMask: [.titled], backing: .buffered, defer: false)
@@ -2615,6 +2638,19 @@ extension K10V3Tests {
     defer { window.orderOut(nil) }
     try await Task.sleep(for: .milliseconds(350))
     host.layoutSubtreeIfNeeded()
+    if scrollToBottom {
+        func findScroll(_ view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { findScroll($0) }.first
+        }
+        let scroll = try XCTUnwrap(findScroll(host))
+        if let document = scroll.documentView {
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        host.layoutSubtreeIfNeeded()
+    }
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
     try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: root).appendingPathComponent("macos-\(name).png"))
@@ -2629,6 +2665,17 @@ extension K10V3Tests {
     defer { window.isHidden = true }
     try await Task.sleep(for: .milliseconds(350))
     controller.view.layoutIfNeeded()
+    if scrollToBottom {
+        func findScroll(_ view: UIView) -> UIScrollView? {
+            if let scroll = view as? UIScrollView { return scroll }
+            return view.subviews.lazy.compactMap { findScroll($0) }.first
+        }
+        let scroll = try XCTUnwrap(findScroll(controller.view))
+        scroll.setContentOffset(CGPoint(x: 0, y: max(-scroll.adjustedContentInset.top,
+            scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)), animated: false)
+        try await Task.sleep(for: .milliseconds(150))
+        controller.view.layoutIfNeeded()
+    }
     let image = UIGraphicsImageRenderer(size: window.bounds.size).image { _ in
         XCTAssertTrue(window.drawHierarchy(in: window.bounds, afterScreenUpdates: true))
     }
@@ -2773,5 +2820,371 @@ extension K10V3Tests {
         model.dailyMorning = nil
         model.dailyEvening = nil
         try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "v362-empty")
+    }
+}
+
+extension K10V3Tests {
+    private func b98MaterialGap(_ id: String = "read-gap") -> K10ReportDeliveryGap {
+        .init(gapId: id, stage: "materials_read", unitKind: "material", unitId: "unreadable-material",
+              reasonCode: "material_projection_invalid", message: "一条材料暂时无法读取，保留其余内容。",
+              sourceRefs: [], eventIds: [], companyCodes: [], companyScopeKnown: false)
+    }
+
+    @MainActor private func b98MaterialContext() async throws -> (ControlledK10Service, AppModel, K10DailyReport, K10ReportMaterialsPage) {
+        let fixture = K10SyntheticUIService()
+        let response = try await fixture.latestDailyReport(window: "evening")
+        let report = try XCTUnwrap(response.report)
+        let page = try await fixture.reportMaterials(id: report.reportId, cursor: nil)
+        let service = ControlledK10Service(batchID: "b98-materials")
+        return (service, AppModel(serviceFactory: { service }, cacheClearer: {}), report, page)
+    }
+
+    func testB98MaterialsReadGapsRemainOptionalAndPreserveNarrative() throws {
+        let legacy = Data(#"{"schemaVersion":10,"reportId":"r","items":[],"page":{"nextCursor":null}}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(K10ReportMaterialsPage.self, from: legacy).readGaps, [])
+        let emptyGapPage = K10ReportMaterialsPage(schemaVersion: 10, reportId: "r", items: [],
+                                                  page: .init(nextCursor: "later"), readGaps: [b98MaterialGap()])
+        XCTAssertEqual(try JSONDecoder().decode(K10ReportMaterialsPage.self, from: JSONEncoder().encode(emptyGapPage)), emptyGapPage)
+    }
+
+    @MainActor func testB98MaterialsContinuationFailureKeepsPagesAndRetriesSameCursor() async throws {
+        let (service, model, report, original) = try await b98MaterialContext()
+        var first = original
+        first.page = .init(nextCursor: "next")
+        first.readGaps = [b98MaterialGap()]
+        var next = original
+        next.readGaps = [b98MaterialGap(), b98MaterialGap("second-gap")]
+        await service.setMaterialsReplies([.success(first), .failure(.server(503, "本页暂不可用")), .success(next)])
+        await model.openMaterials(for: report)
+        await model.loadMoreReportMaterials()
+        XCTAssertEqual(model.reportMaterials, first)
+        XCTAssertEqual(model.reportMaterialsError, "本页暂不可用")
+        XCTAssertFalse(model.loadingMoreReportMaterials)
+        await model.loadMoreReportMaterials()
+        XCTAssertEqual(model.reportMaterials?.items, original.items)
+        XCTAssertEqual(model.reportMaterials?.readGaps.map(\.gapId), ["read-gap", "second-gap"])
+        XCTAssertNil(model.reportMaterials?.page.nextCursor)
+        XCTAssertNil(model.reportMaterialsError)
+        let requests = await service.materialRequestLog()
+        XCTAssertEqual(requests, [report.reportId + "#first", report.reportId + "#next", report.reportId + "#next"])
+    }
+
+    @MainActor func testB98MaterialsProtocolFailuresRemainLocalAndRetryable() async throws {
+        for failure in ["schema", "report", "same-cursor", "empty-cursor"] {
+            let (service, model, report, original) = try await b98MaterialContext()
+            var first = original
+            first.page = .init(nextCursor: "next")
+            let next = K10ReportMaterialsPage(schemaVersion: failure == "schema" ? 99 : 10,
+                reportId: failure == "report" ? "another-report" : report.reportId,
+                items: original.items,
+                page: .init(nextCursor: failure == "same-cursor" ? "next" : failure == "empty-cursor" ? "" : nil))
+            await service.setMaterialsReplies([.success(first), .success(next), .success(original)])
+            await model.openMaterials(for: report)
+            await model.loadMoreReportMaterials()
+            XCTAssertEqual(model.reportMaterials, first, failure)
+            XCTAssertNotNil(model.reportMaterialsError, failure)
+            await model.loadMoreReportMaterials()
+            XCTAssertNil(model.reportMaterialsError, failure)
+            XCTAssertNil(model.reportMaterials?.page.nextCursor, failure)
+        }
+    }
+
+    @MainActor func testB98AllBadMaterialsPageStillReachesLaterReadablePageAndDetectsCursorCycle() async throws {
+        let (service, model, report, original) = try await b98MaterialContext()
+        let bad = K10ReportMaterialsPage(schemaVersion: 10, reportId: report.reportId, items: [],
+                                         page: .init(nextCursor: "p2"), readGaps: [b98MaterialGap()])
+        var middle = original
+        middle.page = .init(nextCursor: "p3")
+        var loop = original
+        loop.page = .init(nextCursor: "p2")
+        await service.setMaterialsReplies([.success(bad), .success(middle), .success(loop)])
+        await model.openMaterials(for: report)
+        XCTAssertEqual(model.reportMaterials?.items.count, 0)
+        XCTAssertEqual(model.reportMaterials?.readGaps.count, 1)
+        await model.loadMoreReportMaterials()
+        XCTAssertEqual(model.reportMaterials?.items, original.items)
+        await model.loadMoreReportMaterials()
+        XCTAssertEqual(model.reportMaterials?.page.nextCursor, "p3")
+        XCTAssertNotNil(model.reportMaterialsError)
+    }
+
+    @MainActor func testB98StaleMaterialsFailureCannotPolluteAnotherReport() async throws {
+        let (service, model, report, original) = try await b98MaterialContext()
+        var first = original
+        first.page = .init(nextCursor: "next")
+        await service.setMaterialsReplies([.success(first)])
+        await model.openMaterials(for: report)
+        let gate = RefreshGate()
+        await service.setMaterialsReplies([.failure(.server(500, "旧报告错误"))], gate: gate)
+        let oldRead = Task { await model.loadMoreReportMaterials() }
+        await gate.waitUntilEntered()
+        let otherResponse = try await K10SyntheticUIService().latestDailyReport(window: "morning")
+        let other = try XCTUnwrap(otherResponse.report)
+        let otherPage = try await K10SyntheticUIService().reportMaterials(id: other.reportId, cursor: nil)
+        await service.setMaterialsReplies([.success(otherPage)])
+        await model.openMaterials(for: other)
+        await gate.open()
+        await oldRead.value
+        XCTAssertEqual(model.reportMaterials, otherPage)
+        XCTAssertNil(model.reportMaterialsError)
+        XCTAssertFalse(model.loadingMoreReportMaterials)
+    }
+
+    @MainActor func testB98SameReportReopenRejectsOldCallbackAndCancelledReadKeepsContent() async throws {
+        let (service, model, report, original) = try await b98MaterialContext()
+        let gate = RefreshGate()
+        var old = original
+        old.page = .init(nextCursor: "obsolete")
+        await service.setMaterialsReplies([.success(old)], gate: gate)
+        let oldOpen = Task { await model.openMaterials(for: report) }
+        await gate.waitUntilEntered()
+        await service.setMaterialsReplies([.success(original)])
+        await model.openMaterials(for: report)
+        await gate.open()
+        await oldOpen.value
+        XCTAssertEqual(model.reportMaterials, original)
+        var first = original
+        first.page = .init(nextCursor: "next")
+        await service.setMaterialsReplies([.success(first)])
+        await model.openMaterials(for: report)
+        let cancelGate = RefreshGate()
+        await service.setMaterialsReplies([.success(original)], gate: cancelGate)
+        let read = Task { await model.loadMoreReportMaterials() }
+        await cancelGate.waitUntilEntered()
+        read.cancel()
+        await cancelGate.open()
+        await read.value
+        XCTAssertEqual(model.reportMaterials, first)
+        XCTAssertNil(model.reportMaterialsError)
+        XCTAssertFalse(model.loadingMoreReportMaterials)
+    }
+
+    @MainActor func testB98ConnectionChangeRejectsOldMaterialErrorAndFirstFailureCanRetry() async throws {
+        let (service, model, report, original) = try await b98MaterialContext()
+        await service.setMaterialsReplies([.failure(.server(500, "首屏错误")), .success(original)])
+        await model.openMaterials(for: report)
+        XCTAssertNil(model.reportMaterials)
+        XCTAssertEqual(model.reportMaterialsError, "首屏错误")
+        await model.openMaterials(for: report)
+        XCTAssertEqual(model.reportMaterials, original)
+        let gate = RefreshGate()
+        await service.setMaterialsReplies([.failure(.server(500, "旧连接错误"))], gate: gate)
+        let oldRead = Task { await model.openMaterials(for: report) }
+        await gate.waitUntilEntered()
+        model.resetForConnectionChange()
+        await gate.open()
+        await oldRead.value
+        XCTAssertNil(model.reportMaterials)
+        XCTAssertNil(model.reportMaterialsError)
+        XCTAssertFalse(model.loadingReportMaterials)
+        let cancelledFirstGate = RefreshGate()
+        await service.setMaterialsReplies([.success(original)], gate: cancelledFirstGate)
+        let cancelledFirst = Task { await model.openMaterials(for: report) }
+        await cancelledFirstGate.waitUntilEntered()
+        cancelledFirst.cancel()
+        await cancelledFirstGate.open()
+        await cancelledFirst.value
+        XCTAssertNil(model.reportMaterials)
+        XCTAssertEqual(model.reportMaterialsError, "读取已取消，可重新读取。")
+        XCTAssertFalse(model.loadingReportMaterials)
+        await service.setMaterialsReplies([.success(original)])
+        await model.openMaterials(for: report)
+        XCTAssertEqual(model.reportMaterials, original)
+        XCTAssertNil(model.reportMaterialsError)
+    }
+}
+
+extension K10V3Tests {
+    @MainActor func testB99ActualMetadataFaultKeepsReportMaterialsAndOriginalReadable() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let root = env["NK_B99_API_DIR"], let renderRoot = env["NK_B99_RENDER_DIR"] else {
+            if env["NK_B99_REQUIRE_ACTUAL_API"] == "1" { return XCTFail("B99 actual API artifacts required") }
+            throw XCTSkip("Set B99 actual API and render paths")
+        }
+        func read<T: Decodable>(_ name: String, as: T.Type) throws -> T {
+            try JSONDecoder().decode(T.self, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name)))
+        }
+        let response = try read("metadata-report.json", as: K10DailyReportResponse.self)
+        let report = try XCTUnwrap(response.report)
+        XCTAssertTrue(response.isReadableByCurrentApp)
+        XCTAssertEqual(response.state, "available")
+        XCTAssertFalse(report.coverageGaps?.isEmpty ?? true)
+        XCTAssertFalse(report.eveningCards.isEmpty)
+        let materials = try read("metadata-materials.json", as: K10ReportMaterialsPage.self)
+        XCTAssertEqual(materials.reportId, report.reportId)
+        XCTAssertFalse(materials.items.isEmpty)
+        XCTAssertFalse(materials.readGaps.isEmpty)
+        let original = try read("metadata-document.json", as: K10DocumentPage.self)
+        let first = try read("metadata-document-page.json", as: K10DocumentPage.self)
+        let next = try read("metadata-document-next.json", as: K10DocumentPage.self)
+        XCTAssertFalse(original.readWarnings?.isEmpty ?? true)
+        XCTAssertEqual(original.contentKind, "original")
+        XCTAssertNotNil(first.page.nextCursor)
+        let service = ControlledK10Service(batchID: "b99-actual-api")
+        let clock = try XCTUnwrap(ISO8601DateFormatter().date(from: try XCTUnwrap(report.resultAvailableAt)))
+        let model = AppModel(serviceFactory: { service }, cacheClearer: {}, clock: { clock })
+        model.state = .ready
+        model.dailyEvening = response
+        model.dailyWindow = "evening"
+        await service.setMaterialsReplies([.success(materials)])
+        await model.openMaterials(for: report)
+        XCTAssertEqual(model.reportMaterials?.items, materials.items)
+        await service.setDocumentOverride(first)
+        let source = try XCTUnwrap(report.eveningCards.flatMap(\.sourceRefs).first { $0.documentId == first.documentId })
+        let openedResult = await model.openDocument(source)
+        let opened = try XCTUnwrap(openedResult)
+        await service.setDocumentOverride(next)
+        let completeResult = await model.loadMoreDocument(opened)
+        let complete = try XCTUnwrap(completeResult)
+        XCTAssertEqual(complete.body, original.body)
+        XCTAssertEqual(complete.readWarnings, original.readWarnings)
+        XCTAssertNil(complete.page.nextCursor)
+        try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "b99-report-metadata-gap")
+        try await renderB81View(ReportMaterialsSheet(report: report, model: model), root: renderRoot, name: "b99-independent-materials")
+        try await renderB81View(SourceDocumentSheet(document: complete, model: model), root: renderRoot, name: "b99-original-metadata-gap")
+    }
+
+    @MainActor func testB98ActualMaterialAPIAndNativeFailureRecoveryScreens() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let root = env["NK_B98_MATERIALS_API_DIR"], let renderRoot = env["NK_B98_RENDER_DIR"] else {
+            if env["NK_B98_REQUIRE_ACTUAL_API"] == "1" { return XCTFail("Actual material API artifacts and native output paths required") }
+            throw XCTSkip("Set NK_B98_MATERIALS_API_DIR and NK_B98_RENDER_DIR for actual material API acceptance")
+        }
+        func read<T: Decodable>(_ name: String, as: T.Type) throws -> T {
+            try JSONDecoder().decode(T.self, from: Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name)))
+        }
+        let response = try read("report.json", as: K10DailyReportResponse.self)
+        XCTAssertTrue(response.isReadableByCurrentApp)
+        let report = try XCTUnwrap(response.report)
+        let first = try read("materials-first.json", as: K10ReportMaterialsPage.self)
+        let next = try read("materials-next.json", as: K10ReportMaterialsPage.self)
+        let bad = try read("materials-all-bad.json", as: K10ReportMaterialsPage.self)
+        let afterBad = try read("materials-after-bad.json", as: K10ReportMaterialsPage.self)
+        let empty = try read("materials-empty.json", as: K10ReportMaterialsPage.self)
+        let emptyResponse = try read("report-empty.json", as: K10DailyReportResponse.self)
+        XCTAssertTrue(emptyResponse.isReadableByCurrentApp)
+        let emptyReport = try XCTUnwrap(emptyResponse.report)
+        for page in [first, next, bad, afterBad, empty] { XCTAssertTrue(page.isReadableByCurrentApp) }
+        XCTAssertEqual(first.reportId, report.reportId)
+        XCTAssertEqual(next.reportId, report.reportId)
+        XCTAssertEqual(bad.reportId, report.reportId)
+        XCTAssertEqual(afterBad.reportId, report.reportId)
+        XCTAssertEqual(empty.reportId, emptyReport.reportId)
+        XCTAssertFalse(first.items.isEmpty)
+        XCTAssertNotNil(first.page.nextCursor)
+        let relation = try XCTUnwrap(first.items.flatMap(\.companyRelations).first { $0.relation.count == 501 })
+        XCTAssertEqual(relation.relation.count, 501)
+        XCTAssertFalse(relation.sourceRefs.isEmpty)
+        XCTAssertTrue(bad.items.isEmpty)
+        XCTAssertFalse(bad.readGaps.isEmpty)
+        XCTAssertNotNil(bad.page.nextCursor)
+        XCTAssertTrue(empty.items.isEmpty)
+        XCTAssertTrue(empty.readGaps.isEmpty)
+        XCTAssertNil(empty.page.nextCursor)
+        let original = try read("original.json", as: K10DocumentPage.self)
+        XCTAssertFalse(original.body?.isEmpty ?? true)
+        XCTAssertEqual(original.contentKind, "original")
+        XCTAssertTrue(first.items.flatMap(\.sourceRefs).contains { $0.documentId == original.documentId && $0.revision == original.revision })
+
+        let service = ControlledK10Service(batchID: "b98-actual-api")
+        let model = AppModel(serviceFactory: { service }, cacheClearer: {})
+        await service.setMaterialsReplies([.failure(.server(503, "材料首屏读取暂时失败")), .success(first),
+                                          .failure(.server(503, "下一页读取暂时失败")), .success(next)])
+        await model.openMaterials(for: report)
+        XCTAssertNil(model.reportMaterials)
+        XCTAssertNotNil(model.reportMaterialsError)
+        try await renderB81View(ReportMaterialsSheet(report: report, model: model), root: renderRoot, name: "b98-materials-first-error")
+        await model.openMaterials(for: report)
+        XCTAssertEqual(model.reportMaterials, first)
+        try await renderB81View(ReportMaterialsSheet(report: report, model: model), root: renderRoot, name: "b98-materials-populated")
+        await model.loadMoreReportMaterials()
+        XCTAssertEqual(model.reportMaterials, first)
+        XCTAssertNotNil(model.reportMaterialsError)
+        try await renderB81View(ReportMaterialsSheet(report: report, model: model), root: renderRoot, name: "b98-materials-next-error", scrollToBottom: true)
+        await model.loadMoreReportMaterials()
+        XCTAssertNil(model.reportMaterialsError)
+        XCTAssertGreaterThanOrEqual(model.reportMaterials?.items.count ?? 0, first.items.count)
+        let requests = await service.materialRequestLog()
+        XCTAssertEqual(requests.suffix(2), [report.reportId + "#" + first.page.nextCursor!, report.reportId + "#" + first.page.nextCursor!])
+        try await renderB81View(ReportMaterialsSheet(report: report, model: model), root: renderRoot, name: "b98-materials-recovered", scrollToBottom: true)
+
+        await service.setMaterialsReplies([.success(bad), .success(afterBad)])
+        await model.openMaterials(for: report)
+        try await renderB81View(ReportMaterialsSheet(report: report, model: model), root: renderRoot, name: "b98-materials-all-bad")
+        await model.loadMoreReportMaterials()
+        XCTAssertFalse(model.reportMaterials?.items.isEmpty ?? true)
+        XCTAssertFalse(model.reportMaterials?.readGaps.isEmpty ?? true)
+        await service.setMaterialsReplies([.success(empty)])
+        await model.openMaterials(for: emptyReport)
+        try await renderB81View(ReportMaterialsSheet(report: emptyReport, model: model), root: renderRoot, name: "b98-materials-empty")
+        // Decode and render the exact raw document returned by FastAPI; the source
+        // reference identity above binds the material to this readable original.
+        await service.setDocumentOverride(original)
+        let source = try XCTUnwrap(first.items.flatMap(\.sourceRefs).first { $0.documentId == original.documentId && $0.revision == original.revision })
+        let opened = await model.openDocument(source)
+        XCTAssertEqual(opened, original)
+        try await renderB81View(SourceDocumentSheet(document: try XCTUnwrap(opened), model: model), root: renderRoot, name: "b98-material-original")
+    }
+}
+
+extension K10V3Tests {
+    @MainActor func testB98ActualReportIsolationAPIAndNativeScreens() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let root = env["NK_B98_REPORT_API_DIR"], let renderRoot = env["NK_B98_RENDER_DIR"] else {
+            if env["NK_B98_REQUIRE_ACTUAL_API"] == "1" { return XCTFail("Actual B92 report API artifacts required") }
+            throw XCTSkip("Set NK_B98_REPORT_API_DIR and NK_B98_RENDER_DIR for actual report isolation acceptance")
+        }
+        for name in ["normal", "all-sort-invalid", "morning-only-review"] {
+            let file = name == "normal" ? "normal-current-report.json" : name + "-report.json"
+            let data = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(file))
+            let response = try JSONDecoder().decode(K10DailyReportResponse.self, from: data)
+            XCTAssertTrue(response.isReadableByCurrentApp, name)
+            XCTAssertEqual(response.state, "available", name)
+            let report = try XCTUnwrap(response.report)
+            let delivery = try XCTUnwrap(report.delivery)
+            XCTAssertEqual(report.status, "partial", name)
+            XCTAssertEqual(delivery.outcome, "partial", name)
+            XCTAssertFalse(delivery.gaps.isEmpty, name)
+            XCTAssertEqual(report.discovery?.outcome, "not_completed", name)
+            XCTAssertEqual(delivery.rankingScope, name == "normal" ? "completed_subset" : "none", name)
+            if name == "normal" {
+                XCTAssertGreaterThan(report.eveningCards.count, 0)
+                XCTAssertTrue(report.eveningCards.allSatisfy { !$0.catalysts.isEmpty })
+            } else {
+                XCTAssertTrue(report.eveningCards.isEmpty)
+                XCTAssertTrue(report.addedCards.isEmpty)
+            }
+            if name == "morning-only-review" {
+                let review = try XCTUnwrap(report.morningReview)
+                XCTAssertEqual(review.state, "complete")
+                XCTAssertGreaterThan(review.targetReasonCount, 0)
+                XCTAssertTrue(review.items.allSatisfy { $0.status == "completed" && $0.unreviewedOpportunityIds.isEmpty })
+                XCTAssertTrue(report.lifecycleUpdates?.contains { $0.kind == "risk" && !$0.sourceRefs.isEmpty } ?? false)
+            } else {
+                XCTAssertGreaterThan(report.materials?.count ?? 0, 0)
+            }
+            let readableAt = try XCTUnwrap(report.resultAvailableAt, name)
+            XCTAssertFalse(readableAt.isEmpty, name)
+            let clockValue: String
+            if name == "normal" {
+                clockValue = try XCTUnwrap(report.availableAt, "Valid sorted recommendations require a formal publication time")
+            } else {
+                XCTAssertNil(report.availableAt, "Readable materials or an independent morning review must not imply formal recommendation publication")
+                clockValue = readableAt
+            }
+            let reportClock = try XCTUnwrap(ISO8601DateFormatter().date(from: clockValue), name)
+            let model = AppModel(serviceFactory: { nil }, cacheClearer: {}, clock: { reportClock })
+            model.state = .ready
+            model.dailyWindow = report.windowKind
+            if report.windowKind == "morning" { model.dailyMorning = response } else { model.dailyEvening = response }
+            if name == "normal" { XCTAssertGreaterThan(model.currentEveningCards.count, 0, "Actual API must use the fixture's business clock for populated current-card acceptance") }
+            try await renderB81View(OpportunitiesView(model: model), root: renderRoot, name: "b98-report-" + name)
+            let pageData = try Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(name + "-materials.json"))
+            let page = try JSONDecoder().decode(K10ReportMaterialsPage.self, from: pageData)
+            XCTAssertTrue(page.isReadableByCurrentApp)
+            XCTAssertEqual(page.reportId, report.reportId)
+            XCTAssertEqual(page.items.count, report.materials?.count)
+            XCTAssertTrue(page.items.allSatisfy { !$0.facts.isEmpty && !$0.sourceRefs.isEmpty })
+        }
     }
 }

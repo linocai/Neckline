@@ -76,7 +76,9 @@ def test_final_editor_controls_exact_published_subset(tmp_path, monkeypatch, sel
         assert conn.execute("SELECT count(*) FROM k10_company_windows").fetchone()[0] == len({code for code, _ in expected})
         assert conn.execute("SELECT count(*) FROM k10_external_attempts WHERE state IN ('started','running','unknown')").fetchone()[0] == 0
     if selection == "invalid":
-        assert flow.task_status == "failed"
+        assert flow.task_status == "completed"
+        assert report["status"] == "partial" and report["delivery"]["rankingScope"] == "none"
+        assert report["resultAvailableAt"] and report["delivery"]["gaps"]
         assert report["discovery"]["outcome"] == "not_completed"
         assert not report["availableAt"] and report["eveningCards"] == []
     else:

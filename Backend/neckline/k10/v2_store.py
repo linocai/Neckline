@@ -234,10 +234,34 @@ def _write_report_delivery(
                  (report_id, _json(coverage)))
 
 
+def _prepare_report_materials(conn, *, report_id: str, materials, stage: str = "materials"):
+    from .materials import MaterialProjectionError, material_refs, partition_materials, project_material
+
+    refs: set[tuple[str, int]] = set()
+    for item in materials:
+        try:
+            projection = project_material(item)
+        except MaterialProjectionError:
+            continue
+        refs.update((ref["documentId"], ref["revision"]) for ref in material_refs(projection))
+    present = {key for key in refs if conn.execute(
+        "SELECT 1 FROM k10_source_documents d JOIN k10_source_document_versions v "
+        "ON v.document_id=d.document_id WHERE d.document_id=? AND v.revision=?", key,
+    ).fetchone() is not None}
+    return partition_materials(report_id=report_id, materials=materials, source_keys=present, stage=stage)
+
+
+def prepare_report_materials(*, db_path: Path, report_id: str, materials, stage: str = "materials"):
+    """Validate a derived material subset before the public transaction."""
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        return _prepare_report_materials(conn, report_id=report_id, materials=materials, stage=stage)
+
+
 def write_report_materials(
     conn, *, report_id: str, materials: list[Mapping[str, Any]], result_available_at: str | None,
     delivery_deadline_at: str | None, unavailable_reason: Mapping[str, Any] | None = None,
-) -> None:
+) -> list[dict[str, Any]]:
     """Persist safe, unranked event materials with the report transaction."""
     if unavailable_reason is not None and materials:
         raise ValueError("不可用材料不能同时写入项目")
@@ -249,17 +273,10 @@ def write_report_materials(
             delivery_deadline_at = existing[0]
         elif delivery_deadline_at != existing[0]:
             raise ValueError("报告冻结截止时间不可覆盖")
+    materials, gaps = _prepare_report_materials(conn, report_id=report_id, materials=materials)
     state = "unavailable" if unavailable_reason is not None else ("available" if materials else "empty")
     conn.execute("DELETE FROM k10_v2_report_materials WHERE report_id=?", (report_id,))
     for item in materials:
-        required = {"materialId", "eventId", "eventTitle", "facts", "companyRelations", "uncertainties", "sourceRefs", "asOf"}
-        if not isinstance(item, Mapping) or set(item) != required:
-            raise ValueError("报告材料字段无效")
-        if not all(isinstance(item[key], str) and item[key] for key in ("materialId", "eventId", "eventTitle", "asOf")):
-            raise ValueError("报告材料身份无效")
-        for key in ("facts", "companyRelations", "uncertainties", "sourceRefs"):
-            if not isinstance(item[key], list):
-                raise ValueError("报告材料集合无效")
         conn.execute(
             "INSERT INTO k10_v2_report_materials(report_id,material_id,event_id,event_title,facts_json,"
             "company_relations_json,uncertainties_json,source_refs_json,as_of) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -275,6 +292,7 @@ def write_report_materials(
          None if unavailable_reason is None else _json(dict(unavailable_reason)),
          result_available_at or delivery_deadline_at or "1970-01-01T00:00:00+00:00"),
     )
+    return gaps
 
 
 def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id: str, inputs,
@@ -284,15 +302,23 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
                   allow_unpublished_failed_delivery_replacement: bool = False):
     """Called inside opportunity publication transaction, including retries."""
     prior_report = conn.execute(
-        'SELECT available_at FROM k10_v2_report_runs WHERE report_id=?', (report_id,)
+        'SELECT available_at,status FROM k10_v2_report_runs WHERE report_id=?', (report_id,)
     ).fetchone()
-    if prior_report is not None and prior_report[0] is not None:
+    if prior_report is not None and (prior_report[0] is not None or prior_report[1] in {'completed', 'partial'}):
         return
     prior_card_count = (
         int(conn.execute('SELECT count(*) FROM k10_v2_report_cards WHERE report_id=?', (report_id,)).fetchone()[0])
         if prior_report is not None else 0
     )
     cutoff, status = conn.execute('SELECT cutoff_at,status FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
+    if materials is not None:
+        materials, material_gaps = _prepare_report_materials(conn, report_id=report_id, materials=materials)
+        if material_gaps and delivery is not None:
+            delivery = dict(delivery)
+            delivery['gaps'] = [*delivery.get('gaps', []), *material_gaps]
+            delivery['outcome'] = 'partial'
+            if delivery.get('rankingScope') == 'all_processed':
+                delivery['rankingScope'] = 'completed_subset'
     source_companions: dict[tuple[str, int], dict[str, Any]] = {}
     if isinstance(delivery, Mapping) and delivery.get('contractVersion') == 'k10-report-delivery-3.6.1-b92':
         scan_coverage = conn.execute('SELECT coverage_json FROM k10_scans WHERE scan_id=?', (scan_id,)).fetchone()
@@ -325,8 +351,9 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
         parent = row[0] if row else None
         if parent:
             parent_codes = {row[0] for row in conn.execute('SELECT company_code FROM k10_v2_report_cards WHERE report_id=?', (parent,))}
+    formal_available_at = None if delivery is not None and delivery.get('rankingScope') == 'none' else available_at
     conn.execute('INSERT INTO k10_v2_report_runs VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(report_id) DO UPDATE SET verification_cutoff_at=excluded.verification_cutoff_at,available_at=excluded.available_at,status=excluded.status,error_json=NULL',
-                 (report_id, scan_id, snapshot_id, kind, parent, cutoff, available_at, available_at, status, None, available_at))
+                 (report_id, scan_id, snapshot_id, kind, parent, cutoff, available_at, formal_available_at, status, None, available_at))
     if delivery is not None:
         _write_report_delivery(
             conn, report_id=report_id, delivery=delivery,
@@ -450,7 +477,7 @@ def publish_cards(conn, *, report_id: str, scan_id: str, kind: str, snapshot_id:
 
     def finalize_timestamp(final_at):
         conn.execute('UPDATE k10_v2_report_runs SET available_at=?,verification_cutoff_at=?,created_at=? WHERE report_id=?',
-                     (final_at, final_at, final_at, report_id))
+                     (None if formal_available_at is None else final_at, final_at, final_at, report_id))
         conn.execute('UPDATE k10_v2_report_cards SET created_at=? WHERE report_id=?', (final_at, report_id))
     return finalize_timestamp
 
@@ -545,27 +572,40 @@ def read_report(*, db_path: Path, report_id: str | None = None, window: str = 'e
 
 def read_report_materials(*, db_path: Path, report_id: str, cursor: str | None = None, limit: int = 30) -> dict[str, Any] | None:
     """Read one report's derived materials; no latest fallback and no DDL."""
+    from .materials import material_gap
+
     with read_connection(db_path) as conn:
         require_schema(conn)
         exists = conn.execute('SELECT 1 FROM k10_v2_report_runs WHERE report_id=?', (report_id,)).fetchone()
         if exists is None:
             return None
+        if cursor is not None and conn.execute(
+            'SELECT 1 FROM k10_v2_report_materials WHERE report_id=? AND material_id=?',
+            (report_id, cursor),
+        ).fetchone() is None:
+            raise ValueError('分页游标不属于当前报告材料')
         rows = list(conn.execute(
             'SELECT material_id,event_id,event_title,facts_json,company_relations_json,uncertainties_json,source_refs_json,as_of '
-            'FROM k10_v2_report_materials WHERE report_id=? ORDER BY material_id', (report_id,),
+            'FROM k10_v2_report_materials WHERE report_id=? '
+            + ('AND material_id>? ' if cursor is not None else '')
+            + 'ORDER BY material_id LIMIT ?',
+            (report_id, cursor, limit + 1) if cursor is not None else (report_id, limit + 1),
         ))
-    start = 0
-    if cursor is not None:
-        found = next((index for index, row in enumerate(rows) if row[0] == cursor), None)
-        if found is None:
-            raise ValueError('分页游标不属于当前报告材料')
-        start = found + 1
-    visible = rows[start:start + limit]
-    return {"reportId": report_id, "items": [
-        {"materialId": row[0], "eventId": row[1], "eventTitle": row[2], "facts": json.loads(row[3]),
-         "companyRelations": json.loads(row[4]), "uncertainties": json.loads(row[5]),
-         "sourceRefs": json.loads(row[6]), "asOf": row[7]} for row in visible
-    ], "nextCursor": visible[-1][0] if start + limit < len(rows) else None}
+        visible = rows[:limit]
+        decoded, read_gaps = [], []
+        for row in visible:
+            try:
+                decoded.append({"materialId": row[0], "eventId": row[1], "eventTitle": row[2],
+                    "facts": json.loads(row[3]), "companyRelations": json.loads(row[4]),
+                    "uncertainties": json.loads(row[5]), "sourceRefs": json.loads(row[6]), "asOf": row[7]})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                read_gaps.append(material_gap(report_id=report_id, material_id=row[0],
+                    stage="materials_read", reason_code="material_projection_invalid"))
+        items, projection_gaps = _prepare_report_materials(
+            conn, report_id=report_id, materials=decoded, stage="materials_read")
+        read_gaps.extend(projection_gaps)
+    return {"reportId": report_id, "items": items, "readGaps": read_gaps,
+            "nextCursor": visible[-1][0] if len(rows) > limit else None}
 
 
 def _record_incomplete_report(conn, *, scan_id, snapshot_id, state, error_code, created_at):
@@ -936,15 +976,26 @@ def record_scan_task_failure(conn, *, task_id, status, stage, checkpoint, create
         coverage["delivery"] = delivery
         coverage["rankingInput"] = None
         conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=?", (_json(coverage), scan_id))
+    materials = None
+    if is_current_runtime_contract(payload.get("runtimeContract")):
+        materials = _safe_failed_report_materials(
+            conn, task_id=str(task_id), strategy_snapshot_id=str(snapshot_id), as_of=created_at,
+        )
+        materials, material_gaps = _prepare_report_materials(
+            conn, report_id=str(report[0]), materials=materials)
+        if material_gaps:
+            delivery = dict(delivery)
+            prior_gaps = list(delivery.get("gaps", []))
+            known = {gap.get("gapId") for gap in prior_gaps if isinstance(gap, Mapping)}
+            delivery["gaps"] = [*prior_gaps, *(gap for gap in material_gaps if gap["gapId"] not in known)]
+            coverage["delivery"] = delivery
+            conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=?", (_json(coverage), scan_id))
     _write_report_delivery(conn, report_id=str(report[0]), delivery=dict(delivery))
     # A failed final sort never writes formal cards, selection windows, or an
     # outbox.  It can still leave the user a read-only bundle of completed
     # event facts and explicitly uncertain relations.  This lives in the same
     # terminal task transaction as the failed report identity and manifest.
-    if is_current_runtime_contract(payload.get("runtimeContract")):
-        materials = _safe_failed_report_materials(
-            conn, task_id=str(task_id), strategy_snapshot_id=str(snapshot_id), as_of=created_at,
-        )
+    if materials is not None:
         write_report_materials(
             conn, report_id=str(report[0]), materials=materials,
             result_available_at=created_at, delivery_deadline_at=None,

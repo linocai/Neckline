@@ -270,6 +270,63 @@ class DiscoveryIssue:
             raise ValueError("发现失败状态执行单元无效")
 
 
+@dataclass(frozen=True)
+class PrioritizationResult(Sequence[object]):
+    """An explicitly validated editorial subset and its derivation gaps."""
+    choices: tuple[object, ...]
+    rejected: tuple[Mapping[str, Any], ...] = ()
+    completed: bool = True
+
+    def __len__(self):
+        return len(self.choices)
+
+    def __getitem__(self, index):
+        return self.choices[index]
+
+
+def normalize_prioritization(choices: Sequence[object], candidates: Sequence["DiscoveryCandidate"]) -> PrioritizationResult:
+    allowed = {(row.mapping.company_code, row.event.canonical_key, row.event.stage_key) for row in candidates}
+    result: list[object] = []
+    rejected: list[Mapping[str, Any]] = []
+    seen_companies: set[str] = set()
+    for position, choice in enumerate(choices):
+        def reject(code):
+            rejected.append({"rowIndex": position, "reasonCode": code})
+        if isinstance(choice, tuple) and len(choice) == 2:
+            key, company = choice
+            if not any(code == company and canonical == key for code, canonical, _stage in allowed):
+                reject("prioritize_reference_invalid")
+                continue
+            if company not in seen_companies:
+                seen_companies.add(company)
+                result.append(choice)
+            continue
+        if (not isinstance(choice, Mapping) or not isinstance(choice.get("companyCode"), str)
+                or not isinstance(choice.get("catalystKeys"), list)):
+            reject("prioritize_row_invalid")
+            continue
+        company = choice["companyCode"]
+        retained = []
+        seen_keys = set()
+        for key in choice["catalystKeys"]:
+            if (not isinstance(key, Mapping) or not isinstance(key.get("canonicalKey"), str)
+                    or not isinstance(key.get("stageKey"), str)
+                    or (company, key["canonicalKey"], key["stageKey"]) not in allowed):
+                reject("prioritize_reference_invalid")
+                continue
+            identity = (key["canonicalKey"], key["stageKey"])
+            if identity not in seen_keys:
+                seen_keys.add(identity)
+                retained.append({"canonicalKey": identity[0], "stageKey": identity[1]})
+        if not retained:
+            reject("prioritize_row_invalid")
+            continue
+        if company not in seen_companies:
+            seen_companies.add(company)
+            result.append({"companyCode": company, "catalystKeys": retained})
+    return PrioritizationResult(tuple(result), tuple(rejected), bool(result) or not choices)
+
+
 class DiscoveryUnderstandingIncomplete(RuntimeError):
     """Selected bodies did not all produce a valid, durable understanding."""
 
@@ -1565,7 +1622,14 @@ def run_discovery(
                 finalization_guard()
             elif leaseguard is not None:
                 leaseguard()
-            ordered_keys = tuple(choices(candidates=rank_inputs))
+            priority_result = choices(candidates=rank_inputs)
+            if not isinstance(priority_result, PrioritizationResult):
+                priority_result = normalize_prioritization(tuple(priority_result), rank_inputs)
+            ordered_keys = tuple(priority_result)
+            for code in dict.fromkeys(str(gap["reasonCode"]) for gap in priority_result.rejected):
+                issues.append(DiscoveryIssue("prioritize", code))
+            if not priority_result.completed:
+                issues.append(DiscoveryIssue("prioritize", "prioritize_not_completed"))
         except Exception as exc:
             if isinstance(exc, (DiscoverySliceYield, DiscoveryDeadlineExceeded, SqliteWriteBusy)):
                 raise
@@ -1642,7 +1706,7 @@ def run_discovery(
         # Do not relabel a non-empty malformed finalization as a normal zero
         # recommendation.  It is an execution failure with a recoverable
         # frozen input/receipt boundary.
-        raise ValueError("跨事件公司整理未返回任何有效选择")
+        issues.append(DiscoveryIssue("prioritize", "prioritize_not_completed"))
     # A normal ``choices: []`` has no missing company and produces a complete
     # zero-recommendation delivery.  Unselected candidates remain durable
     # research facts, but never become cards, windows or samples.

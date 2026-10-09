@@ -98,7 +98,9 @@ def test_same_task_title_recovery_reuses_completed_batch_and_only_retries_known_
 
 @pytest.mark.parametrize("legacy_partial", [False, True])
 def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(tmp_path, monkeypatch, legacy_partial):
-    db, task_id, first, calls, gateway = _run(tmp_path, monkeypatch, title_response="global_invalid")
+    from tests.title_failure_fixture import legacy_title_failure
+    with legacy_title_failure(monkeypatch):
+        db, task_id, first, calls, gateway = _run(tmp_path, monkeypatch, title_response="global_invalid")
     assert first.status == "failed" and calls == ["titleBatch", "titleGlobal", "titleGlobal"]
     checkpoint = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
     scan_id = checkpoint["scanId"]
@@ -120,11 +122,15 @@ def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(t
         handlers=pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet"), clock=lambda: RUN_AT)
     assert second.status == "completed"
     assert resumed_calls.count("titleBatch") == 0
-    assert resumed_calls.count("titleGlobal") == 1
+    # Current behavior revalidates and discards the original unknown-only
+    # reply. It must not rebill merely to turn a lawful zero into a candidate.
+    assert resumed_calls.count("titleGlobal") == 0
     after = store.get_scan(scan_id=scan_id, db_path=db)
     assert after["coverage"]["inputDocumentRefs"] == before["coverage"]["inputDocumentRefs"]
     assert frozen_scan_input_sha256(scan_id=scan_id, db_path=db) == digest
-    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1
+    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 0
+    assert after["coverage"]["titleFailures"][0]["phase"] == "reconcile"
+    assert after["coverage"]["titleFailures"][0]["rejectedCount"] == 1
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM k10_publication_batches WHERE scan_id=?", (scan_id,)).fetchone()[0] == 1
     with pytest.raises(RuntimeError):
@@ -133,7 +139,9 @@ def test_real_cli_worker_recovers_frozen_failed_titles_and_publishes_same_scan(t
 
 
 def test_recovery_authorization_survives_real_worker_slice_after_paid_title_checkpoint(tmp_path, monkeypatch):
-    db, task_id, first, _, _ = _run(tmp_path, monkeypatch, title_response="global_invalid")
+    from tests.title_failure_fixture import legacy_title_failure
+    with legacy_title_failure(monkeypatch):
+        db, task_id, first, _, _ = _run(tmp_path, monkeypatch, title_response="global_invalid")
     assert first.status == "failed"
     scan_id = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["scanId"]
     recover_scan(db_path=db, scan_id=scan_id, execution_config_id="b39-execution", execution_config_revision=1,
@@ -158,8 +166,9 @@ def test_recovery_authorization_survives_real_worker_slice_after_paid_title_chec
     assert saved["recoveryAuthorized"] == authorized
     done = run_once(db_path=db, worker_id="next-slice", lease_for=timedelta(minutes=5), handlers=handlers,
                     clock=lambda: RUN_AT + timedelta(minutes=1))
-    assert done.status == "completed" and calls.count("titleBatch") == 0 and calls.count("titleGlobal") == 1
+    assert done.status == "completed" and calls.count("titleBatch") == 0 and calls.count("titleGlobal") == 0
     final = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]
     assert final["recoveryAuthorized"] == authorized
     assert final["executionStartedAt"] == saved["executionStartedAt"]
-    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 1
+    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=db)) == 0
+    assert store.get_scan(scan_id=scan_id, db_path=db)["coverage"]["titleFailures"][0]["phase"] == "reconcile"

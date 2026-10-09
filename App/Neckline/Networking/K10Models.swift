@@ -143,6 +143,28 @@ struct K10ReportMaterialsPage: Codable, Equatable {
     let reportId: String
     var items: [K10ReportMaterial]
     var page: K10Page
+    /// Read-time projection gaps do not change the report's execution outcome.
+    /// An empty items page may still have gaps and a continuation cursor.
+    var readGaps: [K10ReportDeliveryGap] = []
+
+    init(schemaVersion: Int, reportId: String, items: [K10ReportMaterial], page: K10Page,
+         readGaps: [K10ReportDeliveryGap] = []) {
+        self.schemaVersion = schemaVersion
+        self.reportId = reportId
+        self.items = items
+        self.page = page
+        self.readGaps = readGaps
+    }
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, reportId, items, page, readGaps }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        reportId = try values.decode(String.self, forKey: .reportId)
+        items = try values.decode([K10ReportMaterial].self, forKey: .items)
+        page = try values.decode(K10Page.self, forKey: .page)
+        readGaps = try values.decodeIfPresent([K10ReportDeliveryGap].self, forKey: .readGaps) ?? []
+    }
 
     var isReadableByCurrentApp: Bool { schemaVersion == 10 }
 }
@@ -552,7 +574,7 @@ struct K10ResultsCohort: Codable, Identifiable, Equatable { let batchId: String;
 struct K10ResultsEventGroup: Codable, Identifiable, Equatable { let eventId: String; let headline: String?; let companyWindowIds: [String]; let opportunityIds: [String]; let companySampleCount: Int; let catalystCount: Int; let primary: [String: K10EvaluationMetrics]; var overlap: K10EvaluationMetrics? = nil; var id: String { eventId } }
 struct K10Results: Codable, Equatable { let schemaVersion: String; let state: String; let reason: K10Failure?; let asOf: String?; let primary: [String: K10EvaluationMetrics]; let overlap: K10EvaluationMetrics; let records: [K10Evaluation]; let cohorts: [K10ResultsCohort]?; let eventGroups: [K10ResultsEventGroup]?; var configurationState: String? = nil; var configurationMissing: [String]? = nil; var configurationErrors: [String]? = nil; var strategyVersion: String? = nil }
 
-struct K10DocumentPage: Codable, Equatable, Identifiable { let schemaVersion: String; let documentId: String; let revision: Int; let sourceKey: String; let externalId: String; let canonicalUrl: String?; let title: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String; let excerpt: String?; let body: String?; let page: K10Page; var contentKind: String? = nil; var sourceKind: String? = nil; var originalTitle: String? = nil; var originalPublishedText: String? = nil; var eventTime: K10EventTime? = nil; var id: String { "\(documentId)-\(revision)" } }
+struct K10DocumentPage: Codable, Equatable, Identifiable { let schemaVersion: String; let documentId: String; let revision: Int; let sourceKey: String; let externalId: String; let canonicalUrl: String?; let title: String?; let publishedAt: String?; let publishedPrecision: String; let fetchedAt: String; let excerpt: String?; let body: String?; let page: K10Page; var contentKind: String? = nil; var sourceKind: String? = nil; var originalTitle: String? = nil; var originalPublishedText: String? = nil; var eventTime: K10EventTime? = nil; var readWarnings: [String]? = nil; var id: String { "\(documentId)-\(revision)" } }
 struct K10CollectionConfiguration: Codable, Equatable {
     let state: String
     let configId: String?

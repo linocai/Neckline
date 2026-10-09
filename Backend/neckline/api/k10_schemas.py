@@ -714,6 +714,7 @@ class SourceDocumentPageOut(K10Model):
     excerpt: str | None = None
     body: str | None = None
     contentKind: Literal["original", "excerpt", "unavailable"]
+    readWarnings: list[str] = Field(default_factory=list)
     page: PageMeta = Field(default_factory=PageMeta)
 
 
@@ -1001,21 +1002,21 @@ class V2ReportMaterialsOut(K10Model):
 
 
 class V2MaterialFactOut(K10Model):
-    text: str = Field(min_length=1, max_length=4000)
+    text: str = Field(min_length=1)
     sourceRefs: list[SourceReference] = Field(default_factory=list)
 
 
 class V2MaterialCompanyRelationOut(K10Model):
     companyCode: str = Field(min_length=1, max_length=32)
     companyName: str = Field(min_length=1, max_length=160)
-    relation: str = Field(min_length=1, max_length=500)
+    relation: str = Field(min_length=1)
     sourceRefs: list[SourceReference] = Field(default_factory=list)
 
 
 class V2ReportMaterialOut(K10Model):
     materialId: str = Field(min_length=1, max_length=160)
     eventId: str = Field(min_length=1, max_length=160)
-    eventTitle: str = Field(min_length=1, max_length=1000)
+    eventTitle: str = Field(min_length=1)
     facts: list[V2MaterialFactOut] = Field(default_factory=list)
     companyRelations: list[V2MaterialCompanyRelationOut] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
@@ -1028,6 +1029,7 @@ class V2ReportMaterialsEnvelope(K10Model):
     reportId: str
     items: list[V2ReportMaterialOut]
     page: PageMeta
+    readGaps: list[V2DeliveryGapOut] = Field(default_factory=list)
 
 
 class NotificationEvidenceOut(K10Model):

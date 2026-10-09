@@ -444,8 +444,13 @@ def _b76_committed_delivery(
         raise NotificationConflict("B76 报告尚未提交，不能通知")
     report_id, report_scan_id, window_kind, available_at, report_status, coverage_raw = row
     if (report_id != "report_" + scan_id or report_scan_id != scan_id or window_kind != expected_window
-            or not isinstance(available_at, str) or not available_at or report_status != public_status):
+            or report_status != public_status):
         raise NotificationConflict("B76 已提交报告与任务交付状态不一致")
+    metadata = conn.execute("SELECT result_available_at FROM k10_v2_report_delivery_metadata WHERE report_id=?", (report_id,)).fetchone()
+    if (delivery["rankingScope"] == "none" and (available_at is not None or metadata is None or not metadata[0])):
+        raise NotificationConflict("未排序材料交付缺少可读时间或冒充正式发布时间")
+    if delivery["rankingScope"] != "none" and (not isinstance(available_at, str) or not available_at):
+        raise NotificationConflict("正式报告缺少发布时间")
     try:
         coverage = json.loads(coverage_raw)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -510,7 +515,7 @@ def _current_committed_delivery(conn, *, task_kind: str, terminal_status: str, s
         (checkpoint.get("scanId"),),
     ).fetchone()
     expected_window = {"evening_scan": "evening", "morning_scan": "morning"}.get(task_kind)
-    if row is None or row[1] != expected_window or not row[2] or row[3] not in {"completed", "partial"}:
+    if row is None or row[1] != expected_window or row[3] not in {"completed", "partial"}:
         raise NotificationConflict("报告没有可公开的正式结果")
     try:
         delivery = json.loads(row[4])["delivery"]
@@ -518,6 +523,12 @@ def _current_committed_delivery(conn, *, task_kind: str, terminal_status: str, s
         raise NotificationConflict("报告交付记录不可读") from exc
     if not _b76_delivery_is_well_formed(delivery) or delivery.get("contractVersion") != REPORT_DELIVERY_CONTRACT:
         raise NotificationConflict("报告交付记录无效")
+    metadata = conn.execute("SELECT result_available_at FROM k10_v2_report_delivery_metadata WHERE report_id=?", (row[0],)).fetchone()
+    if delivery["rankingScope"] == "none":
+        if row[2] is not None or metadata is None or not metadata[0]:
+            raise NotificationConflict("未排序材料没有可读结果或冒充正式发布")
+    elif not isinstance(row[2], str) or not row[2]:
+        raise NotificationConflict("正式报告没有发布时间")
     return {"reportId": str(row[0]), "windowKind": str(row[1]), "delivery": delivery,
             "notificationOutcome": "partial" if row[3] == "partial" else "complete"}
 
@@ -538,9 +549,10 @@ def _b76_failure_incident(conn, *, terminal_status: str, stage: str, checkpoint:
     scan_id = checkpoint.get("scanId")
     if isinstance(scan_id, str) and scan_id:
         public = conn.execute(
-            "SELECT status,available_at FROM k10_v2_report_runs WHERE scan_id=?", (scan_id,)
+            "SELECT r.status,r.available_at,m.result_available_at FROM k10_v2_report_runs r "
+            "LEFT JOIN k10_v2_report_delivery_metadata m ON m.report_id=r.report_id WHERE r.scan_id=?", (scan_id,)
         ).fetchone()
-        if public is not None and public[0] in {"completed", "partial"} and isinstance(public[1], str) and public[1]:
+        if public is not None and public[0] in {"completed", "partial"} and any(isinstance(value, str) and value for value in public[1:]):
             raise NotificationConflict("已公开 B76 报告的任务不能再作为失败通知")
     authorization = checkpoint.get("recoveryAuthorized")
     if authorization is None:

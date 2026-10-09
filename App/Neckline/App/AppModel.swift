@@ -37,6 +37,7 @@ struct K10CacheContext: Hashable {
     var selectedMaterialsReport: K10DailyReport?
     var reportMaterials: K10ReportMaterialsPage?
     var reportMaterialsError: String?
+    var loadingReportMaterials = false
     var loadingMoreReportMaterials = false
     var analysisChains: [String: K10AnalysisChain] = [:]
     var opportunityDetails: [String: K10OpportunityDetail] = [:]
@@ -69,6 +70,8 @@ struct K10CacheContext: Hashable {
     private var cacheClearer: () -> Void = { K10Cache.clearAllK10() }
     private var adminServiceFactory: (URL, String) -> any K10AdminServicing = { baseURL, token in K10AdminClient(baseURL: baseURL, token: token) }
     private var connectionGeneration = 0
+    private var materialsGeneration = 0
+    private var loadedMaterialCursors: Set<String> = []
     private var refreshGeneration = 0
     private var analysisChainReloadGenerations: [String: Int] = [:]
     private var analysisRequestKeys: [String: (signature: String, key: String)] = [:]
@@ -104,7 +107,7 @@ struct K10CacheContext: Hashable {
     }
     func resetForConnectionChange() {
         advanceConnectionGeneration()
-        dailyEvening = nil; dailyMorning = nil; dailyReportErrors = [:]; auxiliaryLoadErrors = [:]; loadingMoreDailyCards = false; selectedMaterialsReport = nil; reportMaterials = nil; reportMaterialsError = nil; loadingMoreReportMaterials = false
+        dailyEvening = nil; dailyMorning = nil; dailyReportErrors = [:]; auxiliaryLoadErrors = [:]; loadingMoreDailyCards = false; selectedMaterialsReport = nil; reportMaterials = nil; reportMaterialsError = nil; loadingReportMaterials = false; loadingMoreReportMaterials = false; loadedMaterialCursors = []
         publications = []; companyWindows = []; selectionDetails = []; scanSummaries = []; researchAssessments = [:]; morningReport = nil; morningReportLoadError = nil; analysisChains = [:]; analysisChainReloadGenerations = [:]; opportunityDetails = [:]; analysisRequestInFlightWindowIDs = []; analysisRequestKeys = [:]; results = nil; configuration = nil; operationsReadiness = nil; collectionStatus = nil; collectionControlInFlight = false; usage = nil; providers = []; tavilyKeySet = false; discoveryPauseInFlight = false
         selectedOpportunity = nil; selectedWindow = nil; lastAvailableAt = nil; offline = false; state = .idle; cacheClearer()
     }
@@ -304,53 +307,82 @@ struct K10CacheContext: Hashable {
 
     func openMaterials(for report: K10DailyReport) async {
         let generation = connectionGeneration
+        materialsGeneration &+= 1
+        let requestGeneration = materialsGeneration
         selectedMaterialsReport = report
         reportMaterials = nil
         reportMaterialsError = nil
+        loadedMaterialCursors = []
+        loadingMoreReportMaterials = false
+        loadingReportMaterials = true
+        defer {
+            if isCurrentMaterials(generation, requestGeneration, report.reportId) { loadingReportMaterials = false }
+        }
         guard !offline, let service = serviceFactory() else {
             reportMaterialsError = offline ? "离线快照没有保存材料页，请恢复连接后读取。" : "服务连接不可用"
             return
         }
         do {
             let page = try await service.reportMaterials(id: report.reportId, cursor: nil)
+            try Task.checkCancellation()
+            guard isCurrentMaterials(generation, requestGeneration, report.reportId) else { return }
             guard page.isReadableByCurrentApp, page.reportId == report.reportId else {
                 throw K10APIError.decoding("服务返回的材料不属于当前报告")
             }
-            guard isCurrent(generation), selectedMaterialsReport?.reportId == report.reportId else { return }
+            guard page.page.nextCursor != "" else { throw K10APIError.decoding("材料分页游标无效") }
             reportMaterials = page
         } catch is CancellationError {
+            guard isCurrentMaterials(generation, requestGeneration, report.reportId) else { return }
+            reportMaterialsError = "读取已取消，可重新读取。"
             return
         } catch {
-            guard isCurrent(generation), selectedMaterialsReport?.reportId == report.reportId else { return }
+            guard isCurrentMaterials(generation, requestGeneration, report.reportId) else { return }
             reportMaterialsError = error.localizedDescription
         }
     }
 
     func loadMoreReportMaterials() async {
         let generation = connectionGeneration
-        guard !offline, !loadingMoreReportMaterials, let service = serviceFactory(),
-              let current = reportMaterials, let cursor = current.page.nextCursor else { return }
+        let requestGeneration = materialsGeneration
+        guard !offline, !loadingReportMaterials, !loadingMoreReportMaterials, let service = serviceFactory(),
+              let current = reportMaterials, selectedMaterialsReport?.reportId == current.reportId,
+              let cursor = current.page.nextCursor else { return }
         loadingMoreReportMaterials = true
-        defer { if isCurrent(generation) { loadingMoreReportMaterials = false } }
+        defer {
+            if isCurrentMaterials(generation, requestGeneration, current.reportId) { loadingMoreReportMaterials = false }
+        }
         do {
             let next = try await service.reportMaterials(id: current.reportId, cursor: cursor)
-            guard isCurrent(generation), reportMaterials?.reportId == current.reportId,
-                  next.isReadableByCurrentApp, next.reportId == current.reportId,
-                  next.page.nextCursor != cursor else {
-                if isCurrent(generation), next.reportId != current.reportId {
-                    reportMaterialsError = "服务返回的材料不属于当前报告"
-                }
-                return
+            try Task.checkCancellation()
+            guard isCurrentMaterials(generation, requestGeneration, current.reportId),
+                  reportMaterials?.reportId == current.reportId else { return }
+            guard next.isReadableByCurrentApp else {
+                throw K10APIError.incompatibleVersion("服务端报告材料协议不受当前版本支持")
+            }
+            guard next.reportId == current.reportId else {
+                throw K10APIError.decoding("服务返回的材料不属于当前报告")
+            }
+            if let nextCursor = next.page.nextCursor,
+               nextCursor.isEmpty || nextCursor == cursor || loadedMaterialCursors.contains(nextCursor) {
+                throw K10APIError.decoding("材料分页无法继续，已保留当前内容")
             }
             var seen = Set(current.items.map(\.materialId))
             reportMaterials?.items += next.items.filter { seen.insert($0.materialId).inserted }
+            var gapIDs = Set(current.readGaps.map(\.gapId))
+            reportMaterials?.readGaps += next.readGaps.filter { gapIDs.insert($0.gapId).inserted }
             reportMaterials?.page = next.page
+            loadedMaterialCursors.insert(cursor)
+            reportMaterialsError = nil
         } catch is CancellationError {
             return
         } catch {
-            guard isCurrent(generation) else { return }
+            guard isCurrentMaterials(generation, requestGeneration, current.reportId) else { return }
             reportMaterialsError = error.localizedDescription
         }
+    }
+
+    private func isCurrentMaterials(_ connection: Int, _ request: Int, _ reportID: String) -> Bool {
+        isCurrent(connection) && materialsGeneration == request && selectedMaterialsReport?.reportId == reportID
     }
 
     /// Home history/focus data is optional context. Its failure is recorded locally and never
@@ -624,7 +656,8 @@ struct K10CacheContext: Hashable {
                 sourceKind: current.sourceKind ?? next.sourceKind,
                 originalTitle: current.originalTitle ?? next.originalTitle,
                 originalPublishedText: current.originalPublishedText ?? next.originalPublishedText,
-                eventTime: current.eventTime ?? next.eventTime
+                eventTime: current.eventTime ?? next.eventTime,
+                readWarnings: Array(Set((current.readWarnings ?? []) + (next.readWarnings ?? []))).sorted()
             )
         } catch is CancellationError { return nil }
         catch { toast = error.localizedDescription; return nil }

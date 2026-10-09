@@ -33,7 +33,11 @@ class TitleTriageProtocolError(ValueError):
         # non-sensitive diagnostic instead of losing every failure under the
         # generic model_execution_invalid code. Output-contract errors may use
         # the configured single JSON repair; input errors remain terminal.
-        if "未完整且唯一覆盖输入" in message:
+        if message == "无标题快讯缺少完整原文":
+            self.code = "source_content_empty"
+        elif message == "标题资料 title 无效":
+            self.code = "source_title_unavailable"
+        elif "未完整且唯一覆盖输入" in message:
             self.code = "title_json_coverage_invalid"
         elif "JSON 必须" in message:
             self.code = "title_json_root_invalid"
@@ -70,7 +74,7 @@ class TitleDTO:
             raise TitleTriageProtocolError("标题资料缺少 sourceKey")
         if self.published_at is not None and not isinstance(self.published_at, str):
             raise TitleTriageProtocolError("标题资料 publishedAt 无效")
-        if not isinstance(self.title, str):
+        if not isinstance(self.title, str) or not self.title.strip():
             raise TitleTriageProtocolError("标题资料 title 无效")
 
     @property
@@ -543,6 +547,88 @@ def normalize_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleD
     return canonical
 
 
+def isolate_reconcile_response(raw: Mapping[str, object], items: Sequence[TitleDTO],
+                               batch_results: Sequence[TitleTriageResult], input_count: int
+                               ) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Remove unusable wire judgements, never manufacture evidence or selections.
+
+    Canonical persisted decisions still use the strict decoder. Only model
+    choices are isolatable; bad frozen inputs cannot be repaired here. The
+    caller must persist the returned gaps before publishing the valid subset.
+    """
+    frozen = _validate_items(items)
+    results = _validate_batch(batch=frozen, results=batch_results)
+    by_index = {i: result for i, _item, result in _global_participants(frozen, results)}
+    if (not isinstance(raw, Mapping)
+            or not any(isinstance(raw.get(key), list) for key in ("selected", "merged"))):
+        return normalize_reconcile_result(raw, frozen, results, input_count), []
+    # A broken sibling array or metadata cannot erase independently readable
+    # choices. No model completion/count declaration is promoted to truth.
+    clean = {key: raw.get(key) if isinstance(raw.get(key), list) else [] for key in ("selected", "merged")}
+    rejected: list[dict[str, object]] = []
+    for key in ("selected", "merged"):
+        if not isinstance(raw.get(key), list):
+            rejected.append({"reasonCode": "title_json_root_invalid", "inputRefs": []})
+
+    def reject(row: object, reason: str) -> None:
+        index = row.get("i") if isinstance(row, Mapping) else None
+        refs = ([{"documentId": frozen[index].document_id, "revision": frozen[index].revision}]
+                if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(frozen) else [])
+        rejected.append({"reasonCode": reason, "inputRefs": refs})
+
+    def index_of(row: Mapping[str, object], key: str) -> int | None:
+        value = row.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value in by_index else None
+
+    selected = []
+    for row in clean["selected"]:
+        if isinstance(row, Mapping) and row.get("reason_placeholder") == "":
+            row = {k: v for k, v in row.items() if k != "reason_placeholder"}
+        if isinstance(row, Mapping) and set(row) in ({"i", "reason"}, {"i", "reason", "selectedRank"}):
+            index, reason = row.get("i"), row.get("reason")
+            if (isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(frozen)
+                    and index not in by_index and isinstance(reason, str) and not reason.strip()):
+                continue  # An empty schema echo asserts no decision about the excluded title.
+        if not isinstance(row, Mapping) or set(row) not in ({"i", "reason"}, {"i", "reason", "selectedRank"}):
+            reject(row, "title_json_row_invalid")
+        elif index_of(row, "i") is None:
+            reject(row, "title_json_reference_invalid")
+        elif not isinstance(row.get("reason"), str) or not row["reason"].strip() or len(row["reason"]) > 280:
+            reject(row, "title_json_row_invalid")
+        else:
+            selected.append(row)
+    selected_indices = {row["i"] for row in selected}
+    merged = []
+    for row in clean["merged"]:
+        if not isinstance(row, Mapping) or set(row) != {"i", "into", "reason"}:
+            reject(row, "title_json_row_invalid")
+            continue
+        index, target = index_of(row, "i"), index_of(row, "into")
+        if index is None or target is None:
+            reject(row, "title_json_reference_invalid")
+        elif index in selected_indices or index == target or target not in selected_indices:
+            # This edge adds no decision. Keep the explicit selection/complement.
+            continue
+        elif by_index[index].status == "correction_or_denial" or by_index[target].status == "correction_or_denial":
+            reject(row, "title_protected_merge_invalid")
+        elif not isinstance(row.get("reason"), str) or not row["reason"].strip() or len(row["reason"]) > 280:
+            reject(row, "title_json_row_invalid")
+        else:
+            merged.append(row)
+    clean.update(selected=selected, merged=merged)
+    canonical = normalize_reconcile_result(clean, frozen, results, input_count)
+    if "selectionComplete" in raw and raw.get("selectionComplete") is not True:
+        rejected.append({"reasonCode": "title_review_incomplete", "inputRefs": [
+            {"documentId": frozen[i].document_id, "revision": frozen[i].revision}
+            for i in canonical["notSelected"]]})
+    accepted = {frozen[row["i"]].ref for key in ("selected", "merged") for row in canonical[key]}
+    # A malformed duplicate does not undo a separate valid decision for its source.
+    rejected = [{**gap, "inputRefs": [r for r in gap["inputRefs"]
+                if (r["documentId"], r["revision"]) not in accepted]} for gap in rejected
+                if not gap["inputRefs"] or any((r["documentId"], r["revision"]) not in accepted for r in gap["inputRefs"])]
+    return canonical, rejected
+
+
 def _decode_canonical_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
                                        batch_results: Sequence[TitleTriageResult], input_count: int) -> tuple[TitleSelectionItem, ...]:
     """Strictly decode the canonical selected/merged/notSelected ledger form."""
@@ -599,8 +685,8 @@ def _decode_canonical_reconcile_result(raw: Mapping[str, object], items: Sequenc
         covered.add(index)
     if covered != set(by_index):
         raise TitleTriageProtocolError("全局标题输出未完整覆盖候选 refIndex")
-    selected_indices = {index for index, item, _ in participants
-                        if any(output.ref == item.ref and output.disposition == "selected" for output in selection)}
+    selected_refs = {output.ref for output in selection if output.disposition == "selected"}
+    selected_indices = {index for index, item, _ in participants if item.ref in selected_refs}
     for index, target, reason in pending_merges:
         item, result = by_index[index]
         target_item, target_result = by_index[target]
@@ -612,8 +698,9 @@ def _decode_canonical_reconcile_result(raw: Mapping[str, object], items: Sequenc
                                             result.stage_key, reason, merged_into=target_item.ref))
     # no_value has already received its complete batch-level audit; reconstruct
     # it locally instead of requiring thousands of repetitive global rows.
+    results_by_ref = {row.ref: row for row in results}
     for item in frozen:
-        result = {row.ref: row for row in results}[item.ref]
+        result = results_by_ref[item.ref]
         if result.status == "no_value":
             selection.append(TitleSelectionItem(item.document_id, item.revision, "no_value", result.matter_key,
                                                 result.stage_key, result.reason))
@@ -625,6 +712,14 @@ def validate_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDT
     """Decode a compact complete declaration or a strict old checkpoint."""
     canonical = normalize_reconcile_result(raw, items, batch_results, input_count)
     return _decode_canonical_reconcile_result(canonical, items, batch_results, input_count)
+
+
+def validate_canonical_reconcile_result(raw: Mapping[str, object], items: Sequence[TitleDTO],
+                                       batch_results: Sequence[TitleTriageResult], input_count: int
+                                       ) -> dict[str, object]:
+    """Persisted derived results never pass through tolerant wire parsing."""
+    _decode_canonical_reconcile_result(raw, items, batch_results, input_count)
+    return dict(raw)
 
 
 def _validate_items(items: Sequence[TitleDTO]) -> tuple[TitleDTO, ...]:
@@ -814,8 +909,7 @@ def title_from_document_fields(*, document_id: str, revision: int, source_key: s
                                published_at: str | None, metadata: Mapping[str, object]) -> TitleDTO:
     """Construct the sealed DTO by reading only the source's title metadata key."""
     title = metadata.get("title") if isinstance(metadata, Mapping) else None
-    if not isinstance(title, str):
-        raise TitleTriageProtocolError("来源资料缺少标题，不能进入标题初筛")
+    # The DTO checks identity before classifying an unusable optional title.
     return TitleDTO(document_id, revision, source_key, published_at, title)
 
 

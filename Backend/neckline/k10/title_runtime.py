@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import store
+from .failure_scope import local_model_failure_code
 from .discovery import DiscoveryDocument, deduplicate_documents
 from .title_triage import (
     TitleTriageProtocolError, batch_request_spec, reconcile_request_spec,
     normalize_batch_result, normalize_reconcile_result, title_from_document_fields, triage_titles, validate_batch_result,
-    validate_reconcile_result,
+    validate_reconcile_result, validate_canonical_reconcile_result, isolate_reconcile_response,
 )
 
 
@@ -53,7 +54,7 @@ def read_title_failures(*, task_id: str, db_path: Path) -> list[dict[str, Any]]:
     with read_connection(db_path) as conn:
         rows = conn.execute(
             "SELECT input_sha256,status,result_json FROM k10_execution_item_checkpoints "
-            "WHERE task_id=? AND stage='title_batch_gap' ORDER BY item_key", (task_id,),
+            "WHERE task_id=? AND stage IN ('title_batch_gap','title_reconcile_gap','title_source_gap') ORDER BY item_key", (task_id,),
         ).fetchall()
     result = []
     for digest, status, raw in rows:
@@ -124,10 +125,7 @@ def _local_failure_code(exc: BaseException) -> str | None:
     code = getattr(exc, "code", None)
     if isinstance(exc, _FrozenTitleGap):
         return code
-    if code in {"content_policy_refused", "json_invalid", "json_root_invalid", "model_json_invalid",
-                "model_json_root_invalid", "model_result_not_json", "model_result_root_invalid",
-                "model_result_unsafe", "response_json_invalid", "model_json_repair_exhausted",
-                "title_protected_merge_invalid"}:
+    if local_model_failure_code(exc) is not None or code == "title_protected_merge_invalid":
         return code
     if isinstance(code, str) and code.startswith("title_json_"):
         return code
@@ -216,16 +214,24 @@ def select_title_documents(
                   for ref, target in exact.duplicates.items()}
     titles = []
     direct: list[tuple[DiscoveryDocument, str]] = []
+    unusable_sources: dict[str, list[dict[str, Any]]] = {}
     for document in exact.retained:
-        reason = _direct_body_reason(document)
+        try:
+            reason = _direct_body_reason(document)
+            if reason is None:
+                title = title_from_document_fields(
+                    document_id=document.document_id, revision=document.revision,
+                    source_key=document.metadata.get("sourceKey"), published_at=document.published_at,
+                    metadata=document.metadata,
+                )
+        except TitleTriageProtocolError as exc:
+            if exc.code not in {"source_content_empty", "source_title_unavailable"}:
+                raise
+            unusable_sources.setdefault(exc.code, []).append(_ref(document))
+            continue
         if reason is not None:
             direct.append((document, reason))
             continue
-        title = title_from_document_fields(
-            document_id=document.document_id, revision=document.revision,
-            source_key=document.metadata.get("sourceKey"), published_at=document.published_at,
-            metadata=document.metadata,
-        )
         titles.append(title)
 
     if guard is not None:
@@ -253,6 +259,23 @@ def select_title_documents(
         title_status="frozen", created_at=_now(), db_path=db_path,
     )
     saved_gaps = {row["batchIndex"]: row for row in read_title_failures(task_id=task_id, db_path=db_path)}
+    for offset, (reason_code, refs) in enumerate(sorted(unusable_sources.items()), start=1):
+        affected = {(row["documentId"], row["revision"]) for row in refs}
+        affected |= {ref for ref, target in duplicates.items() if target in affected}
+        gap_index = (len(titles) + batch_size - 1) // batch_size + offset
+        value = {"batchIndex": gap_index, "batchRefs": [], "phase": "source",
+                 "reasonCode": reason_code, "inputRefs": [
+                     {"documentId": doc, "revision": revision} for doc, revision in sorted(affected)]}
+        if gap_index in saved_gaps and saved_gaps[gap_index] != value:
+            raise TitleTriageProtocolError("来源失败范围不可静默改写")
+        if gap_index not in saved_gaps:
+            store.record_execution_checkpoint(task_id=task_id, item_kind="global",
+                item_key=("title-source-gap" if reason_code == "source_content_empty" else "title-source-gap:" + reason_code),
+                stage="title_source_gap", input_sha256=_digest(value),
+                status="completed", attempt_count=0, network_attempt_count=0, repair_attempt_count=0,
+                elapsed_ms=0, input_tokens=None, output_tokens=None, result=value,
+                safe_error_code=None, safe_error_ref=None, updated_at=_now(), db_path=db_path, leaseguard=guard)
+            saved_gaps[gap_index] = value
     restored_gaps = tuple(saved_gaps.values())
 
     title_policy = {**approved, "batchSize": batch_size}
@@ -261,7 +284,7 @@ def select_title_documents(
     context = [{key: item[key] for key in ("companyCode", "headline")
                 if isinstance(item.get(key), str)} for item in known_subjects]
 
-    def operation(stage, instruction, payload, validate):
+    def operation(stage, instruction, payload, validate, canonical_validate=None):
         if guard is not None:
             guard()
         if context:
@@ -279,7 +302,8 @@ def select_title_documents(
                     exc.code = "title_json_contract_invalid"
                 raise
             return dict(normalized) if isinstance(normalized, Mapping) else dict(value)
-        return model.run_title_operation(stage=stage, instruction=instruction, payload=payload, validate=check)
+        return model.run_title_operation(stage=stage, instruction=instruction, payload=payload,
+                                         validate=check, decode=canonical_validate or check)
 
     def batch_call(items):
         refs = [{"documentId": item.document_id, "revision": item.revision} for item in items]
@@ -333,12 +357,53 @@ def select_title_documents(
             compact_output=compact_reconcile_contract,
         )
         instruction += "同一发布的不同细节在本次全局归并中一并判断；筛选理由不是新增事实依据。纠正、否认及重大反证不得被普通正面消息吞并。"
-        # Even an empty answer is explicitly validated, not inferred from a failed call.
+        gap_index = (len(titles) + batch_size - 1) // batch_size
+
+        def record_gap(issues, *, global_failed=False):
+            affected = {(r["documentId"], r["revision"]) for issue in issues for r in issue["inputRefs"]}
+            affected |= {ref for ref, target in duplicates.items() if target in affected}
+            value = {"batchIndex": gap_index, "batchRefs": [], "phase": "reconcile",
+                     "reasonCode": "title_reconcile_partial", "globalFailed": global_failed,
+                     "rejectedCount": len(issues), "errorCodes": sorted({i["reasonCode"] for i in issues}),
+                     "inputRefs": [{"documentId": ref[0], "revision": ref[1]} for ref in sorted(affected)]}
+            old = saved_gaps.get(gap_index)
+            if old is not None and old != value:
+                raise TitleTriageProtocolError("标题协调失败范围不可静默改写")
+            if old is None:
+                store.record_execution_checkpoint(task_id=task_id, item_kind="global",
+                    item_key="title-reconcile-gap", stage="title_reconcile_gap", input_sha256=_digest(value),
+                    status="completed", attempt_count=0, network_attempt_count=0, repair_attempt_count=0,
+                    elapsed_ms=0, input_tokens=None, output_tokens=None, result=value,
+                    safe_error_code=None, safe_error_ref=None, updated_at=_now(), db_path=db_path, leaseguard=guard)
+                saved_gaps[gap_index] = value
+
+        def normalize(value):
+            canonical, issues = isolate_reconcile_response(value, items, results, limit)
+            if issues:
+                record_gap(issues)
+            return canonical
+
+        # A failed global model judgement skips only its dependent title choices.
+        # Independently admitted raw flashes/collections still reach research.
+        # No batch candidate is promoted into a fabricated global selection.
+        prior_gap = saved_gaps.get(gap_index)
+        if prior_gap is not None and prior_gap.get("globalFailed"):
+            raw = {"selected": [], "merged": []}
         if all(result.status == "no_value" for result in results):
             raw = {"selected": [], "merged": [], "notSelected": []}
-        else:
-            raw = operation("titleReconcile", instruction, payload,
-                lambda value: normalize_reconcile_result(value, items, results, limit))
+        elif not (prior_gap is not None and prior_gap.get("globalFailed")):
+            try:
+                raw = operation("titleReconcile", instruction, payload, normalize,
+                    canonical_validate=lambda value: validate_canonical_reconcile_result(value, items, results, limit))
+            except Exception as exc:
+                code = _local_failure_code(exc)
+                if code is None:
+                    raise
+                by_result_ref = {result.ref: result for result in results}
+                refs = [{"documentId": item.document_id, "revision": item.revision}
+                        for item in items if by_result_ref[item.ref].status != "no_value"]
+                record_gap([{"reasonCode": code, "inputRefs": refs}], global_failed=True)
+                raw = {"selected": [], "merged": []}
         return validate_reconcile_result(raw, items, results, limit)
 
     def isolate_batch(index, items, exc):
@@ -377,12 +442,15 @@ def select_title_documents(
     final_refs = (*direct_refs, *selected_titles)
     batches = {title.ref: index // batch_size for index, title in enumerate(titles)}
     initial = {result.ref: result for result in selection.batch_results}
+    failed_refs = {(r["documentId"], r["revision"]) for gap in saved_gaps.values() for r in gap["inputRefs"]}
     for rank, (document, reason) in enumerate(direct, start=1):
         store.record_title_triage_item(task_id=task_id, document_id=document.document_id,
             revision=document.revision, batch_index=0, disposition="protected",
             matter_key="body-required", merged_ref=None, selection_rank=rank,
             audit_reason=reason, created_at=_now(), db_path=db_path)
     for item in final_items:
+        if item.ref in failed_refs:
+            continue
         status = initial[item.ref].status
         disposition = ("no_value" if item.disposition == "no_value" else "merged" if item.disposition == "merged" else "protected" if status == "correction_or_denial"
                        else "uncertain" if item.disposition == "selected" and status == "uncertain"
@@ -393,6 +461,8 @@ def select_title_documents(
             selection_rank=(item.selected_rank + len(direct) if item.selected_rank is not None else None),
             audit_reason=item.reason, created_at=_now(), db_path=db_path)
     for ref, representative in duplicates.items():
+        if ref in failed_refs:
+            continue
         if representative not in initial and representative not in direct_refs:
             continue
         store.record_title_triage_item(task_id=task_id, document_id=ref[0], revision=ref[1],

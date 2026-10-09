@@ -648,6 +648,9 @@ def validate_research_round_result(*, result: ResearchRoundResult,
             raise InvestigationError("公司映射引用未输入资料", code="investigation_reference_invalid")
     assessments = [validate_company_assessment(row) for row in result.company_assessments]
     for assessment in assessments:
+        if "recommendation" in assessment and not _round_ref_keys(
+                assessment["sourceRefs"], field="companyAssessments[].sourceRefs") <= allowed:
+            raise InvestigationError("公司结论引用未输入资料", code="investigation_reference_invalid")
         if not _assessment_origin_ref_is_allowed(assessment, allowed):
             raise InvestigationError("公司披露来源未输入资料", code="investigation_reference_invalid")
     if codes or result.company_assessments:
@@ -795,12 +798,10 @@ class _Investigation:
             self.guard()
 
     def _external_guard(self) -> None:
+        # Provider refusal belongs to the exact service/binding ledger at its
+        # wire boundary. A shared model object must not turn a settled search
+        # refusal into a stop for independent model work or paid local replay.
         self._guard()
-        terminal = getattr(self.model, '_terminal_provider_error', None)
-        if terminal in {'insufficient_balance', 'provider_authorization_failed'}:
-            message = ('余额不足，停止后续模型及搜索步骤' if terminal == 'insufficient_balance'
-                       else '供应商授权失败，停止后续模型及搜索步骤')
-            raise InvestigationError(message, code=terminal)
 
     def _new_external_guard(self) -> None:
         """Admit a new search/fulltext provider request at its exact boundary.
@@ -1523,8 +1524,6 @@ class _Investigation:
         if not isinstance(coverage, Mapping):
             raise InvestigationError("补查覆盖信息无效", code="investigation_tool_failed")
         reason = coverage.get("reason")
-        if reason in {"insufficient_balance", "provider_authorization_failed"}:
-            self.model._terminal_provider_error = reason
         if coverage.get("requestState") == "pending":
             raise InvestigationError("资料调用尚未完成",
                                      code=str(reason or "investigation_tool_failed"))
@@ -1716,6 +1715,9 @@ class _Investigation:
             db_path=self.db_path, lease_guard=self.guard,
         )
         self.state["snapshot"] = next_snapshot
+        # This exact input already owns a durable round. Later projection
+        # failures must not INSERT a second disposition for the same input.
+        self._b78_active_packet = None
 
     def _b78_mark_failed(self, *, packet: Mapping[str, Any], safe_error_code: str) -> None:
         """Append a safe direct-only failure after a paid receipt is rejected.
@@ -1746,15 +1748,6 @@ class _Investigation:
         raw = rounds[-1].get("result") if isinstance(rounds[-1], Mapping) else None
         code = raw.get("safeErrorCode") if isinstance(raw, Mapping) else None
         return code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{3,80}", code) else None
-
-    def _b78_terminal_provider_failure(self, code: str) -> None:
-        """Make a restored account failure visible to both model wrappers."""
-        for model in (self.model, getattr(self.model, "_base", None)):
-            if model is not None:
-                try:
-                    setattr(model, "_terminal_provider_error", code)
-                except (AttributeError, TypeError):
-                    pass
 
     def _b78_restore(self, *, initial_claims: Mapping[str, Claim]) -> dict[str, Any] | None:
         """Restore direct-round packet state without consulting legacy stages."""
@@ -1929,12 +1922,12 @@ class _Investigation:
             # would let a later recovery exhaust a fresh paid attempt.
             failure_code = self._b78_failed_round_error()
             if failure_code in {"insufficient_balance", "provider_authorization_failed"}:
-                self._b78_terminal_provider_failure(failure_code)
-                message = ("余额不足，停止后续模型及搜索步骤" if failure_code == "insufficient_balance"
-                           else "供应商授权失败，停止后续模型及搜索步骤")
+                message = ("本研究已收到余额不足回执，保留该研究缺口" if failure_code == "insufficient_balance"
+                           else "本研究已收到供应商授权失败回执，保留该研究缺口")
                 raise InvestigationError(message, code=failure_code)
             if not self.allow_failed_resume:
-                raise InvestigationError("调查执行失败，等待任务恢复", code="investigation_previously_failed")
+                raise InvestigationError("调查执行失败，保留原有缺口",
+                    code=failure_code or "investigation_previously_failed")
         if self.snapshot.execution_status == "paused":
             raise InvestigationError("调查已暂停，等待同一任务恢复", code="investigation_execution_paused")
         company_scope = self._company_scope()
@@ -1994,6 +1987,7 @@ class _Investigation:
             claims.update({claim.claim_id: claim for claim in _b78_visible_shared_claims(packet)
                            if claim.claim_id not in claims})
             result = restored["lastResult"] if self.snapshot.research_status != "continue_research" else None
+        terminal_packet: Mapping[str, Any] | None = None
         while result is None:
             self._external_guard()
             # Keep the exact program-built packet available to the outer
@@ -2056,8 +2050,9 @@ class _Investigation:
                     self._b78_append(packet=packet, result=self._b78_terminal_pending_result(result, reason),
                                      context_results=(), tool_evidence=(), research_status="pending_verification")
                     return self._b78_pending(reason)
-                self._b78_append(packet=packet, result=result, context_results=(), tool_evidence=(),
-                                 research_status=research_status)
+                # Validate the full derived outcome before labeling this
+                # round successful. Restore takes the same projection path.
+                terminal_packet = packet
                 break
             packet = self._b78_packet(claims=tuple(claims.values()), questions=tuple(questions.values()),
                                       query_paths=tuple(paths.values()), evidence_updates=evidence_updates,
@@ -2084,7 +2079,14 @@ class _Investigation:
             }, assessments=comparison.get("historicalAssessments", []))}
         elif conclusion.get("researchStatus") == "ready_for_comparison":
             conclusion["researchStatus"] = "background_only"
-        return self._outcome(conclusion, rows, mappings, context, comparison)
+        outcome = self._outcome(conclusion, rows, mappings, context, comparison)
+        if terminal_packet is not None:
+            self._b78_append(packet=terminal_packet, result=result, context_results=(), tool_evidence=(),
+                             research_status=result.conclusion["researchStatus"])
+            # Pure projection only: bind candidate provenance to the committed
+            # revision, with no repeated local reads or supplier requests.
+            outcome = self._outcome(conclusion, rows, mappings, context, comparison)
+        return outcome
 
     def run(self) -> InvestigationOutcome:
         return self._run_b78()
@@ -2202,6 +2204,8 @@ def research_outcome(*, model: Any, verifier: Any, task_id: str, event: EventDra
                 and runtime.snapshot.execution_status != "failed"):
             try:
                 runtime._b78_mark_failed(packet=packet, safe_error_code=code)
+            except SqliteWriteBusy:
+                raise
             except (sqlite3.Error, store.K10Conflict) as persist_exc:
                 logging.getLogger(__name__).warning(
                     "k10_research_failure_disposition_error type=%s", type(persist_exc).__name__)

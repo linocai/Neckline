@@ -242,11 +242,11 @@ def test_b76_full_scale_single_content_refusal_publishes_isolated_partial_subset
 
 
 def test_b76_global_priority_content_refusal_returns_actual_failed_report(tmp_path, monkeypatch):
-    """A final-ranking refusal cannot be relabeled as a partial subset report."""
+    """A final-ranking refusal keeps materials without inventing formal order."""
     flow = run_full_scale_flow(tmp_path, monkeypatch, name="failed", refusal_operation="prioritize",
                                expect_handler_failure=True)
 
-    assert flow.task_status == "failed"
+    assert flow.task_status == "completed"
     assert flow.calls["titleBatch"] == TITLE_COUNT // TITLE_BATCH_SIZE + 1
     assert flow.calls["research:research_round"] == SELECTED_EVENT_COUNT * 2
     assert flow.calls["prioritize"] == 1
@@ -254,19 +254,21 @@ def test_b76_global_priority_content_refusal_returns_actual_failed_report(tmp_pa
     envelope = _report(flow)
     assert envelope["schemaVersion"] == 10
     assert envelope["state"] == "available"
-    assert envelope["reason"] == {
-        "reason": "incomplete", "message": "今天没跑成 · 处理未完成", "missing": [],
-    }
+    assert envelope["reason"]["reason"] == "partial_delivery"
     report = envelope["report"]
     assert report is not None
-    assert report["status"] == "failed"
+    assert report["status"] == "partial"
     assert report["availableAt"] is None
     assert report["eveningCards"] == []
     delivery = report["delivery"]
     assert delivery["contractVersion"] == REPORT_DELIVERY_CONTRACT
-    assert delivery["outcome"] == "failed"
+    assert delivery["outcome"] == "partial"
     assert delivery["rankingScope"] == "none"
     assert delivery["rankingInputSha256"] is None
+    assert report["resultAvailableAt"] and report["materials"]["state"]=="available"
+    assert report["discovery"]["outcome"]=="not_completed" and delivery["gaps"]
+    with sqlite3.connect(flow.db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM k10_publication_samples").fetchone()[0]==0
 
 
 def test_b76_partial_zero_cards_is_not_an_empty_report(tmp_path, monkeypatch):
@@ -282,7 +284,7 @@ def test_b76_partial_zero_cards_is_not_an_empty_report(tmp_path, monkeypatch):
     report = envelope["report"]
     assert report is not None
     assert report["status"] == "partial"
-    assert report["availableAt"]
+    assert report["availableAt"] is None and report["resultAvailableAt"]
     assert report["eveningCards"] == []
     assert report["coverageGaps"]
     assert envelope["reason"] is not None
@@ -359,8 +361,8 @@ def test_title_global_failure_projects_completed_batch_counts_to_actual_api(tmp_
             if "inputCount" in payload:
                 self._record("titleGlobal")
                 # The batches have all persisted; only this global decision is
-                # invalid. An out-of-range selected index remains a hard
-                # protocol failure rather than being silently filtered.
+                # invalid. Its foreign model hint is isolated with an unknown-scope
+                # gap rather than trusted as a frozen source identity.
                 return self._ok({"selected": [{"i": payload["inputCount"], "reason": "越界"}], "merged": []})
             return super().respond(request)
 
@@ -370,9 +372,9 @@ def test_title_global_failure_projects_completed_batch_counts_to_actual_api(tmp_
         tmp_path, monkeypatch, name="title-global-after-25-batches", selected_event_count=0,
         expect_handler_failure=True,
     )
-    assert flow.task_status == "failed"
+    assert flow.task_status == "completed"
     assert flow.calls["titleBatch"] == 25
-    assert flow.calls["titleGlobal"] == 2
+    assert flow.calls["titleGlobal"] == 1
 
     config_id, config_revision, execution_id, execution_revision = acceptance_base.active_bindings(flow.db_path)
     with acceptance_base.actual_api(
@@ -382,9 +384,12 @@ def test_title_global_failure_projects_completed_batch_counts_to_actual_api(tmp_
         response = client.get("/api/v1/k10/v2/reports/latest?window=evening")
     assert response.status_code == 200
     report = response.json()["report"]
-    assert report is not None and report["status"] == "failed"
+    assert report is not None and report["status"] == "partial"
     assert report["delivery"]["counts"] == {
         "titleInput": 1600, "titleProcessed": 1600, "titleFailed": 0, "titleUnprocessed": 0,
         "eventInput": 0, "eventProcessed": 0, "eventFailed": 0, "eventUnprocessed": 0,
         "comparableCompanies": 0, "publishedCompanies": 0,
     }
+
+    assert report["resultAvailableAt"] and not report["eveningCards"]
+    assert any(gap["reasonCode"] == "title_reconcile_partial" and not gap["companyScopeKnown"] for gap in report["delivery"]["gaps"])

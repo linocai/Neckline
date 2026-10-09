@@ -41,7 +41,8 @@ def _business_result(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(structured, Mapping):
         raise Jin10Error("structured_content_missing")
     status = structured.get("status")
-    if status is not None and status not in {200, "200", "ok", "success"}:
+    if status is not None and (isinstance(status, bool) or not isinstance(status, (int, str))
+                               or status not in {200, "200", "ok", "success"}):
         raise Jin10Error("business_status_error")
     return structured
 

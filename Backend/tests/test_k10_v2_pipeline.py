@@ -41,9 +41,12 @@ def test_provider_failure_through_cli_worker_has_no_downstream_calls(tmp_path,mo
     assert not gateway.search_paths
     report=read_report(db_path=db)
     assert report["eveningCards"]==[] and report["availableAt"] is None
-    assert report["status"] == ("failed" if status==402 else "retry_pending")
+    assert report["status"] == ("partial" if status==402 else "retry_pending")
     if status==402:
-        assert task.status=='failed'
+        assert task.status=='completed'
+        assert report['resultAvailableAt'] and report['delivery']['rankingScope']=='none'
+        assert report['discovery']['outcome']=='not_completed'
+        assert report['delivery']['gaps']
         with sqlite3.connect(db) as conn:
             assert conn.execute('SELECT count(*) FROM k10_task_retry_schedules WHERE task_id=?',(task_id,)).fetchone()[0]==0
     else:
@@ -134,7 +137,12 @@ def test_later_provider_failure_preserves_successful_work_without_search(tmp_pat
     assert calls[:3] == ['titleBatch', 'titleGlobal', 'understand']
     assert calls[-1] == f'http_{status}'
     assert 'research:research_round' not in calls and not gateway.search_paths
-    assert task.status == ('failed' if status == 402 else 'queued')
+    assert task.status == ('completed' if status == 402 else 'queued')
+    if status == 402:
+        report = read_report(db_path=db)
+        assert report['status']=='partial' and report['resultAvailableAt']
+        assert report['discovery']['outcome']=='not_completed' and not report['eveningCards']
+        assert report['delivery']['gaps']
     if status == 429:
         resumed = run_once(db_path=db,worker_id='late-retry',lease_for=timedelta(minutes=5),
             handlers=pipeline.production_handlers(tushare_token='fixture-token',parquet_dir=tmp_path/'parquet'),clock=lambda:RUN_AT)

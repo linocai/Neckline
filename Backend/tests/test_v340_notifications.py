@@ -122,7 +122,8 @@ def _committed_report(
         )
         conn.execute(
             "INSERT INTO k10_v2_report_runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ("report_" + scan_id, scan_id, "strategy", window_kind, None, STAMP, STAMP, STAMP,
+            ("report_" + scan_id, scan_id, "strategy", window_kind, None, STAMP, STAMP,
+             None if delivery["rankingScope"] == "none" else STAMP,
              report_status or ("completed" if delivery["outcome"] == "complete" else "partial"), None, STAMP),
         )
         conn.execute(
@@ -131,6 +132,9 @@ def _committed_report(
                                                 "delivery": coverage_delivery if coverage_delivery is not None else delivery},
                                                ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
         )
+        if delivery["rankingScope"] == "none":
+            conn.execute("INSERT INTO k10_v2_report_delivery_metadata VALUES (?,?,?,?,?,?)",
+                ("report_" + scan_id, STAMP, None, "available", None, STAMP))
     # The notification reader validates the durable identity only.  These
     # fixture rows intentionally omit unrelated opportunity ancestry.
     with sqlite3.connect(path) as conn:

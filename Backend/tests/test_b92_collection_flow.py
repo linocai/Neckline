@@ -543,12 +543,14 @@ def test_official_documented_jin10_aliases_keep_raw_flash_and_schema_page_parame
             structured={"data": {"items": [], "next_offset": "a", "next_cursor": "b",
                                  "has_more": True}}, obtained_at=datetime.now(timezone.utc),
             question="哪条", target="fixture", db_path=database)
-    with pytest.raises(Jin10Error, match="item_introduction_conflict"):
-        persist_question_tool_result(task_id=task_id, tool_name="list_news",
-            structured={"data": {"items": [{"id": "x", "url": "https://xnews.jin10.com/details/x",
-                "time": "2026-09-25T00:00:00+08:00", "title": "标题",
-                "intro": "甲", "introduction": "乙"}], "has_more": False}},
-            obtained_at=datetime.now(timezone.utc), question="哪条", target="fixture", db_path=database)
+    rejected = persist_question_tool_result(task_id=task_id, tool_name="list_news",
+        structured={"data": {"items": [{"id": "x", "url": "https://xnews.jin10.com/details/x",
+            "time": "2026-09-25T00:00:00+08:00", "title": "标题",
+            "intro": "甲", "introduction": "乙"}], "has_more": False}},
+        obtained_at=datetime.now(timezone.utc), question="哪条", target="fixture", db_path=database)
+    assert rejected["documentRefs"] == []
+    assert rejected["coverage"]["state"] == "partial"
+    assert rejected["coverage"]["rejectedItems"][0]["reasonCode"] == "item_introduction_conflict"
 
 
 def test_freeze_only_consumes_terminal_refs_and_blocks_old_unknown_dependency(tmp_path):

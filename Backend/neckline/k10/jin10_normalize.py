@@ -23,8 +23,6 @@ def _page(tool_name: str, structured: Mapping[str, Any]) -> tuple[list[Mapping[s
     if not isinstance(data, Mapping) or not isinstance(data.get("items"), list):
         raise Jin10Error("page_shape_invalid")
     rows = data["items"]
-    if any(not isinstance(row, Mapping) for row in rows):
-        raise Jin10Error("page_item_invalid")
     more = data.get("has_more")
     if not isinstance(more, bool):
         raise Jin10Error("page_has_more_missing")
@@ -75,7 +73,7 @@ def _document(tool_name: str, item: Mapping[str, Any], obtained_at: datetime) ->
         raise Jin10Error("item_content_invalid")
     if intro is not None and not isinstance(intro, str):
         raise Jin10Error("item_intro_invalid")
-    if source_key == "jin10-flash" and not text:
+    if source_key == "jin10-flash" and (not text or not text.strip()):
         raise Jin10Error("flash_content_missing")
     if source_key == "jin10-news" and not (text or intro or title):
         raise Jin10Error("article_summary_missing")
@@ -87,6 +85,11 @@ def _document(tool_name: str, item: Mapping[str, Any], obtained_at: datetime) ->
     except ValueError:
         parsed = None
     published = parsed if parsed is not None and parsed.tzinfo is not None else None
+    if published is not None:
+        try:
+            published.astimezone(timezone.utc)
+        except (OverflowError, ValueError) as exc:
+            raise Jin10Error("item_time_invalid") from exc
     precision = "exact" if published is not None else "unknown"
     body = text if text else None
     excerpt = intro or title if body is None else intro
@@ -129,16 +132,28 @@ def persist_question_tool_result(
             raise Jin10Error("parent_article_mismatch")
     writer = SqliteIngestionWriter(db_path=db_path, leaseguard=leaseguard)
     refs: list[dict[str, Any]] = []
-    for row in rows:
-        doc = _document(tool_name, row, obtained_at)
+    rejected: list[dict[str, Any]] = []
+    for position, row in enumerate(rows):
+        try:
+            if not isinstance(row, Mapping):
+                raise Jin10Error("page_item_invalid")
+            doc = _document(tool_name, row, obtained_at)
+        except Jin10Error as exc:
+            if tool_name == "get_news":
+                raise
+            # Page envelope/cursor remains validated above. One unavailable
+            # external item cannot erase its valid siblings or next page.
+            rejected.append({"itemIndex": position, "reasonCode": exc.code})
+            continue
         stored = writer.append_document_version(source_key=_source_key(tool_name), document=doc)
         refs.append({"documentId": stored.version.document_id, "revision": stored.version.revision,
                      "sourceKey": _source_key(tool_name), "contentSha256": stored.version.content_hash,
                      "publishedAt": doc.published_at.isoformat() if doc.published_at else None,
                      "fetchedAt": obtained_at.astimezone(timezone.utc).isoformat(timespec="seconds")})
     truncated = tool_name == "search_flash" and len(rows) >= 150
-    coverage = {"state": "partial" if truncated or has_more else "completed",
+    coverage = {"state": "partial" if truncated or has_more or rejected else "completed",
                 "resultCount": len(rows), "nextCursor": cursor,
+                "acceptedCount": len(refs), "rejectedItems": rejected,
                 "cursorField": cursor_field,
                 "hasMore": has_more, "truncated": truncated,
                 "absenceProven": False}

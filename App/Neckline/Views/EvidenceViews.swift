@@ -450,6 +450,10 @@ struct SourceDocumentSheet: View {
                                 Text("来源原始时间文字：\(originalPublishedText)")
                                     .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                             }
+                            ForEach(document.readWarnings ?? [], id: \.self) { warning in
+                                Label(warning, systemImage: "exclamationmark.circle")
+                                    .font(NKFont.callout).foregroundStyle(NK.amber)
+                            }
                             if let eventTime = document.eventTime {
                                 Text("可确认事项时间 \(k10DisplayTime(eventTime.value)) · \(k10PublishedPrecisionText(eventTime.precision))")
                                     .font(NKFont.caption).foregroundStyle(NK.textSecondary)

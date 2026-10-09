@@ -30,10 +30,12 @@ from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
 from neckline.llm.openai_compat import bounded_response_wait, can_bound_response_wait
 
 from . import store
+from .failure_scope import MODEL_CONTENT_FAILURE_CODES, local_model_failure_code
 from .config import validate_execution_config, validate_run_config
 from .delivery import runtime_contract
-from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryModel, DiscoveryRun, EventComparison, InvestigationOutcome,
+from .discovery import (CandidateComparison, CompanyMappingDraft, DiscoveryDocument, DiscoveryIssue, DiscoveryModel, DiscoveryRun, EventComparison, InvestigationOutcome,
                         EvidenceRef, EventDraft, FrozenDiscoveryDraftCompatibilityError, SqliteDiscoveryWriter, Verification,
+                        PrioritizationResult, normalize_prioritization,
                         DiscoveryDeadlineExceeded, DiscoverySliceYield, DiscoveryUnderstandingIncomplete, ProviderThrottleYield, freeze_discovery_run, freeze_event_drafts, persist_discovery, reject_uncalibrated_prediction, run_discovery,
                         thaw_discovery_run, thaw_event_drafts, validate_event_comparison_rows,
                         event_input_facts, event_system_metadata)
@@ -186,7 +188,8 @@ def _b90_isolated_morning_unsettled_dependencies(*, task_id: str, db_path: Path,
 
 def _b90_discovery_deadline_result(*, context: TaskContext, scan_id: str,
                                    configuration: Mapping[str, Any],
-                                   cutoff_at: datetime, generated_at: datetime) -> TaskResult:
+                                   cutoff_at: datetime, generated_at: datetime,
+                                   failure_code: str | None = None) -> TaskResult:
     """Freeze an honest no-new-discovery partial while completed reviews remain usable.
 
     This is intentionally narrower than a generic cancellation: it has no
@@ -202,10 +205,12 @@ def _b90_discovery_deadline_result(*, context: TaskContext, scan_id: str,
     refs = _morning_refs(coverage.get("inputDocumentRefs"))
     title_input = len(refs)
     from .delivery import delivery_gap, delivery_manifest
+    reason_code = failure_code or "morning_discovery_deadline"
     gap = delivery_gap(
         stage="discovery", unit_kind="scan", unit_id=scan_id,
-        reason_code="morning_discovery_deadline",
-        message="隔夜新机会发现未在晨报截止前完成；已完成的昨晚理由复核仍可读取。",
+        reason_code=reason_code,
+        message=("隔夜新机会发现未完成；已完成的昨晚理由复核仍可读取。" if failure_code else
+                 "隔夜新机会发现未在晨报截止前完成；已完成的昨晚理由复核仍可读取。"),
         source_refs=refs, company_scope_known=False,
     )
     delivery = delivery_manifest(
@@ -224,10 +229,10 @@ def _b90_discovery_deadline_result(*, context: TaskContext, scan_id: str,
     )
     terminal_coverage = {
         **coverage,
-        "pipelineState": "morning_discovery_deadline",
+        "pipelineState": "morning_discovery_partial" if failure_code else "morning_discovery_deadline",
         "ingestionState": "partial",
         "discoveryState": "partial",
-        "discoveryIssues": [{"stage": "discovery", "code": "morning_discovery_deadline"}],
+        "discoveryIssues": [{"stage": "discovery", "code": reason_code}],
         "delivery": delivery,
     }
     empty_run = DiscoveryRun(
@@ -238,7 +243,7 @@ def _b90_discovery_deadline_result(*, context: TaskContext, scan_id: str,
         "candidateCount": 0, "deferredCount": 0,
         # This opt-in is revalidated by the durable store against both the
         # current B90 task contract and every unsettled ledger stage.
-        "allowDiscoveryUnknownPublication": True,
+        **({"allowDiscoveryUnknownPublication": True} if failure_code is None else {}),
         "_b76DeferredPublication": {
             "run": empty_run, "scanId": scan_id, "createdAt": str(scan.get("createdAt") or _text(generated_at)),
             "updatedAt": _text(generated_at), "delivery": delivery,
@@ -249,17 +254,102 @@ def _b90_discovery_deadline_result(*, context: TaskContext, scan_id: str,
     return TaskResult("completed", "delivery_ready", checkpoint)
 
 
-_B76_GLOBAL_RESEARCH_FAILURE_CODES = frozenset({
-    "research_storage_unavailable",
-    "investigation_execution_failed",
-    "operation_failed",
-    "insufficient_balance",
-    "provider_authorization_failed",
-})
-
-
 _TS_CODE = re.compile(r"^\d{6}\.(?:SZ|SH|BJ)$")
 _HK_CODE = re.compile(r"^\d{4,5}\.HK$")
+
+
+def _content_failure_unadmitted_units(*, task_id: str, events: Sequence[EventDraft],
+                                      coverage: Mapping[str, Any], completed_units: set[str],
+                                      db_path: Path) -> set[str]:
+    from .research_store import task_research_facts
+    admitted = set(task_research_facts(task_id=task_id, db_path=db_path))
+    admitted.update(coverage.get("researchSnapshotIds", ()))
+    with read_connection(db_path) as conn:
+        rows = conn.execute("SELECT item_key,input_sha256,status,result_json FROM k10_execution_item_checkpoints "
+            "WHERE task_id=? AND stage='research_input_boundary'", (task_id,)).fetchall()
+    for item_key, input_sha, status, raw in rows:
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("研究准入检查点不可读取", code="research_input_invalid") from exc
+        if (status != "completed" or not isinstance(value, dict) or store._hash(value) != input_sha
+                or not isinstance(value.get("snapshotId"), str)
+                or item_key != f"research-input:{value['snapshotId']}:{value.get('snapshotRevision')}"):
+            raise PipelineError("研究准入检查点身份不一致", code="research_input_invalid")
+        admitted.add(value["snapshotId"])
+    return {_research_unit_id(event) for event in events
+            if _research_unit_id(event) not in completed_units
+            and _research_id(task_id=task_id, event=event) not in admitted}
+
+
+def _settled_content_failure_run(*, task_id: str, configuration: Mapping[str, Any],
+                                 assembly_binding: Mapping[str, Any] | None,
+                                 coverage: Mapping[str, Any], failure_code: str, db_path: Path) -> DiscoveryRun:
+    """Keep completed canonical work readable after an external content failure.
+
+    Only this task's exact assembly binding is eligible. The saved fragments
+    are completed derivatives, not model wire replies; corruption still raises.
+    Ranking is unavailable, so every recovered recommendation remains material.
+    """
+    fragments: list[DiscoveryRun] = []
+    if assembly_binding is not None:
+        aggregate = store.completed_execution_items(task_id=task_id, item_kind="global",
+            stage="discovery_pre_rank", db_path=db_path)
+        rows = aggregate or store.completed_execution_items(task_id=task_id, item_kind="event",
+            stage="discovery_assemble", db_path=db_path)
+        seen: set[str] = set()
+        for row in rows:
+            saved = row.get("result")
+            if (not isinstance(saved, Mapping) or saved.get("version") != 1
+                    or not isinstance(saved.get("input"), list)
+                    or not isinstance(saved.get("run"), Mapping)
+                    or row["inputSha256"] != store._hash({**assembly_binding, "input": saved["input"]})
+                    or (aggregate and row["itemKey"] != "pre_rank")):
+                raise PipelineError("已完成组装检查点不可恢复", code="discovery_aggregate_invalid")
+            fragment = thaw_discovery_run(frozen=saved["run"], configuration=configuration)
+            inputs = thaw_event_drafts(saved["input"])
+            input_units = {_research_unit_id(item) for item in inputs}
+            units = {_research_unit_id(item) for item in fragment.events}
+            if len(units) != len(fragment.events) or units != input_units or units & seen:
+                raise PipelineError("已完成组装身份不一致", code="discovery_aggregate_invalid")
+            seen.update(units)
+            fragments.append(fragment)
+    completed_events = tuple(event for fragment in fragments for event in fragment.events)
+    inputs = completed_events
+    frozen_inputs = coverage.get("researchInputEvents")
+    if frozen_inputs is not None:
+        if (assembly_binding is None or not isinstance(frozen_inputs, list)
+                or coverage.get("researchInputEventsSha256") != store._hash({**assembly_binding, "input": frozen_inputs})):
+            raise PipelineError("研究输入清单不可恢复", code="research_input_invalid")
+        frozen_events = thaw_event_drafts(frozen_inputs)
+        units = [_research_unit_id(event) for event in frozen_events]
+        completed_units = {_research_unit_id(event) for event in completed_events}
+        if (len(units) != len(set(units)) or units != coverage.get("researchInputUnitIds")
+                or not completed_units <= set(units)):
+            raise PipelineError("研究输入与完成片不一致", code="research_input_invalid")
+        # Canonical fragments bind their candidate/verification objects to
+        # their own event instances. Keep those exact completed instances;
+        # only the unassembled identities come from the frozen input list.
+        completed_by_unit = {_research_unit_id(event): event for event in completed_events}
+        inputs = tuple(completed_by_unit.get(_research_unit_id(event), event) for event in frozen_events)
+    completed_units = {_research_unit_id(event) for event in completed_events}
+    unadmitted_units = _content_failure_unadmitted_units(task_id=task_id, events=inputs,
+        coverage=coverage, completed_units=completed_units, db_path=db_path)
+    missing_assembly = tuple(DiscoveryIssue("assembly",
+        "content_failure_not_admitted" if _research_unit_id(event) in unadmitted_units else "assembly_not_completed",
+        event.source_refs[0] if event.source_refs else None, event.canonical_key, _research_unit_id(event))
+        for event in inputs if _research_unit_id(event) not in completed_units)
+    return DiscoveryRun("partial", validate_run_config(configuration, scope="discovery"),
+        inputs,
+        tuple(value for fragment in fragments for value in fragment.verifications),
+        (), (), tuple(value for fragment in fragments for value in fragment.metadata_pending),
+        tuple(value for fragment in fragments for value in fragment.excluded), 0,
+        tuple(value for fragment in fragments for value in fragment.updates),
+        tuple(value for fragment in fragments for value in
+              (*fragment.candidates, *fragment.deferred, *fragment.background)),
+        (*tuple(issue for fragment in fragments for issue in fragment.issues),
+         *missing_assembly, DiscoveryIssue("prioritize", failure_code)),
+        {"eventFailed": sum(fragment.document_counts.get("eventFailed", 0) for fragment in fragments)})
 
 
 def _refs(value: Any) -> tuple[EvidenceRef, ...]:
@@ -553,14 +643,9 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                       model_options: Mapping[str, Any] | None = None) -> LLMResult:
         messages, request_kwargs, content = self._request_parts(
             operation=operation, payload=payload, model_options=model_options)
-        terminal = getattr(self, "_terminal_provider_error", None)
-        if terminal is not None:
-            message = ("模型服务鉴权或权限校验失败，已停止后续模型调用"
-                       if terminal == "provider_authorization_failed" else "余额不足，已停止后续模型调用")
-            raise PipelineError(message, code=terminal)
+        # Durable admission owns settled refusal scope and exact-receipt
+        # reuse. A process-local flag would also reject reusable paid replies.
         result: LLMResult = self.provider.chat(messages, **request_kwargs)
-        if result.error_code in {"insufficient_balance", "provider_authorization_failed"}:
-            self._terminal_provider_error = result.error_code
         self._thread_usage.retry_after_seconds = result.retry_after_seconds
         record = {"operation": operation, "provider": result.provider, "model": result.model,
                                    "inputTokens": result.prompt_tokens, "outputTokens": result.completion_tokens,
@@ -621,8 +706,13 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
             code = result.error_code if isinstance(result.error_code, str) and re.fullmatch(r"[a-z0-9_]{3,64}", result.error_code) else "model_failed"
             raise PipelineError("DeepSeek 结构化调用失败", code=code)
         try: parsed=json.loads(result.content)
-        except (TypeError, json.JSONDecodeError) as exc: raise PipelineError("DeepSeek 未返回有效 JSON", code="json_invalid") from exc
+        except (TypeError, ValueError, RecursionError) as exc: raise PipelineError("DeepSeek 未返回有效 JSON", code="json_invalid") from exc
         if not isinstance(parsed, Mapping): raise PipelineError("DeepSeek JSON 根必须是对象", code="json_root_invalid")
+        from .model_execution import SemanticValidationError, validate_model_json
+        try:
+            validate_model_json(parsed)
+        except SemanticValidationError as exc:
+            raise PipelineError("DeepSeek 返回不可持久化的 JSON 内容", code=exc.code) from exc
         # DeepSeek's structured response may place the requested object under a sole
         # ``output`` key.  This is the only accepted wrapper: mixed roots remain invalid
         # rather than silently dropping model fields or relaxing later schema checks.
@@ -1330,14 +1420,8 @@ class DeepSeekDiscoveryModel(DiscoveryModel):
                          model_options=self._model_options("prioritize"))
         choices = raw.get("choices")
         if not isinstance(choices, list):
-            raise PipelineError("跨事件公司比较缺少 choices")
-        result: list[Mapping[str, Any]] = []
-        for choice in choices:
-            if (not isinstance(choice, Mapping) or not isinstance(choice.get("companyCode"), str)
-                    or not isinstance(choice.get("catalystKeys"), list)):
-                raise PipelineError("跨事件公司比较结构不完整")
-            result.append({"companyCode": choice["companyCode"], "catalystKeys": list(choice["catalystKeys"])})
-        return tuple(result)
+            raise PipelineError("跨事件公司比较缺少 choices", code="prioritize_json_contract_invalid")
+        return tuple(choices)
 
 
 class _CheckpointedDiscoveryModel:
@@ -1355,7 +1439,9 @@ class _CheckpointedDiscoveryModel:
     def __init__(self, *, base: DiscoveryModel, task_id: str, execution_profile: Mapping[str, Any],
                  cutoff_at: datetime, db_path: Path, leaseguard: Callable[[], None] | None,
                  allow_failed_research_resume: bool = False,
-                 new_research_external_admission_guard: Callable[[], None] | None = None) -> None:
+                 new_research_external_admission_guard: Callable[[], None] | None = None,
+                 isolate_content_failure: bool = False) -> None:
+        self._isolate_content_failure = isolate_content_failure
         self._base, self._task_id, self._binding = base, task_id, execution_profile
         self._cutoff_at, self._db_path, self._leaseguard = _text(cutoff_at), db_path, leaseguard
         self._allow_failed_research_resume = allow_failed_research_resume
@@ -1899,7 +1985,8 @@ class _CheckpointedDiscoveryModel:
             register(documents=documents)
 
     def run_title_operation(self, *, stage: str, instruction: str, payload: Mapping[str, Any],
-                            validate: Callable[[Any], Mapping[str, Any]]) -> Mapping[str, Any]:
+                            validate: Callable[[Any], Mapping[str, Any]],
+                            decode: Callable[[Any], Mapping[str, Any]] | None = None) -> Mapping[str, Any]:
         if stage not in {"titleBatch", "titleReconcile"}:
             raise PipelineError("标题操作无效", code="title_operation_invalid")
         if isinstance(self._base, DeepSeekDiscoveryModel):
@@ -1915,9 +2002,17 @@ class _CheckpointedDiscoveryModel:
         identity = sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()
         item = {"instruction": instruction, "payload": payload}
+        def restore(value):
+            from .title_triage import TitleTriageProtocolError
+            try:
+                return (decode or validate)(value)
+            except TitleTriageProtocolError as exc:
+                # This boundary receives persisted canonical derivatives.
+                # Its corruption is never a new model-wire content gap.
+                raise PipelineError("标题已验证检查点损坏", code="model_cache_corrupt") from exc
         return self._run(operation=stage, stage=stage, item_key=identity,
             item=item, invoke=invoke,
-            encode=validate, decode=validate)
+            encode=validate, decode=restore)
 
     def source_context_request_fits(self, **kwargs):
         checker = getattr(self._base, "source_context_request_fits", None)
@@ -2771,7 +2866,7 @@ class _CheckpointedDiscoveryModel:
             item = {"candidates": [{"canonicalKey": row.event.canonical_key, "stageKey": row.event.stage_key,
                                       "companyCode": row.mapping.company_code, "comparison": row.comparison.summary,
                                       "evidenceRefs": self._refs(row.comparison.evidence_refs)} for row in candidates]}
-        def encode(value: Sequence[object]) -> list[Any]:
+        def encode(value: PrioritizationResult) -> Mapping[str, Any]:
             rows: list[dict[str, Any]] = []
             for row in value:
                 if isinstance(row, Mapping):
@@ -2782,12 +2877,27 @@ class _CheckpointedDiscoveryModel:
                     rows.append({"canonicalKey": row[0], "companyCode": row[1]})
                 else:
                     raise PipelineError("排序缓存无效", code="model_cache_corrupt")
-            return rows
+            return {"version": 1, "choices": rows, "rejected": [dict(gap) for gap in value.rejected],
+                    "completed": value.completed}
         def decode(value: Mapping[str, Any] | list[Any]) -> tuple[object, ...]:
-            if not isinstance(value, list):
+            if isinstance(value, Mapping):
+                if (set(value) != {"version", "choices", "rejected", "completed"} or value["version"] != 1
+                        or not isinstance(value["choices"], list) or not isinstance(value["rejected"], list)
+                        or not isinstance(value["completed"], bool)):
+                    raise PipelineError("排序缓存无效", code="model_cache_corrupt")
+                rows, rejected, completed = value["choices"], value["rejected"], value["completed"]
+                for gap in rejected:
+                    if (not isinstance(gap, Mapping) or set(gap) != {"rowIndex", "reasonCode"}
+                            or not isinstance(gap["rowIndex"], int) or isinstance(gap["rowIndex"], bool)
+                            or gap["rowIndex"] < -1 or not isinstance(gap["reasonCode"], str)
+                            or not gap["reasonCode"]):
+                        raise PipelineError("排序缓存缺口无效", code="model_cache_corrupt")
+            elif isinstance(value, list):
+                rows, rejected, completed = value, [], True
+            else:
                 raise PipelineError("排序缓存无效", code="model_cache_corrupt")
             result: list[object] = []
-            for row in value:
+            for row in rows:
                 if not isinstance(row, Mapping) or not isinstance(row.get("companyCode"), str):
                     raise PipelineError("排序缓存无效", code="model_cache_corrupt")
                 if isinstance(row.get("catalystKeys"), list):
@@ -2796,9 +2906,20 @@ class _CheckpointedDiscoveryModel:
                     result.append((row["canonicalKey"], row["companyCode"]))
                 else:
                     raise PipelineError("排序缓存无效", code="model_cache_corrupt")
-            return tuple(result)
+            verified = normalize_prioritization(tuple(result), candidates)
+            if verified.rejected or tuple(result) != verified.choices or (result and not completed):
+                raise PipelineError("排序缓存不匹配冻结输入", code="model_cache_corrupt")
+            return PrioritizationResult(tuple(result), tuple(rejected), completed)
+        def invoke():
+            try:
+                return normalize_prioritization(tuple(self._base.prioritize(candidates=candidates)), candidates)
+            except Exception as exc:
+                code = local_model_failure_code(exc)
+                if code is None or not self._isolate_content_failure:
+                    raise
+                return PrioritizationResult((), ({"rowIndex": -1, "reasonCode": code},), False)
         return self._run(operation="prioritize", stage="prioritize", item_key="global", item=item,
-                         invoke=lambda: self._base.prioritize(candidates=candidates), encode=encode, decode=decode)
+                         invoke=invoke, encode=encode, decode=decode)
 
     def _verification_refs(self, event: EventDraft) -> list[dict[str, Any]]:
         documents = getattr(self._base, "_verification_documents", {}).get(id(event), ())
@@ -3645,7 +3766,10 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
 
     by_unit = {_research_unit_id(item): item for item in run.events}
     failed_unit_ids: set[str] = set()
-    gaps: list[dict[str, Any]] = []
+    material_gaps = coverage.get("materialProjectionGaps", [])
+    if not isinstance(material_gaps, list) or any(not isinstance(gap, Mapping) for gap in material_gaps):
+        raise PipelineError("材料投影缺口不可读取", code="material_projection_gap_invalid")
+    gaps: list[dict[str, Any]] = [dict(gap) for gap in material_gaps]
     failed_gap_indexes: dict[str, int] = {}
     excluded_codes: set[str] = set()
     title_scope_unknown = False
@@ -3792,11 +3916,14 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
             excluded_codes.update(codes)
             if not codes:
                 title_scope_unknown = True
+            label = "标题协调中的无效结果已跳过" if gap.get("phase") == "reconcile" else "该批标题未完成"
+            if gap.get("phase") == "source":
+                label = "该条资料缺少可用标题，已跳过" if reason == "source_title_unavailable" else "该条资料缺少可用正文，已跳过"
             gaps.append(delivery_gap(
                 stage="title_triage", unit_kind="document", unit_id=f"title_batch_{batch_index}",
                 reason_code=reason,
-                message=("该批标题未完成，相关公司不参与本轮聚合推荐。" if codes else
-                         "该批标题未完成，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"),
+                message=(f"{label}，相关公司不参与本轮聚合推荐。" if codes else
+                         f"{label}，影响公司范围尚未确认；本轮仅发布已完成研究的公司。"),
                 source_refs=refs, company_codes=sorted(codes), company_scope_known=bool(codes),
             ))
     recorded_dependencies = coverage.get("researchDependencyExclusions")
@@ -3827,6 +3954,14 @@ def _b76_delivery_for_run(*, run, coverage: Mapping[str, Any], failed_snapshots:
         add_failed_research_gap(unit_id)
     unprocessed_unit_ids: set[str] = set()
     for issue in run.issues:
+        if issue.stage == "prioritize" and issue.execution_unit_id is None and issue.canonical_key is None:
+            # Editorial output gaps do not invalidate completed research or
+            # remove an independently selected company from a valid order.
+            gaps.append(delivery_gap(stage="prioritize", unit_kind="discovery",
+                unit_id="final_order_" + issue.code, reason_code=issue.code,
+                message="最终整理的无效选择已跳过；有效选择及已完成研究材料保留。",
+                company_scope_known=False))
+            continue
         raw_unit_id = getattr(issue, "execution_unit_id", None)
         unit_id = raw_unit_id if isinstance(raw_unit_id, str) and raw_unit_id else None
         event = by_unit.get(unit_id) if unit_id is not None else None
@@ -4110,6 +4245,7 @@ def _publish_scan(*, run, scan_id: str, kind: str, db_path: Path, created_at: st
                   included_company_codes: set[str] | None = None, scan_finalizer=None,
                   task_finalizer=None, morning_report_draft: Mapping[str, Any] | None = None,
                   publication_checkpoint: dict[str, Any] | None = None,
+                  prepared_materials: list[dict[str, Any]] | None = None,
                   delivery_deadline_at: str | None = None,
                   allow_unpublished_failed_delivery_replacement: bool = False):
     writer = SqliteDiscoveryWriter(scan_id=scan_id, db_path=db_path, created_at=created_at)
@@ -4132,7 +4268,7 @@ def _publish_scan(*, run, scan_id: str, kind: str, db_path: Path, created_at: st
         item for item in all_inputs
         if item.comparison["classification"]["kind"] in {"initial", "independent", "material_stage"}
     )
-    materials = (_safe_report_materials(run=run, db_path=db_path,
+    materials = (prepared_materials if prepared_materials is not None else _safe_report_materials(run=run, db_path=db_path,
                                         strategy_snapshot_id=config["payload"]["strategySnapshotId"],
                                         as_of=updated_at) if is_v2 else None)
     if publication_checkpoint is not None:
@@ -6386,7 +6522,8 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                             execution_profile=execution_profile, cutoff_at=cutoff_at,
                                             db_path=db_path, leaseguard=leaseguard,
                                             allow_failed_research_resume=allow_failed_research_resume,
-                                            new_research_external_admission_guard=new_research_external_admission_guard)
+                                            new_research_external_admission_guard=new_research_external_admission_guard,
+                                            isolate_content_failure=b76_delivery)
     frozen_draft = coverage.get("discoveryDraft")
     if allow_failed_research_resume:
         # A failed B39 research snapshot can resume only on the same frozen task.
@@ -6602,6 +6739,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             if time.monotonic() - slice_started >= policy["taskSliceSeconds"]:
                 raise DiscoverySliceYield()
 
+    assembly_binding: Mapping[str, Any] | None = None
     try:
         if title_enabled:
             from .title_runtime import completed_title_batch_refs, read_title_failures, select_title_documents
@@ -6845,9 +6983,18 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         unit_id = _research_unit_id(event)
                         researched_unit_refs[unit_id] = {(ref.document_id, ref.revision) for ref in event.source_refs}
                         snapshot_unit_ids[_research_id(task_id=str(task_id), event=event)] = unit_id
-                    if prior == unit_ids:
-                        return
+                    frozen_events = freeze_event_drafts(events)
+                    input_sha = store._hash({**assembly_binding, "input": frozen_events})
+                    existing_events = running_coverage.get("researchInputEvents")
+                    if existing_events is not None:
+                        if (existing_events != frozen_events
+                                or running_coverage.get("researchInputEventsSha256") != input_sha):
+                            raise PipelineError("研究输入内容不可覆盖", code="research_input_invalid")
+                        if prior == unit_ids:
+                            return
                     running_coverage["researchInputUnitIds"] = list(unit_ids)
+                    running_coverage["researchInputEvents"] = frozen_events
+                    running_coverage["researchInputEventsSha256"] = input_sha
                     running_coverage["researchEventCount"] = len(unit_ids)
                     store.update_running_scan_coverage(
                         scan_id=scan_id, coverage=running_coverage, db_path=db_path,
@@ -7135,8 +7282,6 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                                     "research_storage_unavailable",
                                     "investigation_execution_failed",
                                     "operation_failed",
-                                    "insufficient_balance",
-                                    "provider_authorization_failed",
                                 ) if b76_delivery else ())
             if run.state in {"completed", "partial"}:
                 if title_enabled:
@@ -7212,12 +7357,27 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         # A transient write contention after a paid ranking result is a
         # continuation, not permission to terminalize this frozen scan.
         raise
-    except Exception:
+    except Exception as exc:
         if leaseguard is not None:
             leaseguard()
-        finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
-                                status="failed", pipeline_state="discovery_failed", coverage_extra=running_coverage)
-        raise
+        code = local_model_failure_code(exc)
+        if code is None or not b76_delivery or task_id is None:
+            finalize_ingestion_scan(run=ingestion, scan_id=scan_id, completed_at=_now(), db_path=db_path,
+                                    status="failed", pipeline_state="discovery_failed", coverage_extra=running_coverage)
+            raise
+        # The failed operation has settled. Continue the same finalization
+        # path rather than terminalizing the scan before morning aggregation.
+        # Unknown costs, lease/storage errors and damaged canonical state have
+        # distinct types/codes and never enter this content-only branch.
+        run = _settled_content_failure_run(task_id=str(task_id), configuration=configuration,
+            assembly_binding=assembly_binding, coverage=running_coverage, failure_code=code, db_path=db_path)
+        from .research_store import task_research_facts
+        running_coverage = {**running_coverage,
+            "researchSnapshotIds": list(task_research_facts(task_id=str(task_id), db_path=db_path)),
+            "discoveryDraft": freeze_discovery_run(run), "discoveryState": "partial",
+            "discoveryIssues": [{"stage": issue.stage, "code": issue.code} for issue in run.issues],
+            "discoveryChannelFailure": code}
+        store.update_running_scan_coverage(scan_id=scan_id, coverage=running_coverage, db_path=db_path)
 
     finalization_issues = [issue for issue in run.issues if issue.stage in {"classify", "prioritize"}]
     if title_enabled and finalization_issues and not b76_delivery:
@@ -7269,6 +7429,17 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                        and (issue.document_ref is None or issue.document_ref in event.source_refs)]
             if len(matches) == 1:
                 closeout_skipped_unit_ids.add(_research_unit_id(matches[0]))
+    if (task_id and final_coverage.get("discoveryChannelFailure") in MODEL_CONTENT_FAILURE_CODES):
+        skipped = {issue.execution_unit_id for issue in run.issues
+                   if issue.stage == "assembly" and issue.code == "content_failure_not_admitted"}
+        if skipped:
+            # Reprove the absence on every continuation. A missing admitted
+            # snapshot or a completed fragment can never use this exemption.
+            absent = _content_failure_unadmitted_units(task_id=task_id, events=run.events,
+                coverage=final_coverage, completed_units=set(), db_path=db_path)
+            if not skipped <= absent:
+                raise PipelineError("已准入研究不能标为未开始", code="research_input_invalid")
+            closeout_skipped_unit_ids.update(skipped)
     if research_required:
         snapshot_ids = final_coverage["researchSnapshotIds"]
         if (not isinstance(snapshot_ids, list)
@@ -7351,8 +7522,6 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                         failed_research_snapshots = [snapshot for snapshot in snapshots if snapshot.execution_status != "ok"]
                         if not b76_delivery:
                             research_terminal_error = "research_execution_failed"
-    if getattr(model, '_terminal_provider_error', None) in {"insufficient_balance", "provider_authorization_failed"}:
-        research_terminal_error = getattr(model, '_terminal_provider_error')
     if research_terminal_error is not None:
         final_coverage["researchExecutionState"] = "failed"
         final_coverage["researchFailure"] = research_terminal_error
@@ -7361,6 +7530,15 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
         leaseguard()
     delivery = None
     eligible_company_codes: set[str] | None = None
+    report_materials = None
+    if (b76_delivery and research_terminal_error is None and run.state in {"completed", "partial"}
+            and configuration.get("configVersion") == "k10-v2"):
+        from .v2_store import prepare_report_materials
+        report_materials, material_gaps = prepare_report_materials(db_path=db_path,
+            report_id="report_" + scan_id,
+            materials=_safe_report_materials(run=run, db_path=db_path,
+                strategy_snapshot_id=configuration["strategySnapshotId"], as_of=_text(final_completion)))
+        final_coverage["materialProjectionGaps"] = material_gaps
     if b76_delivery and research_terminal_error is None and run.state in {"completed", "partial"}:
         delivery, eligible_company_codes = _b76_delivery_for_run(
             run=run, coverage=final_coverage, failed_snapshots=failed_research_snapshots,
@@ -7442,6 +7620,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
             "run": run, "scanId": scan_id, "createdAt": scan_created_at,
             "updatedAt": _text(final_completion), "delivery": delivery,
             "includedCompanyCodes": eligible_company_codes, "terminalCoverage": terminal_coverage,
+            "preparedMaterials": report_materials,
             "finalStatus": final_status,
         }
         checkpoint["morningReviewMatches"] = matches
@@ -7455,6 +7634,7 @@ def execute_scan(*, kind: str, cutoff_at: datetime, configuration: Mapping[str,A
                       delivery=delivery, included_company_codes=eligible_company_codes,
                       scan_finalizer=scan_finalizer, task_finalizer=task_finalizer,
                       publication_checkpoint=checkpoint,
+                      prepared_materials=report_materials,
                       allow_unpublished_failed_delivery_replacement=(
                           allow_failed_research_resume or allow_unpublished_failed_delivery_replacement
                       ))
@@ -7933,6 +8113,17 @@ def production_scan_handler(
                     context=context, scan_id=scan_id, configuration=frozen["payload"],
                     cutoff_at=cutoff, generated_at=now(),
                 )
+            except Exception as exc:
+                code = local_model_failure_code(exc)
+                if code is None:
+                    raise
+                # The future is terminal here. A settled content failure in
+                # discovery cannot discard already completed review work.
+                discovery_executor.shutdown(wait=True, cancel_futures=False)
+                discovery_executor = None
+                result = _b90_discovery_deadline_result(
+                    context=context, scan_id=scan_id, configuration=frozen["payload"],
+                    cutoff_at=cutoff, generated_at=now(), failure_code=code)
             current_scan = store.get_scan(scan_id=scan_id, db_path=context.db_path)
             current_coverage = current_scan.get("coverage") if isinstance(current_scan, Mapping) and isinstance(current_scan.get("coverage"), Mapping) else None
             if isinstance(current_coverage, Mapping) and isinstance(current_coverage.get("b90MorningParent"), Mapping):
@@ -8112,6 +8303,7 @@ def production_scan_handler(
                           included_company_codes=deferred.get("includedCompanyCodes"),
                           scan_finalizer=scan_finalizer, task_finalizer=task_finalizer,
                           morning_report_draft=report, publication_checkpoint=checkpoint,
+                          prepared_materials=deferred.get("preparedMaterials"),
                           allow_unpublished_failed_delivery_replacement=(
                               same_task_recovery or prepublication_retry is not None
                           ))

@@ -502,7 +502,7 @@ struct ReportMaterialsSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let error = model.reportMaterialsError {
+                if model.reportMaterials?.reportId != report.reportId, let error = model.reportMaterialsError {
                     VStack(spacing: 14) {
                         V3EmptyState(icon: "exclamationmark.triangle", title: "暂时无法读取完成材料", message: error)
                         Button("重新读取") { Task { await model.openMaterials(for: report) } }
@@ -512,6 +512,9 @@ struct ReportMaterialsSheet: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: NKSpace.cardGap) {
                             NoticeLine(icon: "doc.text", text: "这些是来源陈述与不确定性材料，不表示排序、推荐、选择或两日观察。", tone: NK.amber)
+                            if page.items.isEmpty, page.readGaps.isEmpty, page.page.nextCursor == nil {
+                                V3EmptyState(icon: "doc", title: "没有完成材料", message: "这份报告没有可读取的完成材料。")
+                            }
                             ForEach(page.items) { item in
                                 V3Card {
                                     VStack(alignment: .leading, spacing: 10) {
@@ -550,8 +553,26 @@ struct ReportMaterialsSheet: View {
                                     }
                                 }
                             }
+                            if !page.readGaps.isEmpty {
+                                V3Card {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text("材料读取缺口 · \(page.readGaps.count) 条").font(NKFont.headline)
+                                        Text("以下材料暂时无法核实或读取，已保留其余可读内容。读取缺口不改变报告原有的研究状态。")
+                                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                        ForEach(page.readGaps) { gap in
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(gap.message).font(NKFont.callout).foregroundStyle(NK.amber)
+                                                ForEach(gap.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let error = model.reportMaterialsError {
+                                NoticeLine(icon: "exclamationmark.triangle", text: "这一页暂时无法读取：\(error)", tone: NK.amber)
+                            }
                             if page.page.nextCursor != nil {
-                                Button(model.loadingMoreReportMaterials ? "正在读取…" : "继续读取材料") {
+                                Button(model.loadingMoreReportMaterials ? "正在读取…" : model.reportMaterialsError == nil ? "继续读取材料" : "重试这一页") {
                                     Task { await model.loadMoreReportMaterials() }
                                 }
                                 .buttonStyle(V3SecondaryButtonStyle())
@@ -574,7 +595,7 @@ struct ReportMaterialsSheet: View {
             }
         }
         .task {
-            if model.reportMaterials?.reportId != report.reportId, model.reportMaterialsError == nil {
+            if model.reportMaterials?.reportId != report.reportId, model.reportMaterialsError == nil, !model.loadingReportMaterials {
                 await model.openMaterials(for: report)
             }
         }

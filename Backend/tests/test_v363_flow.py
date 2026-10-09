@@ -884,7 +884,8 @@ def test_b92_private_event_write_interruption_keeps_publication_atomic(tmp_path,
         assert report["status"] == "partial"
 
 
-def test_morning_consumption_preserves_undecided_failed_unknown_and_new_revisions(tmp_path):
+@pytest.mark.parametrize("unranked_morning", [False, True])
+def test_morning_consumption_preserves_undecided_failed_unknown_and_new_revisions(tmp_path, unranked_morning):
     db = tmp_path / "consumption-matrix.sqlite"
     run_id, run_rev, exec_id, exec_rev, _, _ = _bindings(db)
     prior_at = "2026-09-28T21:00:00+08:00"
@@ -930,6 +931,14 @@ def test_morning_consumption_preserves_undecided_failed_unknown_and_new_revision
          terminal=[ref("A")], extra={"b90MorningParent": {"reviewSource": [ref("E")]}})
     scan("failed-morning", "morning", "2026-09-29T08:31:00+08:00", "failed", [ref("C")],
          terminal=[ref("C")], available=False)
+    if unranked_morning:
+        # This is a consumer-level prerequisite, not a patched report producer.
+        # The actual B92 producer counterpart lives in test_b98_report_isolation.
+        with sqlite3.connect(db) as conn:
+            report_id = conn.execute("SELECT report_id FROM k10_v2_report_runs WHERE window_kind='morning' AND status='partial'").fetchone()[0]
+            conn.execute("UPDATE k10_v2_report_runs SET available_at=NULL WHERE report_id=?", (report_id,))
+            conn.execute("INSERT INTO k10_v2_report_delivery_metadata VALUES (?,?,?,?,?,?)",
+                (report_id, morning_at, None, "available", None, morning_at))
     store.create_scan(scan_id="unknown-scan", window_kind="morning", cutoff_at=morning_at,
         config_id=run_id, config_revision=run_rev, status="running",
         coverage={"collectedInput": {"inputDocumentRefs": [ref("D")]}},
@@ -1010,7 +1019,7 @@ def test_progress_get_projects_scalars_beside_large_unrelated_payloads(tmp_path)
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id='scan-progress'",
                      (json.dumps({"executionState": "investigation", "factCacheHits": 1,
-                                  "unusedTree": "x" * 3_540_000}),))
+                                  "researchInputEvents": [{"unused": "x" * 17_100_000}]}),))
         conn.execute("UPDATE k10_execution_item_checkpoints SET result_json=? WHERE item_key='unrelated'",
                      (json.dumps({"unused": "y" * 14_500_000}),))
     tracemalloc.start()
@@ -1022,6 +1031,7 @@ def test_progress_get_projects_scalars_beside_large_unrelated_payloads(tmp_path)
     finally:
         tracemalloc.stop()
     assert after == [before] * 4
+    print(f"B98_PROGRESS_PEAK {peak}")
     assert peak < 5_000_000, "progress GET must not decode multi-MB irrelevant JSON in Python"
 
 
@@ -1053,7 +1063,7 @@ def test_real_scan_gets_keep_the_same_dto_with_four_large_coverage_trees(tmp_pat
         with sqlite3.connect(db) as conn:
             for index in range(4):
                 conn.execute("UPDATE k10_scans SET coverage_json=? WHERE scan_id=?",
-                    (json.dumps({"executionState": "investigation", "unusedTree": "x" * 3_540_000}),
+                    (json.dumps({"executionState": "investigation", "researchInputEvents": [{"unused": "x" * 17_100_000}]}),
                      f"scan-api-{index}"))
         tracemalloc.start()
         try:
@@ -1064,6 +1074,7 @@ def test_real_scan_gets_keep_the_same_dto_with_four_large_coverage_trees(tmp_pat
             tracemalloc.stop()
     assert after == before
     assert all(item["scanId"].startswith("scan-api-") for item in after)
+    print(f"B98_SCAN_API_PEAK {peak}")
     assert peak < 12_000_000, "scan GET must not deserialize four unrelated coverage trees"
 
 
@@ -1141,8 +1152,9 @@ def test_missing_parent_morning_keeps_new_material_but_reports_parent_gap(tmp_pa
     monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro",
                         lambda **_kwargs: ProviderResolution("configured", provider, "fixture", None))
     if zero_parent:
-        # The preceding official report is produced through the same CLI and
-        # worker boundary. It is readable but publishes zero formal cards.
+        # The same real producer creates an unranked partial report from
+        # unavailable collection input. Readable material is not a formal
+        # complete zero-recommendation parent.
         prior_at = datetime(2026, 9, 26, 22, tzinfo=SHANGHAI)
         monkeypatch.setattr(pipeline, "_now", lambda: prior_at)
         parent_task = _cli("enqueue", "--db", str(db), "--kind", "evening",
@@ -1159,6 +1171,8 @@ def test_missing_parent_morning_keeps_new_material_but_reports_parent_gap(tmp_pa
                              execution_id=exec_id, execution_revision=exec_rev) as client:
             parent_report = client.get("/api/v1/k10/v2/reports/latest?window=evening").json()["report"]
         assert parent_report["eveningCards"] == []
+        assert parent_report["availableAt"] is None and parent_report["resultAvailableAt"]
+        assert parent_report["delivery"]["rankingScope"] == "none"
     # Give every source an actually exhausted, complete interval so this test
     # isolates the missing parent rather than incidental collection gaps.
     collection = store.read_execution_config(config_id=collection_id,
@@ -1217,8 +1231,7 @@ def test_missing_parent_morning_keeps_new_material_but_reports_parent_gap(tmp_pa
         require_b76_contract=True)
     assert result is not None and result.status == "completed"
     scan_id = store.task_execution_input(task_id=report_task, db_path=db)["checkpoint"]["scanId"]
-    assert store.get_scan(scan_id=scan_id, db_path=db)["coverage"]["b90MorningParent"]["state"] == (
-        "complete" if zero_parent else "unavailable")
+    assert store.get_scan(scan_id=scan_id, db_path=db)["coverage"]["b90MorningParent"]["state"] == "unavailable"
     with base.actual_api(db, config_id=run_id, config_revision=run_rev,
                          execution_id=exec_id, execution_revision=exec_rev) as client:
         response = client.get("/api/v1/k10/v2/reports/latest?window=morning")
@@ -1227,15 +1240,12 @@ def test_missing_parent_morning_keeps_new_material_but_reports_parent_gap(tmp_pa
         report = envelope["report"]
         materials = client.get(f"/api/v1/k10/v2/reports/{report['reportId']}/materials").json()
     assert report["status"] == "partial"
-    assert report["morningReview"]["state"] == ("complete" if zero_parent else "unavailable")
+    assert report["morningReview"]["state"] == "unavailable"
     assert report["morningReview"]["targetCompanyCount"] == 0
     assert report["delivery"]["outcome"] == "partial"
     parent_gaps = [gap for gap in report["delivery"]["gaps"]
                    if gap["reasonCode"] == "morning_parent_unavailable"]
-    if zero_parent:
-        assert parent_gaps == []
-    else:
-        assert len(parent_gaps) == 1 and parent_gaps[0]["unitId"] == report["reportId"]
+    assert len(parent_gaps) == 1 and parent_gaps[0]["unitId"] == report["reportId"]
     assert materials["items"], "newly researched morning material must remain readable"
     morning_coverage = store.get_scan(scan_id=scan_id, db_path=db)["coverage"]
     decided = {(ref["documentId"], ref["revision"])

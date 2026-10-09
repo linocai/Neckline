@@ -11,6 +11,7 @@ from neckline.k10 import title_runtime, pipeline
 from neckline.k10.title_triage import TitleTriageProtocolError
 from neckline.k10.cli import recover_scan, frozen_scan_input_sha256
 from neckline.k10.worker import run_once
+from tests.title_failure_fixture import legacy_title_failure
 
 
 def test_complete_json_with_bad_review_count_is_accepted_without_a_paid_repair(tmp_path, monkeypatch):
@@ -50,7 +51,8 @@ def test_authorized_recovery_revalidates_saved_response_before_spending_again(tm
     def old_bug(*args,**kwargs):
         raise TitleTriageProtocolError('全局标题旧校验误判')
     monkeypatch.setattr(title_runtime,'normalize_reconcile_result',old_bug)
-    db,task_id,task,calls,_=e2e._run(tmp_path,monkeypatch,v2=True)
+    with legacy_title_failure(monkeypatch):
+        db,task_id,task,calls,_=e2e._run(tmp_path,monkeypatch,v2=True)
     assert task.status=='failed' and calls.count('titleGlobal')==2
     monkeypatch.setattr(title_runtime,'normalize_reconcile_result',original)
     # B82 must recover from the immutable SQLite receipt, never a private
@@ -74,7 +76,8 @@ def test_authorized_title_recovery_rejects_wrong_scope_without_a_new_post(tmp_pa
     original = title_runtime.normalize_reconcile_result
     monkeypatch.setattr(title_runtime, "normalize_reconcile_result",
                         lambda *args, **kwargs: (_ for _ in ()).throw(TitleTriageProtocolError("旧全局校验误判")))
-    db, task_id, task, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
+    with legacy_title_failure(monkeypatch):
+        db, task_id, task, calls, _ = e2e._run(tmp_path, monkeypatch, v2=True)
     assert task.status == "failed" and calls.count("titleGlobal") == 2
     monkeypatch.setattr(title_runtime, "normalize_reconcile_result", original)
     with sqlite3.connect(db) as conn:

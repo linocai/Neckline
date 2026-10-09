@@ -543,10 +543,15 @@ def morning_review_handler(context: TaskContext, *, clock=_now,
                                                retry_after_seconds=result.retry_after_seconds)
             try:
                 proposed = json.loads(result.content)
-            except (TypeError, json.JSONDecodeError):
+            except (TypeError, ValueError, RecursionError):
                 return invalid_model("晨间模型未返回有效 JSON")
             if not isinstance(proposed, Mapping):
                 return invalid_model("晨间模型输出结构无效")
+            from .model_execution import SemanticValidationError, validate_model_json
+            try:
+                validate_model_json(proposed)
+            except SemanticValidationError:
+                return invalid_model("晨间模型返回不可持久化的 JSON 内容")
             action = proposed.get("action")
             # Old frozen contracts did not name an action.  Their replies are
             # a final conclusion, not an implicit tool request.
