@@ -2129,12 +2129,16 @@ def latest_collection_source_summary(*, source_key: str, db_path: Path) -> Optio
         raise ValueError("未知采集来源")
     with read_connection(db_path) as conn:
         require_schema(conn)
-        rows = conn.execute(
-            f"SELECT task_id,{COLLECTION_SUMMARY_SQL} FROM k10_tasks "
-            "WHERE kind='collect_news' "
-            "ORDER BY julianday(json_extract(payload_json,'$.slotAt')) DESC,"
-            "julianday(created_at) DESC,task_id DESC",
-        ).fetchall()
+        # Keep the bounded projection serialized under the same read lock as
+        # other checkpoint readers; concurrent workers must never observe a
+        # half-written checkpoint while choosing a resume boundary.
+        with CHECKPOINT_READ_LOCK:
+            rows = conn.execute(
+                f"SELECT task_id,{COLLECTION_SUMMARY_SQL} FROM k10_tasks "
+                "WHERE kind='collect_news' "
+                "ORDER BY julianday(json_extract(payload_json,'$.slotAt')) DESC,"
+                "julianday(created_at) DESC,task_id DESC",
+            ).fetchall()
     for task_id, raw in rows:
         summary = collection_summary(raw)
         source = summary.get("sources", {}).get(source_key)

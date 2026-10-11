@@ -82,8 +82,8 @@ def _jin10_history_resume(*, config: Mapping[str, Any], source_key: str,
     Jin10 list endpoints can stop at the provider's oldest visible item during
     the first B92 bootstrap. That gap is real, but restarting from 2026-09-26
     on every slot is neither useful nor honest. Once a partial source has
-    durable observed data, resume near that observed boundary and retain the
-    original gap for audit. A later successful window may then establish the
+    durable observed data, resume from the prior requested window end minus
+    lookback and retain the original gap for audit. A later successful window may then establish the
     normal source watermark.
     """
     if store.latest_source_watermark(source_key=source_key, db_path=db_path) is not None:
@@ -97,11 +97,15 @@ def _jin10_history_resume(*, config: Mapping[str, Any], source_key: str,
         for gap in gaps
     ):
         return None
-    observed = prior.get("observedStartAt")
-    if not isinstance(observed, str):
+    previous_end = prior.get("requestedEndAt")
+    if not isinstance(previous_end, str):
+        # Older checkpoints did not persist a window end; keep their bounded
+        # resume behavior until a newer checkpoint supplies the stronger edge.
+        previous_end = prior.get("observedStartAt")
+    if not isinstance(previous_end, str):
         return None
     try:
-        boundary = _instant(observed)
+        boundary = _instant(previous_end)
     except ValueError:
         return None
     lookback = timedelta(seconds=int(config["lookbackSeconds"]))
@@ -168,6 +172,30 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
         if store.task_control_status(kind="collect_news", db_path=context.db_path)["state"] != "open":
             raise Jin10Error("collection_paused", pre_send=True)
 
+    def finalize_page() -> dict[str, Any]:
+        """Finalize a durable page without issuing another provider call."""
+        oldest = state.get("observedStartAt")
+        reached_boundary = bool(oldest) and _instant(str(oldest)) <= start
+        if reached_boundary and not state.get("rejectedItems"):
+            state.update(state="completed", coverageThrough=slot.isoformat(),
+                         errorCode=None, cursor=None, cursorField=None,
+                         terminalPagePending=False)
+            _save(context, source_key, state, watermark_through=slot.isoformat())
+            return state
+        gaps = list(state.get("gaps", []))
+        if not reached_boundary:
+            gap = {"startAt": start.isoformat(), "endAt": oldest or slot.isoformat(),
+                   "reasonCode": "history_unavailable"}
+            if gap not in gaps:
+                gaps.append(gap)
+        state.update(state="partial", errorCode=("source_item_invalid"
+                                                   if state.get("rejectedItems")
+                                                   else "history_unavailable"),
+                     coverageThrough=None, cursor=None, cursorField=None,
+                     gaps=gaps, terminalPagePending=False)
+        _save(context, source_key, state)
+        return state
+
     try:
         with client_factory(token=token, endpoint=mcp["endpoint"],
                             protocol_version=mcp["protocolVersion"],
@@ -177,6 +205,13 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
                 if store.task_control_status(kind="collect_news", db_path=context.db_path)["state"] != "open":
                     state.update(state="partial", errorCode="collection_paused")
                     break
+                # A process can stop after the page checkpoint and before the
+                # terminal-state write. Complete that durable page locally;
+                # an empty cursor is not a new provider request.
+                if (state.get("terminalPagePending") or
+                        (state.get("state") == "running" and int(state.get("pagesFetched", 0)) > 0
+                         and state.get("cursor") is None and not state.get("errorCode"))):
+                    return finalize_page()
                 args = {str(state.get("cursorField") or "cursor"): cursor} if cursor else {}
                 fingerprint = _hash({"tool": tool_name, "arguments": args})
                 if fingerprint in seen:
@@ -229,50 +264,31 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
                 _observed(state, page_refs)
                 next_cursor = result["coverage"]["nextCursor"]
                 has_more = result["coverage"]["hasMore"]
-                if has_more:
+                oldest = state.get("observedStartAt")
+                reached_boundary = bool(oldest) and _instant(str(oldest)) <= start
+                # Jin10 returns newest-first pages. Once the bounded lower edge
+                # is reached, older advertised pages are outside this window.
+                if has_more and not reached_boundary:
                     require_next_request()
                     parameter = (client.pagination_argument(tool_name, admission_guard=require_next_request)
                                  if isinstance(client, Jin10Client) else client.pagination_argument(tool_name))
                 else:
                     parameter = None
-                if has_more and parameter not in {"cursor", "offset"}:
+                if has_more and not reached_boundary and parameter not in {"cursor", "offset"}:
                     state.update(state="partial", errorCode="pagination_parameter_unavailable")
                 seen.add(fingerprint)
                 state["pageFingerprints"] = list(state["pageFingerprints"]) + [fingerprint]
                 state["pagesFetched"] = int(state["pagesFetched"]) + 1
                 state["cursorField"] = parameter if parameter in {"cursor", "offset"} else None
-                state["cursor"] = next_cursor if has_more and state["cursorField"] else None
+                state["cursor"] = next_cursor if has_more and not reached_boundary and state["cursorField"] else None
+                state["terminalPagePending"] = bool(reached_boundary or not has_more)
                 # Version writes and response receipt have committed before the
                 # traversal cursor moves. A crash here replays the exact wire.
                 _save(context, source_key, state)
                 if state.get("errorCode") == "pagination_parameter_unavailable":
                     break
-                if not has_more:
-                    oldest = state.get("observedStartAt")
-                    if not oldest or _instant(str(oldest)) > start:
-                        gap = {"startAt": start.isoformat(), "endAt": oldest or slot.isoformat(),
-                               "reasonCode": "history_unavailable"}
-                        gaps = list(state.get("gaps", []))
-                        if gap not in gaps:
-                            gaps.append(gap)
-                        if state.get("historyGapAcknowledged"):
-                            # The bootstrap gap remains visible, but the
-                            # current bounded window is now complete. Advance
-                            # the normal watermark so the next slot does not
-                            # replay the retired bootstrap range.
-                            state.update(state="completed", coverageThrough=slot.isoformat(),
-                                         errorCode=None, gaps=gaps)
-                            _save(context, source_key, state, watermark_through=slot.isoformat())
-                        else:
-                            state.update(state="partial", errorCode="history_unavailable", gaps=gaps)
-                            _save(context, source_key, state)
-                    else:
-                        state.update(state="partial" if state.get("rejectedItems") else "completed",
-                                     coverageThrough=None if state.get("rejectedItems") else slot.isoformat(),
-                                     errorCode="source_item_invalid" if state.get("rejectedItems") else None)
-                        _save(context, source_key, state,
-                              watermark_through=None if state.get("rejectedItems") else slot.isoformat())
-                    return state
+                if state.get("terminalPagePending"):
+                    return finalize_page()
                 if next_cursor == cursor:
                     state.update(state="partial", errorCode="cursor_not_advanced")
                     break

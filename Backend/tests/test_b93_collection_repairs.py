@@ -541,7 +541,9 @@ def test_collector_restart_between_receipt_and_page_checkpoint_reuses_paid_reply
             page = 2 if arguments else 1
             result = {"structuredContent": {"status": 200, "data": {
                 "items": [{"id": f"list-{page}", "url": f"https://xnews.jin10.com/details/list-{page}",
-                           "time": "2026-09-26T15:00:00+08:00", "title": f"目录{page}"}],
+                           "time": ("2026-09-26T16:00:00+08:00" if page == 1
+                                     else "2026-09-26T15:00:00+08:00"),
+                           "title": f"目录{page}"}],
                 "has_more": page == 1, "next_offset": "page-2" if page == 1 else None}}}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
@@ -601,7 +603,9 @@ def test_collector_without_token_restores_paid_list_page_before_document_checkpo
             result = {"structuredContent": {"status": 200, "data": {
                 "items": [{"id": article_id,
                            "url": "https://xnews.jin10.com/details/" + article_id,
-                           "time": "2026-09-26T15:00:00+08:00", "title": "已付费目录原件"}],
+                           "time": ("2026-09-26T16:00:00+08:00" if not next_page
+                                    else "2026-09-26T15:00:00+08:00"),
+                           "title": "已付费目录原件"}],
                 "has_more": has_more and not next_page,
                 "next_offset": "page-2" if has_more and not next_page else None}}}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
@@ -619,8 +623,8 @@ def test_collector_without_token_restores_paid_list_page_before_document_checkpo
     state = collection_runtime._jin10_source(context, source_key="jin10-news", config=config,
         mcp=mcp, slot=NOW, token=None,
         client_factory=lambda **kwargs: Jin10Client(transport=transport, **kwargs))
-    assert state["state"] == ("partial" if has_more else "completed")
-    assert state["errorCode"] == ("credential_missing" if has_more else None)
+    assert state["state"] == "partial"
+    assert state["errorCode"] == ("credential_missing" if has_more else "history_unavailable")
     assert len(state["documentRefs"]) == 1
     assert methods == after_paid
     rows = store.load_document_versions(refs=state["documentRefs"], db_path=database)
@@ -654,7 +658,7 @@ def test_collection_page_receipt_settles_but_pause_blocks_metadata_lookup(tmp_pa
                 changed_at=NOW.isoformat(), changed_by="fixture", db_path=database)
             return {"structuredContent": {"status": 200, "data": {
                 "items": [{"id": "paused-page", "url": "https://xnews.jin10.com/details/paused-page",
-                           "time": "2026-09-26T15:00:00+08:00", "title": "已结算目录"}],
+                           "time": "2026-09-26T16:00:00+08:00", "title": "已结算目录"}],
                 "has_more": True, "next_offset": "page-2"}}}
         def pagination_argument(self, name):
             raise AssertionError("paused collection must not make a new MCP metadata request")

@@ -142,14 +142,14 @@ def test_history_gap_is_acknowledged_once_then_rolling_watermark_is_established(
     database, config_id, revision = _configured(tmp_path)
     FixtureJin10.calls = []
     first = _run_slot(database, config_id, revision,
-                      "2026-09-25T08:00:00+08:00", "2026-09-25T09:00:00+08:00")
+                      "2026-09-25T08:00:00+08:00", "2026-09-25T01:00:00+08:00")
     assert store.get_task(task_id=first, db_path=database).status == "failed"
     first_checkpoint = store.task_execution_input(task_id=first, db_path=database)["checkpoint"]
     assert first_checkpoint["sources"]["jin10-flash"]["errorCode"] == "history_unavailable"
     assert store.latest_source_watermark(source_key="jin10-flash", db_path=database) is None
 
     second = _run_slot(database, config_id, revision,
-                       "2026-09-25T20:00:00+08:00", "2026-09-25T19:00:00+08:00")
+                       "2026-09-25T20:00:00+08:00", "2026-09-25T07:00:00+08:00")
     assert store.get_task(task_id=second, db_path=database).status == "completed"
     second_checkpoint = store.task_execution_input(task_id=second, db_path=database)["checkpoint"]
     for source_key in ("jin10-flash", "jin10-news"):
@@ -530,7 +530,8 @@ def test_official_documented_jin10_aliases_keep_raw_flash_and_schema_page_parame
                 item_id = "20260328134122893800" if first else "20260328134122893801"
                 return {"structuredContent": {"status": 200, "data": {
                     "items": [{"id": item_id, "title": "", "content": "原始快讯完整内容",
-                               "time": "2026-09-25T00:00:00+08:00",
+                               "time": "2026-09-25T01:00:00+08:00" if first
+                                       else "2026-09-25T00:00:00+08:00",
                                "url": "https://flash.jin10.com/detail/" + item_id}],
                     "next_offset": "offset-one" if first else None,
                     "has_more": first}}}
