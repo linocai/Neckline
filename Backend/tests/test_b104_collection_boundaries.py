@@ -1,11 +1,9 @@
 """B104 collection-boundary regressions through the real CLI and worker."""
-import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-sys.path.insert(0, '/Users/linotsai/Lino/Neckline/Backend/tests')
-import test_b92_collection_flow as flow
+from tests import test_b92_collection_flow as flow
 from neckline.k10 import store
 from neckline.k10.collection_runtime import create_collection_handler
 from neckline.k10.worker import run_once
