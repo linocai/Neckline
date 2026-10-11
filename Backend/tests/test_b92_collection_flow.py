@@ -137,6 +137,31 @@ def test_real_cli_worker_two_slots_preserve_historical_run_coverage(tmp_path):
                for item in data["sources"])
 
 
+def test_history_gap_is_acknowledged_once_then_rolling_watermark_is_established(tmp_path):
+    """A provider bootstrap gap must not make every later slot replay history."""
+    database, config_id, revision = _configured(tmp_path)
+    FixtureJin10.calls = []
+    first = _run_slot(database, config_id, revision,
+                      "2026-09-25T08:00:00+08:00", "2026-09-25T09:00:00+08:00")
+    assert store.get_task(task_id=first, db_path=database).status == "failed"
+    first_checkpoint = store.task_execution_input(task_id=first, db_path=database)["checkpoint"]
+    assert first_checkpoint["sources"]["jin10-flash"]["errorCode"] == "history_unavailable"
+    assert store.latest_source_watermark(source_key="jin10-flash", db_path=database) is None
+
+    second = _run_slot(database, config_id, revision,
+                       "2026-09-25T20:00:00+08:00", "2026-09-25T19:00:00+08:00")
+    assert store.get_task(task_id=second, db_path=database).status == "completed"
+    second_checkpoint = store.task_execution_input(task_id=second, db_path=database)["checkpoint"]
+    for source_key in ("jin10-flash", "jin10-news"):
+        source = second_checkpoint["sources"][source_key]
+        assert source["state"] == "completed"
+        assert source["coverageThrough"] == "2026-09-25T20:00:00+08:00"
+        assert any(gap["reasonCode"] == "history_unavailable" for gap in source["gaps"])
+        watermark = store.latest_source_watermark(source_key=source_key, db_path=database)
+        assert watermark is not None and watermark["successCutoffAt"] == "2026-09-25T12:00:00+00:00"
+    assert len(FixtureJin10.calls) == 4
+
+
 def test_closed_report_and_unknown_kind_do_not_block_collection_queue(tmp_path):
     database, config_id, revision = _configured(tmp_path)
     store.enqueue_task(task_id="unknown-b92-kind", kind="unrecognized_work",

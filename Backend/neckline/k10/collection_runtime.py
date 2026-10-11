@@ -75,6 +75,44 @@ def _source_start(*, config: Mapping[str, Any], source_key: str, slot: datetime,
     return max(bootstrap, previous - lookback)
 
 
+def _jin10_history_resume(*, config: Mapping[str, Any], source_key: str,
+                          db_path: Path) -> dict[str, Any] | None:
+    """Return a bounded resume point after an acknowledged history gap.
+
+    Jin10 list endpoints can stop at the provider's oldest visible item during
+    the first B92 bootstrap. That gap is real, but restarting from 2026-09-26
+    on every slot is neither useful nor honest. Once a partial source has
+    durable observed data, resume near that observed boundary and retain the
+    original gap for audit. A later successful window may then establish the
+    normal source watermark.
+    """
+    if store.latest_source_watermark(source_key=source_key, db_path=db_path) is not None:
+        return None
+    prior = store.latest_collection_source_summary(source_key=source_key, db_path=db_path)
+    if not prior or prior.get("state") != "partial":
+        return None
+    gaps = prior.get("gaps")
+    if not isinstance(gaps, list) or not any(
+        isinstance(gap, Mapping) and gap.get("reasonCode") == "history_unavailable"
+        for gap in gaps
+    ):
+        return None
+    observed = prior.get("observedStartAt")
+    if not isinstance(observed, str):
+        return None
+    try:
+        boundary = _instant(observed)
+    except ValueError:
+        return None
+    lookback = timedelta(seconds=int(config["lookbackSeconds"]))
+    bootstrap = _instant(str(config["bootstrapStartAt"]))
+    return {
+        "start": max(bootstrap, boundary - lookback),
+        "gaps": [dict(gap) for gap in gaps if isinstance(gap, Mapping)],
+        "historyGapAcknowledged": True,
+    }
+
+
 def _base_state(source_key: str, start: datetime, slot: datetime) -> dict[str, Any]:
     return {"sourceKey": source_key, "state": "running",
             "requestedStartAt": start.isoformat(), "requestedEndAt": slot.isoformat(),
@@ -105,10 +143,20 @@ def _save(context: TaskContext, source_key: str, state: Mapping[str, Any], *,
 def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str, Any],
                   mcp: Mapping[str, Any], slot: datetime, token: str | None,
                   client_factory: Callable[..., Jin10Client]) -> dict[str, Any]:
-    start = _source_start(config=config, source_key=source_key, slot=slot, db_path=context.db_path)
+    history_resume = _jin10_history_resume(config=config, source_key=source_key, db_path=context.db_path)
+    start = (history_resume["start"] if history_resume is not None else
+             _source_start(config=config, source_key=source_key, slot=slot, db_path=context.db_path))
     sources = context.checkpoint.get("sources") if isinstance(context.checkpoint, Mapping) else None
     stored = sources.get(source_key) if isinstance(sources, Mapping) else None
     state = dict(stored) if isinstance(stored, Mapping) else _base_state(source_key, start, slot)
+    if history_resume is not None:
+        known_gaps = list(state.get("gaps", []))
+        for gap in history_resume["gaps"]:
+            if gap not in known_gaps:
+                known_gaps.append(gap)
+        state["gaps"] = known_gaps
+        state["limitations"] = list(dict.fromkeys([*state.get("limitations", []), "history_unavailable"]))
+        state["historyGapAcknowledged"] = True
     if state.get("state") == "completed":
         return state
     tool_name = "list_flash" if source_key == "jin10-flash" else "list_news"
@@ -202,10 +250,22 @@ def _jin10_source(context: TaskContext, *, source_key: str, config: Mapping[str,
                 if not has_more:
                     oldest = state.get("observedStartAt")
                     if not oldest or _instant(str(oldest)) > start:
-                        state.update(state="partial", errorCode="history_unavailable",
-                                     gaps=[*state.get("gaps", []), {"startAt": start.isoformat(), "endAt": oldest or slot.isoformat(),
-                                            "reasonCode": "history_unavailable"}])
-                        _save(context, source_key, state)
+                        gap = {"startAt": start.isoformat(), "endAt": oldest or slot.isoformat(),
+                               "reasonCode": "history_unavailable"}
+                        gaps = list(state.get("gaps", []))
+                        if gap not in gaps:
+                            gaps.append(gap)
+                        if state.get("historyGapAcknowledged"):
+                            # The bootstrap gap remains visible, but the
+                            # current bounded window is now complete. Advance
+                            # the normal watermark so the next slot does not
+                            # replay the retired bootstrap range.
+                            state.update(state="completed", coverageThrough=slot.isoformat(),
+                                         errorCode=None, gaps=gaps)
+                            _save(context, source_key, state, watermark_through=slot.isoformat())
+                        else:
+                            state.update(state="partial", errorCode="history_unavailable", gaps=gaps)
+                            _save(context, source_key, state)
                     else:
                         state.update(state="partial" if state.get("rejectedItems") else "completed",
                                      coverageThrough=None if state.get("rejectedItems") else slot.isoformat(),

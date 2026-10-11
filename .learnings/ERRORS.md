@@ -37,3 +37,28 @@ The first B69 cleanup receipt run compared the literal `/tmp` path with its reso
 The release cleanup script now treats the root as a fixed literal, verifies each direct child remains under it, checks `lsof`, and removes only the inventoried children.
 
 ---
+
+## [ERR-20261011-002] gnu_find_printf_on_macos
+
+**Logged**: 2026-10-11T16:10:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+Used GNU `find -printf` on macOS while inventorying reviewer evidence.
+
+### Error
+```
+find: -printf: unknown primary or operator
+```
+
+### Context
+The host uses BSD find; the reviewer evidence inventory was otherwise read-only.
+
+### Suggested Fix
+Use BSD `find -print` with `stat -f` for file metadata.
+
+### Metadata
+- Reproducible: yes
+- Related Files: /tmp/neckline-b102-evening-review-20261011/findings-current.json

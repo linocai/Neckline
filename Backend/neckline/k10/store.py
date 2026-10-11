@@ -2117,6 +2117,33 @@ def latest_source_watermark(*, source_key: str, db_path: Path) -> Optional[dict[
             "successCutoffAt": row[2], "fetchedAt": row[3], "scanId": row[4], "createdAt": row[5]}
 
 
+def latest_collection_source_summary(*, source_key: str, db_path: Path) -> Optional[dict[str, Any]]:
+    """Read the latest small source projection without loading paid replies.
+
+    A source can have a truthful historical bootstrap gap while still having a
+    usable current window. The next collection uses this projection as a
+    one-time rolling boundary when no success watermark exists; raw receipts
+    and document-reference trees stay out of the read path.
+    """
+    if source_key not in {"tushare-major-news", "jin10-flash", "jin10-news"}:
+        raise ValueError("未知采集来源")
+    with read_connection(db_path) as conn:
+        require_schema(conn)
+        rows = conn.execute(
+            f"SELECT task_id,{COLLECTION_SUMMARY_SQL} FROM k10_tasks "
+            "WHERE kind='collect_news' "
+            "ORDER BY julianday(json_extract(payload_json,'$.slotAt')) DESC,"
+            "julianday(created_at) DESC,task_id DESC",
+        ).fetchall()
+    for task_id, raw in rows:
+        summary = collection_summary(raw)
+        source = summary.get("sources", {}).get(source_key)
+        if not isinstance(source, Mapping) or source.get("state") not in {"partial", "completed"}:
+            continue
+        return {"taskId": str(task_id), **dict(source)}
+    return None
+
+
 def save_collection_source_checkpoint(*, task_id: str, worker_id: str, source_key: str,
                                       source_state: Mapping[str, Any], saved_at: datetime,
                                       db_path: Path, watermark_through: str | None = None,
@@ -5695,7 +5722,7 @@ __all__ = [
     "bind_scan_execution", "bind_task_execution", "completed_execution_items", "create_scan",
     "reject_completed_execution_checkpoint", "enqueue_task", "execution_progress_for_scan", "finalize_scan", "finish_task", "freeze_company_window_selection",
     "get_candidate", "get_company_window_selection", "get_observation", "get_opportunity", "get_opportunity_for_candidate", "get_publication_batch", "get_scan",
-    "latest_document_version", "latest_event_revision", "latest_market_day_facts", "latest_source_watermark", "list_candidates",
+    "latest_document_version", "latest_event_revision", "latest_market_day_facts", "latest_source_watermark", "latest_collection_source_summary", "list_candidates",
     "list_company_windows", "list_company_window_evaluations", "list_market_day_facts", "list_observations", "list_opportunities", "market_day_fact_id",
     "list_opportunity_lifecycle_events", "list_publication_batches", "list_publication_samples", "list_scans", "list_source_document_versions",
     "load_analysis_revision", "load_candidate_context", "load_document_versions", "load_observation_context",

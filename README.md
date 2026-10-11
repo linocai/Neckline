@@ -36,6 +36,8 @@ B92是全新业务数据起点。旧报告、任务、原件、付费账本、�
 
 本版生产使用策略`k10-v2-production@1`、执行`k10-v2-execution-production@1`和采集`k10-collection-production@1`，策略快照`k10-v2-20260909`。修订号由新库登记返回，不能照抄旧版本revision2。参数未配置时不得使用默认值。
 
+运行时契约文件：[k10-v2.json](Backend/neckline/config/k10-v2.json) · [k10-execution-v4.json](Backend/neckline/config/k10-execution-v4.json)。
+
 `/opt/neckline/.env`与`/etc/neckline/k10.env`合并后，`DB_PATH=K10_DB_PATH=/opt/neckline/data/neckline.db`、`PARQUET_DIR=K10_PARQUET_DIR=/opt/neckline/data/parquet`。API、worker、晨晚报、采集及行情服务必须共同绑定；readiness核对实际配置内容，不能仅检查HTTP200。当前官方交易日历覆盖2026–2027。
 
 当前数据恢复集位于`/opt/neckline/releases/v3.7.0-b102/recovery`，含10月9日20:00采集后的最新新库设置、53任务及精确回执，已通过NK92身份、完整性及压缩还原哈希校验；切换前后快照相同，复用一份，未回灌数据库。上级目录保留本版不可变制品，B101及此前代码回退保留，B101旧数据快照已被当前恢复点替代回收。任何新业务写入后不得整库覆盖，先核对并保留新写及外呼状态。旧数据恢复入口已退役，禁止回退旧业务库。
