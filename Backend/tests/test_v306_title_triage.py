@@ -16,7 +16,7 @@ import neckline.k10.title_triage as title_triage_module
 from neckline.k10.discovery import (DiscoveryDocument, EvidenceRef, EventDraft,
                                     Verification, deduplicate_documents, run_discovery)
 from neckline.k10.title_triage import (
-    TitleDTO,
+    TitleBatchOutcome, TitleDTO,
     TitleSelectionItem,
     TitleTriageProtocolError,
     TitleTriageResult,
@@ -119,6 +119,29 @@ def test_all_batches_complete_before_one_global_selection_and_no_per_batch_top_n
     assert len(selected.selected_refs) == 9  # morning is 40; no hidden per-batch quota
     assert checkpoints[-1]["stage"] == "title_selection"
     assert checkpoints[-1]["state"] == "frozen"
+
+
+def test_completed_title_batches_resume_directly_to_global_reconciliation():
+    items = _items(9)
+    batches = tuple(items[start:start + POLICY["batchSize"]] for start in range(0, len(items), POLICY["batchSize"]))
+    recovered = {index: TitleBatchOutcome(_batch(batch), ()) for index, batch in enumerate(batches)}
+    calls = []
+    checkpoints = []
+
+    def unexpected_batch(batch):
+        calls.append(batch)
+        raise AssertionError("a durable completed title batch was replayed")
+
+    selected = triage_titles(
+        items, window_kind="evening", policy=POLICY, batch_call=unexpected_batch,
+        reconcile_call=_choose, batch_concurrency=2, checkpoint=checkpoints.append,
+        completed_batches=recovered,
+    )
+
+    assert selected.selected_refs == tuple(item.ref for item in items)
+    assert calls == []
+    assert checkpoints[-1]["stage"] == "title_selection"
+    assert all(item["stage"] != "title_triage_batch" for item in checkpoints)
 
 
 def test_title_batches_use_only_the_explicit_concurrency_and_reconcile_after_all_complete():

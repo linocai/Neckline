@@ -894,6 +894,7 @@ def triage_titles(
     batch_concurrency: int,
     checkpoint: Callable[[Mapping[str, object]], None] | None = None,
     isolate_batch_failure: Callable[[int, tuple[TitleDTO, ...], BaseException], bool] | None = None,
+    completed_batches: Mapping[int, TitleBatchOutcome] | None = None,
 ) -> TitleSelection:
     """Understand every title, globally reconcile, and return frozen body admission.
 
@@ -927,6 +928,15 @@ def triage_titles(
     # Deterministic batch order survives both completion order and local gaps.
     # The caller alone decides whether a failure has a safe, durable boundary.
     completed: dict[int, TitleBatchOutcome] = {}
+    recovered: set[int] = set()
+    if completed_batches is not None:
+        for raw_index, outcome in completed_batches.items():
+            if isinstance(raw_index, bool) or not isinstance(raw_index, int) or not 0 <= raw_index < len(batches):
+                raise TitleTriageProtocolError("标题批次恢复索引无效")
+            if not isinstance(outcome, TitleBatchOutcome):
+                raise TitleTriageProtocolError("标题批次恢复结果无效")
+            completed[raw_index] = _validate_batch_outcome(batches[raw_index], outcome)
+            recovered.add(raw_index)
     isolated: set[int] = set()
     executor = ThreadPoolExecutor(max_workers=min(batch_concurrency, max(1, len(batches))))
     pending: dict[object, int] = {}
@@ -936,6 +946,9 @@ def triage_titles(
         # Keep a bounded submission window. A fatal failure cancels work that
         # has not begun; settled local gaps permit independent batches to run.
         while next_batch < len(batches) and len(pending) < batch_concurrency:
+            if next_batch in recovered:
+                next_batch += 1
+                continue
             future = executor.submit(run_batch, next_batch, batches[next_batch])
             pending[future] = next_batch
             next_batch += 1
@@ -962,6 +975,9 @@ def triage_titles(
                     future.cancel()
                 break
             while next_batch < len(batches) and len(pending) < batch_concurrency:
+                if next_batch in recovered:
+                    next_batch += 1
+                    continue
                 future = executor.submit(run_batch, next_batch, batches[next_batch])
                 pending[future] = next_batch
                 next_batch += 1
@@ -980,7 +996,7 @@ def triage_titles(
             continue
         parsed = completed[index].results
         results.extend(parsed)
-        if checkpoint is not None:
+        if checkpoint is not None and index not in recovered:
             checkpoint({"stage": "title_triage_batch", "state": "partial" if completed[index].failed_refs else "completed", "inputRefs": [
                 {"documentId": item.document_id, "revision": item.revision} for item in batch],
                 "resultRefs": [{"documentId": item.document_id, "revision": item.revision} for item in parsed]})

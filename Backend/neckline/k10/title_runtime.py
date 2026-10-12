@@ -12,7 +12,7 @@ from . import store
 from .failure_scope import local_model_failure_code
 from .discovery import DiscoveryDocument, deduplicate_documents
 from .title_triage import (
-    TitleTriageProtocolError, batch_request_spec, reconcile_request_spec,
+    TitleBatchOutcome, TitleTriageProtocolError, batch_request_spec, reconcile_request_spec,
     isolate_batch_response, validate_canonical_batch_result,
     normalize_reconcile_result, title_from_document_fields, triage_titles,
     validate_reconcile_result, validate_canonical_reconcile_result, isolate_reconcile_response,
@@ -115,6 +115,57 @@ def completed_title_batch_refs(*, task_id: str, documents: Sequence[DiscoveryDoc
         if (representative.document_id, representative.revision) in completed:
             completed.add((duplicate.document_id, duplicate.revision))
     return completed
+
+
+def completed_title_batches(*, task_id: str, batches: Sequence[tuple[Any, ...]], db_path: Path) -> dict[int, TitleBatchOutcome]:
+    """Reuse durable title-batch derivatives without replaying batch work.
+
+    A continuation may have settled every paid title batch while being
+    interrupted before global reconciliation. Rebuilding routing hints and
+    re-entering the model ledger for every batch on each slice can consume the
+    whole slice before the reconcile boundary is reached. Only accept a
+    checkpoint when its successful and failed refs map exactly to one current
+    batch; malformed or stale rows remain eligible for the normal batch path.
+    """
+    from .title_triage import validate_canonical_batch_result
+
+    ref_to_batch: dict[tuple[str, int], int] = {}
+    for index, batch in enumerate(batches):
+        for item in batch:
+            ref = item.ref
+            if ref in ref_to_batch:
+                raise TitleTriageProtocolError("标题批次恢复输入引用重复")
+            ref_to_batch[ref] = index
+    recovered: dict[int, TitleBatchOutcome] = {}
+    for row in store.completed_execution_items(task_id=task_id, item_kind="global",
+                                                stage="model:titleBatch", db_path=db_path):
+        raw = row.get("result")
+        if not isinstance(raw, Mapping):
+            continue
+        refs: set[tuple[str, int]] = set()
+        raw_items = raw.get("items")
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                if isinstance(item, Mapping) and isinstance(item.get("documentId"), str) \
+                        and isinstance(item.get("revision"), int) and not isinstance(item.get("revision"), bool):
+                    refs.add((item["documentId"], item["revision"]))
+        failed_refs = raw.get("failedRefs")
+        if isinstance(failed_refs, list):
+            for item in failed_refs:
+                if isinstance(item, Mapping) and isinstance(item.get("documentId"), str) \
+                        and isinstance(item.get("revision"), int) and not isinstance(item.get("revision"), bool):
+                    refs.add((item["documentId"], item["revision"]))
+        indices = {ref_to_batch.get(ref) for ref in refs}
+        if len(indices) != 1 or None in indices:
+            continue
+        index = next(iter(indices))
+        if index in recovered or refs != {item.ref for item in batches[index]}:
+            continue
+        try:
+            recovered[index] = validate_canonical_batch_result(raw, batches[index])
+        except (TitleTriageProtocolError, TypeError, ValueError, KeyError):
+            continue
+    return recovered
 
 
 class _FrozenTitleGap(Exception):
@@ -280,6 +331,9 @@ def select_title_documents(
     restored_gaps = tuple(saved_gaps.values())
 
     title_policy = {**approved, "batchSize": batch_size}
+    title_batches = tuple(tuple(titles[start:start + batch_size])
+                         for start in range(0, len(titles), batch_size))
+    completed_batches = completed_title_batches(task_id=task_id, batches=title_batches, db_path=db_path)
     title_positions = {item.ref: index for index, item in enumerate(titles)}
     compact_reconcile_contract = _uses_b82_compact_reconcile_contract(execution_profile)
     # Known subjects are separate trusted routing context, never old article bodies.
@@ -462,7 +516,8 @@ def select_title_documents(
 
     selection = triage_titles(titles, window_kind=window_kind, policy=title_policy,
         batch_call=batch_call, reconcile_call=reconcile_call,
-        batch_concurrency=batch_concurrency, checkpoint=progress, isolate_batch_failure=isolate_batch)
+        batch_concurrency=batch_concurrency, checkpoint=progress, isolate_batch_failure=isolate_batch,
+        completed_batches=completed_batches)
     final_items = selection.items
     selected_titles = tuple(item.ref for item in sorted(
         (item for item in final_items if item.disposition == "selected"),

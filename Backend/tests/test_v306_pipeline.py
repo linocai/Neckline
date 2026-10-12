@@ -125,32 +125,35 @@ def test_actual_http_title_pipeline_has_no_body_quota_and_resumes_without_replay
     assert len(calls) == before
 
 
-def test_incomplete_title_response_never_admits_any_body(tmp_path, monkeypatch):
+def test_incomplete_title_response_keeps_failed_row_out_of_selection(tmp_path, monkeypatch):
     path = tmp_path / "invalid-title.sqlite"
     documents, binding, model = _setup(path, count=4, duplicate=False)
     calls = _mock_http(monkeypatch, invalid_batch=True)
     selected = select_title_documents(documents=documents, window_kind="evening", task_id="titles",
         execution_profile=binding, model=model, db_path=path)
-    # R1 settles a malformed title batch as an explicit local gap.  It may
-    # produce a readable partial report, but the failed batch owns no formal
+    # R1 settles a malformed title row as an explicit local gap.  The usable
+    # rows may continue into a partial report; the failed row owns no formal
     # body admission or selection rank.
-    assert selected == ()
-    assert len(calls) == 2 and all(stage == "titles" for stage, _ in calls)
+    assert {document.document_id for document in selected} == {"article-0000", "article-0001", "article-0002"}
+    assert [stage for stage, _ in calls] == ["titles", "global"]
     manifest = store.read_title_selection_manifest(task_id="titles", db_path=path)
-    assert manifest is not None and manifest["selectedRefs"] == []
+    assert manifest is not None and {ref["documentId"] for ref in manifest["selectedRefs"]} == {
+        "article-0000", "article-0001", "article-0002"
+    }
     from neckline.k10.title_runtime import read_title_failures
     failures = read_title_failures(task_id="titles", db_path=path)
     assert failures == [{"batchIndex": 0,
                          "batchRefs": [{"documentId": document.document_id, "revision": document.revision}
                                        for document in documents],
-                         "inputRefs": [{"documentId": document.document_id, "revision": document.revision}
-                                       for document in documents],
-                         "reasonCode": "model_json_repair_exhausted"}]
+                         "inputRefs": [{"documentId": "article-0003", "revision": 1}],
+                         "partial": True,
+                         "reasonCode": "title_batch_partial",
+                         "rejectedCount": 1}]
     with store.read_connection(path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE task_id='titles'").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM k10_v2_article_admissions WHERE task_id='titles'").fetchone() == (3,)
     before = len(calls)
     with pytest.raises(PipelineError, match="准入"):
-        model.understand(document=documents[0])
+        model.understand(document=documents[3])
     assert len(calls) == before
 
 
