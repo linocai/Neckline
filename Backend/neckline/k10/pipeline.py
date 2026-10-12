@@ -3142,11 +3142,19 @@ def _b92_selected_body_documents(*, documents: Sequence[DiscoveryDocument], task
                                                                          list[dict[str, Any]]]:
     """Hydrate selected directory entries without changing the frozen title set."""
     result: list[DiscoveryDocument] = []
+    result_by_ref: dict[EvidenceRef, int] = {}
     companions: dict[EvidenceRef, EvidenceRef] = {}
     gaps: list[dict[str, Any]] = []
     for parent in documents:
         if parent.metadata.get("sourceKey") != "jin10-news" or parent.original_text:
-            result.append(parent)
+            # The frozen input can already contain the question-bound full
+            # revision alongside its directory revision.  A hydrated parent
+            # below may resolve to that same body revision; keep one exact
+            # source ref so discovery's duplicate guard cannot turn a local
+            # replacement into a global report failure.
+            if parent.evidence_ref not in result_by_ref:
+                result_by_ref[parent.evidence_ref] = len(result)
+                result.append(parent)
             continue
         parent_ref = _ref_payload(parent.evidence_ref)
         binding = store.selected_body_binding(task_id=task_id,
@@ -3179,7 +3187,11 @@ def _b92_selected_body_documents(*, documents: Sequence[DiscoveryDocument], task
             row.get("publishedAt"), row["fetchedAt"], row.get("originalText"),
             row.get("excerpt"), {**row.get("metadata", {}), "sourceKey": row["sourceKey"],
                                    "parentDirectoryRef": parent_ref})
-        result.append(body)
+        if body.evidence_ref not in result_by_ref:
+            result_by_ref[body.evidence_ref] = len(result)
+            result.append(body)
+        # Preserve the directory→body relationship even when the body was
+        # already present in the frozen input and therefore was not appended.
         companions[body.evidence_ref] = parent.evidence_ref
     return tuple(result), companions, gaps
 

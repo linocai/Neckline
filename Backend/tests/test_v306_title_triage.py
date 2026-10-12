@@ -9,10 +9,12 @@ import json
 from pathlib import Path
 import threading
 from concurrent.futures import ALL_COMPLETED, wait as wait_for_futures
+from datetime import datetime, timezone
 
 import pytest
 
 import neckline.k10.title_triage as title_triage_module
+import neckline.k10.pipeline as pipeline
 from neckline.k10.discovery import (DiscoveryDocument, EvidenceRef, EventDraft,
                                     Verification, deduplicate_documents, run_discovery)
 from neckline.k10.title_triage import (
@@ -489,6 +491,36 @@ def test_discovery_article_admission_preserves_frozen_order_and_count():
     assert understood == [EvidenceRef("source-1", 1), EvidenceRef("source-0", 1)]
     assert "inputCount" not in run.document_counts
     assert run.document_counts["articleAdmitted"] == 2
+
+
+def test_selected_body_hydration_deduplicates_body_already_in_frozen_input(monkeypatch):
+    parent = DiscoveryDocument(
+        "news-1", 1, "2026-09-08T12:00:00+00:00", "2026-09-08T12:01:00+00:00",
+        None, "目录摘要", {"sourceKey": "jin10-news", "title": "公告精选"},
+    )
+    body = DiscoveryDocument(
+        "news-1", 2, "2026-09-08T12:00:00+00:00", "2026-09-08T12:02:00+00:00",
+        "完整正文", None, {"sourceKey": "jin10-news", "title": "公告精选"},
+    )
+    monkeypatch.setattr(pipeline.store, "selected_body_binding", lambda **_: {
+        "bodyRef": {"documentId": body.document_id, "revision": body.revision},
+    })
+    monkeypatch.setattr(pipeline.store, "load_document_versions", lambda **_: [{
+        "documentId": body.document_id, "revision": body.revision,
+        "publishedAt": body.published_at, "fetchedAt": body.fetched_at,
+        "originalText": body.original_text, "excerpt": body.excerpt,
+        "metadata": dict(body.metadata), "sourceKey": "jin10-news",
+    }])
+
+    hydrated, companions, gaps = pipeline._b92_selected_body_documents(
+        documents=(parent, body), task_id="task", db_path=Path("/tmp/unused.sqlite"),
+        cutoff_at=datetime(2026, 9, 8, 13, tzinfo=timezone.utc), gateway=object(),
+        leaseguard=None, clock=lambda: datetime(2026, 9, 8, 13, tzinfo=timezone.utc),
+    )
+
+    assert [(item.document_id, item.revision) for item in hydrated] == [("news-1", 2)]
+    assert companions == {body.evidence_ref: parent.evidence_ref}
+    assert gaps == []
 
 
 def test_exact_body_dedup_preserves_all_source_refs_without_title_similarity_merging():
