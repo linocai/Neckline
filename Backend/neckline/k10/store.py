@@ -309,6 +309,83 @@ def record_title_triage_item(
         )
 
 
+def record_title_triage_items(
+    *, task_id: str, items: Sequence[Mapping[str, Any]], created_at: str, db_path: Path,
+) -> None:
+    """Persist one frozen title pass in a single transaction.
+
+    A full discovery window can contain tens of thousands of title rows. The
+    single-row helper remains useful for small API fixtures, while the worker
+    path must validate and insert the whole immutable set without paying one
+    SQLite commit per title.
+    """
+    records: list[tuple[str, int, int, str, str | None, str | None, int | None, int | None, str]] = []
+    seen: set[tuple[str, int]] = set()
+    allowed = {"candidate", "uncertain", "protected", "not_selected", "merged", "no_value", "exact_duplicate"}
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError("标题筛选批量条目无效")
+        document_id = item.get("documentId")
+        revision = item.get("revision")
+        batch_index = item.get("batchIndex")
+        disposition = item.get("disposition")
+        matter_key = item.get("matterKey")
+        merged_ref = item.get("mergedRef")
+        selection_rank = item.get("selectionRank")
+        audit_reason = item.get("auditReason")
+        if (not isinstance(document_id, str) or not document_id or isinstance(revision, bool) or not isinstance(revision, int) or revision < 1
+                or isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 0
+                or disposition not in allowed or (matter_key is not None and not isinstance(matter_key, str))
+                or (selection_rank is not None and (isinstance(selection_rank, bool) or not isinstance(selection_rank, int) or selection_rank < 1))
+                or not isinstance(audit_reason, str) or not audit_reason.strip()):
+            raise ValueError("标题筛选批量条目缺少有效来源或去向")
+        merged = None if merged_ref is None else _title_refs([merged_ref])[0]
+        if disposition in {"exact_duplicate", "merged"} and merged is None:
+            raise ValueError("精确重复或语义合并标题必须指向代表文章")
+        key = (document_id, revision)
+        if key in seen:
+            raise ValueError("标题筛选批量条目引用重复")
+        seen.add(key)
+        records.append((document_id, revision, batch_index, disposition, matter_key,
+                        None if merged is None else merged["documentId"],
+                        None if merged is None else merged["revision"], selection_rank, audit_reason))
+    if not records:
+        return
+    with write_connection(db_path) as conn:
+        _require_write_schema(conn)
+        manifest = conn.execute(
+            "SELECT input_refs_json,selection_status FROM k10_v2_title_triage_manifests WHERE task_id=?", (task_id,),
+        ).fetchone()
+        if manifest is None:
+            raise K10Conflict("标题筛选条目没有冻结 manifest")
+        if manifest[1] != "pending":
+            raise K10Conflict("全局选择已冻结，标题筛选条目不可改写")
+        input_keys = {(ref["documentId"], ref["revision"]) for ref in json.loads(manifest[0])}
+        if not seen <= input_keys:
+            raise K10Conflict("标题筛选批量条目不在冻结输入内")
+        existing = {
+            (row[0], int(row[1])): tuple(row[2:])
+            for row in conn.execute(
+                "SELECT document_id,revision,batch_index,disposition,matter_key,merged_document_id,merged_revision,selection_rank,audit_reason "
+                "FROM k10_v2_title_triage_items WHERE task_id=?", (task_id,)
+            )
+        }
+        inserts = []
+        for document_id, revision, batch_index, disposition, matter_key, merged_document_id, merged_revision, selection_rank, audit_reason in records:
+            expected = (batch_index, disposition, matter_key, merged_document_id, merged_revision, selection_rank, audit_reason)
+            old = existing.get((document_id, revision))
+            if old is not None:
+                if old != expected:
+                    raise K10Conflict("标题筛选条目不可被静默改写")
+                continue
+            inserts.append((task_id, document_id, revision, *expected, created_at))
+        if inserts:
+            conn.executemany(
+                "INSERT INTO k10_v2_title_triage_items(task_id,document_id,revision,batch_index,disposition,matter_key,"
+                "merged_document_id,merged_revision,selection_rank,audit_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", inserts,
+            )
+
+
 def read_title_triage_items(*, task_id: str, db_path: Path) -> list[dict[str, Any]]:
     with read_connection(db_path) as conn:
         require_schema(conn)
@@ -5734,7 +5811,7 @@ __all__ = [
     "is_discovery_retired", "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities",
     "read_execution_config", "read_fact_cache", "read_run_config", "read_title_selection_manifest",
     "read_title_triage_items", "read_title_triage_manifest", "read_title_triage_policy",
-    "record_article_outcome", "record_execution_checkpoint", "record_title_triage_item", "reopen_scan",
+    "record_article_outcome", "record_execution_checkpoint", "record_title_triage_item", "record_title_triage_items", "reopen_scan",
     "renew_task_lease", "retire_interrupted_discovery", "retry_task", "run_control_status", "run_control_execution_status",
     "schedule_task_retry", "set_run_control", "settle_external_attempt", "settle_model_response_attempt", "store_fact_cache",
     "task_execution_input", "task_execution_profile", "update_running_scan_coverage",

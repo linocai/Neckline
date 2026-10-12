@@ -527,11 +527,12 @@ def select_title_documents(
     batches = {title.ref: index // batch_size for index, title in enumerate(titles)}
     initial = {result.ref: result for result in selection.batch_results}
     failed_refs = {(r["documentId"], r["revision"]) for gap in saved_gaps.values() for r in gap["inputRefs"]}
+    triage_records: list[dict[str, Any]] = []
+    created_at = _now()
     for rank, (document, reason) in enumerate(direct, start=1):
-        store.record_title_triage_item(task_id=task_id, document_id=document.document_id,
-            revision=document.revision, batch_index=0, disposition="protected",
-            matter_key="body-required", merged_ref=None, selection_rank=rank,
-            audit_reason=reason, created_at=_now(), db_path=db_path)
+        triage_records.append({"documentId": document.document_id, "revision": document.revision,
+            "batchIndex": 0, "disposition": "protected", "matterKey": "body-required",
+            "mergedRef": None, "selectionRank": rank, "auditReason": reason})
     for item in final_items:
         if item.ref in failed_refs:
             continue
@@ -539,20 +540,21 @@ def select_title_documents(
         disposition = ("no_value" if item.disposition == "no_value" else "merged" if item.disposition == "merged" else "protected" if status == "correction_or_denial"
                        else "uncertain" if item.disposition == "selected" and status == "uncertain"
                        else "candidate" if item.disposition == "selected" else "not_selected")
-        store.record_title_triage_item(task_id=task_id, document_id=item.document_id, revision=item.revision,
-            batch_index=batches[item.ref], disposition=disposition, matter_key=item.matter_key,
-            merged_ref=None if item.merged_into is None else {"documentId": item.merged_into[0], "revision": item.merged_into[1]},
-            selection_rank=(item.selected_rank + len(direct) if item.selected_rank is not None else None),
-            audit_reason=item.reason, created_at=_now(), db_path=db_path)
+        triage_records.append({"documentId": item.document_id, "revision": item.revision,
+            "batchIndex": batches[item.ref], "disposition": disposition, "matterKey": item.matter_key,
+            "mergedRef": None if item.merged_into is None else {"documentId": item.merged_into[0], "revision": item.merged_into[1]},
+            "selectionRank": (item.selected_rank + len(direct) if item.selected_rank is not None else None),
+            "auditReason": item.reason})
     for ref, representative in duplicates.items():
         if ref in failed_refs:
             continue
         if representative not in initial and representative not in direct_refs:
             continue
-        store.record_title_triage_item(task_id=task_id, document_id=ref[0], revision=ref[1],
-            batch_index=batches.get(representative, 0), disposition="exact_duplicate", matter_key=None,
-            merged_ref={"documentId": representative[0], "revision": representative[1]}, selection_rank=None,
-            audit_reason="标题和正文完全相同，复用代表文章的筛选结果", created_at=_now(), db_path=db_path)
+        triage_records.append({"documentId": ref[0], "revision": ref[1],
+            "batchIndex": batches.get(representative, 0), "disposition": "exact_duplicate", "matterKey": None,
+            "mergedRef": {"documentId": representative[0], "revision": representative[1]}, "selectionRank": None,
+            "auditReason": "标题和正文完全相同，复用代表文章的筛选结果"})
+    store.record_title_triage_items(task_id=task_id, items=triage_records, created_at=created_at, db_path=db_path)
     selected_refs = [{"documentId": ref[0], "revision": ref[1]} for ref in final_refs]
     if guard is not None:
         guard()

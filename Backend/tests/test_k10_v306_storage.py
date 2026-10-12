@@ -95,6 +95,26 @@ def test_v306_freezes_all_title_audit_and_preoccupies_selected_articles(tmp_path
                                        matter_key="a", merged_ref=None, selection_rank=1, audit_reason="变化", created_at=NOW, db_path=path)
 
 
+def test_v306_bulk_title_audit_is_atomic_and_idempotent(tmp_path):
+    path = tmp_path / "bulk-selection.sqlite"
+    _task(path)
+    refs = [{"documentId": "a", "revision": 1}, {"documentId": "b", "revision": 1}]
+    policy = store.read_title_triage_policy(policy_id="v306-fixture-policy", revision=1, db_path=path)
+    assert policy is not None
+    store.freeze_title_triage_manifest(task_id="task", input_manifest_sha256=store._hash(refs), window_kind="evening",
+        policy_id=policy["policyId"], policy_revision=1, policy_content_sha256=policy["contentSha256"],
+        input_count=2, input_refs=refs, batch_count=1, title_status="frozen", created_at=NOW, db_path=path)
+    records = [
+        {"documentId": "a", "revision": 1, "batchIndex": 0, "disposition": "candidate", "matterKey": "a",
+         "mergedRef": None, "selectionRank": 1, "auditReason": "新事实"},
+        {"documentId": "b", "revision": 1, "batchIndex": 0, "disposition": "not_selected", "matterKey": "b",
+         "mergedRef": None, "selectionRank": None, "auditReason": "无关"},
+    ]
+    store.record_title_triage_items(task_id="task", items=records, created_at=NOW, db_path=path)
+    store.record_title_triage_items(task_id="task", items=records, created_at=NOW, db_path=path)
+    assert len(store.read_title_triage_items(task_id="task", db_path=path)) == 2
+
+
 def test_v306_attempts_are_idempotent_without_a_total_cap(tmp_path):
     path = tmp_path / "attempt.sqlite"
     _task(path)
