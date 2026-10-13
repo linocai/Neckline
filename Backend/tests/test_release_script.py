@@ -74,6 +74,23 @@ def test_load_release_rejects_tampered_artifacts(tmp_path):
         release.load_release(tmp_path / "rel", "v1-b3")
 
 
+def test_snapshot_keeps_only_the_verified_archive(tmp_path, monkeypatch):
+    import sqlite3
+    database = tmp_path / "neckline.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA application_id={release.APPLICATION_ID}")
+        for table in ("k10_tasks", "k10_external_attempts", "k10_model_response_receipts",
+                      "k10_source_document_versions"):
+            conn.execute(f"CREATE TABLE {table}(id INTEGER)")
+        conn.execute("INSERT INTO k10_tasks VALUES (1)")
+    monkeypatch.setattr(release, "DB", database)
+    (tmp_path / "rel").mkdir()
+    report = release.snapshot(tmp_path / "rel")
+    assert report["roundTripVerified"] and report["counts"]["k10_tasks"] == 1
+    assert sorted(p.name for p in (tmp_path / "rel/recovery").iterdir()) == ["pre-switch.db.gz"]
+
+
 def test_switch_refuses_symlinked_runtime_target(tmp_path):
     root = tmp_path / "root"
     (root / "neckline").mkdir(parents=True)

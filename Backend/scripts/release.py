@@ -70,7 +70,7 @@ def build(*, release: str, commit: str, out: Path) -> dict:
     backend = Path(__file__).resolve().parents[1]
     repo = backend.parent
     version, build_number = release.removeprefix("v").split("-b")
-    full_commit = subprocess.run(["git", "-C", str(repo), "rev-parse", commit],
+    full_commit = subprocess.run(["git", "-C", str(repo), "rev-parse", f"{commit}^{{commit}}"],
                                  check=True, capture_output=True, text=True).stdout.strip()
     app_py = subprocess.run(["git", "-C", str(repo), "show", f"{full_commit}:Backend/neckline/api/app.py"],
                             check=True, capture_output=True, text=True).stdout
@@ -105,8 +105,9 @@ def build(*, release: str, commit: str, out: Path) -> dict:
             "archiveSha256": file_sha256(tar_path), "wheel": wheels[0].name,
             "wheelSha256": file_sha256(wheels[0]),
         }
+        # Ship the switch script from the same commit as the runtime it installs.
+        shutil.copy2(tree / "scripts/release.py", out / release / "release.py")
     (target / "release-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    shutil.copy2(Path(__file__), out / release / "release.py")
     return {"release": release, "commit": full_commit, "files": len(manifest["backendFiles"]),
             "directory": str(out / release)}
 
@@ -221,8 +222,9 @@ def snapshot(directory: Path) -> dict:
               "databaseBytes": copy.stat().st_size, "archive": str(archive),
               "archiveBytes": archive.stat().st_size, "archiveSha256": file_sha256(archive),
               "roundTripVerified": True, "productionDatabaseRestored": False}
-    copy.unlink()
-    check.unlink()
+    for path in (copy, check):
+        for leftover in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+            leftover.unlink(missing_ok=True)
     (directory / "snapshot-verification.json").write_text(json.dumps(report, indent=2))
     return report
 

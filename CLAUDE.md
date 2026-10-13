@@ -47,7 +47,7 @@
 
 ## 发布
 
-- 对外版本号 3.7.0 不变时，快修只递增 build。后端每次发布递增 `Backend/neckline/api/app.py` 的 `RELEASE_SET`；客户端只在 `App/` 有改动时才递增 build、重新构建与签名。
+- 对外版本号 3.7.0 不变时，快修只递增 build。后端每次发布递增 `Backend/neckline/api/app.py` 的 `RELEASE_SET`；客户端只在 `App/` 有改动时才递增 build、重新构建与签名。两端一起改版本时用 `App/scripts/prepare_release_candidate.sh <版本> <build>`，它同步所有版本号并重新生成 Xcode 工程。
 - 后端发布只走 `Backend/scripts/release.py`：本地 `build --release <rs> --commit <sha> --out <暂存目录>` 从提交构建（不含工作区改动）；目录上传到 `/opt/neckline/releases/<rs>/` 后，在服务器以 root 跑 `release.py switch --release <rs> --previous <线上 rs>`。它会停服、做恢复点并还原校验、按清单增删替换文件并装 wheel，再把服务和 timer 恢复到切换前的状态并核对 health；任何一步失败自动回滚代码，生产库从不被覆盖。
 - 每个上线的后端 build 打不可变 tag `v<版本>-b<build>`，打在实际部署的 commit 上。
 - 一个 build 一份 `archive/v<版本>-b<build>_execution.md`：范围、验证、部署证据、回退点。PROJECT_PLAN 只留一行索引，README 只写已经上线的事实。
