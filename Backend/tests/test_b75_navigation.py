@@ -132,7 +132,9 @@ def test_direct_round_does_not_resend_navigation_and_refusal_stays_local(tmp_pat
     db,tid,task,calls,_=e2e._run(tmp_path,monkeypatch,v2=True,cli_entry=True)
     assert task.status=='completed' and len(wires)==1
     report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
-    assert report['status']==('partial' if still_refused else 'completed') and report['availableAt']
+    assert report['status']==('partial' if still_refused else 'completed')
+    # A refusal that leaves nothing rankable yields a readable result, not a formal report.
+    assert (report['availableAt'] is None and report['resultAvailableAt']) if still_refused else report['availableAt']
     if still_refused: assert report['coverageGaps'] and not report['eveningCards']
     else: assert report['eveningCards']
     with sqlite3.connect(db) as c:

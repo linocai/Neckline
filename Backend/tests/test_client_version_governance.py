@@ -61,13 +61,6 @@ def _pyproject_version() -> str:
     return m.group(1)
 
 
-def _project_yml_build() -> str:
-    data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
-    value = (data.get("settings") or {}).get("base", {}).get("CURRENT_PROJECT_VERSION")
-    assert value is not None, f"{_PROJECT_YML} 缺 settings.base.CURRENT_PROJECT_VERSION"
-    return str(value)
-
-
 def _project_yml_icon() -> str:
     data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
     target = ((data.get("targets") or {}).get("Neckline") or {})
@@ -116,13 +109,10 @@ def test_client_and_server_marketing_version_all_equal():
     )
 
 
-def test_release_icon_is_new_for_the_exact_marketing_version_and_build():
-    version = _project_yml_version()
-    build = _project_yml_build()
+def test_app_icon_is_one_asset_set_shared_by_both_configurations():
     icon = _project_yml_icon()
-    expected = f"AppIconV{version.replace('.', '')}B{build}"
-    assert icon == expected, f"AppIcon 必须随精确版本/build更名: {icon=} {expected=}"
-    assert (_ASSETS / f"{icon}.appiconset").is_dir(), f"缺少发布图标资产 {_ASSETS / f'{icon}.appiconset'}"
+    assert [path.name for path in _ASSETS.glob("*.appiconset")] == [f"{icon}.appiconset"], (
+        "只保留一份图标资产；图稿变化时才改名")
     pbx_text = _PBXPROJ.read_text(encoding="utf-8")
     assert pbx_text.count(f"ASSETCATALOG_COMPILER_APPICON_NAME = {icon};") == 2
 

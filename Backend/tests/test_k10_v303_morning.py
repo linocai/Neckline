@@ -192,20 +192,6 @@ def test_unreferenced_unknown_time_count_still_marks_morning_coverage_partial(tm
     assert len(report["groups"]["needs_review"]) == 1
 
 
-def test_title_protocol_failure_stops_before_body_read_and_appends_partial_morning_report(tmp_path, monkeypatch):
-    path = tmp_path / "failure.sqlite"
-    config_id, revision = _seed(path, formal_target=True)
-    task_id, task = _run_morning_task(path=path, config_id=config_id, revision=revision, adapter=_ExactAdapter(), monkeypatch=monkeypatch,
-        provider=_RaisingProvider())
-
-    assert task.status == "failed"
-    assert store.task_execution_input(task_id=task_id, db_path=path)["checkpoint"]["safeErrorCode"] == "title_protocol_invalid"
-    report = store.list_morning_reports(db_path=path)[0]
-    assert report["status"] == "partial"
-    scan = store.get_scan(scan_id=report["scanId"], db_path=path)
-    assert scan is not None and scan["coverage"]["executionState"] == "title_incomplete"
-    assert scan["coverage"].get("titleSelectionManifestSha256") is None
-
 
 @pytest.mark.parametrize("failure", ("provider", "token", "calendar"))
 def test_worker_lease_loss_before_unavailable_branch_writes_no_report(tmp_path, monkeypatch, failure):

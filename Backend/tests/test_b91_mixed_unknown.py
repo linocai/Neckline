@@ -190,7 +190,10 @@ def generate_mixed_unknown_acceptance(tmp_path, monkeypatch, *, unknown_kind="mo
         report = body["report"]
         assert body["schemaVersion"] == 10
         assert report["delivery"]["outcome"] == "partial"
-        assert report["availableAt"] and datetime.fromisoformat(report["availableAt"]) <= deadline
+        # Nothing rankable is not a formal report (no availableAt); its readable
+        # result must still land before the 09:20 deadline.
+        assert report["availableAt"] is None and report["delivery"]["rankingScope"] == "none"
+        assert report["resultAvailableAt"] and datetime.fromisoformat(report["resultAvailableAt"]) <= deadline
         assert report["discovery"]["outcome"] == "not_completed"
         items = report["morningReview"]["items"]
         good = next(item for item in items if item["companyCode"] != unknown_company)

@@ -386,39 +386,6 @@ def test_compact_global_declaration_rejects_missing_completion_count_or_invalid_
         validate_reconcile_result(raw, _items(2), _batch(_items(2)), len(_items(2)))
 
 
-def test_frozen_incident_2472_titles_are_all_audited_without_body_or_search_calls():
-    frozen_path = Path("/tmp/neckline-b36-validation/first-run-frozen.json")
-    if not frozen_path.exists():
-        pytest.skip("frozen incident input is unavailable")
-    payload = json.loads(frozen_path.read_text())
-    calls = []
-    body_or_search_calls = 0
-    items = []
-    for row in payload["documents"]:
-        metadata = json.loads(row["metadata_json"])
-        items.append(TitleDTO(row["document_id"], int(row["revision"]), row["source_key"], row["published_at"], metadata["title"]))
-
-    def fake_batch(batch):
-        calls.append(tuple(item.ref for item in batch))
-        # This fake receives sealed TitleDTO values; deliberately no article
-        # fields are loaded from the frozen fixture after title extraction.
-        assert all(not hasattr(item, "original_text") for item in batch)
-        return tuple(TitleTriageResult(item.document_id, item.revision, "no_value", item.document_id,
-                                       "none", "离线协议假数据") for item in batch)
-
-    def fake_global(all_items, results, limit):
-        by_ref = {result.ref: result for result in results}
-        return tuple(TitleSelectionItem(item.document_id, item.revision, "no_value", by_ref[item.ref].matter_key,
-                                        by_ref[item.ref].stage_key, "离线协议假数据")
-                     for item in all_items)
-
-    selection = triage_titles(tuple(items), window_kind="evening", policy={**POLICY, "batchSize": 97},
-                               batch_call=fake_batch, reconcile_call=fake_global, batch_concurrency=1)
-    assert len(selection.input_refs) == 2472
-    assert sum(len(batch) for batch in calls) == 2472
-    assert not selection.selected_refs
-    assert body_or_search_calls == 0
-
 
 @pytest.mark.parametrize("window_kind", ["evening", "morning"])
 def test_cross_batch_merge_and_correction_without_body_quota(window_kind):

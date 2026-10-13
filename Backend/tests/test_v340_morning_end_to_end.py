@@ -243,7 +243,9 @@ def test_b76_actual_morning_partial_contains_discovery_and_review_gaps(monkeypat
         assert connection.execute("SELECT COUNT(*) FROM k10_tasks WHERE kind='morning_review'").fetchone() == (0,)
     work_item_ids = [row[0] for row in items]  # Public incomplete-review IDs identify parent work items.
     assert work_item_ids and all(row[1] == "failed" for row in items)
-    assert review_refusal.child_requests == len(work_item_ids)
+    # B90 parallel reviews stop spending once the provider keeps refusing, so
+    # not every item posts; none may post twice.
+    assert 1 <= review_refusal.child_requests <= len(work_item_ids)
     existing_opportunity = store.get_opportunity_for_candidate(
         candidate_id=existing_candidate_id, db_path=morning_database,
     )
@@ -351,7 +353,7 @@ def test_b76_actual_morning_partial_contains_discovery_and_review_gaps(monkeypat
         assert connection.execute("SELECT COUNT(*) FROM k10_tasks WHERE kind='morning_review'").fetchone() == (0,)
     review_work_item_ids = [row[0] for row in review_items]
     assert review_work_item_ids and all(row[1] == "failed" for row in review_items)
-    assert review_refusal.child_requests == len(review_work_item_ids)
+    assert 1 <= review_refusal.child_requests <= len(review_work_item_ids)
 
     review_payload = _write_actual_morning_report(
         db_path=morning_review_database, config_id=review_config_id, config_revision=review_config_revision,

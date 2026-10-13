@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 import re
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 from . import store
 from .failure_scope import local_model_failure_code
@@ -117,7 +117,8 @@ def completed_title_batch_refs(*, task_id: str, documents: Sequence[DiscoveryDoc
     return completed
 
 
-def completed_title_batches(*, task_id: str, batches: Sequence[tuple[Any, ...]], db_path: Path) -> dict[int, TitleBatchOutcome]:
+def completed_title_batches(*, task_id: str, batches: Sequence[tuple[Any, ...]], db_path: Path,
+                            durable_gap_indices: Collection[int] = ()) -> dict[int, TitleBatchOutcome]:
     """Reuse durable title-batch derivatives without replaying batch work.
 
     A continuation may have settled every paid title batch while being
@@ -126,6 +127,9 @@ def completed_title_batches(*, task_id: str, batches: Sequence[tuple[Any, ...]],
     whole slice before the reconcile boundary is reached. Only accept a
     checkpoint when its successful and failed refs map exactly to one current
     batch; malformed or stale rows remain eligible for the normal batch path.
+    A batch with rejected rows is reused only once its gap checkpoint is
+    durable; otherwise the normal path replays the paid reply without rebilling
+    and writes that gap, which a crash between the two writes would lose.
     """
     from .title_triage import validate_canonical_batch_result
 
@@ -160,6 +164,8 @@ def completed_title_batches(*, task_id: str, batches: Sequence[tuple[Any, ...]],
             continue
         index = next(iter(indices))
         if index in recovered or refs != {item.ref for item in batches[index]}:
+            continue
+        if raw.get("rejectedCount") and index not in durable_gap_indices:
             continue
         try:
             recovered[index] = validate_canonical_batch_result(raw, batches[index])
@@ -333,7 +339,8 @@ def select_title_documents(
     title_policy = {**approved, "batchSize": batch_size}
     title_batches = tuple(tuple(titles[start:start + batch_size])
                          for start in range(0, len(titles), batch_size))
-    completed_batches = completed_title_batches(task_id=task_id, batches=title_batches, db_path=db_path)
+    completed_batches = completed_title_batches(task_id=task_id, batches=title_batches, db_path=db_path,
+                                                durable_gap_indices=saved_gaps.keys())
     title_positions = {item.ref: index for index, item in enumerate(titles)}
     compact_reconcile_contract = _uses_b82_compact_reconcile_contract(execution_profile)
     # Known subjects are separate trusted routing context, never old article bodies.

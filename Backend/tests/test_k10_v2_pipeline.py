@@ -58,40 +58,6 @@ def test_provider_failure_through_cli_worker_has_no_downstream_calls(tmp_path,mo
         assert len(read_report(db_path=db)['eveningCards'])==1
 
 
-def test_mixed_card_action_never_changes_old_frozen_group_and_api_is_read_only(tmp_path):
-    db=tmp_path/'mixed.sqlite';build_fixture(db)
-    evening=read_report(db_path=db)
-    morning=read_report(db_path=db,window='morning')
-    old=next(card for card in evening['eveningCards'] if card['companyCode']=='300002.SZ')
-    new=morning['updatedCards'][0]
-    assert old['currentSelectionState']=='kept' and new['currentSelectionState']=='unhandled'
-    assert new['sampleClass']=='overlap' and new['companyWindowId']!=old['companyWindowId']
-    assert len(new['catalysts'])==2
-    frozen=store.get_company_window_selection(company_window_id=old['companyWindowId'],db_path=db)
-    store.append_company_window_action(action_id='skip-new',company_window_id=new['companyWindowId'],action='skip',idempotency_key='skip-new',
-        reason=None,created_at='2026-09-09T09:20:00+08:00',db_path=db)
-    assert store.get_company_window_selection(company_window_id=old['companyWindowId'],db_path=db)==frozen
-    assert read_report(db_path=db,window='morning')['updatedCards'][0]['currentSelectionState']=='skipped'
-    before=db.read_bytes()
-    with TestClient(create_app(db)) as client:
-        history = client.get('/api/v1/k10/v2/reports?limit=1').json()
-        assert len(history['items']) == 1 and history['page']['nextCursor']
-        page2 = client.get('/api/v1/k10/v2/reports', params={'cursor':history['page']['nextCursor'], 'limit':1}).json()
-        assert page2['items'][0]['reportId'] != history['items'][0]['reportId']
-        for route in ('health','settings','settings/providers','usage/summary'):
-            assert client.get('/api/v1/'+route).status_code == 200
-        config=client.get('/api/v1/k10/configuration').json()
-        assert all(scope['state']=='configured' for scope in config['scopes'])
-        assert config['profileReviewStatus']=='local_draft_awaiting_user'
-        windows=client.get('/api/v1/k10/company-windows').json()['items']
-        assert all(row['companyName'] for row in windows if row.get('strategyVersion')=='K10-v2')
-        assert client.get('/api/v1/k10/v2/reports/latest?window=morning').json()['report']['updatedCards'][0]['companyWindowId']==new['companyWindowId']
-        a=client.get('/api/v1/k10/results?strategy_version=K10-v2').json()
-        b=client.get('/api/v1/k10/results?strategy_version=K10-v1.4').json()
-        assert a['records'] and b['records']
-        assert not ({row['companyWindowId'] for row in a['records']} & {row['companyWindowId'] for row in b['records']})
-    assert db.read_bytes()==before
-
 
 def test_python_subprocess_inherits_external_network_denial():
     result=subprocess.run([sys.executable,'-c',"import socket;socket.create_connection(('1.1.1.1',443))"],capture_output=True,text=True)

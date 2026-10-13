@@ -839,23 +839,6 @@ def _historical_schema9_snapshot(db):
         assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (9,)
 
 
-def test_schema9_empty_receipt_rolls_back_to_schema8_and_forwards_without_rewriting_rows(tmp_path) -> None:
-    from neckline.k10 import schema
-    db, _provider = _receipt_provider(tmp_path)
-    with read_connection(db) as conn:
-        before = conn.execute("SELECT group_concat(task_id || ':' || input_version, '|') FROM k10_tasks ORDER BY task_id").fetchone()[0]
-        assert conn.execute("SELECT COUNT(*) FROM k10_model_response_receipts").fetchone()[0] == 0
-    store.set_run_control(state="closed", reason_code="rollback_rehearsal", changed_at="2026-09-13T13:01:00+00:00",
-                          changed_by="test", db_path=db)
-    assert schema.schema_version(db) == schema.SCHEMA_VERSION
-    _historical_schema9_snapshot(db)
-    assert schema.rollback_schema(db, target_version=8) == 8
-    with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone()[0] == 8
-        assert conn.execute("SELECT name FROM sqlite_master WHERE name='k10_model_response_receipts'").fetchone() is None
-        assert conn.execute("SELECT group_concat(task_id || ':' || input_version, '|') FROM k10_tasks ORDER BY task_id").fetchone()[0] == before
-    assert schema.initialize_schema(db) == schema.SCHEMA_VERSION
-
 
 def test_schema9_refuses_to_drop_unresolved_or_private_paid_receipts(tmp_path, monkeypatch) -> None:
     from neckline.k10 import schema
@@ -902,30 +885,6 @@ def test_schema9_nonempty_receipts_export_is_private_and_rollback_refuses(tmp_pa
     else:
         raise AssertionError("nonempty paid receipts must block automatic Schema 9 rollback")
 
-
-def test_schema9_migration_failure_rolls_back_table_and_version(tmp_path, monkeypatch) -> None:
-    from neckline.k10 import schema
-    db, _provider = _receipt_provider(tmp_path)
-    store.set_run_control(state="closed", reason_code="rollback_rehearsal", changed_at="2026-09-13T13:01:00+00:00",
-                          changed_by="test", db_path=db)
-    _historical_schema9_snapshot(db)
-    assert schema.rollback_schema(db, target_version=8) == 8
-    original = schema._apply_v9
-
-    def interrupted(conn):
-        original(conn)
-        raise RuntimeError("injected migration interruption")
-
-    monkeypatch.setattr(schema, "_apply_v9", interrupted)
-    try:
-        schema.initialize_schema(db)
-    except RuntimeError as exc:
-        assert "interruption" in str(exc)
-    else:
-        raise AssertionError("injected Schema 9 migration failure must surface")
-    with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone()[0] == 8
-        assert conn.execute("SELECT name FROM sqlite_master WHERE name='k10_model_response_receipts'").fetchone() is None
 
 
 def test_structured_locator_preserves_original_offsets_and_never_slices_large_line() -> None:

@@ -28,7 +28,7 @@
 既不属于新表也不属于旧表的孤儿行,而全量重拉本来就只要两次 API 调用。
 
 **注入点**:`fetch_classify` / `fetch_members` 两个 fetcher 可覆盖(单测传假 client,
-⛔ 不联网);`db_path` 可覆盖(⛔ 测试不许落工作库,AGENTS.md)。
+⛔ 不联网);`db_path` 可覆盖(⛔ 测试不许落工作库,CLAUDE.md)。
 """
 
 from __future__ import annotations

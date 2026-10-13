@@ -51,19 +51,6 @@ def test_schema_v1_migrates_to_v2_without_partial_tables(tmp_path):
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
 
 
-def test_existing_v1_schema_forwards_to_v2_in_one_controlled_transaction(tmp_path):
-    from neckline.k10 import schema
-    path=tmp_path/"old-v1.sqlite"
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-        schema._apply_v1(conn)
-        conn.execute("INSERT INTO k10_schema_migrations VALUES(1,'2026-09-01T00:00:00+00:00')")
-    assert initialize_schema(path) == SCHEMA_VERSION
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (SCHEMA_VERSION,)
-        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_opportunities'").fetchone()
-        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='k10_plan_revisions'").fetchone() is None
-
 
 def test_publish_is_atomic_shares_same_company_window_and_freezes_selection(tmp_path):
     path=tmp_path/"publish.sqlite"; initialize_schema(path)

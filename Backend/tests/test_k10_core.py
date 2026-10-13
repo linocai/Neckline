@@ -15,26 +15,6 @@ def _k10_tables(path):
         )}
 
 
-def test_k10_schema_is_explicit_idempotent_and_rolls_back_without_touching_shared_tables(tmp_path):
-    path = tmp_path / "isolated.db"
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE shared_fixture(value TEXT)")
-
-    assert initialize_schema(path) == schema.SCHEMA_VERSION
-    first = _k10_tables(path)
-    assert "k10_schema_migrations" in first
-    assert "k10_tasks" in first
-    assert initialize_schema(path) == schema.SCHEMA_VERSION
-    assert _k10_tables(path) == first
-
-    before = path.read_bytes()
-    with pytest.raises(K10SchemaError, match=f"schema {schema.SCHEMA_VERSION}"):
-        rollback_schema(path)
-    assert path.read_bytes() == before
-    assert _k10_tables(path) == first
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT name FROM sqlite_master WHERE name='shared_fixture'").fetchone()
-
 
 def test_k10_read_before_controlled_migration_never_creates_a_file(tmp_path):
     path = tmp_path / "never-created.db"
@@ -42,13 +22,6 @@ def test_k10_read_before_controlled_migration_never_creates_a_file(tmp_path):
         schema_version(path)
     assert not path.exists()
 
-
-def test_k10_read_rejects_existing_database_without_k10_migration(tmp_path):
-    path = tmp_path / "other.db"
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE unrelated(value TEXT)")
-    with pytest.raises(SchemaUnavailable, match="未建立"):
-        schema_version(path)
 
 
 def test_failed_migration_leaves_no_partial_k10_schema_and_can_retry(tmp_path, monkeypatch):

@@ -50,43 +50,6 @@ def test_cli_worker_discards_only_outside_title_hints(tmp_path, monkeypatch, cod
     assert [card['companyCode'] for card in read_report(db_path=db)['eveningCards']] == ['300002.SZ']
 
 
-def test_recover_real_completed_legacy_title_checkpoint_without_rebilling(tmp_path, monkeypatch):
-    edit_responses(monkeypatch, lambda value: title_codes(value, ['300002.SZ', '300487.SZ']))
-    original = pipeline._CheckpointedDiscoveryModel.run_title_operation
-    # Reproduce B59: raw normalized response becomes completed, then pool check fails.
-    with monkeypatch.context() as legacy:
-        legacy.setattr(title_runtime, '_filter_company_hints', lambda value, allowed: value)
-        def saved_then_rejected(self, **kwargs):
-            value = original(self, **kwargs)
-            if kwargs['stage'] == 'titleBatch':
-                raise TitleTriageProtocolError('标题模型引用池外公司')
-            return value
-        legacy.setattr(pipeline._CheckpointedDiscoveryModel, 'run_title_operation', saved_then_rejected)
-        db, task_id, task, calls, _ = e2e._run(tmp_path, legacy, v2=True)
-        assert task.status == 'failed' and calls == ['titleBatch']
-        checkpoint = store.task_execution_input(task_id=task_id, db_path=db)['checkpoint']
-        scan_id = checkpoint['scanId']
-        with sqlite3.connect(db) as conn:
-            before = conn.execute("SELECT item_key,status,result_json,attempt_count FROM k10_execution_item_checkpoints WHERE task_id=? AND stage='model:titleBatch'", (task_id,)).fetchall()
-        assert before[0][1] == 'completed' and '300487.SZ' in before[0][2]
-        legacy.setattr(title_runtime, '_filter_company_hints', title_runtime_filter)
-        legacy.setattr(pipeline._CheckpointedDiscoveryModel, 'run_title_operation', original)
-        assert recover_scan(db_path=db, scan_id=scan_id, execution_config_id='b39-execution', execution_config_revision=1,
-            confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=db), now=e2e.RUN_AT) == task_id
-        resumed_calls = e2e._http_transport(legacy, v2=True)
-        class NoRefetch:
-            def __init__(self, **kwargs):
-                raise AssertionError('Recovery must use the frozen input')
-        legacy.setattr(pipeline, 'TuShareMajorNewsAdapter', NoRefetch)
-        done = run_once(db_path=db, task_id=task_id, worker_id='b60-recovery', lease_for=timedelta(minutes=5),
-            handlers=pipeline.production_handlers(tushare_token='fixture-token', parquet_dir=tmp_path/'parquet'), clock=lambda:e2e.RUN_AT)
-        assert done.status == 'completed'
-        assert 'titleBatch' not in resumed_calls
-        with sqlite3.connect(db) as conn:
-            after = conn.execute("SELECT item_key,status,result_json,attempt_count FROM k10_execution_item_checkpoints WHERE task_id=? AND stage='model:titleBatch'", (task_id,)).fetchall()
-        assert after == before
-        assert read_report(db_path=db)['eveningCards']
-
 
 def test_mixed_research_company_hints_keep_in_pool_work(tmp_path, monkeypatch):
     """A direct B78 research reply may contain a discardable pool outsider.

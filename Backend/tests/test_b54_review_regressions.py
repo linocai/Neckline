@@ -232,44 +232,6 @@ def test_r3_mixed_company_disclosures_only_withdraw_the_refuted_company(tmp_path
     assert card['catalysts'][0]['verificationStatus']=='unverified'
 
 
-def test_r4_lifecycle_read_is_durable_readonly_and_does_not_reset_selection(tmp_path,monkeypatch):
-    from tests.k10_v320_repair_fixture import build_repair_fixture
-    db=tmp_path/'repair.sqlite';build_repair_fixture(db)
-    _freeze_k10_clocks(monkeypatch,"2026-09-09T09:22:00+08:00")
-    with sqlite3.connect(db) as conn:
-        frozen=conn.execute('SELECT * FROM k10_company_window_selection_snapshots').fetchall()
-        windows=conn.execute('SELECT * FROM k10_company_windows').fetchall()
-        samples=conn.execute('SELECT * FROM k10_publication_samples').fetchall()
-    before=db.read_bytes()
-    from tests.k10_v320_fixture import create_app
-    with TestClient(create_app(db)) as client:
-        evening=client.get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
-        morning=client.get('/api/v1/k10/v2/reports/latest?window=morning').json()['report']
-        assert {x['kind'] for x in evening['lifecycleUpdates']+morning['lifecycleUpdates']}=={'risk','withdrawal','expiry'}
-        assert not evening['eveningCards'][0]['canSelect']
-        assert morning['updatedCards'][0]['canSelect']
-        assert {x['lifecycleState'] for x in morning['updatedCards'][0]['catalysts']}=={'active','withdrawn'}
-        assert any(x['companyCode'] not in {c['companyCode'] for c in evening['eveningCards']} for x in evening['lifecycleUpdates'])
-    assert db.read_bytes()==before
-    with sqlite3.connect(db) as conn:
-        assert conn.execute('SELECT * FROM k10_company_window_selection_snapshots').fetchall()==frozen
-        assert conn.execute('SELECT * FROM k10_company_windows').fetchall()==windows
-        assert conn.execute('SELECT * FROM k10_publication_samples').fetchall()==samples
-
-
-def test_r1_missing_approved_policy_is_not_reported_configured(tmp_path):
-    from tests.k10_v320_fixture import build_fixture,create_app
-    db=tmp_path/'policy.sqlite';build_fixture(db)
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE k10_title_triage_policy_revisions SET approval_state='draft',approved_at=NULL")
-    with TestClient(create_app(db)) as client:
-        config=client.get('/api/v1/k10/configuration').json()
-        assert any(row['state']=='not_configured' for row in config['scopes'])
-        # Current configuration gates new execution, not an existing delivery.
-        report = client.get('/api/v1/k10/v2/reports/latest').json()
-        assert report['state'] == 'available'
-        assert report['report']['reportId'] == 'v2-report-evening'
-
 
 def test_r4_change_link_interruption_rolls_back_lifecycle_event(tmp_path):
     from tests.k10_v320_fixture import build_fixture

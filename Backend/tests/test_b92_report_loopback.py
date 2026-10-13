@@ -271,7 +271,8 @@ def _news_wire(*, article: bool = False, empty_question: bool = False):
     return ProtocolWire(reply=reply, tools=tools)
 
 
-def _make_evening(tmp_path, monkeypatch, *, research_mode="direct", understand_mode="distinct"):
+def _make_evening(tmp_path, monkeypatch, *, research_mode="direct", understand_mode="distinct",
+                  recover_after_freeze=False, unauthorized_reentry=False):
     db_path = tmp_path / "b92-flash.sqlite"
     run_id, run_rev, exec_id, exec_rev, collection_id, collection_rev = _bindings(db_path)
     _cli("collection-control", "--db", str(db_path), "--state", "open",
@@ -310,6 +311,15 @@ def _make_evening(tmp_path, monkeypatch, *, research_mode="direct", understand_m
         "--config-revision", str(run_rev), "--execution-config-id", exec_id,
         "--execution-config-revision", str(exec_rev))
     faults = []
+    original_freeze = pipeline.freeze_discovery_run
+    interrupted = {"value": False}
+    if recover_after_freeze:
+        def interrupt_once(run):
+            if not interrupted["value"]:
+                interrupted["value"] = True
+                raise RuntimeError("deterministic post-checkpoint interruption")
+            return original_freeze(run)
+        monkeypatch.setattr(pipeline, "freeze_discovery_run", interrupt_once)
     def handler(context):
         try:
             return pipeline.production_scan_handler(context, tushare_token=None,
@@ -320,7 +330,48 @@ def _make_evening(tmp_path, monkeypatch, *, research_mode="direct", understand_m
     result = run_once(db_path=db_path, task_id=report_task, worker_id="b92-report",
         lease_for=timedelta(minutes=5), clock=lambda: RUN_AT,
         handlers={"evening_scan": handler}, require_b76_contract=True)
-    assert result is not None and result.status == "completed", faults
+    if recover_after_freeze:
+        assert result is not None and result.status == "failed", (faults, result)
+        failed_input = store.task_execution_input(task_id=report_task, db_path=db_path)
+        failed_scan = store.get_scan(scan_id=failed_input["checkpoint"]["scanId"], db_path=db_path)
+        assert failed_scan is not None and failed_scan["status"] == "failed"
+        assert failed_scan["coverage"]["inputSnapshotFrozen"] is True
+        before_calls = (len(wire.tool_calls), len(transport.calls))
+        if unauthorized_reentry:
+            # A stale re-claim (e.g. a crash between finalizing the scan and the
+            # task) must not revive a scan that was failed without a grant.
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("UPDATE k10_tasks SET status='queued',lease_owner=NULL,lease_until=NULL "
+                             "WHERE task_id=?", (report_task,))
+            stale = run_once(db_path=db_path, task_id=report_task, worker_id="b92-stale",
+                lease_for=timedelta(minutes=5), clock=lambda: RUN_AT,
+                handlers={"evening_scan": handler}, require_b76_contract=True)
+            assert stale is not None and stale.status == "failed"
+            with sqlite3.connect(db_path) as conn:
+                stage = conn.execute("SELECT stage FROM k10_tasks WHERE task_id=?", (report_task,)).fetchone()[0]
+            assert stage == "scan_terminal"
+            still_failed = store.get_scan(scan_id=failed_input["checkpoint"]["scanId"], db_path=db_path)
+            assert still_failed["status"] == "failed"
+            assert (len(wire.tool_calls), len(transport.calls)) == before_calls
+        profile = store.task_execution_profile(task_id=report_task, db_path=db_path)
+        assert profile is not None
+        from neckline.k10.cli import frozen_scan_input_sha256
+        digest = frozen_scan_input_sha256(scan_id=failed_input["checkpoint"]["scanId"], db_path=db_path)
+        recovered_task = _cli(
+            "recover-scan", "--db", str(db_path), "--scan-id", failed_input["checkpoint"]["scanId"],
+            "--execution-config-id", profile["configId"], "--execution-config-revision", str(profile["revision"]),
+            "--confirm-frozen-input-sha256", digest,
+        )
+        assert recovered_task == report_task
+        authorized = store.task_execution_input(task_id=report_task, db_path=db_path)["checkpoint"]
+        assert authorized["recoveryAuthorized"]["frozenInputSha256"] == digest
+        result = run_once(db_path=db_path, task_id=report_task, worker_id="b92-report-recovery",
+            lease_for=timedelta(minutes=5), clock=lambda: RUN_AT,
+            handlers={"evening_scan": handler}, require_b76_contract=True)
+        assert result is not None and result.status == "completed", faults
+        assert (len(wire.tool_calls), len(transport.calls)) == before_calls
+    else:
+        assert result is not None and result.status == "completed", faults
     assert [call["params"]["name"] for call in wire.tool_calls[:3]] == [
         "list_flash", "list_news", "get_news"]
     if research_mode == "direct":
@@ -407,8 +458,67 @@ def _make_evening(tmp_path, monkeypatch, *, research_mode="direct", understand_m
             "wire": wire, "transport": transport, "tavily": tavily}
 
 
+def test_rebootstrapped_execution_revision_leaves_old_backlog_out_of_first_evening(tmp_path, monkeypatch):
+    """Scheme A: a new execution revision moves the first-evening boundary forward."""
+    db_path = tmp_path / "b92-rebootstrap.sqlite"
+    run_id, run_rev, exec_id, _old_rev, collection_id, collection_rev = _bindings(db_path)
+    _cli("collection-control", "--db", str(db_path), "--state", "open",
+         "--config-id", collection_id, "--config-revision", str(collection_rev))
+    collection_task = _cli("enqueue-collection", "--db", str(db_path), "--slot", SLOT.isoformat(),
+                           "--config-id", collection_id, "--config-revision", str(collection_rev))
+    run_once(db_path=db_path, task_id=collection_task, worker_id="b92-collection",
+        lease_for=timedelta(minutes=5), clock=lambda: RUN_AT,
+        handlers={"collect_news": create_collection_handler(tushare_token=None, jin10_token=None)},
+        require_b76_contract=True)
+    with sqlite3.connect(db_path) as conn:
+        for doc, fetched in (("backlog", "2026-09-25T12:00:00+00:00"), ("fresh", "2026-09-26T03:00:00+00:00")):
+            conn.execute("INSERT INTO k10_source_documents VALUES (?,?,?,NULL,?)", (doc, "jin10-flash", doc, fetched))
+            conn.execute("INSERT INTO k10_source_document_versions VALUES (?,1,?,?,'exact',?,?,NULL,'fixture','{}',?)",
+                         (doc, "sha-" + doc, fetched, fetched, doc + " original", fetched))
+    # The operator procedure: a new execution revision with the new bootstrap,
+    # a strategy revision naming a new snapshot, and an explicit binding of both.
+    execution_payload = json.loads((CONFIG_DIR / "k10-execution-v4.json").read_text())
+    execution_payload["discovery"]["collectedInputBootstrapAt"] = "2026-09-26T08:00:00+08:00"
+    execution_file = tmp_path / "execution-rebootstrap.json"
+    execution_file.write_text(json.dumps(execution_payload))
+    rebootstrapped = json.loads(_cli("configure-execution", "--db", str(db_path),
+        "--config-id", exec_id, "--file", str(execution_file)))
+    assert rebootstrapped["configId"] == exec_id and rebootstrapped["revision"] > _old_rev
+    strategy_payload = store.read_run_config(config_id=run_id, revision=run_rev, db_path=db_path)["payload"]
+    strategy_payload = {**strategy_payload, "strategySnapshotId": strategy_payload["strategySnapshotId"] + "-r2"}
+    strategy_file = tmp_path / "strategy-rebootstrap.json"
+    strategy_file.write_text(json.dumps(strategy_payload))
+    strategy = json.loads(_cli("configure", "--db", str(db_path), "--config-id", run_id, "--file", str(strategy_file)))
+    _cli("bind-v2-strategy", "--db", str(db_path), "--snapshot-id", strategy_payload["strategySnapshotId"],
+         "--config-id", run_id, "--config-revision", str(strategy["revision"]),
+         "--execution-config-id", exec_id, "--execution-config-revision", str(rebootstrapped["revision"]))
+    report_task = _cli("enqueue", "--db", str(db_path), "--kind", "evening",
+        "--trading-day", DAY.isoformat(), "--config-id", run_id,
+        "--config-revision", str(strategy["revision"]), "--execution-config-id", exec_id,
+        "--execution-config-revision", str(rebootstrapped["revision"]))
+    # Stop right after the input freeze: without a provider nothing is paid for.
+    monkeypatch.setattr(pipeline, "resolve_deepseek_v4_pro",
+                        lambda **_kwargs: ProviderResolution("not_configured", None, None, "fixture: no provider"))
+    run_once(db_path=db_path, task_id=report_task, worker_id="b92-report",
+        lease_for=timedelta(minutes=5), clock=lambda: RUN_AT,
+        handlers={"evening_scan": lambda context: pipeline.production_scan_handler(
+            context, tushare_token=None, parquet_dir=tmp_path / "parquet", now=lambda: RUN_AT)},
+        require_b76_contract=True)
+    scan_id = store.task_execution_input(task_id=report_task, db_path=db_path)["checkpoint"]["scanId"]
+    frozen = store.get_scan(scan_id=scan_id, db_path=db_path)["coverage"]["collectedInput"]
+    assert [ref["documentId"] for ref in frozen["inputDocumentRefs"]] == ["fresh"]
+
+
 def test_no_title_flash_is_reported_from_real_collection_and_zero_tavily(tmp_path, monkeypatch):
     _make_evening(tmp_path, monkeypatch)
+
+
+def test_b92_authorized_recovery_reopens_failed_scan_and_publishes_same_report(tmp_path, monkeypatch):
+    _make_evening(tmp_path, monkeypatch, recover_after_freeze=True)
+
+
+def test_b92_unauthorized_reentry_leaves_failed_scan_terminal(tmp_path, monkeypatch):
+    _make_evening(tmp_path, monkeypatch, recover_after_freeze=True, unauthorized_reentry=True)
 
 
 def test_b92_critical_question_can_use_tavily_after_local_evidence(tmp_path, monkeypatch):

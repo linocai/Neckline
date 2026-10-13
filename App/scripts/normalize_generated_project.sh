@@ -9,4 +9,4 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PBXPROJ="$SCRIPT_DIR/../Neckline.xcodeproj/project.pbxproj"
 
 perl -0pi -e 's{(/\* Neckline\.app \*/ = \{isa = PBXFileReference; )(?:includeInIndex = 0; (?:lastKnownFileType|explicitFileType) = wrapper\.application;|explicitFileType = wrapper\.application; includeInIndex = 0;) path = Neckline\.app; sourceTree = BUILT_PRODUCTS_DIR; \};}{$1explicitFileType = wrapper.application; includeInIndex = 0; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; \};}' "$PBXPROJ"
-rg -q '/\* Neckline\.app \*/ = \{isa = PBXFileReference; explicitFileType = wrapper\.application; includeInIndex = 0; path = Neckline\.app; sourceTree = BUILT_PRODUCTS_DIR; \};' "$PBXPROJ"
+grep -qE '/\* Neckline\.app \*/ = \{isa = PBXFileReference; explicitFileType = wrapper\.application; includeInIndex = 0; path = Neckline\.app; sourceTree = BUILT_PRODUCTS_DIR; \};' "$PBXPROJ"

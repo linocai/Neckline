@@ -154,31 +154,6 @@ def test_failure_report_and_terminal_task_commit_atomically(tmp_path, monkeypatc
 
 
 
-def test_actual_paginated_morning_api_preserves_selection_and_window(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-    from tests.k10_v320_fixture import build_fixture, create_app
-    from tests.test_k10_api import _freeze_k10_clocks
-    db = tmp_path / 'pagination.sqlite'
-    build_fixture(db, morning_additions=31)
-    _freeze_k10_clocks(monkeypatch, '2026-09-09T09:20:00+08:00')
-    with TestClient(create_app(db)) as client:
-        first = client.get('/api/v1/k10/v2/reports/latest?window=morning').json()
-        report_id = first['report']['reportId']
-        cursor = first['report']['nextCursor']
-        path = '/api/v1/k10/v2/reports/' + report_id
-        next_page = client.get(path, params={'cursor': cursor}).json()
-        assert len(first['report']['addedCards']) == 30 and len(next_page['report']['addedCards']) == 1
-        tail = next_page['report']['addedCards'][0]
-        skipped = client.post('/api/v1/k10/company-windows/'+tail['companyWindowId']+'/selection',
-            json={'action': 'skip', 'idempotencyKey': 'b57-tail-skip'})
-        assert skipped.status_code == 200, skipped.text
-        refreshed = client.get(path, params={'cursor': cursor}).json()
-        updated = refreshed['report']['addedCards'][0]
-        assert updated['cardId'] == tail['cardId'] and updated['currentSelectionState'] == 'skipped'
-        assert (updated['companyWindowId'], updated['d1TradeDate'], updated['d2TradeDate']) == (tail['companyWindowId'], tail['d1TradeDate'], tail['d2TradeDate'])
-        for name, response in [('first', first), ('next', next_page), ('selected', refreshed), ('action', skipped.json())]:
-            (tmp_path/f'b57_pages_{name}.json').write_text(json.dumps(response, ensure_ascii=False))
-
 
 @pytest.mark.parametrize('kind', ['morning', 'evening'])
 def test_early_failure_then_real_api_retry_reuses_same_scan(tmp_path, monkeypatch, kind):

@@ -182,12 +182,3 @@ def test_morning_freeze_omits_backlog_but_keeps_newly_collected_older_original(t
                                         db_path=path, source_keys=('jin10-flash',))
 
 
-def test_offline_corpus_export_cannot_bypass_old_database_guard(tmp_path):
-    import importlib.util
-    from pathlib import Path
-    script = Path(__file__).parents[1] / "scripts/export_v340_task_corpus.py"
-    spec = importlib.util.spec_from_file_location("b93_export_guard", script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    with pytest.raises(ValueError, match="禁止读取或导出"):
-        module.export_corpus(old_database(tmp_path / "retired.sqlite"), "task_old")

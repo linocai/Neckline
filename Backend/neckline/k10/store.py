@@ -2015,17 +2015,11 @@ def create_scan(
             same_cutoff = old[1] == row[1] or _utc_instant(old[1]) == _utc_instant(row[1])
             if (old[0], old[2], old[3]) != (row[0], row[2], row[3]) or not same_cutoff:
                 raise K10Conflict("scan ID 已存在但冻结输入不同")
-            if old[4] in {"queued", "failed", "not_configured"} and status == "running":
-                # A producer-authorized retry re-enters the handler through the
-                # same immutable scan identity. Reopen its terminal projection
-                # before the first durable coverage checkpoint; otherwise the
-                # handler's running-scan guard turns a valid recovery into a
-                # local configuration failure.
-                conn.execute(
-                    "UPDATE k10_scans SET status='running',completed_at=NULL "
-                    "WHERE scan_id=? AND status IN ('queued','failed','not_configured')",
-                    (scan_id,),
-                )
+            if old[4] == "queued" and status == "running":
+                # The producer creates the queued scan; its first worker slice starts it.
+                # Terminal scans are never reopened here: that needs a validated
+                # recovery grant and goes through reopen_scan().
+                conn.execute("UPDATE k10_scans SET status='running' WHERE scan_id=? AND status='queued'", (scan_id,))
             return
         conn.execute(
             "INSERT INTO k10_scans(scan_id,window_kind,cutoff_at,config_id,config_revision,status,coverage_json,"
@@ -2078,6 +2072,13 @@ def finish_scan_with_publication(
     ).rowcount
     if changed != 1:
         raise K10Conflict("公开交付扫描状态已变化")
+
+
+def scan_status(*, scan_id: str, db_path: Path) -> Optional[str]:
+    """Read only a scan's status; its coverage can be megabytes at report scale."""
+    with read_connection(db_path) as conn:
+        row = conn.execute("SELECT status FROM k10_scans WHERE scan_id=?", (scan_id,)).fetchone()
+    return None if row is None else str(row[0])
 
 
 def reopen_scan(*, scan_id: str, db_path: Path) -> bool:
@@ -5820,7 +5821,7 @@ __all__ = [
     "is_discovery_retired", "load_task_analysis_config", "observe_candidate", "observe_company_window", "publish_opportunities",
     "read_execution_config", "read_fact_cache", "read_run_config", "read_title_selection_manifest",
     "read_title_triage_items", "read_title_triage_manifest", "read_title_triage_policy",
-    "record_article_outcome", "record_execution_checkpoint", "record_title_triage_item", "record_title_triage_items", "reopen_scan",
+    "record_article_outcome", "record_execution_checkpoint", "record_title_triage_item", "record_title_triage_items", "reopen_scan", "scan_status",
     "renew_task_lease", "retire_interrupted_discovery", "retry_task", "run_control_status", "run_control_execution_status",
     "schedule_task_retry", "set_run_control", "settle_external_attempt", "settle_model_response_attempt", "store_fact_cache",
     "task_execution_input", "task_execution_profile", "update_running_scan_coverage",

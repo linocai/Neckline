@@ -148,16 +148,19 @@ def test_recovery_authorization_survives_real_worker_slice_after_paid_title_chec
                  confirmed_input_sha256=frozen_scan_input_sha256(scan_id=scan_id, db_path=db), now=RUN_AT)
     authorized = store.task_execution_input(task_id=task_id, db_path=db)["checkpoint"]["recoveryAuthorized"]
     calls = _http_transport(monkeypatch, title_response="array")
-    original = pipeline._CheckpointedDiscoveryModel.run_title_operation
+    # Paid title batches are restored from their durable checkpoints without
+    # re-entering the model, so the slice ends right after that restore.
+    from neckline.k10 import title_runtime
+    original = title_runtime.completed_title_batches
     yielded = False
-    def boundary(self, **kwargs):
+    def boundary(**kwargs):
         nonlocal yielded
-        result = original(self, **kwargs)
-        if kwargs["stage"] == "titleBatch" and not yielded:
+        result = original(**kwargs)
+        if not yielded:
             yielded = True
             raise pipeline.DiscoverySliceYield()
         return result
-    monkeypatch.setattr(pipeline._CheckpointedDiscoveryModel, "run_title_operation", boundary)
+    monkeypatch.setattr(title_runtime, "completed_title_batches", boundary)
     monkeypatch.setattr(pipeline, "_now", lambda: RUN_AT)
     handlers = pipeline.production_handlers(tushare_token="fixture-token", parquet_dir=tmp_path / "parquet")
     sliced = run_once(db_path=db, worker_id="slice", lease_for=timedelta(minutes=5), handlers=handlers, clock=lambda: RUN_AT)

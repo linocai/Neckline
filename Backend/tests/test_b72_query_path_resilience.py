@@ -146,7 +146,7 @@ def test_real_cli_worker_prunes_mixed_routes_and_isolates_a_paid_invalid_plan(tm
         assert gateway.search_routes[1]['targetRefs'] == [{'kind':'company','companyCode':'300004.SZ'}]
     report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
     if force_invalid:
-        assert report['status']=='partial' and report['availableAt']
+        assert report['status']=='partial' and report['availableAt'] is None and report['resultAvailableAt']
     else:
         assert report['status']=='completed' and report['availableAt']
         with sqlite3.connect(db) as c:
@@ -179,7 +179,9 @@ def test_real_cli_local_scope_refusal_is_not_a_search_result(tmp_path, monkeypat
         request_observer=capture_research_packets(packets))
     assert task.status=='completed' and gateway.search_paths==[]
     report=api_for(db).get('/api/v1/k10/v2/reports/latest?window=evening').json()['report']
-    assert report['status']=='partial' and report['availableAt'] and report['coverageGaps']
+    # Nothing rankable: readable result, but no formal availability.
+    assert report['status']=='partial' and report['availableAt'] is None and report['resultAvailableAt']
+    assert report['delivery']['rankingScope']=='none' and report['coverageGaps']
     with sqlite3.connect(db) as c:
         assert c.execute("SELECT COUNT(*) FROM k10_external_attempts WHERE stage='search'").fetchone()==(0,)
         assert_failed_round_without_search(c)

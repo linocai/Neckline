@@ -60,7 +60,9 @@ def test_queued_morning_has_own_readonly_deadline_result(tmp_path, monkeypatch, 
         with base.actual_api(db, **explicit_bindings(db)) as client:
             response = client.get("/api/v1/k10/v2/reports/latest?window=morning").json()
             report = response["report"]
-            assert response["state"] == "available"
+            # Still queued at 09:20: the envelope stays "processing" but says the
+            # deadline passed; no formal result is backfilled after it.
+            assert response["state"] == "processing"
             assert response["reason"]["reason"] == "delivery_deadline_reached"
             assert report["status"] == "queued" and report["availableAt"] is None
             assert datetime.fromisoformat(report["deliveryDeadlineAt"]) == deadline

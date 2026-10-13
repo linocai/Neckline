@@ -239,7 +239,7 @@ def test_v306_retired_discovery_cannot_be_claimed_reopened_or_reenqueued(tmp_pat
                            input_cutoff_at=NOW, payload={}, budget={}, created_at=NOW, db_path=path)
 
 
-def test_v306_same_scan_retry_reopens_terminal_projection_before_checkpoint(tmp_path):
+def test_v306_same_scan_retry_requires_explicit_reopen_before_checkpoint(tmp_path):
     path = tmp_path / "retry-reopen.sqlite"
     _task(path)
     strategy_revision = store.append_run_config(config_id="strategy", payload={}, created_at=NOW, db_path=path)
@@ -257,5 +257,21 @@ def test_v306_same_scan_retry_reopens_terminal_projection_before_checkpoint(tmp_
     )
 
     reopened = store.get_scan(scan_id="retry-scan", db_path=path)
-    assert reopened is not None and reopened["status"] == "running" and reopened["completedAt"] is None
+    assert reopened is not None and reopened["status"] == "failed" and reopened["completedAt"] == NOW
     assert reopened["coverage"]["inputSnapshotFrozen"] is True
+    assert store.reopen_scan(scan_id="retry-scan", db_path=path)
+    reopened = store.get_scan(scan_id="retry-scan", db_path=path)
+    assert reopened is not None and reopened["status"] == "running" and reopened["completedAt"] is None
+
+
+def test_v306_first_slice_starts_producer_queued_scan(tmp_path):
+    path = tmp_path / "queued-start.sqlite"
+    _task(path)
+    strategy_revision = store.append_run_config(config_id="strategy", payload={}, created_at=NOW, db_path=path)
+    scan = dict(scan_id="queued-scan", window_kind="evening", cutoff_at=NOW, config_id="strategy",
+                config_revision=strategy_revision, created_at=NOW, completed_at=None, db_path=path)
+    store.create_scan(**scan, status="queued", coverage={"pipelineState": "queued"})
+    store.create_scan(**scan, status="running", coverage={"pipelineState": "starting"})
+    started = store.get_scan(scan_id="queued-scan", db_path=path)
+    assert started is not None and started["status"] == "running"
+    assert started["coverage"] == {"pipelineState": "queued"}

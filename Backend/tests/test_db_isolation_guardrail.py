@@ -329,11 +329,14 @@ def test_p448_conftest_redirects_default_db_away_from_real_dev_db():
     )
 
 
-def test_p448_default_connection_opens_redirected_db_not_real_one(tmp_path):
+def test_p448_default_connection_opens_redirected_db_not_real_one(tmp_path, monkeypatch):
     """不只看配置,真开一条**零参数兜底**连接,问 SQLite 它到底打开了哪个文件。"""
+    from neckline import db as neckline_db
     from neckline.config import DB_PATH, settings
     from neckline.db import get_connection
 
+    # 这里只验证路径解析;重定向的空库过不了 B92 新库校验,与本测试无关。
+    monkeypatch.setattr(neckline_db, "require_current_database", lambda conn: None)
     conn = get_connection()          # 刻意零参数:测的就是 db_path=None 兜底
     try:
         rows = conn.execute("PRAGMA database_list").fetchall()

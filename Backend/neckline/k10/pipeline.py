@@ -7790,6 +7790,7 @@ def production_scan_handler(
     # Establish this run's report identity before a source/model request can
     # block.  In particular, a 09:20 reader must resolve *this* morning's
     # frozen deadline, never silently fall back to yesterday's report.
+    scan_id = None
     if frozen["payload"].get("configVersion") == "k10-v2":
         scan_id = _scan_id(kind=kind, cutoff_at=cutoff, identity=context.task.task_id)
         context.require_lease()
@@ -7813,22 +7814,6 @@ def production_scan_handler(
             snapshot_id=frozen["payload"]["strategySnapshotId"], kind=kind,
             created_at=_text(started_at), delivery_deadline_at=deadline_text,
         )
-        if b90_morning:
-            # Freeze yesterday's actual readable evening delivery before any
-            # new-source request.  A retry reads this durable snapshot instead
-            # of selecting a newer or older report opportunistically.
-            _freeze_b90_morning_parent(scan_id=scan_id, cutoff_at=cutoff, db_path=context.db_path)
-        if b92_collected:
-            try:
-                _freeze_b92_report_input(context=context, scan_id=scan_id, kind=kind,
-                                         cutoff=cutoff, frozen_at=started_at,
-                                         execution_profile=execution_profile)
-            except (PipelineError, store.K10Conflict, ValueError) as exc:
-                if kind == "morning":
-                    return _append_unavailable_morning_report(
-                        context=context, cutoff=cutoff, frozen=frozen,
-                        reason="本地采集资料冻结失败，来源待核。", generated_at=started_at)
-                return TaskResult("not_configured", "collected_input", error=str(exc))
     resume_scan_id = payload.get("resumeScanId")
     legacy_recovery = isinstance(resume_scan_id, str)
     recovery_authorization = context.checkpoint.get("recoveryAuthorized")
@@ -7882,6 +7867,41 @@ def production_scan_handler(
                 or authorized_time is None or authorized_time.tzinfo is None
                 or (prior_stage is not None and not isinstance(prior_stage, str))):
             return TaskResult("failed", "resume_input", context.checkpoint, "预公开重试授权与原任务不一致")
+
+    # A terminal scan is reopened only here, after the grant above has been
+    # validated against the immutable task/scan binding. Without a grant (e.g. a
+    # slice reclaimed after the scan was finalized but before the task's own
+    # terminal write) the task ends with the scan's outcome instead of reviving it.
+    scan_status = None
+    if scan_id is not None:
+        scan_status = store.scan_status(scan_id=scan_id, db_path=context.db_path)
+        if scan_status in {"failed", "not_configured"}:
+            if not same_task_recovery and prepublication_retry is None:
+                return TaskResult(scan_status, "scan_terminal", context.checkpoint, "扫描已终止，需受控恢复授权才能继续")
+            context.require_lease()
+            if not store.reopen_scan(scan_id=scan_id, db_path=context.db_path):
+                return TaskResult("failed", "resume_input", context.checkpoint, "授权恢复的扫描未能重新打开")
+            scan_status = "running"
+
+    # Completed/partial scans already hold their frozen input; execute_scan
+    # replays their publication idempotently, so only a running scan freezes.
+    if scan_status == "running":
+        if b90_morning:
+            # Freeze yesterday's actual readable evening delivery only after
+            # the scan is known to be running. A retry therefore reads the
+            # original durable parent instead of a newer report.
+            _freeze_b90_morning_parent(scan_id=scan_id, cutoff_at=cutoff, db_path=context.db_path)
+        if b92_collected:
+            try:
+                _freeze_b92_report_input(context=context, scan_id=scan_id, kind=kind,
+                                         cutoff=cutoff, frozen_at=started_at,
+                                         execution_profile=execution_profile)
+            except (PipelineError, store.K10Conflict, ValueError) as exc:
+                if kind == "morning":
+                    return _append_unavailable_morning_report(
+                        context=context, cutoff=cutoff, frozen=frozen,
+                        reason="本地采集资料冻结失败，来源待核。", generated_at=started_at)
+                return TaskResult("not_configured", "collected_input", error=str(exc))
     resuming = legacy_recovery or same_task_recovery
     resolution=resolve_deepseek_v4_pro(configuration=frozen["payload"],task="discovery",db_path=context.db_path,task_id=context.task.task_id)
     execution_profile = runtime_execution_profile(execution_profile, resolution.provider)

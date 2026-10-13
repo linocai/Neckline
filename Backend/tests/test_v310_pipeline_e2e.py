@@ -586,7 +586,8 @@ def test_real_cli_rejects_out_of_question_query_before_tavily(tmp_path, monkeypa
         assert conn.execute("SELECT status,network_attempt_count FROM k10_execution_item_checkpoints WHERE stage='model:investigation_research_round'").fetchall() == [('completed',1)]
     from neckline.k10.v2_store import read_report
     report = read_report(db_path=db_path)
-    assert report['status'] == 'partial' and report['availableAt'] and not report['eveningCards']
+    assert report['status'] == 'partial' and report['availableAt'] is None and report['resultAvailableAt']
+    assert not report['eveningCards']
     assert any(gap['reasonCode'] == 'investigation_path_scope_invalid' for gap in report['delivery']['gaps'])
 
 

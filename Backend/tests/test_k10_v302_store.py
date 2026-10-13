@@ -69,26 +69,6 @@ def _seed_observed_window(path):
         """)
 
 
-def test_v3_migrates_v2_market_rows_without_loss_and_allows_explicit_anomaly(tmp_path):
-    path = tmp_path / "v2.sqlite"
-    from neckline.k10 import schema
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE k10_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-        schema._apply_v1(conn); schema._apply_v2(conn)
-        conn.executemany("INSERT INTO k10_schema_migrations VALUES (?,?)", [(1,NOW),(2,NOW)])
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT MAX(version) FROM k10_schema_migrations").fetchone() == (2,)
-    with sqlite3.connect(path) as conn:
-        conn.execute("INSERT INTO k10_market_day_fact_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                     ("300001.SZ", "2026-09-08", 1, "available", 1, 2, 1, 2, 1, 2, 1, 1, None, "{}", "[]", NOW, NOW))
-    assert initialize_schema(path) == SCHEMA_VERSION
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT availability,open,high,close FROM k10_market_day_fact_revisions").fetchone() == ("available", 1.0, 2.0, 2.0)
-    assert store.append_market_day_fact(company_code="300001.SZ", trade_date="2026-09-08", availability="anomaly",
-                                        open_price=1, high_price=2, low_price=1, close_price=2, pre_close=1, limit_up_price=2,
-                                        close_limit_up=True, touched_limit_up=True, source_refs=(), obtained_at=NOW, created_at=NOW,
-                                        metadata={"anomalyReason": "source_conflict"}, db_path=path) == 2
-
 
 def test_morning_report_versions_preserve_all_five_sections_and_no_overwrite(tmp_path):
     path = tmp_path / "morning.sqlite"

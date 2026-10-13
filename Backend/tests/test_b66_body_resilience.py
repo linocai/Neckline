@@ -52,7 +52,11 @@ def test_missing_claim_reference_derives_only_duplicate_source_without_mutating_
     for claim in raw["events"][0]["claims"]:
         claim.pop("sourceRef")
     before = copy.deepcopy(raw)
-    events, _ = pipeline.DeepSeekDiscoveryModel._decode_understand(raw, require_claims=True, full_text=True)
+    # The missing reference is derived only from the frozen body being read.
+    from neckline.k10.discovery import EvidenceRef
+    events, _ = pipeline.DeepSeekDiscoveryModel._decode_understand(
+        raw, require_claims=True, full_text=True,
+        frozen_source_ref=EvidenceRef(document_id="source-1", revision=1))
     actual = events[0].facts["researchClaims"]
     assert actual == [{**expected[0], "claimId": actual[0]["claimId"], "verificationStatus": "unverified"}]
     assert actual[0]["claimId"].startswith("claim_")

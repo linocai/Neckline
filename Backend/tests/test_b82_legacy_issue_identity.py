@@ -133,7 +133,7 @@ def test_b82_legacy_ambiguous_event_issue_blocks_sibling_candidates(tmp_path, mo
     assert frozen["issues"] == [{
         "stage": "compare", "code": "legacy_event_stage_unbound", "canonicalKey": cross._EVENT_KEY,
     }]
-    assert report["status"] == "partial" and report["availableAt"]
+    assert report["status"] == "partial" and report["availableAt"] is None and report["resultAvailableAt"]
     delivery = report["delivery"]
     assert delivery["outcome"] == "partial"
     assert delivery["rankingScope"] == "none"
@@ -212,7 +212,7 @@ def test_b82_foreign_v4_execution_unit_never_falls_back_to_canonical_key(tmp_pat
         "executionUnitId": foreign_unit_id,
     }]
     delivery = report["delivery"]
-    assert report["status"] == "partial" and report["availableAt"]
+    assert report["status"] == "partial" and report["availableAt"] is None and report["resultAvailableAt"]
     assert delivery["outcome"] == "partial" and delivery["rankingScope"] == "none"
     assert delivery["counts"] == {
         **delivery["counts"],

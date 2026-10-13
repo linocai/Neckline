@@ -131,7 +131,9 @@ def test_v304_runtime_rejects_invalidated_claim_with_only_unrelated_independent_
     result = runtime.morning_review_handler(_runtime_context(path=tmp_path/"morning.sqlite", independent_refs=[{"documentId": "doc-v304-independent", "revision": 1}]))
     assert result.status == "failed"
     assert result.stage == "model"
-    assert "直接引用独立核验资料" in result.error
+    # B93 also accepts a stored original the parent reason did not cite; an
+    # unrelated independent ref alone still cannot carry a withdrawal.
+    assert "必须直接引用独立核验" in result.error
 
 
 def test_v304_runtime_keeps_pending_morning_contrary_visible_before_independent_confirmation(tmp_path, monkeypatch):
