@@ -27,3 +27,6 @@ Package.resolved
 # 本地 dev DB 的施工期回退备份(高危块前 cp -p / sqlite3 .backup 产物)。
 # 生产回退绳在 ECS /opt/neckline/data/ 下,与此无关。
 Backend/data/*.bak-*
+
+# 本地工作区（P1 离线快照与模型回执缓存等），不进仓库。
+Backend/.work/

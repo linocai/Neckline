@@ -1,0 +1,37 @@
+{
+  "configVersion": "screening-draft-20261016",
+  "approval": "draft",
+  "note": "P1 离线草稿：晨报窗口为上个交易日 15:00 → 当天 08:00；利好清单暂按 2026-10-14 消息偏好讨论的草拟口径；条数上限与重要程度门槛待用户在 P1 点评时决定；持续影响的消息暂不收。未批准的配置不能用于线上出报。",
+  "selection": {
+    "relation": {"include": ["主体"], "review": ["受益方"]},
+    "direction": {"include": ["利好"]},
+    "freshness": {"include": ["新"], "review": ["不确定"]},
+    "types": {
+      "include": ["订单合同", "业绩向好", "并购扩张", "政策受益", "商业化进展"],
+      "review": ["经营数据", "回购增持", "战略合作", "控制权变更", "股权激励", "融资发行", "行业动态", "其他"],
+      "exclude": ["立案处罚", "业绩下滑", "终止撤回", "退市风险", "减持解禁", "程序性事项"]
+    },
+    "importanceMinimum": null,
+    "maxItems": null
+  },
+  "matching": {
+    "note": "这些简称是常用词或地名，来源还会给它们自动插入股票代码；简称只在「简称：」「【简称」格式里才算点名，全称照常匹配。依据：2026-10-16 对 9/28 以来 30,035 篇原件的抽查。",
+    "strictShortNames": ["值得买", "线上线下", "向日葵", "新天地", "探路者", "新城市", "杭州高新"]
+  },
+  "classification": {
+    "contract": "screening-classify-v2",
+    "batchMaxCompanies": 8,
+    "batchMaxChars": 16000,
+    "concurrency": 6,
+    "maxAttempts": 2,
+    "profileChars": 80,
+    "excerpt": {"lead": 200, "window": 220, "limit": 1500, "minChars": 200, "blockMaxChars": 12000},
+    "history": {"lookbackDays": 14, "maxItems": 8, "window": 60, "snippetChars": 120},
+    "modelOptions": {
+      "max_tokens": 32768,
+      "thinking": {"type": "enabled"},
+      "reasoning_effort": "high",
+      "response_format": {"type": "json_object"}
+    }
+  }
+}
