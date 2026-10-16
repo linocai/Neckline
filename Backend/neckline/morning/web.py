@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 from datetime import date
 from html import escape
@@ -19,6 +20,17 @@ from . import db
 from .api import document_out, report_out, v4_db_path
 
 _HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"}
+
+
+class HideReadKey(logging.Filter):
+    """访问码在路径里：uvicorn 的访问日志不记 /read/ 开头的请求（凭据不进日志），其他请求照常记。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (isinstance(args, tuple) and len(args) >= 3 and str(args[2]).startswith("/read/"))
+
+
+logging.getLogger("uvicorn.access").addFilter(HideReadKey())
 _WEEKDAYS = "一二三四五六日"
 _CSS = """
 :root{--bg:#fbfaf7;--fg:#1d1d1f;--muted:#6e6e73;--line:#e3e1db;--card:#fff;--accent:#9a3412}

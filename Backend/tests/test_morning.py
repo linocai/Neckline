@@ -315,6 +315,17 @@ def _with_device(path):
         db.upsert_device(conn, token="ab" * 32, platform="ios", at=at("2026-10-12", "12:00"))
 
 
+def test_read_key_never_reaches_access_log():
+    import logging
+    from neckline.morning.web import HideReadKey
+    def record(target):
+        return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                                 ("1.2.3.4:5", "GET", target, "1.1", 200), None)
+    assert not HideReadKey().filter(record(f"/read/{READ_KEY}"))
+    assert HideReadKey().filter(record("/api/v4/reports/latest"))
+    assert any(isinstance(f, HideReadKey) for f in logging.getLogger("uvicorn.access").filters)
+
+
 def test_read_page_before_first_report(path, monkeypatch):
     monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
     monkeypatch.setenv("NECKLINE_READ_KEY", READ_KEY)
