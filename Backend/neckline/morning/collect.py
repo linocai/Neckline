@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -45,7 +46,8 @@ def run_collection(db_path: Path, *, now: datetime, config: Mapping[str, Any], t
                    bootstrap_start: datetime | None = None, max_pages: int | None = None,
                    jin10_factory: Callable[..., jin10.Jin10Client] = jin10.Jin10Client,
                    tushare_post: tushare.Post | None = None, clock: Callable[[], datetime] = _utc_now) -> dict:
-    run_id = "collect-" + now.astimezone(CST).strftime("%Y%m%dT%H%M%S")
+    # 同一业务时刻可能跑多次（重启续跑、彩排）：编号带随机后缀，绝不覆盖已有的采集记录。
+    run_id = "collect-" + now.astimezone(CST).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     with db.write(db_path) as conn:
         db.begin_collection(conn, run_id=run_id, slot_at=now, started_at=clock())
         marks = {key: db.source_watermark(conn, key) for key in SOURCES}

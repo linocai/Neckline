@@ -235,7 +235,7 @@ def get_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
 # ------------------------------------------------------------------ 采集记录
 
 def begin_collection(conn: sqlite3.Connection, *, run_id: str, slot_at: datetime, started_at: datetime) -> None:
-    conn.execute("INSERT OR REPLACE INTO collection_runs VALUES (?,?,?,?,?,?)",
+    conn.execute("INSERT INTO collection_runs VALUES (?,?,?,?,?,?)",
                  (run_id, utc(slot_at), utc(started_at), None, "running", "[]"))
 
 

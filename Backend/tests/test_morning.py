@@ -203,6 +203,16 @@ def test_collection_needs_explicit_bootstrap_then_advances_watermark(path):
         assert db.source_watermark(conn, "jin10-flash") == now
         assert db.source_watermark(conn, "jin10-news") is None
 
+    # 同一业务时刻再跑一次（重启续跑、彩排）不能覆盖前一次的覆盖记录
+    pages["jin10-flash"] = [([_flash(4, at("2026-10-12", "19:30"))], False)]
+    made.clear()
+    run_collection(path, now=now, config=COLLECTION, tokens=tokens, jin10_factory=factory,
+                   tushare_post=tushare_post, clock=lambda: now)
+    with db.read(path) as conn:
+        assert db.source_watermark(conn, "jin10-flash") == now
+        assert db.source_watermark(conn, "tushare-major-news") == now
+        assert conn.execute("SELECT count(*) FROM collection_runs").fetchone()[0] == 3
+
 
 def test_tushare_splits_saturated_intervals():
     from neckline.news import tushare
@@ -218,6 +228,7 @@ def test_tushare_splits_saturated_intervals():
     outcome = tushare.fetch_major_news(post, "token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "17:00"),
                                        max_requests=8, clock=lambda: at("2026-10-12", "17:00"))
     assert outcome.complete and len(seen) == 3 and seen[1][1] < seen[2][0]
+    assert len(outcome.documents) == 4  # 满额那次的 400 条不留，只留两半各自的结果
     assert tushare.fetch_major_news(post, None, start=at("2026-10-12", "15:00"), end=at("2026-10-12", "17:00"),
                                     max_requests=8, clock=lambda: at("2026-10-12", "17:00")).error == "credential_missing"
 

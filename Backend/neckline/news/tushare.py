@@ -112,14 +112,8 @@ def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: dat
             outcome.error = exc.code
             return outcome
         outcome.requests += 1
-        fetched_at = clock()
-        for item in items:
-            document = _document(item, fetched_at)
-            if document is None:
-                outcome.rejected += 1
-                continue
-            outcome.documents.append(document)
         if len(items) >= SATURATION:
+            # 满额就可能被截断：这次的结果不要，切成两半重取，两半合起来覆盖同一段时间。
             seconds = int((hi - lo).total_seconds())
             if seconds < 1:
                 outcome.error = "same_second_saturated"
@@ -127,5 +121,13 @@ def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: dat
             mid = lo + timedelta(seconds=seconds // 2)
             pending.append((mid + timedelta(seconds=1), hi))
             pending.append((lo, mid))
+            continue
+        fetched_at = clock()
+        for item in items:
+            document = _document(item, fetched_at)
+            if document is None:
+                outcome.rejected += 1
+                continue
+            outcome.documents.append(document)
     outcome.complete = True  # 个别字段缺失的记录只计入 rejected，不挡住整段覆盖
     return outcome
