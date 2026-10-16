@@ -21,7 +21,7 @@ V4 是轻量的**创业板消息筛选器**。每个交易日早上一份晨报�
 ## 当前状态（2026-10-16）
 
 - **v3 已退役**：采集、晚报、早报、两个行情 timer 和 worker 已 stop + disable；API（v3.7.0-b109）保留只读历史；数据库未改动。恢复命令记在 V4 记录 §7。
-- **V4 P1**：晨报框架已改好（`Backend/neckline/screening/`，草稿配置 `screening-draft.json`，未提交）。离线第二轮：10/13、10/14 两期各 9 家，10/8 长假一期 14 家，每期 15–34 次调用、1–2.5 分钟，等用户点评利好口径与时效。离线数据与回执在本机 `Backend/.work/p1-offline/`（不进 Git，P1 结束清理）。
+- **V4 P1 上线（B110，未部署）**：代码已提交到 `6a4c6e3`（采集、晨报任务、`/api/v4`、只读网页 `/read`、推送通道、systemd 单元、release.py 改动），新单测全过；NB 隔离彩排（10/16 窗口）跑通，6 家、无缺口。下一步：① 在 `6a4c6e3` 上跑全量测试；② 重新打包 B110；③ 建 `/etc/neckline/v4.env`（库路径、从 v3 库移来的 DeepSeek 密钥、新生成的网页访问码）；④ 备份并改 NPM `http.conf`：只在 nk 的 443 段加 `/read/` 不记日志的 location，`nginx -t` 通过后 reload；⑤ 装单元、预检、切换、init-db、从 10/16 08:00 起首次采集、开三个 timer、就绪检查、打 tag；⑥ 访问链接写进本机 `Backend/.work/read-link.txt`；⑦ 补 B110 记录、NB_info、README，清理 NB `/tmp/nk-b110-rehearsal`。详见 [B110 记录](archive/v4.0.0-b110_execution.md)。
 - **遗留**：NB 上 `/opt/neckline/releases` 有约 5 GB 旧恢复集，P5 时清理；本机 `~/Lino/releases/Neckline` 只留 B107、B109 两份制品。
 
 ## 当前 Plan：V4.0.0
