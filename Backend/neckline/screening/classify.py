@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
-from .deepseek import ChatError, DeepSeekClient
+from .deepseek import ChatError, ChatUnknown, DeepSeekClient
 from .pool import CompanyPool
 from .prefilter import Message, Window
 from .text import excerpt_for
@@ -98,6 +98,7 @@ class CompanyResult:
     events: list[Event] = field(default_factory=list)
     mentions: list[str] = field(default_factory=list)
     error: str | None = None
+    retryable: bool = True  # 结果不明的调用不重做，记为缺口
 
 
 @dataclass
@@ -285,7 +286,9 @@ def classify(messages: Sequence[Message], history: Sequence[Message], pool: Comp
             result = client.complete(prompt, settings["modelOptions"])
         except ChatError as exc:
             outcome.error = str(exc)
-            return outcome, {c: CompanyResult(company=c, message_ids=wanted[c], error=f"调用失败：{exc}") for c in batch}
+            retryable = not isinstance(exc, ChatUnknown)
+            return outcome, {c: CompanyResult(company=c, message_ids=wanted[c], error=f"调用失败：{exc}",
+                                              retryable=retryable) for c in batch}
         outcome.usage, outcome.seconds, outcome.from_receipt = result.usage, result.seconds, result.from_receipt
         if result.finish_reason not in ("stop", None):
             outcome.error = f"finish:{result.finish_reason}"
@@ -301,7 +304,7 @@ def classify(messages: Sequence[Message], history: Sequence[Message], pool: Comp
             outcomes.append(outcome)
             for code, company_result in batch_results.items():
                 results[code] = company_result
-                if company_result.error:
+                if company_result.error and company_result.retryable:
                     retry.append(code)
         if not retry:
             break

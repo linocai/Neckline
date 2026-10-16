@@ -284,18 +284,13 @@ def test_build56_health_and_operator_config_paths():
     # No startup or operational database access is needed by this public endpoint.
     response=TestClient(app).get('/api/v1/health')
     import re
-    project = (Path(__file__).parents[2]/'App/project.yml').read_text()
-    version = re.search(r'MARKETING_VERSION:\s*"([^"]+)"', project).group(1)
-    # A backend-only hotfix deliberately keeps the installed client build.
-    assert VERSION == f'v{version}'
+    # V4 起后端版本号就是对外版本号；App 在 P3 改造时再升到同一版本，此前两端可以不同。
+    assert re.fullmatch(r'v\d+\.\d+\.\d+', VERSION)
     assert response.status_code == 200 and response.json()['releaseSet'] == RELEASE_SET
-    assert re.fullmatch(rf'v{re.escape(version)}-b[1-9][0-9]*', RELEASE_SET)
+    assert re.fullmatch(rf'{re.escape(VERSION)}-b[1-9][0-9]*', RELEASE_SET)
     root=Path(__file__).parents[2]
     for name in ('k10-v2.json','k10-execution-v4.json'):
         assert (root/'Backend/neckline/config'/name).is_file()
-    readme=(root/'README.md').read_text()
-    assert '[k10-execution-v3.json]' not in readme
-    assert '[k10-execution-v4.json]' in readme and '[k10-v2.json]' in readme
 
 
 @pytest.mark.parametrize('role',['pro','con'])

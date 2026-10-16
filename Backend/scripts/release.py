@@ -39,9 +39,14 @@ HOST = "ser657204219523"
 ROOT = Path("/opt/neckline")
 DB = ROOT / "data/neckline.db"
 APPLICATION_ID = 1313552690
+V4_DB = ROOT / "data/v4.db"
+V4_APPLICATION_ID = 1313552704
 SERVICES = ["neckline.service", "neckline-k10-worker.service"]
 TIMERS = ["neckline-k10-collection.timer", "neckline-k10-morning.timer", "neckline-k10-evening.timer",
-          "neckline-market-update.timer", "neckline-market-retry.timer"]
+          "neckline-market-update.timer", "neckline-market-retry.timer",
+          "neckline-v4-morning.timer", "neckline-v4-collect.timer", "neckline-v4-finalize.timer"]
+# V4 的出报与采集是一次性任务：切换前必须都不在运行，切换期间 timer 停住，结束后恢复原状态。
+V4_JOBS = ["neckline-v4-morning.service", "neckline-v4-collect.service", "neckline-v4-finalize.service"]
 RUNTIME_PREFIXES = ("neckline/", "scripts/", "deploy/")
 RUNTIME_FILES = (".env.example", "pyproject.toml", "requirements.txt")
 
@@ -191,23 +196,33 @@ def install_wheel(wheel: Path) -> None:
 
 
 def snapshot(directory: Path) -> dict:
+    report = snapshot_db(directory, DB, APPLICATION_ID, "pre-switch",
+                         ("k10_tasks", "k10_external_attempts", "k10_model_response_receipts",
+                          "k10_source_document_versions"))
+    if V4_DB.exists():
+        report["v4"] = snapshot_db(directory, V4_DB, V4_APPLICATION_ID, "v4-pre-switch",
+                                   ("documents", "document_versions", "collection_runs", "model_receipts", "reports"))
+    (directory / "snapshot-verification.json").write_text(json.dumps(report, indent=2))
+    return report
+
+
+def snapshot_db(directory: Path, db: Path, application_id: int, name: str, tables: tuple[str, ...]) -> dict:
     recovery = directory / "recovery"
     recovery.mkdir(mode=0o700, exist_ok=True)
     os.chmod(recovery, 0o700)
-    tables = ("k10_tasks", "k10_external_attempts", "k10_model_response_receipts", "k10_source_document_versions")
-    copy, check = recovery / "pre-switch.db", recovery / "restore-check.db"
-    archive = recovery / "pre-switch.db.gz"
+    copy, check = recovery / f"{name}.db", recovery / f"{name}-restore-check.db"
+    archive = recovery / f"{name}.db.gz"
 
     def counts(path: Path) -> dict:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
             con.execute("PRAGMA query_only=ON")
-            if con.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
+            if con.execute("PRAGMA application_id").fetchone()[0] != application_id:
                 raise RuntimeError(f"{path.name} application_id 不符")
             if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError(f"{path.name} 完整性校验失败")
             return {table: con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in tables}
 
-    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as source, sqlite3.connect(copy) as target:
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as source, sqlite3.connect(copy) as target:
         source.backup(target)
     os.chmod(copy, 0o600)
     expected = counts(copy)
@@ -225,7 +240,6 @@ def snapshot(directory: Path) -> dict:
     for path in (copy, check):
         for leftover in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
             leftover.unlink(missing_ok=True)
-    (directory / "snapshot-verification.json").write_text(json.dumps(report, indent=2))
     return report
 
 
@@ -259,8 +273,15 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     owner = (pwd.getpwnam("neckline").pw_uid, grp.getgrnam("neckline").gr_gid, 0o600)
     if (db_stat.st_uid, db_stat.st_gid, db_stat.st_mode & 0o777) != owner:
         raise RuntimeError("生产库属主或权限异常")
+    if V4_DB.exists():
+        v4_stat = V4_DB.stat()
+        if (v4_stat.st_uid, v4_stat.st_gid, v4_stat.st_mode & 0o777) != owner:
+            raise RuntimeError("V4 晨报库属主或权限异常")
     if started_attempts():
         raise RuntimeError("有进行中的外呼，稍后再切换")
+    running = [unit for unit in V4_JOBS if unit_state(unit)["active"] in ("active", "activating", "reloading")]
+    if running:
+        raise RuntimeError(f"V4 任务正在运行（{', '.join(running)}），稍后再切换")
 
     before = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
     if check_only:
@@ -286,6 +307,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             raise RuntimeError("服务未停止")
         if started_attempts():
             raise RuntimeError("停服后仍有进行中的外呼")
+        if any(unit_state(unit)["active"] in ("active", "activating", "reloading") for unit in V4_JOBS):
+            raise RuntimeError("停 timer 后仍有 V4 任务在运行")
         record["snapshot"] = snapshot(new_dir)
         try:
             write_runtime(ROOT, new_entries, set(old["backendFiles"]) - set(new["backendFiles"]))

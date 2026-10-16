@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the Neckline V4 morning report deadline at Beijing 09:15 every day
+
+[Timer]
+OnCalendar=*-*-* 09:15:00 Asia/Shanghai
+Persistent=false
+Unit=neckline-v4-finalize.service
+
+[Install]
+WantedBy=timers.target

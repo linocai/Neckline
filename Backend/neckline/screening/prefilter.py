@@ -44,13 +44,13 @@ class Window:
 @dataclass
 class PrefilterResult:
     messages: list[Message]          # 窗口内、点名公司池的消息
-    history: list[Message]           # 窗口开始前、点名公司池的消息（只供核对）
+    history: list[Message]           # 窗口开始前、点名候选公司的消息（只供核对）
     input_count: int
     duplicate_count: int
     unmatched_count: int
 
 
-def _message(doc: Mapping) -> Message:
+def to_message(doc: Mapping) -> Message:
     meta = doc.get("meta") or {}
     text = plain_text(doc.get("text") or doc.get("excerpt"))
     title = (meta.get("title") or meta.get("originalTitle") or "").strip()
@@ -76,10 +76,9 @@ def as_of(docs: Iterable[Mapping], collected_by: datetime) -> list[Mapping]:
     return list(latest.values())
 
 
-def prefilter(docs: Sequence[Mapping], pool: CompanyPool, window: Window, *, history_days: int) -> PrefilterResult:
-    visible = [_message(d) for d in as_of(docs, window.collected_by)]
-    in_window = sorted((m for m in visible if window.start <= m.published_at <= window.end),
-                       key=lambda m: (m.published_at, m.ref))
+def prefilter_window(docs: Iterable[Mapping], pool: CompanyPool) -> tuple[list[Message], int, int, int]:
+    """窗口内的原件（每个文档一个版本）→ 去重、匹配公司池。返回（消息、窗口内条数、重复、未点名）。"""
+    in_window = sorted((to_message(d) for d in docs), key=lambda m: (m.published_at, m.ref))
     seen: dict[str, Message] = {}
     kept: list[Message] = []
     duplicates = unmatched = 0
@@ -95,13 +94,27 @@ def prefilter(docs: Sequence[Mapping], pool: CompanyPool, window: Window, *, his
             unmatched += 1
             continue
         kept.append(message)
-    candidates = pool.subset({code for m in kept for code in m.companies})
-    floor = window.start - timedelta(days=history_days)
+    return kept, len(in_window), duplicates, unmatched
+
+
+def match_history(docs: Iterable[Mapping], candidates: CompanyPool) -> list[Message]:
+    """窗口开始前的原件逐条匹配候选公司，只留下点名了候选公司的；可以边读边丢，不必整批进内存。"""
     history = []
-    for message in sorted((m for m in visible if floor <= m.published_at < window.start),
-                          key=lambda m: (m.published_at, m.ref)):
+    for doc in docs:
+        message = to_message(doc)
         message.companies = candidates.match(message.title + "\n" + message.text)
         if message.companies:
             history.append(message)
-    return PrefilterResult(messages=kept, history=history, input_count=len(in_window),
+    return sorted(history, key=lambda m: (m.published_at, m.ref))
+
+
+def prefilter(docs: Sequence[Mapping], pool: CompanyPool, window: Window, *, history_days: int) -> PrefilterResult:
+    """离线用：一次给全部原件，按窗口拆成本期与核对两部分。"""
+    visible = as_of(docs, window.collected_by)
+    in_window = [d for d in visible if window.start <= datetime.fromisoformat(d["publishedAt"]) <= window.end]
+    kept, count, duplicates, unmatched = prefilter_window(in_window, pool)
+    floor = window.start - timedelta(days=history_days)
+    earlier = (d for d in visible if floor <= datetime.fromisoformat(d["publishedAt"]) < window.start)
+    history = match_history(earlier, pool.subset({code for m in kept for code in m.companies}))
+    return PrefilterResult(messages=kept, history=history, input_count=count,
                            duplicate_count=duplicates, unmatched_count=unmatched)

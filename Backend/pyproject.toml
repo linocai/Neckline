@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neckline-runtime"
-version = "3.7.0"
+version = "4.0.0"
 description = "Neckline production service runtime"
 requires-python = ">=3.11"
 
@@ -13,7 +13,7 @@ where = ["."]
 include = ["neckline*"]
 
 [tool.setuptools.package-data]
-"neckline.config" = ["*.json"]
+"neckline.config" = ["*.json", "*.jsonl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

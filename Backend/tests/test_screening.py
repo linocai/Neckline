@@ -7,10 +7,9 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from neckline.screening import deepseek
 from neckline.screening.classify import (EVENT_TYPES, CompanyResult, Event, make_batches, parse_batch,
                                          pick_history, render_company, system_prompt)
-from neckline.screening.deepseek import ChatError, DeepSeekClient
+from neckline.screening.deepseek import ChatError, DeepSeekClient, FileReceipts
 from neckline.screening.pool import Company, CompanyPool
 from neckline.screening.prefilter import Message, Window, as_of, prefilter
 from neckline.screening.select import select, validate_rules
@@ -212,24 +211,24 @@ def test_validate_rules_rejects_incomplete_config(rules, message):
         validate_rules(rules)
 
 
-def test_identical_request_is_billed_once(tmp_path, monkeypatch):
+def test_identical_request_is_billed_once(tmp_path):
     calls = []
 
-    def fake_post(url, json, timeout, headers):  # noqa: A002 - httpx 的参数名
-        calls.append(json)
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
         return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
                                          "usage": {"prompt_tokens": 3}})
 
-    monkeypatch.setattr(deepseek.httpx, "post", fake_post)
     client = DeepSeekClient(endpoint="https://example.invalid/chat/completions", model="m", api_key="k",
-                            receipts_dir=tmp_path, timeout_seconds=5, max_attempts=1)
+                            receipts=FileReceipts(tmp_path), timeout_seconds=5, max_attempts=1,
+                            transport=httpx.MockTransport(handler))
     prompt = [{"role": "user", "content": "x"}]
     first = client.complete(prompt, {"max_tokens": 10})
     second = client.complete(prompt, {"max_tokens": 10})
     assert len(calls) == 1 and not first.from_receipt and second.from_receipt
     assert second.request_sha256 == first.request_sha256 and second.usage == {"prompt_tokens": 3}
     offline = DeepSeekClient(endpoint="https://example.invalid/chat/completions", model="m", api_key=None,
-                             receipts_dir=tmp_path, timeout_seconds=5, max_attempts=1)
+                             receipts=FileReceipts(tmp_path), timeout_seconds=5, max_attempts=1)
     assert offline.complete(prompt, {"max_tokens": 10}).from_receipt
     with pytest.raises(ChatError, match="未提供"):
         offline.complete(prompt, {"max_tokens": 11})

@@ -1,0 +1,17 @@
+[Unit]
+Description=Neckline V4 evening news collection (keeps paging bounded and records intraday news for checking)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/v4.env
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python -m neckline.morning.cli collect
+TimeoutStartSec=20min
+MemoryHigh=500M
+MemoryMax=700M

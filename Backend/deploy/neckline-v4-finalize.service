@@ -1,0 +1,13 @@
+[Unit]
+Description=Neckline V4 morning report deadline: mark a missing report as failed and push the problem
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/v4.env
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python -m neckline.morning.cli finalize
+TimeoutStartSec=5min

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Neckline V4 morning report at Beijing 08:00 every day (non-trading days only collect)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Shanghai
+Persistent=false
+Unit=neckline-v4-morning.service
+
+[Install]
+WantedBy=timers.target

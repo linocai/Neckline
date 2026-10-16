@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .classify import CONTRACT, CST, classify
-from .deepseek import DeepSeekClient
+from .deepseek import DeepSeekClient, FileReceipts
 from .pool import CompanyPool
 from .prefilter import Window, prefilter
 from .select import Entry, select
@@ -56,7 +56,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--archive", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-draft.json")
+    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v1.json")
     ap.add_argument("--receipts", type=Path, default=Path(".work/p1-offline/receipts"))
     ap.add_argument("--window-start", required=True)
     ap.add_argument("--window-end", required=True)
@@ -87,7 +87,7 @@ def main() -> None:
     pre = prefilter(docs, pool, window, history_days=settings["history"]["lookbackDays"])
     prefilter_seconds = round(time.monotonic() - started, 1)
     client = DeepSeekClient(endpoint=args.endpoint, model=args.model, api_key=os.environ.get("DEEPSEEK_API_KEY"),
-                            receipts_dir=args.receipts, timeout_seconds=600, max_attempts=2)
+                            receipts=FileReceipts(args.receipts), timeout_seconds=600, max_attempts=2)
     model_started = time.monotonic()
     result = classify(pre.messages, pre.history, pool, profiles, client, window=window, settings=settings)
     model_seconds = round(time.monotonic() - model_started, 1)

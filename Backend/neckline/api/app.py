@@ -1,4 +1,4 @@
-"""Neckline V3 API: reads and explicit user commands; heavy work runs in K10 worker."""
+"""Neckline API：V4 晨报接口（/api/v4）与只读网页（/read），以及 v3 的只读历史接口（P5 删除）。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -19,14 +19,16 @@ from neckline.api.schemas import (
 from neckline.api.stores import upsert_device
 from neckline.config import settings
 from neckline.k10.schema import read_connection, require_schema
+from neckline.morning.api import create_router as create_morning_router
+from neckline.morning.web import create_router as create_read_router
 from neckline.k10.notifications import require_notifications_schema
 from neckline.settings_store import (
     create_provider, delete_provider, get_app_settings, get_tavily_api_key, list_providers_public,
     set_push_kinds, set_tavily_api_key, update_provider,
 )
 
-VERSION = "v3.7.0"
-RELEASE_SET = "v3.7.0-b109"
+VERSION = "v4.0.0"
+RELEASE_SET = "v4.0.0-b110"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
@@ -90,6 +92,10 @@ app.include_router(create_collection_router(
         settings.k10_collection_config_revision,
         settings.k10_collection_config_binding_error,
     )))
+
+
+app.include_router(create_morning_router(require_token_dependency=require_token))
+app.include_router(create_read_router())
 
 
 @app.get(f"{API_PREFIX}/health")

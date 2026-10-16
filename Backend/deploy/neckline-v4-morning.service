@@ -1,0 +1,21 @@
+[Unit]
+Description=Neckline V4 morning report: 08:00 collection, then report and push on trading days
+After=network-online.target
+Wants=network-online.target
+# 出错退出 75 时按分钟重启续跑；过了 09:15 截止任务自己以 0 退出，不会无限重启。
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/v4.env
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python -m neckline.morning.cli morning
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=30min
+MemoryHigh=700M
+MemoryMax=900M

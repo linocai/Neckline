@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Neckline V4 news collection at Beijing 20:00 every day
+
+[Timer]
+OnCalendar=*-*-* 20:00:00 Asia/Shanghai
+Persistent=false
+Unit=neckline-v4-collect.service
+
+[Install]
+WantedBy=timers.target

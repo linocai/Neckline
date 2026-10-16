@@ -1,0 +1,25 @@
+{
+  "collectionVersion": "collection-v4-1",
+  "note": "每天 08:00、20:00 各采一次（周末节假日也采）。每个来源从上次完整覆盖处减去回看时长开始取到当下；首次上线须显式给出起点。",
+  "jin10": {
+    "endpoint": "https://mcp.jin10.com/mcp",
+    "protocolVersion": "2025-11-25"
+  },
+  "sources": {
+    "tushare-major-news": {
+      "lookbackSeconds": 3600,
+      "maxRequests": 128,
+      "timeoutSeconds": 30
+    },
+    "jin10-flash": {
+      "lookbackSeconds": 3600,
+      "maxPages": 128,
+      "timeoutSeconds": 30
+    },
+    "jin10-news": {
+      "lookbackSeconds": 3600,
+      "maxPages": 32,
+      "timeoutSeconds": 30
+    }
+  }
+}
