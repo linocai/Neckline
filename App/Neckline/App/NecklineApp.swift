@@ -1,143 +1,139 @@
 import SwiftUI
-import Foundation
 #if os(macOS)
 import AppKit
 #endif
 
-private struct K10SyntheticTokenStore: APIAccessTokenStore {
+/// QA 与测试宿主不读写钥匙串。
+private struct EphemeralTokenStore: APIAccessTokenStore {
     func load() -> String? { nil }
     func save(_ token: String) -> Bool { true }
 }
 
 @main struct NecklineApp: App {
     @StateObject private var config: AppConfig
-    @State private var model: AppModel
+    @State private var model: MorningModel
     #if os(iOS)
-    @UIApplicationDelegateAdaptor(K10AppDelegate.self) private var appDelegate
+    @UIApplicationDelegateAdaptor(MorningPush.self) private var push
     #endif
 
-    private static var usesSyntheticUI: Bool {
-        #if DEBUG
-        // AppKit consumes dash-prefixed launch arguments while constructing NSApplication
-        // and exposes them as user-defaults. Keep the direct argument check for simulator
-        // launches, and the defaults check for a macOS executable launched with the same flag.
-        ProcessInfo.processInfo.arguments.contains("-K10SyntheticUI")
-            || UserDefaults.standard.bool(forKey: "K10SyntheticUI")
-            || ProcessInfo.processInfo.environment["K10_SYNTHETIC_UI"] == "1"
-            || Bundle.main.object(forInfoDictionaryKey: "K10SyntheticUI") as? String == "YES"
-            // XCTest launches the app host without the explicit UI flag. It must never
-            // read the user's Keychain token or contact a configured service.
-            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        #else
-        false
-        #endif
-    }
-
     init() {
-        #if DEBUG
-        if let raw = ProcessInfo.processInfo.environment["NK_QA_API_URL"] {
-            precondition(ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1")
-            guard let url = URL(string: raw), ["127.0.0.1", "localhost", "::1"].contains(url.host ?? "") else {
-                preconditionFailure("Local QA requires a loopback API URL")
-            }
-            let suite = "top.linotsai.neckline.qa.local-api"
-            let defaults = UserDefaults(suiteName: suite)!
-            defaults.removePersistentDomain(forName: suite)
-            let localConfig = AppConfig(defaults: defaults, tokenStore: K10SyntheticTokenStore(), loadPersistentCredentials: false)
-            localConfig.baseURLOverride = url.absoluteString
-            _config = StateObject(wrappedValue: localConfig)
-            _model = State(initialValue: AppModel())
-            return
-        }
-        if Self.usesSyntheticUI {
-            let suite = "top.linotsai.neckline.synthetic-ui"
-            let defaults = UserDefaults(suiteName: suite)!
-            defaults.removePersistentDomain(forName: suite)
-            _config = StateObject(wrappedValue: AppConfig(defaults: defaults, tokenStore: K10SyntheticTokenStore(), loadPersistentCredentials: false))
-            let service = K10SyntheticUIService(presentsB39State: true)
-            _model = State(initialValue: AppModel(serviceFactory: { service }))
-            return
-        }
-        #endif
-        _config = StateObject(wrappedValue: AppConfig())
-        _model = State(initialValue: AppModel())
+        let defaults = Self.sessionDefaults()
+        let config = Self.makeConfig(defaults: defaults)
+        _config = StateObject(wrappedValue: config)
+        _model = State(initialValue: MorningModel(config: config, defaults: defaults))
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(model: model, config: config).task {
-                if Self.usesSyntheticUI {
-                    await model.refresh()
-                    #if DEBUG
-                    if ProcessInfo.processInfo.environment["NK_QA_KEEP_FIRST"] == "1",
-                       let window = model.companyWindows.first(where: { $0.companyWindowId == "synthetic-evening-window" }) {
-                        await model.act("keep", window: window)
-                    }
-                    await applyQARoute()
-                    #endif
-                    return
-                }
-                model.bind(config: config)
-                #if os(iOS)
-                let initialRoute = appDelegate.attach(config: config, model: model)
-                model.notificationRegistrar = { await appDelegate.requestAuthorizationAndRegister() }
-                if let initialRoute { await model.openNotification(initialRoute) }
-                else { await model.refresh() }
-                #else
-                await model.refresh()
-                #endif
-                #if DEBUG
-                await applyQARoute()
-                #endif
-            }
-        }.defaultSize(width: 1180, height: 760)
-    }
+            MorningRootView(model: model, config: config)
+                .qaAppearance()
+                .task { await launch() }
+        }
+        .defaultSize(width: 1180, height: 760)
 
-    #if DEBUG
-    /// A process-only starting route for the single reusable QA client.
-    /// Real data remains read-only; synthetic selection seeding is confined above.
-    private func applyQARoute() async {
-        guard ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1" else { return }
-        if let name = ProcessInfo.processInfo.environment["NK_QA_TAB"], let tab = AppTab(rawValue: name) { model.tab = tab }
-        if let window = ProcessInfo.processInfo.environment["NK_QA_DAILY_WINDOW"], ["evening", "morning"].contains(window) { model.dailyWindow = window }
-        if ProcessInfo.processInfo.environment["NK_QA_MATERIALS"] == "1",
-           let report = (model.dailyWindow == "morning" ? model.dailyMorning : model.dailyEvening)?.report {
-            await model.openMaterials(for: report)
-        }
-        if ProcessInfo.processInfo.environment["NK_QA_READING"] == "1",
-           let window = model.companyWindows.first(where: { model.selection(for: $0)?.state == "kept" }) {
-            model.tab = .focus
-            model.selectedWindow = window
-        }
         #if os(macOS)
-        if let path = ProcessInfo.processInfo.environment["NK_QA_RENDER_PATH"],
-           path.hasPrefix("/tmp/neckline-v3-qa/"), path.hasSuffix(".png") {
-            // Render only our own SwiftUI view tree. This never reads the desktop,
-            // other applications or the macOS window compositor. Sheets do not present from
-            // a detached hosting view, so the material QA route renders that exact view tree.
-            let root: AnyView
-            if ProcessInfo.processInfo.environment["NK_QA_MATERIALS"] == "1",
-               let report = selectedMaterialsReportForQA {
-                root = AnyView(ReportMaterialsSheet(report: report, model: model).frame(width: 1180, height: 760))
-            } else {
-                root = AnyView(RootView(model: model, config: config).frame(width: 1180, height: 760))
-            }
-            let view = NSHostingView(rootView: root)
-            view.appearance = NSAppearance(named: .aqua)
-            view.setFrameSize(NSSize(width: 1180, height: 760))
-            view.layoutSubtreeIfNeeded()
-            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-                if let png = bitmap.representation(using: .png, properties: [:]) {
-                    try? png.write(to: URL(fileURLWithPath: path), options: .atomic)
-                }
-            }
+        Settings {
+            MorningSettingsView(model: model, config: config)
+                .tint(NKMorning.accent)
+                .qaAppearance()
+                .frame(minWidth: 440, minHeight: 420)
         }
         #endif
     }
 
-    private var selectedMaterialsReportForQA: K10DailyReport? {
-        (model.dailyWindow == "morning" ? model.dailyMorning : model.dailyEvening)?.report
+    private func launch() async {
+        #if os(iOS)
+        await push.attach(model)
+        #endif
+        #if DEBUG && os(macOS)
+        await renderQASnapshotIfRequested()
+        #endif
+    }
+
+    private static func sessionDefaults() -> UserDefaults {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return isolatedDefaults(suite: "top.linotsai.neckline.xctest")
+        }
+        if ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil {
+            return isolatedDefaults(suite: "top.linotsai.neckline.qa.local-api")
+        }
+        #endif
+        return .standard
+    }
+
+    private static func makeConfig(defaults: UserDefaults) -> AppConfig {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            let config = AppConfig(defaults: defaults, tokenStore: EphemeralTokenStore(), loadPersistentCredentials: false)
+            config.apiToken = ""
+            config.baseURLOverride = ""
+            return config
+        }
+        if let raw = ProcessInfo.processInfo.environment["NK_QA_API_URL"] {
+            precondition(ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1")
+            guard let url = URL(string: raw),
+                  let host = url.host?.lowercased(),
+                  ["127.0.0.1", "localhost", "::1"].contains(host) else {
+                preconditionFailure("Local QA requires a loopback API URL")
+            }
+            let config = AppConfig(defaults: defaults, tokenStore: EphemeralTokenStore(), loadPersistentCredentials: false)
+            config.baseURLOverride = url.absoluteString
+            return config
+        }
+        #endif
+        return AppConfig(defaults: defaults)
+    }
+
+    private static func isolatedDefaults(suite: String) -> UserDefaults {
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    #if DEBUG && os(macOS)
+    /// 只把晨报根视图画进调用方给定的 PNG。路径必须落在既有 QA 目录里。
+    private func renderQASnapshotIfRequested() async {
+        guard let path = ProcessInfo.processInfo.environment["NK_QA_RENDER_PATH"],
+              path.hasPrefix("/tmp/neckline-v3-qa/"),
+              path.hasSuffix(".png") else { return }
+        await model.reload(.latest)
+        await model.reloadHistory()
+        let root = MorningRootView(model: model, config: config)
+            .qaAppearance()
+            .frame(width: 1180, height: 760)
+        let view = NSHostingView(rootView: root)
+        view.appearance = Self.qaNSAppearance()
+        view.setFrameSize(NSSize(width: 1180, height: 760))
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    private static func qaNSAppearance() -> NSAppearance? {
+        switch ProcessInfo.processInfo.environment["NK_QA_APPEARANCE"] {
+        case "dark": NSAppearance(named: .darkAqua)
+        case "light": NSAppearance(named: .aqua)
+        default: NSApp.effectiveAppearance
+        }
     }
     #endif
+}
+
+private extension View {
+    @ViewBuilder func qaAppearance() -> some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NK_QA_APPEARANCE"] == "dark" {
+            preferredColorScheme(.dark)
+        } else if ProcessInfo.processInfo.environment["NK_QA_APPEARANCE"] == "light" {
+            preferredColorScheme(.light)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
 }

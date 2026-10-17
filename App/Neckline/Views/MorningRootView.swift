@@ -1,4 +1,4 @@
-// 晨报根视图。尚未接进 @main。
+// 晨报根视图。iOS 三个标签；macOS 两栏，设置放在系统设置窗口。
 
 import SwiftUI
 
@@ -24,7 +24,12 @@ struct MorningRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                SettingsLink {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("设置")
+                .help("设置")
                 Button {
                     Task {
                         await model.reload(model.focus)

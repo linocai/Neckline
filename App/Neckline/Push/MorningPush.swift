@@ -11,8 +11,11 @@ final class MorningPush: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // 点按通知冷启动时，系统会在 delegate 装上之后回调 didReceive。
+        // 启动参数里的远程通知也先记下，attach 时同样走 handleNotificationTap。
         UNUserNotificationCenter.current().delegate = self
-        _ = launchOptions
+        if launchOptions?[.remoteNotification] != nil {
+            pendingTap = true
+        }
         return true
     }
 

@@ -1,4 +1,4 @@
-// 连接、通知和关于。macOS 稍后放进系统设置窗口，这里只做视图。
+// 连接、通知和关于。iOS 在标签里，macOS 在系统设置窗口。
 
 import SwiftUI
 
@@ -10,8 +10,8 @@ struct MorningSettingsView: View {
         Form {
             Section("连接") {
                 Picker("环境", selection: $config.environment) {
-                    Text("正式").tag(NKEnvironment.prod)
-                    Text("本地开发").tag(NKEnvironment.dev)
+                    Text(NKEnvironment.prod.label).tag(NKEnvironment.prod)
+                    Text(NKEnvironment.dev.label).tag(NKEnvironment.dev)
                 }
                 .pickerStyle(.segmented)
                 TextField("手填地址", text: $config.baseURLOverride, prompt: Text("留空则用所选环境"))

@@ -34,57 +34,12 @@ enum NKEnvironment: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 设置里的环境名。
     var label: String {
         switch self {
-        case .dev:  return "Dev · 127.0.0.1:8002"
-        case .prod: return "Prod · nk.linotsai.top"
+        case .dev: return "本地开发"
+        case .prod: return "正式"
         }
-    }
-
-    /// 分段控件里的**短名**(macOS 原型 1623–1624 行两段就写 `Dev` / `Prod`)——
-    /// 地址在它下面那一行「生效 baseURL」里完整给出,段内再重复一遍会把控件撑爆。
-    var shortLabel: String {
-        switch self {
-        case .dev:  return "Dev"
-        case .prod: return "Prod"
-        }
-    }
-}
-
-enum NKVersionCompatibility {
-    static func message(serverVersion: String?, appVersion: String? = nil) -> String? {
-        guard let serverVersion else { return nil }
-        let server = normalized(serverVersion)
-        let app = normalized(appVersion ?? (
-            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-        ))
-        guard !server.isEmpty, !app.isEmpty, server != app else { return nil }
-        guard let order = compare(server, app) else {
-            return "服务端为 v\(server)，当前 App 为 \(app)；版本不一致，请核对发布套件。"
-        }
-        // `2.7` 与 `2.7.0` 是同一个语义版本，不应仅因书写位数不同而阻断使用。
-        if order == 0 { return nil }
-        if order < 0 {
-            return "服务端仍是 v\(server)，当前 App 为 \(app)；请先部署服务端。"
-        }
-        return "服务端已是 v\(server)，当前 App 为 \(app)；请更新 App。"
-    }
-
-    private static func normalized(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.lowercased().hasPrefix("v") ? String(trimmed.dropFirst()) : trimmed
-    }
-
-    private static func compare(_ lhs: String, _ rhs: String) -> Int? {
-        let left = lhs.split(separator: ".").map(String.init)
-        let right = rhs.split(separator: ".").map(String.init)
-        guard left.allSatisfy({ Int($0) != nil }), right.allSatisfy({ Int($0) != nil }) else { return nil }
-        for index in 0..<max(left.count, right.count) {
-            let l = index < left.count ? Int(left[index])! : 0
-            let r = index < right.count ? Int(right[index])! : 0
-            if l != r { return l < r ? -1 : 1 }
-        }
-        return 0
     }
 }
 
@@ -170,17 +125,7 @@ final class AppConfig: ObservableObject {
         let trimmed = baseURLOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         guard let url = URL(string: trimmed) else { return "服务地址格式不正确" }
-        return isAllowedOverride(url) ? nil : "远端服务必须使用 HTTPS；本地开发仅允许 Debug 的 127.0.0.1/localhost"
-    }
-
-    var effectiveServiceLabel: String {
-        let trimmed = baseURLOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return environment.label }
-        guard connectionConfigurationError == nil else { return "临时地址无效" }
-        let address = resolvedBaseURL.host.map { host in
-            resolvedBaseURL.port.map { "\(host):\($0)" } ?? host
-        } ?? resolvedBaseURL.absoluteString
-        return "临时 · \(address)"
+        return isAllowedOverride(url) ? nil : "远端服务必须使用 HTTPS；本地开发仅允许 Debug 的 127.0.0.1、localhost 或 ::1"
     }
 
     var hasToken: Bool { !apiToken.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -197,7 +142,7 @@ final class AppConfig: ObservableObject {
         if url.scheme?.lowercased() == "https" { return true }
         #if DEBUG
         let host = url.host?.lowercased()
-        return url.scheme?.lowercased() == "http" && (host == "127.0.0.1" || host == "localhost")
+        return url.scheme?.lowercased() == "http" && (host == "127.0.0.1" || host == "localhost" || host == "::1")
         #else
         return false
         #endif

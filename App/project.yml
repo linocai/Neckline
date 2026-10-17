@@ -12,7 +12,6 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "3.7.0"
     CURRENT_PROJECT_VERSION: "109"
-    K10_SYNTHETIC_UI: "NO"
     # One reusable QA bundle per platform; release builds keep the empty suffix.
     NK_BUNDLE_SUFFIX: ""
     DEVELOPMENT_TEAM: HX73DFL88G
