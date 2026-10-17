@@ -1,7 +1,9 @@
 """TuShare ``major_news``（新闻通讯长文）按时间段取数。
 
-这个接口没有可靠的翻页游标：一次返回满 400 条就视为可能截断，把时间段对半切开再取，
-切点落在整秒上，同一秒的消息不会悄悄漏掉。
+先按固定时长把窗口切成首尾相接的整秒片，再按时间先后逐片请求。这个接口没有可靠的翻页游标：
+某一片返回满 400 条就视为可能截断，丢掉这一片的结果，只把这一片对半切开再取。
+切点落在整秒上，下一片从上一片结束后 1 秒开始，同一秒不会被两片重复计入。
+每天调用次数有上限，超限立刻停止，已经取到的留下。
 """
 from __future__ import annotations
 
@@ -62,11 +64,34 @@ def _parse(raw: str) -> tuple[datetime | None, str]:
     return (parsed.replace(tzinfo=CST) if parsed.tzinfo is None else parsed), "exact"
 
 
+def _failure(response: Mapping[str, object]) -> str | None:
+    code = response.get("code")
+    if code == 0:
+        return None
+    msg = response.get("msg")
+    # 只记错误类别。响应原文和 token 都不进入结果。
+    if code == 40203 or (isinstance(msg, str) and "频率超限" in msg):
+        return "quota_exceeded"
+    return "upstream_rejected"
+
+
+def _time_slices(start: datetime, end: datetime, slice_seconds: int) -> list[tuple[datetime, datetime]]:
+    """[start, end] 切成互不重叠的整秒片，每片跨度不超过 slice_seconds，下一片从上片结束后 1 秒开始。"""
+    slices: list[tuple[datetime, datetime]] = []
+    cursor = start
+    while cursor <= end:
+        slice_end = min(cursor + timedelta(seconds=slice_seconds), end)
+        slices.append((cursor, slice_end))
+        cursor = slice_end + timedelta(seconds=1)
+    return slices
+
+
 def _items(post: Post, token: str, start: datetime, end: datetime) -> Sequence[Any]:
     response = post({"api_name": "major_news", "token": token, "fields": FIELDS,
                      "params": {"start_date": _wire_time(start), "end_date": _wire_time(end)}})
-    if response.get("code") != 0:
-        raise TuShareError("upstream_rejected")
+    failure = _failure(response)
+    if failure:
+        raise TuShareError(failure)
     data = response.get("data")
     if not isinstance(data, Mapping) or not isinstance(data.get("items"), list):
         raise TuShareError("response_invalid")
@@ -94,13 +119,18 @@ def _document(item: Any, fetched_at: datetime) -> SourceDocument | None:
                           metadata={"provider": "tushare", "source": source or None, "rawPubTime": raw_time})
 
 
-def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: datetime, max_requests: int,
-                     clock: Callable[[], datetime]) -> SourceOutcome:
+def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: datetime, slice_seconds: int,
+                     max_requests: int, clock: Callable[[], datetime]) -> SourceOutcome:
     outcome = SourceOutcome(source_key=SOURCE_KEY, requested_start=start, requested_end=end)
+    if slice_seconds < 1:
+        raise ValueError("slice_seconds 必须是正整数")
     if not token:
         outcome.error = "credential_missing"
         return outcome
-    pending = [(start.replace(microsecond=0), end.replace(microsecond=0))]
+    start_s, end_s = start.replace(microsecond=0), end.replace(microsecond=0)
+    # 栈顶是最早的一片。对半切时先压后半、再压前半，前半会先被取走，其他片留在下面不动。
+    slices = _time_slices(start_s, end_s, slice_seconds) if start_s <= end_s else [(start_s, end_s)]
+    pending = list(reversed(slices))
     while pending:
         if outcome.requests >= max_requests:
             outcome.error = "request_bound_reached"

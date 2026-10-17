@@ -168,7 +168,8 @@ def _flash(i: int, when: datetime) -> dict:
 
 
 COLLECTION = {"jin10": {"endpoint": jin10.ENDPOINT, "protocolVersion": jin10.PROTOCOL_VERSION},
-              "sources": {"tushare-major-news": {"lookbackSeconds": 3600, "maxRequests": 8, "timeoutSeconds": 5},
+              "sources": {"tushare-major-news": {"lookbackSeconds": 3600, "sliceSeconds": 10800, "maxRequests": 8,
+                                              "timeoutSeconds": 5},
                           "jin10-flash": {"lookbackSeconds": 3600, "maxPages": 4, "timeoutSeconds": 5},
                           "jin10-news": {"lookbackSeconds": 3600, "maxPages": 4, "timeoutSeconds": 5}}}
 
@@ -226,11 +227,168 @@ def test_tushare_splits_saturated_intervals():
         return {"code": 0, "data": {"items": rows}}
 
     outcome = tushare.fetch_major_news(post, "token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "17:00"),
-                                       max_requests=8, clock=lambda: at("2026-10-12", "17:00"))
+                                       slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "17:00"))
     assert outcome.complete and len(seen) == 3 and seen[1][1] < seen[2][0]
     assert len(outcome.documents) == 4  # 满额那次的 400 条不留，只留两半各自的结果
     assert tushare.fetch_major_news(post, None, start=at("2026-10-12", "15:00"), end=at("2026-10-12", "17:00"),
-                                    max_requests=8, clock=lambda: at("2026-10-12", "17:00")).error == "credential_missing"
+                                    slice_seconds=10800, max_requests=8,
+                                    clock=lambda: at("2026-10-12", "17:00")).error == "credential_missing"
+
+
+def test_tushare_requests_fixed_slices_in_order():
+    from neckline.news import tushare
+    seen = []
+
+    def post(payload):
+        params = payload["params"]
+        seen.append((params["start_date"], params["end_date"]))
+        return {"code": 0, "data": {"items": []}}
+
+    outcome = tushare.fetch_major_news(post, "token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "22:00"),
+                                       slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "22:00"))
+    assert outcome.complete and outcome.error is None and outcome.requests == 3
+    assert seen == [
+        ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
+        ("2026-10-12 18:00:01", "2026-10-12 21:00:01"),
+        ("2026-10-12 21:00:02", "2026-10-12 22:00:00"),
+    ]
+
+
+def test_tushare_bisects_only_the_saturated_slice():
+    from neckline.news import tushare
+    seen = []
+    saturated = ("2026-10-12 18:00:01", "2026-10-12 21:00:01")
+
+    def post(payload):
+        params = payload["params"]
+        key = (params["start_date"], params["end_date"])
+        seen.append(key)
+        count = 400 if key == saturated else 1
+        rows = [[f"2026-10-12 16:10:{i % 60:02d}", "src", f"t{len(seen)}-{i}", "正文"] for i in range(count)]
+        return {"code": 0, "data": {"items": rows}}
+
+    outcome = tushare.fetch_major_news(post, "token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "22:00"),
+                                       slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "22:00"))
+    assert seen == [
+        ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
+        saturated,
+        ("2026-10-12 18:00:01", "2026-10-12 19:30:01"),
+        ("2026-10-12 19:30:02", "2026-10-12 21:00:01"),
+        ("2026-10-12 21:00:02", "2026-10-12 22:00:00"),
+    ]
+    assert outcome.complete and outcome.requests == 5 and len(outcome.documents) == 4
+
+
+def test_tushare_stops_on_daily_quota_and_keeps_earlier_documents():
+    from neckline.news import tushare
+    calls = []
+
+    def post(payload):
+        calls.append(payload["params"]["start_date"])
+        if len(calls) == 2:
+            return {"code": 40203, "msg": "抱歉，您访问接口(major_news)频率超限(40次/天)，token=secret-token"}
+        return {"code": 0, "data": {"items": [["2026-10-12 16:00:00", "同花顺", "标题甲", "正文甲"]]}}
+
+    outcome = tushare.fetch_major_news(post, "secret-token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "22:00"),
+                                       slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "22:00"))
+    assert outcome.error == "quota_exceeded" and outcome.complete is False
+    assert [doc.title for doc in outcome.documents] == ["标题甲"] and outcome.requests == 1
+    assert calls == ["2026-10-12 15:00:00", "2026-10-12 18:00:01"]
+    assert "secret-token" not in outcome.error and "频率超限" not in outcome.error
+
+    other = []
+
+    def rejected(payload):
+        other.append(1)
+        if len(other) == 1:
+            return {"code": 0, "data": {"items": [["2026-10-12 16:00:00", "同花顺", "标题乙", "正文乙"]]}}
+        return {"code": 40101, "msg": "其它错误 secret-token"}
+
+    denied = tushare.fetch_major_news(rejected, "secret-token", start=at("2026-10-12", "15:00"),
+                                      end=at("2026-10-12", "22:00"), slice_seconds=10800, max_requests=8,
+                                      clock=lambda: at("2026-10-12", "22:00"))
+    assert denied.error == "upstream_rejected" and len(denied.documents) == 1 and len(other) == 2
+    assert "secret-token" not in denied.error
+
+    limited = []
+
+    def by_msg(payload):
+        limited.append(1)
+        if len(limited) == 1:
+            return {"code": 0, "data": {"items": [["2026-10-12 16:00:00", "同花顺", "标题丙", "正文丙"]]}}
+        return {"code": 50000, "msg": "调用频率超限"}
+
+    capped = tushare.fetch_major_news(by_msg, "secret-token", start=at("2026-10-12", "15:00"),
+                                      end=at("2026-10-12", "22:00"), slice_seconds=10800, max_requests=8,
+                                      clock=lambda: at("2026-10-12", "22:00"))
+    assert capped.error == "quota_exceeded" and len(capped.documents) == 1 and len(limited) == 2
+
+
+def test_incomplete_collection_resumes_from_the_first_attempt(path):
+    bootstrap = at("2026-10-12", "15:00")
+    first_now = at("2026-10-12", "22:00")
+    second_now = at("2026-10-13", "08:00")
+    third_now = at("2026-10-13", "20:00")
+    tokens = {"TUSHARE_TOKEN": "secret-token", "JIN10_MCP_TOKEN": "j"}
+    calls = []
+
+    def post(payload):
+        params = payload["params"]
+        calls.append((params["start_date"], params["end_date"]))
+        if len(calls) == 2:
+            return {"code": 40203, "msg": "频率超限 token=secret-token"}
+        return {"code": 0, "data": {"items": [["2026-10-12 16:30:00", "同花顺", f"标题{len(calls)}", "正文"]]}}
+
+    def factory(**_):
+        return FakeJin10([([_flash(1, bootstrap)], False)])
+
+    first = run_collection(path, now=first_now, config=COLLECTION, tokens=tokens, bootstrap_start=bootstrap,
+                           jin10_factory=factory, tushare_post=post, clock=lambda: first_now)
+    tushare_first = next(s for s in first["sources"] if s["sourceKey"] == "tushare-major-news")
+    assert tushare_first["error"] == "quota_exceeded" and tushare_first["complete"] is False
+    assert tushare_first["documents"] == 1 and tushare_first["newVersions"] == 1
+    assert tushare_first["requestedStart"] == bootstrap.isoformat()
+    blob = json.dumps(first["sources"], ensure_ascii=False)
+    assert "secret-token" not in blob and "频率超限" not in blob
+    assert len(calls) == 2
+    with db.read(path) as conn:
+        assert db.source_watermark(conn, "tushare-major-news") is None
+
+    second = run_collection(path, now=second_now, config=COLLECTION, tokens=tokens, jin10_factory=factory,
+                            tushare_post=post, clock=lambda: second_now)
+    tushare_second = next(s for s in second["sources"] if s["sourceKey"] == "tushare-major-news")
+    assert tushare_second["requestedStart"] == bootstrap.isoformat() and tushare_second["complete"]
+    assert calls[2] == ("2026-10-12 15:00:00", "2026-10-12 18:00:00")
+    with db.read(path) as conn:
+        assert db.source_watermark(conn, "tushare-major-news") == second_now
+
+    third = run_collection(path, now=third_now, config=COLLECTION, tokens=tokens, jin10_factory=factory,
+                           tushare_post=post, clock=lambda: third_now)
+    tushare_third = next(s for s in third["sources"] if s["sourceKey"] == "tushare-major-news")
+    assert tushare_third["requestedStart"] == at("2026-10-13", "07:00").isoformat() and tushare_third["complete"]
+    with db.read(path) as conn:
+        assert db.source_watermark(conn, "tushare-major-news") == third_now
+
+
+def test_collection_without_an_attempt_still_needs_bootstrap_and_makes_no_requests(path):
+    now = at("2026-10-12", "20:00")
+    tokens = {"TUSHARE_TOKEN": "t", "JIN10_MCP_TOKEN": "j"}
+    calls = {"tushare": 0, "jin10": 0}
+
+    def post(payload):
+        calls["tushare"] += 1
+        return {"code": 0, "data": {"items": []}}
+
+    def factory(**_):
+        calls["jin10"] += 1
+        return FakeJin10([([], False)])
+
+    for _ in range(2):
+        result = run_collection(path, now=now, config=COLLECTION, tokens=tokens, tushare_post=post,
+                                jin10_factory=factory, clock=lambda: now)
+        assert result["status"] == "failed"
+        assert {s["error"] for s in result["sources"]} == {"bootstrap_start_missing"}
+    assert calls == {"tushare": 0, "jin10": 0}
 
 
 # ------------------------------------------------------------------ 出报真实入口

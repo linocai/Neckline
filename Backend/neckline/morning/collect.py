@@ -1,6 +1,7 @@
 """每天 08:00、20:00 采集：三个来源各自从上次完整覆盖处（减回看时长）取到现在，存进晨报库。
 
-某个来源失败不影响其他来源；没有覆盖记录的来源必须显式给出起点（首次上线的 bootstrap），不猜。
+某个来源失败不影响其他来源。没有完整覆盖时，从该来源首次真正取数的起点续采；
+从来没取过、又没给出起点的，如实记为没有采集起点。
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ def _fetch(key: str, *, start: datetime, end: datetime, settings: Mapping[str, A
     if key == "tushare-major-news":
         post = tushare_post or tushare.http_post(float(settings["timeoutSeconds"]))
         return tushare.fetch_major_news(post, tokens.get("TUSHARE_TOKEN"), start=start, end=end,
+                                        slice_seconds=int(settings["sliceSeconds"]),
                                         max_requests=max_pages or int(settings["maxRequests"]), clock=clock)
     token = tokens.get("JIN10_MCP_TOKEN")
     if not token:
@@ -51,15 +53,21 @@ def run_collection(db_path: Path, *, now: datetime, config: Mapping[str, Any], t
     with db.write(db_path) as conn:
         db.begin_collection(conn, run_id=run_id, slot_at=now, started_at=clock())
         marks = {key: db.source_watermark(conn, key) for key in SOURCES}
+        attempts = {key: db.source_attempt_start(conn, key) for key in SOURCES}
     summaries = []
     for key in SOURCES:
         settings = config["sources"][key]
-        mark = marks[key]
-        if mark is None and bootstrap_start is None:
+        mark, attempt = marks[key], attempts[key]
+        if mark is not None:
+            start = mark - timedelta(seconds=int(settings["lookbackSeconds"]))
+        elif attempt is not None:
+            start = attempt
+        else:
+            start = bootstrap_start
+        if start is None:
             outcome = SourceOutcome(source_key=key, requested_start=now, requested_end=now)
             outcome.error = "bootstrap_start_missing"
         else:
-            start = bootstrap_start if mark is None else mark - timedelta(seconds=int(settings["lookbackSeconds"]))
             try:
                 outcome = _fetch(key, start=start, end=now, settings=settings, jin10_settings=config["jin10"],
                                  tokens=tokens, jin10_factory=jin10_factory, tushare_post=tushare_post,

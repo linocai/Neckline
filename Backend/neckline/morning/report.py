@@ -29,6 +29,7 @@ SOURCE_LABELS = {"tushare-major-news": "TuShare 新闻", "jin10-flash": "金十�
 ERROR_LABELS = {
     "history_unavailable": "来源翻不到窗口起点", "page_limit": "翻页到上限", "request_bound_reached": "请求数到上限",
     "credential_missing": "凭据缺失", "unauthorized": "凭据被拒", "rate_limited": "被限流",
+    "quota_exceeded": "达到每日调用上限",
     "transport_error": "网络错误", "bootstrap_start_missing": "没有采集起点",
 }
 
