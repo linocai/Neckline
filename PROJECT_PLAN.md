@@ -18,11 +18,12 @@ V4 是轻量的**创业板消息筛选器**。每个交易日早上一份晨报�
 - **数据**：B92（2026-09-27）之前的数据永远不用。V4 用新库从零开始；每天 08:00、20:00 采集（周末节假日也采），08:00 那次供晨报，20:00 那次只为翻页上限和留底核对，晚上不计算、不推送。
 - **编号与入口**：4.0.0 的 build 延续 3.x，从 B110 起；MCP 在 `https://nk.linotsai.top/mcp`，和 API 同一个服务。
 
-## 当前状态（2026-10-16）
+## 当前状态（2026-10-17）
 
 - **v3 已退役**：采集、晚报、早报、两个行情 timer 和 worker 已 stop + disable；API（v3.7.0-b109）保留只读历史；数据库未改动。恢复命令记在 V4 记录 §7。
-- **V4 P1**：后端已上线，现役 B111（`798d3cb`，10/17 18:1x 切换，tag 已推）；B110 首次上线见 [B110 记录](archive/v4.0.0-b110_execution.md)，B111 修 TuShare 每日 40 次额度与断点续采，见 [B111 记录](archive/v4.0.0-b111_execution.md)。**下一步**：看 10/17 20:00 定时采集里 TuShare 是否从 10/16 08:00 续采完整；10/19（周一）08:00 出第一期晨报，用户从本机 `Backend/.work/read-link.txt` 里的链接看。之后 P3 改 App、P2 做 MCP，规则对照第二天市场表现再和用户定。
-- **遗留**：NB 上 `/opt/neckline/releases` 有约 5 GB 旧恢复集，P5 时清理；本机 `~/Lino/releases/Neckline` 留 B109（v3 回退）、B110、B111 三份制品。
+- **V4 P1**：后端已上线，现役 B111（`798d3cb`）；B110 首次上线见 [B110 记录](archive/v4.0.0-b110_execution.md)，B111 修 TuShare 额度与断点续采，10/17 20:00 续采已验证完整，见 [B111 记录](archive/v4.0.0-b111_execution.md)。10/19（周一）08:00 出第一期晨报。
+- **P3 发布进行中（B112）**：全量 2,363 通过；`dace921` 已推 main；后端制品已上传 NB、预检通过，**切换被自动模式拦下，待用户放行**；macOS 已换成 4.0.0 (112)，iOS Release 构建就绪待用户用 Xcode 装。**下一步**：放行后 `release.py switch --release v4.0.0-b112 --previous v4.0.0-b111` → health → tag `v4.0.0-b112` 打在 `dace921` → 补记录、README、NB_info 与清理。见 [B112 记录](archive/v4.0.0-b112_execution.md) §6。
+- **遗留**：NB 上 `/opt/neckline/releases` 约 8.4 GB（主要是 B105–B107 旧恢复集），P5 时清理；本机 `~/Lino/releases/Neckline` 有 B109–B112 制品，发布完成后只留 B111（回退）与 B112。
 
 ## 当前 Plan：V4.0.0
 
