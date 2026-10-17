@@ -103,7 +103,9 @@ def test_client_and_server_marketing_version_all_equal():
         "预期 pbxproj 里 Neckline app target(Debug + Release)各一处 MARKETING_VERSION,"
         f"实际抓到 {len(pbx_versions)} 处。各方实际值:{actual}"
     )
-    assert {server, package, pyproject} == {yml_version}, f"服务端包版本与 project.yml 版本号不一致。各方实际值:{actual}"
+    # V4 过渡期：2026-10-16 用户决定后端先以 4.0.0 上线，App 在 P3 改造时再升到 4.0.0。
+    # 这段时间只要求后端三处一致、App 两处一致；两端互相一致在 P3 恢复（见 PROJECT_PLAN Backlog）。
+    assert len({server, package, pyproject}) == 1, f"服务端三处版本号不一致。各方实际值:{actual}"
     assert set(pbx_versions) == {yml_version}, (
         f"pbxproj Neckline app target 版本号与 project.yml 不一致。各方实际值:{actual}"
     )
