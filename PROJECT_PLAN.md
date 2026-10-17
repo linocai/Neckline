@@ -21,8 +21,8 @@ V4 是轻量的**创业板消息筛选器**。每个交易日早上一份晨报�
 ## 当前状态（2026-10-16）
 
 - **v3 已退役**：采集、晚报、早报、两个行情 timer 和 worker 已 stop + disable；API（v3.7.0-b109）保留只读历史；数据库未改动。恢复命令记在 V4 记录 §7。
-- **V4 P1**：B110（`412ec3d`，tag 已推）10/17 17:01 已上线，三个 V4 timer 在跑，见 [B110 记录](archive/v4.0.0-b110_execution.md)。上线后发现 TuShare 每天只能调 40 次、首次采集没取完整且补不回来；修复为 B111（`798d3cb`，Cursor 施工、已验收），制品已传到 NB 并通过预检，**下一步**：确认 `798d3cb` 上全量测试全绿（日志在会话 scratchpad，若丢失就重跑）→ `release.py switch --release v4.0.0-b111 --previous v4.0.0-b110`（避开 20:00/08:00 任务运行时）→ 就绪检查、看 TuShare 是否从 10/16 08:00 续采完整 → 打 tag → 补 [B111 记录](archive/v4.0.0-b111_execution.md)。须在 10/19 08:00 首期晨报前完成。
-- **遗留**：NB 上 `/opt/neckline/releases` 有约 5 GB 旧恢复集，P5 时清理；本机 `~/Lino/releases/Neckline` 只留 B107、B109 两份制品。
+- **V4 P1**：后端已上线，现役 B111（`798d3cb`，10/17 18:1x 切换，tag 已推）；B110 首次上线见 [B110 记录](archive/v4.0.0-b110_execution.md)，B111 修 TuShare 每日 40 次额度与断点续采，见 [B111 记录](archive/v4.0.0-b111_execution.md)。**下一步**：看 10/17 20:00 定时采集里 TuShare 是否从 10/16 08:00 续采完整；10/19（周一）08:00 出第一期晨报，用户从本机 `Backend/.work/read-link.txt` 里的链接看。之后 P3 改 App、P2 做 MCP，规则对照第二天市场表现再和用户定。
+- **遗留**：NB 上 `/opt/neckline/releases` 有约 5 GB 旧恢复集，P5 时清理；本机 `~/Lino/releases/Neckline` 留 B109（v3 回退）、B110、B111 三份制品。
 
 ## 当前 Plan：V4.0.0
 
