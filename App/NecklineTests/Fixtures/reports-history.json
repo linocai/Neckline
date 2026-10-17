@@ -1,0 +1,32 @@
+{
+  "reports": [
+    {
+      "availableAt": "2026-10-19T00:03:00+00:00",
+      "entryCount": 3,
+      "failureReason": null,
+      "status": "available",
+      "tradeDate": "2026-10-19"
+    },
+    {
+      "availableAt": null,
+      "entryCount": 0,
+      "failureReason": "09:15 前没能出报",
+      "status": "failed",
+      "tradeDate": "2026-10-16"
+    },
+    {
+      "availableAt": null,
+      "entryCount": 0,
+      "failureReason": null,
+      "status": "running",
+      "tradeDate": "2026-10-15"
+    },
+    {
+      "availableAt": "2026-10-14T00:01:00+00:00",
+      "entryCount": 0,
+      "failureReason": null,
+      "status": "available",
+      "tradeDate": "2026-10-14"
+    }
+  ]
+}

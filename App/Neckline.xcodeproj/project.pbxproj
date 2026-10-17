@@ -7,26 +7,42 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		04D3F873585F2CC8C8B3C554 /* not-ready.json in Resources */ = {isa = PBXBuildFile; fileRef = E3342D8C6FE415EEF7396FFB /* not-ready.json */; };
 		0547EEE1A5E7C7F733CFBCBB /* K10Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C8A5B8ED333D054E78670F /* K10Presentation.swift */; };
+		0D6F880EF61399E7A9034723 /* MorningModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3597301592C33B76EF3BBF66 /* MorningModels.swift */; };
 		135E1D225DD3A335B01CCCC4 /* PerformanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF060F1E6A22BF8B6651DA3D /* PerformanceView.swift */; };
 		2D0D4704D7FEFD16EB9065F3 /* FocusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 505E0455C9839F8DDFC1509A /* FocusView.swift */; };
 		2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E32D24CA427022EEC9C9A9 /* AppConfig.swift */; };
+		2E54774157117080103B1B4D /* report-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = DAD5DF9777E116FDCD8FC584 /* report-failed.json */; };
+		3DB9E4BDA138D8E29F8927F2 /* report-empty.json in Resources */ = {isa = PBXBuildFile; fileRef = DADCC85586E10EA993971C5A /* report-empty.json */; };
+		43F571E4033DEA82CF2448B8 /* MorningContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CBFCAD520E4315CAEB0DD1 /* MorningContractTests.swift */; };
 		44EAD2DDB15B930CE165C67F /* K10SyntheticUIFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = F39E6A6D225FF8334B237C4D /* K10SyntheticUIFixture.swift */; };
 		45840F3BCAF7B4848A3D0E55 /* K10APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4E9B9EEA99C056B56FE1375 /* K10APIClient.swift */; };
 		50B7B5DC05976A885CBEE477 /* EvidenceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86A72185E3D793AF612B42FE /* EvidenceViews.swift */; };
+		51A680CC37ACDB004BAD2CC8 /* document.json in Resources */ = {isa = PBXBuildFile; fileRef = 5BB09451E630B41F41925F06 /* document.json */; };
 		533090F979B20FDF6301516B /* K10PushManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1042216DBB836ABC0E990F8 /* K10PushManager.swift */; };
+		756B18E6BDF1059752F901DF /* devices-ok.json in Resources */ = {isa = PBXBuildFile; fileRef = 1C7C9940985A397A6DEFA770 /* devices-ok.json */; };
 		7BAE6E696271633BAE2B1E75 /* V3Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = C672CA828283663AA66E65D9 /* V3Components.swift */; };
 		7FC2D9D596F2FCACD7B2FA05 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */; };
+		814C995AF6F5C1E330B786BA /* MorningCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */; };
+		903D54E0A001B3561507A639 /* not-configured.json in Resources */ = {isa = PBXBuildFile; fileRef = 45D5268003FE60EFA0761757 /* not-configured.json */; };
+		96003CC49BB0594DB9A83C94 /* health.json in Resources */ = {isa = PBXBuildFile; fileRef = C8BA7A3DF6108D195AB4FAFB /* health.json */; };
 		9AB8E6175FF5D2F6F32CE161 /* K10Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2F48AD9D010977F65428D0B /* K10Models.swift */; };
 		A95E60B60DE6A07CDB6DD7DA /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53B123024CC94ED7E02FF66F /* DesignTokens.swift */; };
+		AADC26923148ABE07BC435FD /* report-not-found.json in Resources */ = {isa = PBXBuildFile; fileRef = 5C14D4C709EBCECE8A15A579 /* report-not-found.json */; };
 		AB52CA616EFD21F6EA0C4967 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A75B75043B9190B8F306FF1D /* Assets.xcassets */; };
+		BA7CCB9C13B594BD5E65F75C /* MorningAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BA36CC7F701FFE1531C11E9 /* MorningAPI.swift */; };
 		BD9088BE2E8A50DACD16600C /* K10Cache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D671721E48E271478045DED /* K10Cache.swift */; };
+		C4F763A3822C974C289A05D6 /* document-not-found.json in Resources */ = {isa = PBXBuildFile; fileRef = 9368D0D8912B2600FE4585CB /* document-not-found.json */; };
+		D0A0E0ACDBE488FF4EFB433E /* reports-history.json in Resources */ = {isa = PBXBuildFile; fileRef = B4D7BB58A402D15EC1FC2CDB /* reports-history.json */; };
 		D2D68B45C55FF097DD425DA2 /* K10AdminClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B710879587F23363906E8DEC /* K10AdminClient.swift */; };
 		D5A72F2C59EEAF85B365CDF0 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77FD6BD33022ABE863D2F5A2 /* RootView.swift */; };
 		D9D8505738803869E7C0475C /* K10V3Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4037AAEDF2991B7415648397 /* K10V3Tests.swift */; };
 		E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */; };
 		E9D0F3558B4FC6EB7F819FDF /* OpportunitiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BC26B9801A802B487413845 /* OpportunitiesView.swift */; };
 		EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE386C48FF2459211CE2D690 /* AppModel.swift */; };
+		EEC0BA092C7ED60560285A3D /* unauthorized.json in Resources */ = {isa = PBXBuildFile; fileRef = 865C6D568107580FC642159F /* unauthorized.json */; };
+		FEFCC8FF7BD92049C31714CB /* report-available.json in Resources */ = {isa = PBXBuildFile; fileRef = D9A68CEF1F959980525CF73D /* report-available.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -41,26 +57,42 @@
 
 /* Begin PBXFileReference section */
 		0BC26B9801A802B487413845 /* OpportunitiesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpportunitiesView.swift; sourceTree = "<group>"; };
+		1C7C9940985A397A6DEFA770 /* devices-ok.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "devices-ok.json"; sourceTree = "<group>"; };
+		2BA36CC7F701FFE1531C11E9 /* MorningAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningAPI.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3597301592C33B76EF3BBF66 /* MorningModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningModels.swift; sourceTree = "<group>"; };
 		4037AAEDF2991B7415648397 /* K10V3Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10V3Tests.swift; sourceTree = "<group>"; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		45C8A5B8ED333D054E78670F /* K10Presentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10Presentation.swift; sourceTree = "<group>"; };
+		45D5268003FE60EFA0761757 /* not-configured.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "not-configured.json"; sourceTree = "<group>"; };
 		505E0455C9839F8DDFC1509A /* FocusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusView.swift; sourceTree = "<group>"; };
 		53B123024CC94ED7E02FF66F /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		58E32D24CA427022EEC9C9A9 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		5BB09451E630B41F41925F06 /* document.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = document.json; sourceTree = "<group>"; };
+		5C14D4C709EBCECE8A15A579 /* report-not-found.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-not-found.json"; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		77FD6BD33022ABE863D2F5A2 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		865C6D568107580FC642159F /* unauthorized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = unauthorized.json; sourceTree = "<group>"; };
 		86A72185E3D793AF612B42FE /* EvidenceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceViews.swift; sourceTree = "<group>"; };
 		8D671721E48E271478045DED /* K10Cache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10Cache.swift; sourceTree = "<group>"; };
+		9368D0D8912B2600FE4585CB /* document-not-found.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "document-not-found.json"; sourceTree = "<group>"; };
 		9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A75B75043B9190B8F306FF1D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NecklineApp.swift; sourceTree = "<group>"; };
+		B4D7BB58A402D15EC1FC2CDB /* reports-history.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "reports-history.json"; sourceTree = "<group>"; };
 		B710879587F23363906E8DEC /* K10AdminClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10AdminClient.swift; sourceTree = "<group>"; };
 		BC33E699B9891551265741C6 /* Neckline.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Neckline.entitlements; sourceTree = "<group>"; };
+		BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningCopy.swift; sourceTree = "<group>"; };
 		BF060F1E6A22BF8B6651DA3D /* PerformanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceView.swift; sourceTree = "<group>"; };
 		C672CA828283663AA66E65D9 /* V3Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V3Components.swift; sourceTree = "<group>"; };
+		C8BA7A3DF6108D195AB4FAFB /* health.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = health.json; sourceTree = "<group>"; };
 		CE386C48FF2459211CE2D690 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		D9A68CEF1F959980525CF73D /* report-available.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-available.json"; sourceTree = "<group>"; };
+		DAD5DF9777E116FDCD8FC584 /* report-failed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-failed.json"; sourceTree = "<group>"; };
+		DADCC85586E10EA993971C5A /* report-empty.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-empty.json"; sourceTree = "<group>"; };
+		E3342D8C6FE415EEF7396FFB /* not-ready.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "not-ready.json"; sourceTree = "<group>"; };
 		E4E9B9EEA99C056B56FE1375 /* K10APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10APIClient.swift; sourceTree = "<group>"; };
+		E9CBFCAD520E4315CAEB0DD1 /* MorningContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningContractTests.swift; sourceTree = "<group>"; };
 		F1042216DBB836ABC0E990F8 /* K10PushManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10PushManager.swift; sourceTree = "<group>"; };
 		F2F48AD9D010977F65428D0B /* K10Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10Models.swift; sourceTree = "<group>"; };
 		F39E6A6D225FF8334B237C4D /* K10SyntheticUIFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K10SyntheticUIFixture.swift; sourceTree = "<group>"; };
@@ -106,6 +138,8 @@
 				B710879587F23363906E8DEC /* K10AdminClient.swift */,
 				E4E9B9EEA99C056B56FE1375 /* K10APIClient.swift */,
 				F2F48AD9D010977F65428D0B /* K10Models.swift */,
+				2BA36CC7F701FFE1531C11E9 /* MorningAPI.swift */,
+				3597301592C33B76EF3BBF66 /* MorningModels.swift */,
 			);
 			path = Networking;
 			sourceTree = "<group>";
@@ -143,6 +177,7 @@
 				86A72185E3D793AF612B42FE /* EvidenceViews.swift */,
 				505E0455C9839F8DDFC1509A /* FocusView.swift */,
 				45C8A5B8ED333D054E78670F /* K10Presentation.swift */,
+				BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */,
 				0BC26B9801A802B487413845 /* OpportunitiesView.swift */,
 				BF060F1E6A22BF8B6651DA3D /* PerformanceView.swift */,
 				77FD6BD33022ABE863D2F5A2 /* RootView.swift */,
@@ -156,8 +191,29 @@
 			isa = PBXGroup;
 			children = (
 				4037AAEDF2991B7415648397 /* K10V3Tests.swift */,
+				E9CBFCAD520E4315CAEB0DD1 /* MorningContractTests.swift */,
+				D24F1998AD91EB4A3E29F6B1 /* Fixtures */,
 			);
 			path = NecklineTests;
+			sourceTree = "<group>";
+		};
+		D24F1998AD91EB4A3E29F6B1 /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				1C7C9940985A397A6DEFA770 /* devices-ok.json */,
+				9368D0D8912B2600FE4585CB /* document-not-found.json */,
+				5BB09451E630B41F41925F06 /* document.json */,
+				C8BA7A3DF6108D195AB4FAFB /* health.json */,
+				45D5268003FE60EFA0761757 /* not-configured.json */,
+				E3342D8C6FE415EEF7396FFB /* not-ready.json */,
+				D9A68CEF1F959980525CF73D /* report-available.json */,
+				DADCC85586E10EA993971C5A /* report-empty.json */,
+				DAD5DF9777E116FDCD8FC584 /* report-failed.json */,
+				5C14D4C709EBCECE8A15A579 /* report-not-found.json */,
+				B4D7BB58A402D15EC1FC2CDB /* reports-history.json */,
+				865C6D568107580FC642159F /* unauthorized.json */,
+			);
+			path = Fixtures;
 			sourceTree = "<group>";
 		};
 		E98B16CC67AAB178AB4F5775 /* Products */ = {
@@ -177,6 +233,7 @@
 			buildConfigurationList = FC438A3B119A2EC7057DEB43 /* Build configuration list for PBXNativeTarget "NecklineTests" */;
 			buildPhases = (
 				FE3623EE2C1FFEA37C504CF5 /* Sources */,
+				D298FDC223902BEC78EE085A /* Resources */,
 			);
 			buildRules = (
 			);
@@ -257,6 +314,25 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D298FDC223902BEC78EE085A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				756B18E6BDF1059752F901DF /* devices-ok.json in Resources */,
+				C4F763A3822C974C289A05D6 /* document-not-found.json in Resources */,
+				51A680CC37ACDB004BAD2CC8 /* document.json in Resources */,
+				96003CC49BB0594DB9A83C94 /* health.json in Resources */,
+				903D54E0A001B3561507A639 /* not-configured.json in Resources */,
+				04D3F873585F2CC8C8B3C554 /* not-ready.json in Resources */,
+				FEFCC8FF7BD92049C31714CB /* report-available.json in Resources */,
+				3DB9E4BDA138D8E29F8927F2 /* report-empty.json in Resources */,
+				2E54774157117080103B1B4D /* report-failed.json in Resources */,
+				AADC26923148ABE07BC435FD /* report-not-found.json in Resources */,
+				D0A0E0ACDBE488FF4EFB433E /* reports-history.json in Resources */,
+				EEC0BA092C7ED60560285A3D /* unauthorized.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -276,6 +352,9 @@
 				0547EEE1A5E7C7F733CFBCBB /* K10Presentation.swift in Sources */,
 				533090F979B20FDF6301516B /* K10PushManager.swift in Sources */,
 				44EAD2DDB15B930CE165C67F /* K10SyntheticUIFixture.swift in Sources */,
+				BA7CCB9C13B594BD5E65F75C /* MorningAPI.swift in Sources */,
+				814C995AF6F5C1E330B786BA /* MorningCopy.swift in Sources */,
+				0D6F880EF61399E7A9034723 /* MorningModels.swift in Sources */,
 				E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */,
 				E9D0F3558B4FC6EB7F819FDF /* OpportunitiesView.swift in Sources */,
 				135E1D225DD3A335B01CCCC4 /* PerformanceView.swift in Sources */,
@@ -290,6 +369,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D9D8505738803869E7C0475C /* K10V3Tests.swift in Sources */,
+				43F571E4033DEA82CF2448B8 /* MorningContractTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

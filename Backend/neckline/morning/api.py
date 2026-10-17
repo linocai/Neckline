@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -50,12 +51,14 @@ class DeviceIn(BaseModel):
     platform: str = Field(pattern=r"^ios$")
 
 
+@contextmanager
 def _open(path_provider: Callable[[], Path | None]):
     path = path_provider()
     if path is None:
         raise HTTPException(status_code=503, detail={"reason": "v4_not_configured"})
     try:
-        return db.read(path)
+        with db.read(path) as conn:  # 库不存在或不是 V4 库时，进入这一步就会抛 NotReady
+            yield conn
     except db.NotReady:
         raise HTTPException(status_code=503, detail={"reason": "v4_db_not_ready"})
 

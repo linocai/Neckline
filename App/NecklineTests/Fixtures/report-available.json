@@ -1,0 +1,153 @@
+{
+  "availableAt": "2026-10-19T00:03:00+00:00",
+  "configVersion": "screening-v1",
+  "content": {
+    "configVersion": "screening-v1",
+    "entries": [
+      {
+        "companyCode": "300953",
+        "companyName": "震裕科技",
+        "firstDisclosed": null,
+        "fresh": "新",
+        "headline": "前三季度净利预增",
+        "importance": "高",
+        "others": [
+          {
+            "headline": "签订设备采购合同",
+            "importance": "中",
+            "type": "订单合同"
+          }
+        ],
+        "rank": 1,
+        "reason": "公告预计净利增长 58%",
+        "relation": "主体",
+        "sources": [
+          {
+            "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4",
+            "publishedAt": "2026-10-16T17:05+08:00",
+            "sourceLabel": "金十快讯",
+            "title": "震裕科技：前三季度净利预增",
+            "url": "https://example.invalid/flash/z1"
+          }
+        ],
+        "type": "业绩向好"
+      },
+      {
+        "companyCode": "300683",
+        "companyName": "海特生物",
+        "firstDisclosed": "2026-10-16",
+        "fresh": "新",
+        "headline": "签署海外授权协议",
+        "importance": "高",
+        "others": [],
+        "rank": 2,
+        "reason": "公告写明首付款",
+        "relation": "主体",
+        "sources": [
+          {
+            "documentId": "doc_456d13ced901b52aa72ff231fb8b6b02",
+            "publishedAt": "2026-10-19T07:40+08:00",
+            "sourceLabel": "TuShare 新闻",
+            "title": null,
+            "url": null
+          }
+        ],
+        "type": "订单合同"
+      },
+      {
+        "companyCode": "300082",
+        "companyName": "奥克股份",
+        "firstDisclosed": null,
+        "fresh": "新",
+        "headline": "新产品进入量产",
+        "importance": "中",
+        "others": [],
+        "rank": 3,
+        "reason": "公告写明开始量产",
+        "relation": "主体",
+        "sources": [
+          {
+            "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41",
+            "publishedAt": "2026-10-18T21:10+08:00",
+            "sourceLabel": "金十资讯",
+            "title": "奥克股份：新产品进入量产",
+            "url": "https://example.invalid/news/o1"
+          }
+        ],
+        "type": "商业化进展"
+      }
+    ],
+    "gapSummary": "采集不完整：金十资讯没取全",
+    "generatedAt": "2026-10-19T08:03+08:00",
+    "kind": "morning",
+    "reportId": "morning-2026-10-19",
+    "review": {
+      "fresh": [],
+      "old": [],
+      "relation": [
+        {
+          "companyCode": "300014",
+          "companyName": "亿纬锂能",
+          "firstDisclosed": null,
+          "fresh": "新",
+          "headline": "下游客户扩产",
+          "importance": "中",
+          "others": [],
+          "rank": 1,
+          "reason": "稿件写的是客户，不是公司自己的订单",
+          "relation": "受益方",
+          "sources": [
+            {
+              "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41",
+              "publishedAt": "2026-10-18T21:10+08:00",
+              "sourceLabel": "金十资讯",
+              "title": "下游扩产",
+              "url": "https://example.invalid/news/o1"
+            }
+          ],
+          "type": "订单合同"
+        }
+      ],
+      "types": [
+        {
+          "companyCode": "300124",
+          "companyName": "汇川技术",
+          "firstDisclosed": null,
+          "fresh": "新",
+          "headline": "行业价格上涨",
+          "importance": "低",
+          "others": [],
+          "rank": 1,
+          "reason": "稿件只写了行业",
+          "relation": "主体",
+          "sources": [
+            {
+              "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4",
+              "publishedAt": "2026-10-16T17:05+08:00",
+              "sourceLabel": "金十快讯",
+              "title": "行业价格",
+              "url": "https://example.invalid/flash/z1"
+            }
+          ],
+          "type": "行业动态"
+        }
+      ]
+    },
+    "stats": {
+      "messages": 3
+    },
+    "tradeDate": "2026-10-19",
+    "window": {
+      "end": "2026-10-19T08:00+08:00",
+      "start": "2026-10-16T15:00+08:00"
+    }
+  },
+  "failedAt": null,
+  "failureReason": null,
+  "gapSummary": "采集不完整：金十资讯没取全",
+  "reportId": "morning-2026-10-19",
+  "status": "available",
+  "tradeDate": "2026-10-19",
+  "windowEnd": "2026-10-19T00:00:00+00:00",
+  "windowStart": "2026-10-16T07:00:00+00:00"
+}

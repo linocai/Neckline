@@ -77,6 +77,10 @@ targets:
       macOS: "27.0"
     sources:
       - path: NecklineTests
+        excludes:
+          - "Fixtures/**"
+      - path: NecklineTests/Fixtures
+        buildPhase: resources
     dependencies:
       - target: Neckline
     settings:

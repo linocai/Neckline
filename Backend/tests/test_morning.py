@@ -484,6 +484,18 @@ def test_read_key_never_reaches_access_log():
     assert any(isinstance(f, HideReadKey) for f in logging.getLogger("uvicorn.access").filters)
 
 
+def test_api_reports_503_when_the_v4_db_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(tmp_path / "missing.db"))
+    app = FastAPI()
+    app.include_router(api_router(require_token_dependency=lambda: None))
+    client = TestClient(app)
+    for target in ("/api/v4/reports/latest", "/api/v4/reports/2026-10-19", "/api/v4/reports", "/api/v4/documents/x"):
+        response = client.get(target)
+        assert response.status_code == 503 and response.json() == {"detail": {"reason": "v4_db_not_ready"}}
+    monkeypatch.delenv("NECKLINE_V4_DB_PATH")
+    assert client.get("/api/v4/reports/latest").json() == {"detail": {"reason": "v4_not_configured"}}
+
+
 def test_read_page_before_first_report(path, monkeypatch):
     monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
     monkeypatch.setenv("NECKLINE_READ_KEY", READ_KEY)

@@ -1,0 +1,13 @@
+{
+  "availableAt": null,
+  "configVersion": "screening-v1",
+  "content": null,
+  "failedAt": "2026-10-16T01:20:00+00:00",
+  "failureReason": "09:15 前没能出报",
+  "gapSummary": null,
+  "reportId": "morning-2026-10-16",
+  "status": "failed",
+  "tradeDate": "2026-10-16",
+  "windowEnd": "2026-10-16T00:00:00+00:00",
+  "windowStart": "2026-10-15T07:00:00+00:00"
+}
