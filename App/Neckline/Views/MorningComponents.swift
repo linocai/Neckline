@@ -260,7 +260,13 @@ private struct MorningScreenModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            // ShapeStyle 的 background 默认 ignoresSafeAreaEdges: .all，会把标签栏从安全区里拿掉。
+            #if os(iOS)
+            // 底色交给导航容器，才能铺到导航栏与悬浮标签栏后面；视图自己的 background 只盖安全区内，栏后会露白。
+            .containerBackground(NKMorning.page, for: .navigation)
+            // 默认在导航栏下沿是一道硬边白底；柔和边缘让滚上去的内容渐隐在同一底色里。
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            #else
             .background { NKMorning.page }
+            #endif
     }
 }

@@ -70,7 +70,8 @@ struct MorningSettingsView: View {
         .formStyle(.grouped)
         #if os(iOS)
         .scrollContentBackground(.hidden)
-        .background { NKMorning.page }
+        .containerBackground(NKMorning.page, for: .navigation)
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.large)
         .toolbarTitleDisplayMode(.large)
