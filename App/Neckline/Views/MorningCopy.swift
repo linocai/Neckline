@@ -55,6 +55,11 @@ enum MorningCopy {
         return windowLine(start: report.windowStart, end: report.windowEnd, generatedAt: nil)
     }
 
+    /// 北京时间的「10/16 17:05」。解析不了就原样返回。
+    static func beijingClock(_ value: String) -> String {
+        ShanghaiClock.monthDayClock(value) ?? value
+    }
+
     static func windowLine(start: String, end: String, generatedAt: String?) -> String {
         let left = ShanghaiClock.monthDayClock(start) ?? start
         let right = ShanghaiClock.monthDayClock(end) ?? end

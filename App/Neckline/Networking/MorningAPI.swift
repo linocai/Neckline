@@ -17,6 +17,15 @@ protocol MorningTransport: Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
 }
 
+protocol MorningClient: Sendable {
+    func health() async throws -> MorningHealth
+    func latest() async throws -> MorningReport
+    func report(tradeDate: String) async throws -> MorningReport
+    func history(limit: Int) async throws -> MorningHistory
+    func document(id: String) async throws -> MorningDocument
+    func registerDevice(token: String) async throws -> MorningDeviceAck
+}
+
 struct URLSessionMorningTransport: MorningTransport {
     var session: URLSession = .shared
 
@@ -27,7 +36,7 @@ struct URLSessionMorningTransport: MorningTransport {
     }
 }
 
-struct MorningAPI: Sendable {
+struct MorningAPI: MorningClient, Sendable {
     var baseURL: URL
     var token: String
     var transport: any MorningTransport
