@@ -83,7 +83,7 @@ struct EntryDetailView: View {
         guard let first = entry.firstDisclosed?.trimmingCharacters(in: .whitespacesAndNewlines), !first.isEmpty else {
             return Text("\(type)\(gap)\(importance)")
         }
-        let disclosed = Text(MorningCopy.historyTitle(tradeDate: first))
+        let disclosed = Text(MorningCopy.firstDisclosedLine(first))
             .foregroundStyle(NKMorning.textSecondary)
             .monospacedDigit()
         return Text("\(type)\(gap)\(importance)\(gap)\(disclosed)")
@@ -107,7 +107,7 @@ struct EntryDetailView: View {
                     Text(title)
                         .font(NKMorningFont.titleLine)
                         .foregroundStyle(NKMorning.textPrimary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .truncationMode(.tail)
                 }
             }

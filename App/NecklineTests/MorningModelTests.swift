@@ -65,6 +65,8 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(message?.title, MorningCopy.failedTitle)
         XCTAssertEqual(message?.detail, "09:15 前没能出报")
         XCTAssertEqual(message?.problem, true)
+        XCTAssertEqual(message?.retry, false)
+        XCTAssertEqual(message?.icon, "exclamationmark.triangle")
         XCTAssertEqual(MorningCopy.windowLine(report: failed), "窗口 10/15 15:00 → 10/16 08:00")
     }
 
@@ -84,15 +86,15 @@ final class MorningModelTests: XCTestCase {
     }
 
     func testNoReport() async {
-        await assertScreenError(.noReport, title: MorningCopy.noReport, detail: MorningCopy.noReportDetail)
+        await assertScreenError(.noReport, title: MorningCopy.noReport, detail: MorningCopy.noReportDetail, retry: false)
     }
 
     func testMissingToken() async {
-        await assertScreenError(.missingToken, title: MorningCopy.missingToken, retry: false)
+        await assertScreenError(.missingToken, title: MorningCopy.missingToken, retry: true, settings: true)
     }
 
     func testUnauthorized() async {
-        await assertScreenError(.unauthorized, title: MorningCopy.unauthorized, retry: false)
+        await assertScreenError(.unauthorized, title: MorningCopy.unauthorized, retry: true, settings: true)
     }
 
     func testServiceNotConfigured() async {
@@ -266,7 +268,7 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "neckline.keep"), "keep")
     }
 
-    private func assertScreenError(_ error: MorningClientError, title: String, detail: String? = nil, retry: Bool = true, file: StaticString = #filePath, line: UInt = #line) async {
+    private func assertScreenError(_ error: MorningClientError, title: String, detail: String? = nil, retry: Bool = true, settings: Bool = false, file: StaticString = #filePath, line: UInt = #line) async {
         let fake = FakeMorningClient()
         fake.latestResult = .failure(error)
         let model = makeModel(client: fake)
@@ -278,6 +280,7 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(message?.detail, detail, file: file, line: line)
         XCTAssertEqual(message?.problem, false, file: file, line: line)
         XCTAssertEqual(message?.retry, retry, file: file, line: line)
+        XCTAssertEqual(message?.settings, settings, file: file, line: line)
     }
 
     private func makeModel(client: FakeMorningClient) -> MorningModel {

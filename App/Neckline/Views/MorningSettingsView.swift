@@ -7,26 +7,35 @@ struct MorningSettingsView: View {
     @ObservedObject var config: AppConfig
 
     var body: some View {
+        ScrollViewReader { proxy in
+            form
+                #if DEBUG
+                .onAppear { scrollAboutIntoView(proxy) }
+                #endif
+        }
+    }
+
+    private var form: some View {
         Form {
             Section("连接") {
-                Picker("环境", selection: $config.environment) {
+                Picker(selection: $config.environment) {
                     Text(NKEnvironment.prod.label).tag(NKEnvironment.prod)
                     Text(NKEnvironment.dev.label).tag(NKEnvironment.dev)
+                } label: {
+                    fieldName("环境")
                 }
                 .pickerStyle(.segmented)
-                TextField("手填地址", text: $config.baseURLOverride, prompt: Text("留空则用所选环境"))
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    #endif
-                    .autocorrectionDisabled()
-                LabeledContent("生效主机") {
+                addressField
+                LabeledContent {
                     Text(effectiveHost)
                         .foregroundStyle(config.connectionConfigurationError == nil ? NKMorning.textSecondary : NKMorning.problem)
                         .monospacedDigit()
                         .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                } label: {
+                    fieldName("生效主机")
                 }
-                SecureField("令牌", text: $config.apiToken)
+                tokenField
                 Button("检查连接") { Task { await model.checkConnection() } }
                     .disabled(model.isCheckingConnection)
                 if model.isCheckingConnection {
@@ -55,13 +64,69 @@ struct MorningSettingsView: View {
             Section("关于") {
                 Text(about)
                     .foregroundStyle(NKMorning.textPrimary)
+                    .id("nk-qa-about")
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(NKMorning.page.ignoresSafeArea())
+        .formStyle(.grouped)
         #if os(iOS)
+        .scrollContentBackground(.hidden)
+        .background { NKMorning.page }
+        .navigationTitle("设置")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarTitleDisplayMode(.large)
         .task { await MorningPush.readAuthorization(into: model) }
         #endif
+    }
+
+    #if DEBUG
+    private func scrollAboutIntoView(_ proxy: ScrollViewProxy) {
+        guard ProcessInfo.processInfo.environment["NK_QA_ROUTE"] == "settings" else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo("nk-qa-about", anchor: .bottom)
+            }
+        }
+    }
+    #endif
+
+    private func fieldName(_ title: String) -> some View {
+        Text(title)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
+    }
+
+    @ViewBuilder private var addressField: some View {
+        LabeledContent {
+            #if os(iOS)
+            TextField("留空则用所选环境", text: $config.baseURLOverride)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                .multilineTextAlignment(.trailing)
+                .autocorrectionDisabled()
+            #else
+            TextField("", text: $config.baseURLOverride, prompt: Text("留空则用所选环境"))
+                .autocorrectionDisabled()
+            #endif
+        } label: {
+            fieldName("地址")
+        }
+    }
+
+    @ViewBuilder private var tokenField: some View {
+        LabeledContent {
+            #if os(iOS)
+            SecureField("令牌", text: $config.apiToken)
+                .multilineTextAlignment(.trailing)
+            #else
+            SecureField("", text: $config.apiToken)
+            #endif
+        } label: {
+            fieldName("令牌")
+        }
     }
 
     private var effectiveHost: String {

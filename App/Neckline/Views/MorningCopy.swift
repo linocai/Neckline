@@ -86,6 +86,50 @@ enum MorningCopy {
         guard let reason, !reason.isEmpty else { return failedTitle }
         return "\(failedTitle)\n\(reason)"
     }
+
+    /// 当年不写年份。只有日期时不补时刻。
+    static func firstDisclosedLine(_ value: String, now: Date = Date()) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = ShanghaiClock.civil(trimmed) else { return "首次公开 \(trimmed)" }
+        let showYear = parsed.year != ShanghaiClock.year(of: now)
+        let day = showYear ? "\(parsed.year)/\(parsed.month)/\(parsed.day)" : "\(parsed.month)/\(parsed.day)"
+        if let hour = parsed.hour, let minute = parsed.minute {
+            return "首次公开 \(day) \(hour):\(String(format: "%02d", minute))"
+        }
+        return "首次公开 \(day)"
+    }
+
+    static func documentHeading(title: String?, text: String, sourceLabel: String) -> String {
+        let named = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !named.isEmpty { return named }
+        if let bracket = leadingBracket(text) { return bracket }
+        return sourceName(sourceLabel)
+    }
+
+    static func sourceName(_ sourceLabel: String) -> String {
+        let trimmed = sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "原文" : trimmed
+    }
+
+    static func symbol(for error: MorningClientError) -> String {
+        switch error {
+        case .noReport: return "calendar"
+        case .missingToken, .unauthorized: return "key"
+        case .unreachable: return "wifi.slash"
+        case .notConfigured: return "gearshape.badge.exclamationmark"
+        case .dbNotReady: return "externaldrive.badge.exclamationmark"
+        case .unreadable: return "doc.badge.exclamationmark"
+        case .noDocument: return "doc.text.magnifyingglass"
+        }
+    }
+
+    private static func leadingBracket(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.first == "【", let end = trimmed.firstIndex(of: "】") else { return nil }
+        let inner = trimmed[trimmed.index(after: trimmed.startIndex)..<end]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return inner.isEmpty ? nil : inner
+    }
 }
 
 private enum ShanghaiClock {
@@ -106,6 +150,33 @@ private enum ShanghaiClock {
     }
 
     private static let weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+
+    struct CivilDate {
+        let year: Int
+        let month: Int
+        let day: Int
+        let hour: Int?
+        let minute: Int?
+    }
+
+    static func year(of date: Date) -> Int {
+        gregorian(timeZone: shanghai).component(.year, from: date)
+    }
+
+    /// 「YYYY-MM-DD」或「YYYY-MM-DD HH:MM」。
+    static func civil(_ value: String) -> CivilDate? {
+        let pieces = value.split(separator: " ", maxSplits: 1).map(String.init)
+        guard let date = pieces.first?.split(separator: "-"), date.count == 3,
+              let year = Int(date[0]), let month = Int(date[1]), let day = Int(date[2]),
+              (1...12).contains(month), (1...31).contains(day) else { return nil }
+        guard pieces.count == 2 else { return CivilDate(year: year, month: month, day: day, hour: nil, minute: nil) }
+        let time = pieces[1].split(separator: ":")
+        guard time.count >= 2, let hour = Int(time[0]), let minute = Int(time[1]),
+              (0...23).contains(hour), (0...59).contains(minute) else {
+            return CivilDate(year: year, month: month, day: day, hour: nil, minute: nil)
+        }
+        return CivilDate(year: year, month: month, day: day, hour: hour, minute: minute)
+    }
 
     static func day(_ value: String) -> DayParts? {
         let pieces = value.split(separator: "-")

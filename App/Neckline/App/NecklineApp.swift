@@ -19,8 +19,12 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
     init() {
         let defaults = Self.sessionDefaults()
         let config = Self.makeConfig(defaults: defaults)
+        let model = MorningModel(config: config, defaults: defaults)
+        #if DEBUG
+        Self.applyQALaunchState(to: model)
+        #endif
         _config = StateObject(wrappedValue: config)
-        _model = State(initialValue: MorningModel(config: config, defaults: defaults))
+        _model = State(initialValue: model)
     }
 
     var body: some Scene {
@@ -29,15 +33,17 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
                 .qaAppearance()
                 .task { await launch() }
         }
-        .defaultSize(width: 1180, height: 760)
+        .defaultSize(width: Self.initialWindowSize.width, height: Self.initialWindowSize.height)
 
         #if os(macOS)
         Settings {
             MorningSettingsView(model: model, config: config)
                 .tint(NKMorning.accent)
                 .qaAppearance()
-                .frame(minWidth: 440, minHeight: 420)
+                .frame(width: 520)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .windowResizability(.contentSize)
         #endif
     }
 
@@ -90,6 +96,30 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         defaults.removePersistentDomain(forName: suite)
         return defaults
     }
+
+    #if DEBUG
+    /// 截图进程在第一帧之前选定期次和标签。日期只作用于 macOS 左栏焦点；iOS 由根视图推进历史栈。
+    private static func applyQALaunchState(to model: MorningModel) {
+        guard ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil else { return }
+        if let date = ProcessInfo.processInfo.environment["NK_QA_TRADE_DATE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !date.isEmpty {
+            model.focus = .date(date)
+        }
+        switch ProcessInfo.processInfo.environment["NK_QA_ROUTE"] {
+        case "history": model.tab = .history
+        case "settings": model.tab = .settings
+        default: break
+        }
+    }
+
+    private static var initialWindowSize: CGSize {
+        ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil
+            ? CGSize(width: 1280, height: 800)
+            : CGSize(width: 1180, height: 760)
+    }
+    #else
+    private static var initialWindowSize: CGSize { CGSize(width: 1180, height: 760) }
+    #endif
 
     #if DEBUG && os(macOS)
     /// 只把晨报根视图画进调用方给定的 PNG。路径必须落在既有 QA 目录里。

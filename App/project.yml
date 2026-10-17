@@ -1,6 +1,7 @@
 name: Neckline
 options:
   bundleIdPrefix: top.linotsai
+  developmentLanguage: zh-Hans
   deploymentTarget:
     iOS: "27.0"
     macOS: "27.0"
@@ -18,6 +19,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEVELOPMENT_LANGUAGE: zh-Hans
 
 targets:
   Neckline:

@@ -4,25 +4,31 @@ import SwiftUI
 
 struct MorningPageHeader: View {
     let report: MorningReport
+    /// iOS 把标题和窗口行放进导航栏，这里只留缺口摘要。
+    var showsIdentity = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(MorningCopy.header(tradeDate: report.tradeDate))
-                .font(NKMorningFont.pageTitle)
-                .foregroundStyle(NKMorning.textPrimary)
-            Text(MorningCopy.windowLine(report: report))
-                .font(NKMorningFont.caption)
-                .foregroundStyle(NKMorning.textSecondary)
-                .monospacedDigit()
-                .fixedSize(horizontal: false, vertical: true)
-            if let gap = gapText {
-                Text(gap)
-                    .font(NKMorningFont.caption)
-                    .foregroundStyle(NKMorning.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if showsIdentity || gapText != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                if showsIdentity {
+                    Text(MorningCopy.header(tradeDate: report.tradeDate))
+                        .font(NKMorningFont.pageTitle)
+                        .foregroundStyle(NKMorning.textPrimary)
+                    Text(MorningCopy.windowLine(report: report))
+                        .font(NKMorningFont.caption)
+                        .foregroundStyle(NKMorning.textSecondary)
+                        .monospacedDigit()
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let gap = gapText {
+                    Text(gap)
+                        .font(NKMorningFont.caption)
+                        .foregroundStyle(NKMorning.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var gapText: String? {
@@ -101,23 +107,44 @@ struct MorningTag: View {
 struct MorningStatusView: View {
     let message: MorningMessage
     var retry: () -> Void
+    var openSettings: () -> Void = {}
 
     var body: some View {
         ContentUnavailableView {
-            Text(message.title)
-                .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textPrimary)
+            Label {
+                Text(message.title)
+                    .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textPrimary)
+            } icon: {
+                Image(systemName: message.icon)
+                    .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textSecondary)
+            }
         } description: {
             if let detail = message.detail, !detail.isEmpty {
                 Text(detail)
-                    .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textSecondary)
+                    .foregroundStyle(NKMorning.textSecondary)
                     .multilineTextAlignment(.center)
             }
         } actions: {
             if message.retry {
                 Button("重试", action: retry)
             }
+            if message.settings {
+                Button("去设置", action: openSettings)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 280)
+    }
+}
+
+enum MorningChrome {
+    @MainActor
+    static func openSettings(_ model: MorningModel) {
+        #if os(iOS)
+        model.tab = .settings
+        #else
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        #endif
     }
 }
 
@@ -135,8 +162,12 @@ struct MorningLoadingView: View {
 
 struct MorningFold<Content: View>: View {
     let title: String
+    var headerInset: CGFloat = 0
     @ViewBuilder var content: () -> Content
     @State private var open = false
+    #if DEBUG
+    @Environment(\.nkQAReviewOpen) private var qaReviewOpen
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -152,6 +183,7 @@ struct MorningFold<Content: View>: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(NKMorning.textTertiary)
                 }
+                .padding(.horizontal, headerInset)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -160,8 +192,38 @@ struct MorningFold<Content: View>: View {
                     .transition(.opacity.combined(with: .offset(y: -6)).combined(with: .scale(scale: 0.98, anchor: .top)))
             }
         }
+        #if DEBUG
+        .onAppear {
+            guard qaReviewOpen, !open else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { open = true }
+        }
+        #endif
     }
 }
+
+#if DEBUG
+private struct NKQAReviewOpenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct NKQAScrollBottomKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var nkQAReviewOpen: Bool {
+        get { self[NKQAReviewOpenKey.self] }
+        set { self[NKQAReviewOpenKey.self] = newValue }
+    }
+
+    var nkQAScrollBottom: Bool {
+        get { self[NKQAScrollBottomKey.self] }
+        set { self[NKQAScrollBottomKey.self] = newValue }
+    }
+}
+#endif
 
 extension MorningReview {
     var listedGroups: [MorningReviewGroup] {
@@ -190,7 +252,15 @@ extension View {
     }
 
     func morningScreen() -> some View {
-        frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(NKMorning.page.ignoresSafeArea())
+        modifier(MorningScreenModifier())
+    }
+}
+
+private struct MorningScreenModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // ShapeStyle 的 background 默认 ignoresSafeAreaEdges: .all，会把标签栏从安全区里拿掉。
+            .background { NKMorning.page }
     }
 }

@@ -10,13 +10,9 @@ struct HistoryView: View {
             if !model.historyLoaded && model.history.isEmpty && model.historyError == nil {
                 MorningLoadingView()
             } else if model.history.isEmpty, let error = model.historyError {
-                MorningStatusView(message: MorningMessage(title: MorningCopy.text(for: error), detail: MorningCopy.detail(for: error), problem: false, retry: true)) {
-                    Task { await model.reloadHistory() }
-                }
+                MorningStatusView(message: .forClientError(error), retry: { Task { await model.reloadHistory() } }, openSettings: { MorningChrome.openSettings(model) })
             } else if model.history.isEmpty {
-                MorningStatusView(message: MorningMessage(title: MorningCopy.noReport, detail: MorningCopy.noReportDetail, problem: false, retry: true)) {
-                    Task { await model.reloadHistory() }
-                }
+                MorningStatusView(message: .forClientError(.noReport), retry: { Task { await model.reloadHistory() } }, openSettings: { MorningChrome.openSettings(model) })
             } else {
                 list
             }
@@ -24,8 +20,9 @@ struct HistoryView: View {
         .morningScreen()
         .navigationTitle("历史")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarTitleDisplayMode(.large)
+        .toolbar(.visible, for: .navigationBar)
         #endif
         .onAppear { Task { await model.reloadHistory() } }
     }
@@ -33,9 +30,6 @@ struct HistoryView: View {
     private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("历史")
-                    .font(NKMorningFont.pageTitle)
-                    .foregroundStyle(NKMorning.textPrimary)
                 VStack(spacing: 0) {
                     ForEach(model.history) { item in
                         NavigationLink {

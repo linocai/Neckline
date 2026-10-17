@@ -22,6 +22,7 @@
 		5863E5860F65E4653A55242B /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 103A8C7EA6A9AECEAE3F90A6 /* HistoryView.swift */; };
 		756B18E6BDF1059752F901DF /* devices-ok.json in Resources */ = {isa = PBXBuildFile; fileRef = 1C7C9940985A397A6DEFA770 /* devices-ok.json */; };
 		814C995AF6F5C1E330B786BA /* MorningCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */; };
+		85D0F3F786AC53940DAA463B /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 3DB7575968EFAD12CE247E44 /* Localizable.strings */; };
 		903D54E0A001B3561507A639 /* not-configured.json in Resources */ = {isa = PBXBuildFile; fileRef = 45D5268003FE60EFA0761757 /* not-configured.json */; };
 		93A6404435A7B165F66F6701 /* MorningComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED7FF84C0CF8D88C3C40E81 /* MorningComponents.swift */; };
 		96003CC49BB0594DB9A83C94 /* health.json in Resources */ = {isa = PBXBuildFile; fileRef = C8BA7A3DF6108D195AB4FAFB /* health.json */; };
@@ -66,6 +67,7 @@
 		63AF15102713B1CA1D617741 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		6796D92CDB96A78D6277B651 /* EntryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryDetailView.swift; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6B5E9BBE8E09CB81EA904BF9 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		8637BB4377BD0557D4D5223C /* MorningRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningRootView.swift; sourceTree = "<group>"; };
 		865C6D568107580FC642159F /* unauthorized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = unauthorized.json; sourceTree = "<group>"; };
 		9368D0D8912B2600FE4585CB /* document-not-found.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "document-not-found.json"; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
 			children = (
 				A75B75043B9190B8F306FF1D /* Assets.xcassets */,
 				6995CFD51E96AA2443EC4E3A /* Info.plist */,
+				3DB7575968EFAD12CE247E44 /* Localizable.strings */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -268,11 +271,11 @@
 				};
 			};
 			buildConfigurationList = 013466C7A20AD94E0F96F316 /* Build configuration list for PBXProject "Neckline" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
-				en,
+				"zh-Hans",
 			);
 			mainGroup = 202ABB56067EF350BA571BA4;
 			minimizedProjectReferenceProxies = 1;
@@ -293,6 +296,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AB52CA616EFD21F6EA0C4967 /* Assets.xcassets in Resources */,
+				85D0F3F786AC53940DAA463B /* Localizable.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -358,6 +362,17 @@
 			targetProxy = 237551DF584A0E27E93567C5 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		3DB7575968EFAD12CE247E44 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				6B5E9BBE8E09CB81EA904BF9 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		3F5B4D0D52DB3309E7100884 /* Debug */ = {
@@ -474,6 +489,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 109;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_LANGUAGE = "zh-Hans";
 				DEVELOPMENT_TEAM = HX73DFL88G;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -538,6 +554,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 109;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_LANGUAGE = "zh-Hans";
 				DEVELOPMENT_TEAM = HX73DFL88G;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;

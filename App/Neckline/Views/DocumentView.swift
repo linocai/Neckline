@@ -13,13 +13,13 @@ struct DocumentView: View {
             case .loading:
                 MorningLoadingView()
             case .failed(let error):
-                MorningStatusView(message: failureMessage(error)) { Task { await load() } }
+                MorningStatusView(message: failureMessage(error), retry: { Task { await load() } }, openSettings: { MorningChrome.openSettings(model) })
             case .loaded(let document):
                 article(document)
             }
         }
         .morningScreen()
-        .navigationTitle("原文")
+        .navigationTitle(navigationHeading)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -30,7 +30,7 @@ struct DocumentView: View {
     private func article(_ document: MorningDocument) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(title(of: document))
+                Text(MorningCopy.documentHeading(title: document.title, text: document.text, sourceLabel: document.sourceLabel))
                     .font(NKMorningFont.pageTitle)
                     .foregroundStyle(NKMorning.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -71,13 +71,15 @@ struct DocumentView: View {
         }
     }
 
-    private func failureMessage(_ error: MorningClientError) -> MorningMessage {
-        MorningMessage(title: MorningCopy.text(for: error), detail: MorningCopy.detail(for: error), problem: false, retry: true)
+    private var navigationHeading: String {
+        if case .loaded(let document) = phase {
+            return MorningCopy.sourceName(document.sourceLabel)
+        }
+        return "原文"
     }
 
-    private func title(of document: MorningDocument) -> String {
-        let trimmed = document.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "原文" : trimmed
+    private func failureMessage(_ error: MorningClientError) -> MorningMessage {
+        .forClientError(error)
     }
 
     private func sourceLine(_ document: MorningDocument) -> String {

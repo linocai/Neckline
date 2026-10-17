@@ -28,6 +28,8 @@ struct MorningMessage: Equatable {
     var detail: String?
     var problem: Bool
     var retry: Bool
+    var settings: Bool = false
+    var icon: String = "exclamationmark.circle"
 }
 
 struct MorningCheckLine: Identifiable, Equatable {
@@ -115,20 +117,19 @@ final class MorningModel {
     func message(for state: MorningLoadState) -> MorningMessage? {
         switch state {
         case .loading:
-            return MorningMessage(title: MorningCopy.reading, detail: nil, problem: false, retry: false)
+            return MorningMessage(title: MorningCopy.reading, detail: nil, problem: false, retry: false, icon: "clock")
         case .ready:
             return nil
         case .empty:
-            return MorningMessage(title: MorningCopy.emptyEntries, detail: nil, problem: false, retry: false)
+            return MorningMessage(title: MorningCopy.emptyEntries, detail: nil, problem: false, retry: false, icon: "tray")
         case .failed(let report):
             let reason = report.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = (reason?.isEmpty == false) ? reason : nil
-            return MorningMessage(title: MorningCopy.failedTitle, detail: detail, problem: true, retry: true)
+            return MorningMessage(title: MorningCopy.failedTitle, detail: detail, problem: true, retry: false, icon: "exclamationmark.triangle")
         case .running:
-            return MorningMessage(title: MorningCopy.running, detail: MorningCopy.runningDetail, problem: false, retry: true)
+            return MorningMessage(title: MorningCopy.running, detail: MorningCopy.runningDetail, problem: false, retry: true, icon: "clock")
         case .error(let error):
-            let retry = error != .missingToken && error != .unauthorized
-            return MorningMessage(title: MorningCopy.text(for: error), detail: MorningCopy.detail(for: error), problem: false, retry: retry)
+            return .forClientError(error)
         }
     }
 
@@ -373,6 +374,19 @@ final class MorningModel {
         guard pieces.count == 3, let month = Int(pieces[1]), let day = Int(pieces[2]),
               (1...12).contains(month), (1...31).contains(day) else { return tradeDate }
         return "\(month)/\(day)"
+    }
+}
+
+extension MorningMessage {
+    static func forClientError(_ error: MorningClientError) -> MorningMessage {
+        MorningMessage(
+            title: MorningCopy.text(for: error),
+            detail: MorningCopy.detail(for: error),
+            problem: false,
+            retry: error != .noReport,
+            settings: error == .missingToken || error == .unauthorized,
+            icon: MorningCopy.symbol(for: error)
+        )
     }
 }
 

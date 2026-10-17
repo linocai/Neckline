@@ -210,6 +210,16 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(MorningCopy.emptyEntries, "今天没有符合条件的利好")
         XCTAssertEqual(MorningCopy.running, "正在出报")
         XCTAssertEqual(MorningCopy.runningDetail, "完成后下拉刷新")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 17, hour: 12)))
+        XCTAssertEqual(MorningCopy.firstDisclosedLine("2026-10-13 16:45", now: now), "首次公开 10/13 16:45")
+        XCTAssertEqual(MorningCopy.firstDisclosedLine("2026-10-13", now: now), "首次公开 10/13")
+        XCTAssertEqual(MorningCopy.firstDisclosedLine("2025-03-02 09:05", now: now), "首次公开 2025/3/2 9:05")
+        XCTAssertEqual(MorningCopy.documentHeading(title: nil, text: "【海特生物：授权】后续", sourceLabel: "金十快讯"), "海特生物：授权")
+        XCTAssertEqual(MorningCopy.documentHeading(title: "已有标题", text: "【不用】", sourceLabel: "金十快讯"), "已有标题")
+        XCTAssertEqual(MorningCopy.documentHeading(title: nil, text: "没有括号", sourceLabel: "金十快讯"), "金十快讯")
+        XCTAssertEqual(MorningCopy.sourceName(" 金十快讯 "), "金十快讯")
     }
 
     private func decode<T: Decodable>(_ name: String, as type: T.Type) throws -> T {

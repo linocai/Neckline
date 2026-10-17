@@ -35,6 +35,13 @@ final class MorningPush: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func requestAuthorizationAndRegister() async {
+        #if DEBUG
+        // 截图验收不弹系统通知框；权限状态仍按当前结果读，未询问就保持未询问。
+        if ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil {
+            if let model { await Self.readAuthorization(into: model) }
+            return
+        }
+        #endif
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {

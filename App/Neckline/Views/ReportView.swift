@@ -6,31 +6,24 @@ struct ReportView: View {
     var slot: MorningSlot
     var model: MorningModel
     var showsDateMenu = false
-    var hidesNavigationBar = false
+    #if DEBUG
+    @Environment(\.nkQAReviewOpen) private var qaReviewOpen
+    @Environment(\.nkQAScrollBottom) private var qaScrollBottom
+    #endif
 
     var body: some View {
         VStack(spacing: 0) {
             if showsDateMenu { dateMenu }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let report = model.report(for: slot) {
-                        MorningPageHeader(report: report)
-                            .padding(.horizontal, usesCards ? 0 : NKMorningSpace.page)
-                    }
-                    listBody
-                }
-                .padding(.horizontal, usesCards ? NKMorningSpace.page : 0)
-                .padding(.top, 12)
-                .padding(.bottom, 28)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .refreshable { await refresh() }
+            scrollingList
         }
         .morningScreen()
-        .navigationTitle("晨报")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(hidesNavigationBar ? .hidden : .visible, for: .navigationBar)
+        .navigationTitle(navigationHeading)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarTitleDisplayMode(.large)
+        .modifier(MorningWindowSubtitle(text: navigationSubheading))
+        #else
+        .navigationTitle("晨报")
         #endif
         .onAppear {
             Task {
@@ -40,13 +33,61 @@ struct ReportView: View {
         }
     }
 
+    @ViewBuilder private var scrollingList: some View {
+        #if DEBUG
+        if qaReviewOpen || qaScrollBottom {
+            ScrollViewReader { proxy in
+                reportScroll
+                    .onAppear { scheduleReviewScroll(proxy) }
+                    .onChange(of: model.state(for: slot)) { _, _ in scheduleReviewScroll(proxy) }
+            }
+        } else {
+            reportScroll
+        }
+        #else
+        reportScroll
+        #endif
+    }
+
+    private var reportScroll: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if let report = model.report(for: slot) {
+                    MorningPageHeader(report: report, showsIdentity: showsPageIdentity)
+                        .padding(.horizontal, usesCards ? 0 : NKMorningSpace.page)
+                }
+                listBody
+            }
+            .padding(.horizontal, usesCards ? NKMorningSpace.page : 0)
+            .padding(.top, 12)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .refreshable { await refresh() }
+    }
+
+    #if DEBUG
+    private func scheduleReviewScroll(_ proxy: ScrollViewProxy) {
+        guard qaReviewOpen || qaScrollBottom, case .ready = model.state(for: slot) else { return }
+        let anchor: UnitPoint = qaScrollBottom ? .bottom : .top
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo("nk-qa-review", anchor: anchor)
+            }
+        }
+    }
+    #endif
+
     @ViewBuilder private var listBody: some View {
         switch model.state(for: slot) {
         case .loading:
             MorningLoadingView()
         case .ready(let report):
             entryList(report.content?.entries ?? [], quiet: false)
-            reviewFold(report)
+            reviewAnchor(reviewFold(report))
         case .empty(let report):
             if let message = model.message(for: .empty(report)) {
                 status(message)
@@ -59,10 +100,18 @@ struct ReportView: View {
         }
     }
 
+    @ViewBuilder private func reviewAnchor<V: View>(_ view: V) -> some View {
+        #if DEBUG
+        view.id("nk-qa-review")
+        #else
+        view
+        #endif
+    }
+
     @ViewBuilder private func reviewFold(_ report: MorningReport) -> some View {
         let groups = report.content?.review.listedGroups ?? []
         if !groups.isEmpty {
-            MorningFold(title: "待定与旧事") {
+            MorningFold(title: "待定与旧事", headerInset: foldHeaderInset) {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(groups) { group in
                         VStack(alignment: .leading, spacing: 6) {
@@ -127,8 +176,34 @@ struct ReportView: View {
         #endif
     }
 
+    private var showsPageIdentity: Bool {
+        #if os(iOS)
+        false
+        #else
+        true
+        #endif
+    }
+
+    private var navigationHeading: String {
+        guard let report = model.report(for: slot) else { return "晨报" }
+        return MorningCopy.header(tradeDate: report.tradeDate)
+    }
+
+    private var navigationSubheading: String {
+        guard let report = model.report(for: slot) else { return "" }
+        return MorningCopy.windowLine(report: report)
+    }
+
+    private var foldHeaderInset: CGFloat {
+        #if os(macOS)
+        NKMorningSpace.page
+        #else
+        0
+        #endif
+    }
+
     private func status(_ message: MorningMessage) -> some View {
-        MorningStatusView(message: message) { Task { await refresh() } }
+        MorningStatusView(message: message, retry: { Task { await refresh() } }, openSettings: { MorningChrome.openSettings(model) })
     }
 
     private func refresh() async {
@@ -161,6 +236,7 @@ struct ReportView: View {
         }
         #if os(macOS)
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         #endif
         .fixedSize()
         .padding(.horizontal, NKMorningSpace.page)
@@ -181,5 +257,21 @@ struct ReportView: View {
         } else {
             Text(title)
         }
+    }
+}
+
+private struct MorningWindowSubtitle: ViewModifier {
+    var text: String
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if text.isEmpty {
+            content
+        } else {
+            content.navigationSubtitle(text)
+        }
+        #else
+        content
+        #endif
     }
 }
