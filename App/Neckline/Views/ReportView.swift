@@ -12,23 +12,33 @@ struct ReportView: View {
     #endif
 
     var body: some View {
-        VStack(spacing: 0) {
-            if showsDateMenu { dateMenu }
+        page
+            .morningScreen()
+            #if os(iOS)
+            .navigationTitle(navigationHeading)
+            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.large)
+            .modifier(MorningWindowSubtitle(text: navigationSubheading))
+            #else
+            .navigationTitle("晨报")
+            #endif
+            .onAppear {
+                Task {
+                    await model.reload(slot)
+                    if showsDateMenu { await model.reloadHistory() }
+                }
+            }
+    }
+
+    /// 日期菜单作为顶栏：列表滚到它下面时由系统做滚动边缘效果，不再被硬切在菜单正下方。
+    @ViewBuilder private var page: some View {
+        if showsDateMenu {
             scrollingList
-        }
-        .morningScreen()
-        #if os(iOS)
-        .navigationTitle(navigationHeading)
-        .navigationBarTitleDisplayMode(.large)
-        .toolbarTitleDisplayMode(.large)
-        .modifier(MorningWindowSubtitle(text: navigationSubheading))
-        #else
-        .navigationTitle("晨报")
-        #endif
-        .onAppear {
-            Task {
-                await model.reload(slot)
-                if showsDateMenu { await model.reloadHistory() }
+                .safeAreaBar(edge: .top) { dateMenu }
+                .scrollEdgeEffectStyle(.hard, for: .top)
+        } else {
+            VStack(spacing: 0) {
+                scrollingList
             }
         }
     }
@@ -59,7 +69,7 @@ struct ReportView: View {
                 listBody
             }
             .padding(.horizontal, usesCards ? NKMorningSpace.page : 0)
-            .padding(.top, 12)
+            .padding(.top, showsDateMenu ? 4 : 12)
             .padding(.bottom, 28)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -241,6 +251,8 @@ struct ReportView: View {
         .fixedSize()
         .padding(.horizontal, NKMorningSpace.page)
         .padding(.top, 12)
+        // 列表顶部相应少留 8，没滚动时位置不变；滚动后分隔线不贴着菜单文字。
+        .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
