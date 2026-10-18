@@ -46,16 +46,75 @@ enum NKMorning {
     static let tagFill = Color(light: 0xF2F2F7, dark: 0x3A3A3C)
 }
 
+/// 多行文字的字号规格。只在这里写磅值、相对的文本样式和字重。
+struct NKScaledFontSpec {
+    var size: CGFloat
+    var relativeTo: Font.TextStyle
+    var weight: Font.Weight
+
+    static let pageTitle = NKScaledFontSpec(size: 28, relativeTo: .title, weight: .semibold)
+    static let caption = NKScaledFontSpec(size: 13, relativeTo: .footnote, weight: .regular)
+    static let captionMedium = NKScaledFontSpec(size: 13, relativeTo: .footnote, weight: .medium)
+    static let company = NKScaledFontSpec(size: 16, relativeTo: .callout, weight: .semibold)
+    static let titleLine = NKScaledFontSpec(size: 15, relativeTo: .subheadline, weight: .regular)
+    static let detailTitle = NKScaledFontSpec(size: 17, relativeTo: .headline, weight: .semibold)
+}
+
 enum NKMorningFont {
-    static let pageTitle = Font.system(size: 28, weight: .semibold)
-    static let caption = Font.system(size: 13)
-    static let company = Font.system(size: 16, weight: .semibold)
-    static let titleLine = Font.system(size: 15)
+    #if os(iOS)
+    // 系统文本样式在默认字号下与原先的固定磅值相同，并跟随系统字体大小。
+    static let pageTitle = Font.title.weight(.semibold)
+    static let caption = Font.footnote
+    static let company = Font.callout.weight(.semibold)
+    static let titleLine = Font.subheadline
     /// 条目详情里的事件标题，比名单标题行大一号。
-    static let detailTitle = Font.system(size: 17, weight: .semibold)
+    static let detailTitle = Font.headline.weight(.semibold)
+    static let tag = Font.caption2.weight(.medium)
+    static let reason = Font.subheadline
+    static let document = Font.callout
+    static let disclosure = Font.caption.weight(.semibold)
+    #else
+    static let pageTitle = Font.system(size: NKScaledFontSpec.pageTitle.size, weight: NKScaledFontSpec.pageTitle.weight)
+    static let caption = Font.system(size: NKScaledFontSpec.caption.size, weight: NKScaledFontSpec.caption.weight)
+    static let company = Font.system(size: NKScaledFontSpec.company.size, weight: NKScaledFontSpec.company.weight)
+    static let titleLine = Font.system(size: NKScaledFontSpec.titleLine.size, weight: NKScaledFontSpec.titleLine.weight)
+    /// 条目详情里的事件标题，比名单标题行大一号。
+    static let detailTitle = Font.system(size: NKScaledFontSpec.detailTitle.size, weight: NKScaledFontSpec.detailTitle.weight)
     static let tag = Font.system(size: 11, weight: .medium)
     static let reason = Font.system(size: 15)
     static let document = Font.system(size: 16)
+    static let disclosure = Font.system(size: 12, weight: .semibold)
+    #endif
+}
+
+extension View {
+    /// 多行不用文本样式：样式自带额外行距和中文断行，默认字号下也会少排字、行距更大。
+    func nkScaledFont(_ spec: NKScaledFontSpec) -> some View {
+        modifier(NKScaledFont(spec: spec))
+    }
+}
+
+private struct NKScaledFont: ViewModifier {
+    var weight: Font.Weight
+    #if os(iOS)
+    @ScaledMetric private var size: CGFloat
+
+    init(spec: NKScaledFontSpec) {
+        weight = spec.weight
+        _size = ScaledMetric(wrappedValue: spec.size, relativeTo: spec.relativeTo)
+    }
+    #else
+    private var size: CGFloat
+
+    init(spec: NKScaledFontSpec) {
+        weight = spec.weight
+        size = spec.size
+    }
+    #endif
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: size, weight: weight))
+    }
 }
 
 enum NKMorningSpace {

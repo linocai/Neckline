@@ -48,7 +48,7 @@ struct MorningSettingsView: View {
                 }
                 ForEach(model.connectionLines) { line in
                     Text(line.text)
-                        .font(NKMorningFont.caption)
+                        .nkScaledFont(.caption)
                         .foregroundStyle(line.problem ? NKMorning.problem : NKMorning.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

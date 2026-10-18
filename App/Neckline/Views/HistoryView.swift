@@ -55,16 +55,16 @@ struct HistoryView: View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(MorningCopy.historyTitle(tradeDate: item.tradeDate))
-                    .font(NKMorningFont.company)
+                    .nkScaledFont(.company)
                     .foregroundStyle(NKMorning.textPrimary)
                     .monospacedDigit()
                 Text(MorningCopy.historySubtitle(status: item.status, entryCount: item.entryCount))
-                    .font(NKMorningFont.caption)
+                    .nkScaledFont(.caption)
                     .foregroundStyle(NKMorning.textSecondary)
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(NKMorningFont.disclosure)
                 .foregroundStyle(NKMorning.textTertiary)
         }
         .padding(.horizontal, NKMorningSpace.rowH)

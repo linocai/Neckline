@@ -75,8 +75,12 @@ final class MorningModel {
     private var tickets: [MorningSlot: Int] = [:]
     private var historyTicket = 0
     private var epoch = 0
-    private var connectionWatch: Task<Void, Never>?
+    private var connectionDebounce: Task<Void, Never>?
+    private var connectionChange: Task<Void, Never>?
     private var pendingDeviceToken: String?
+    private var registeredDeviceToken: String?
+    private var registrationFlight: (epoch: Int, token: String)?
+    private var loadCancelRetries: [MorningSlot: Int] = [:]
 
     var tab: MorningTab = .report
     var focus: MorningSlot = .latest
@@ -88,6 +92,8 @@ final class MorningModel {
     private(set) var notificationPermission: MorningNoticePermission = .notAsked
     private(set) var notificationRegistration: MorningNoticeRegistration?
     private(set) var selectedEntryKey: String?
+    /// 每次点推送加一。晨报栈用它回到名单根页，历史栈不看这个数。
+    private(set) var reportStackReset = 0
     private var states: [MorningSlot: MorningLoadState] = [:]
 
     init(config: AppConfig,
@@ -141,6 +147,12 @@ final class MorningModel {
         return main.first
     }
 
+    /// 右栏详情只认当前选中，在主名单和四组待定里找；没选中时不退回主名单第一条。
+    func detailEntry(in report: MorningReport) -> MorningEntry? {
+        guard let selectedEntryKey else { return nil }
+        return Self.entries(in: report).first { $0.listID == selectedEntryKey }
+    }
+
     func select(_ entry: MorningEntry) {
         selectedEntryKey = entry.listID
     }
@@ -161,10 +173,19 @@ final class MorningModel {
                 report = try await client.report(tradeDate: tradeDate)
             }
             guard epoch == capturedEpoch, tickets[slot] == ticket else { return }
+            loadCancelRetries[slot] = 0
             states[slot] = Self.classify(report)
             if slot == focus { adoptSelection(for: report) }
         } catch is CancellationError {
-            return
+            // 被后来的请求取代时直接丢掉。仍是当前这一期、又停在读取中时，换一个不被取消的任务再取一次。
+            guard epoch == capturedEpoch, tickets[slot] == ticket else { return }
+            guard case .loading = states[slot] else { return }
+            let retries = loadCancelRetries[slot] ?? 0
+            guard retries < 1 else { return }
+            loadCancelRetries[slot] = retries + 1
+            Task { @MainActor [weak self] in
+                await self?.reload(slot)
+            }
         } catch {
             guard epoch == capturedEpoch, tickets[slot] == ticket else { return }
             states[slot] = .error(Self.clientError(error))
@@ -208,6 +229,8 @@ final class MorningModel {
         selectedEntryKey = nil
         focus = .latest
         notificationRegistration = nil
+        registeredDeviceToken = nil
+        loadCancelRetries.removeAll()
         client = clientFactory(config)
         await reload(.latest)
         await reloadHistory()
@@ -215,18 +238,23 @@ final class MorningModel {
     }
 
     /// 手填地址和令牌按键连续变化时稍等再清空，避免每打一个字就打一次接口。
+    /// 后续按键只取消还在等待的防抖；已经开始的切换单独跑完，不被这次取消带走。
     func connectionInputsChanged() {
-        connectionWatch?.cancel()
-        connectionWatch = Task { [weak self] in
+        connectionDebounce?.cancel()
+        connectionDebounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.handleConnectionChange()
+            guard !Task.isCancelled, let self else { return }
+            self.connectionChange = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.handleConnectionChange()
+            }
         }
     }
 
     func handleNotificationTap() async {
         tab = .report
         focus = .latest
+        reportStackReset += 1
         await reload(.latest)
     }
 
@@ -234,6 +262,17 @@ final class MorningModel {
         guard !isCheckingConnection else { return }
         isCheckingConnection = true
         defer { isCheckingConnection = false }
+        await collectConnectionLines()
+        await retryFailedDeviceRegistration()
+    }
+
+    /// 上一次登记失败后重试。已登记、或没有待登记令牌时不发请求。
+    func retryFailedDeviceRegistration() async {
+        guard notificationRegistration == .failed else { return }
+        await sendDeviceTokenIfPossible()
+    }
+
+    private func collectConnectionLines() async {
         let capturedEpoch = epoch
         if let problem = config.connectionConfigurationError {
             connectionLines = [MorningCheckLine(id: 0, text: problem, problem: true)]
@@ -311,14 +350,33 @@ final class MorningModel {
     }
 
     private func sendDeviceTokenIfPossible() async {
-        guard let pendingDeviceToken, config.hasToken else { return }
+        guard let token = pendingDeviceToken, config.hasToken else { return }
+        if notificationRegistration == .registered, registeredDeviceToken == token { return }
+        if let flight = registrationFlight, flight.epoch == epoch, flight.token == token { return }
+        let capturedEpoch = epoch
+        let capturedToken = token
+        registrationFlight = (capturedEpoch, capturedToken)
+        defer {
+            if registrationFlight?.epoch == capturedEpoch, registrationFlight?.token == capturedToken {
+                registrationFlight = nil
+            }
+        }
         do {
-            let ack = try await client.registerDevice(token: pendingDeviceToken)
-            notificationRegistration = ack.ok ? .registered : .failed
+            let ack = try await client.registerDevice(token: capturedToken)
+            guard epoch == capturedEpoch, pendingDeviceToken == capturedToken else { return }
+            if ack.ok {
+                notificationRegistration = .registered
+                registeredDeviceToken = capturedToken
+            } else {
+                notificationRegistration = .failed
+                registeredDeviceToken = nil
+            }
         } catch is CancellationError {
             return
         } catch {
+            guard epoch == capturedEpoch, pendingDeviceToken == capturedToken else { return }
             notificationRegistration = .failed
+            registeredDeviceToken = nil
         }
     }
 

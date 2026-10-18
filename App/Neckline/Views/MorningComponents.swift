@@ -12,17 +12,17 @@ struct MorningPageHeader: View {
             VStack(alignment: .leading, spacing: 4) {
                 if showsIdentity {
                     Text(MorningCopy.header(tradeDate: report.tradeDate))
-                        .font(NKMorningFont.pageTitle)
+                        .nkScaledFont(.pageTitle)
                         .foregroundStyle(NKMorning.textPrimary)
                     Text(MorningCopy.windowLine(report: report))
-                        .font(NKMorningFont.caption)
+                        .nkScaledFont(.caption)
                         .foregroundStyle(NKMorning.textSecondary)
                         .monospacedDigit()
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let gap = gapText {
                     Text(gap)
-                        .font(NKMorningFont.caption)
+                        .nkScaledFont(.caption)
                         .foregroundStyle(NKMorning.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -42,23 +42,13 @@ struct MorningEntryRow: View {
     let entry: MorningEntry
     var quiet = false
     var selected = false
+    #if os(iOS)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(entry.companyName)
-                    .font(NKMorningFont.company)
-                    .foregroundStyle(quiet ? NKMorning.textSecondary : NKMorning.textPrimary)
-                    .lineLimit(1)
-                Text(entry.companyCode)
-                    .font(NKMorningFont.company)
-                    .monospacedDigit()
-                    .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                MorningTag(type: entry.type, importance: entry.importance)
-            }
+            nameCodeAndTag
             Text(entry.headline)
                 .font(NKMorningFont.titleLine)
                 .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
@@ -71,6 +61,52 @@ struct MorningEntryRow: View {
         .background(selected ? NKMorning.selection : Color.clear)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var nameCodeAndTag: some View {
+        #if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.companyName)
+                        .font(NKMorningFont.company)
+                        .foregroundStyle(quiet ? NKMorning.textSecondary : NKMorning.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(entry.companyCode)
+                        .font(NKMorningFont.company)
+                        .monospacedDigit()
+                        .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
+                }
+                MorningTag(type: entry.type, importance: entry.importance)
+            }
+        } else {
+            standardNameCodeAndTag
+        }
+        #else
+        standardNameCodeAndTag
+        #endif
+    }
+
+    private var standardNameCodeAndTag: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(entry.companyName)
+                .font(NKMorningFont.company)
+                .foregroundStyle(quiet ? NKMorning.textSecondary : NKMorning.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(entry.companyCode)
+                .font(NKMorningFont.company)
+                .monospacedDigit()
+                .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            MorningTag(type: entry.type, importance: entry.importance)
+                .layoutPriority(1)
+        }
     }
 
     private var horizontalInset: CGFloat {
@@ -180,7 +216,7 @@ struct MorningFold<Content: View>: View {
                         .foregroundStyle(NKMorning.textSecondary)
                     Spacer(minLength: 8)
                     Image(systemName: open ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(NKMorningFont.disclosure)
                         .foregroundStyle(NKMorning.textTertiary)
                 }
                 .padding(.horizontal, headerInset)

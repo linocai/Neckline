@@ -116,7 +116,7 @@ struct ReportView: View {
                     ForEach(groups) { group in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(group.title)
-                                .font(NKMorningFont.caption.weight(.medium))
+                                .nkScaledFont(.captionMedium)
                                 .foregroundStyle(NKMorning.textTertiary)
                                 .padding(.horizontal, groupInset)
                             entryList(group.entries, quiet: true)

@@ -11,18 +11,18 @@ struct EntryDetailView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(entry.companyName)
-                        .font(NKMorningFont.company)
+                        .nkScaledFont(.company)
                         .foregroundStyle(NKMorning.textPrimary)
                     Text(entry.companyCode)
-                        .font(NKMorningFont.company)
+                        .nkScaledFont(.company)
                         .monospacedDigit()
                         .foregroundStyle(NKMorning.textSecondary)
                 }
                 meta
-                    .font(NKMorningFont.caption)
+                    .nkScaledFont(.caption)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(entry.headline)
-                    .font(NKMorningFont.detailTitle)
+                    .nkScaledFont(.detailTitle)
                     .foregroundStyle(NKMorning.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(entry.reason)
@@ -105,7 +105,7 @@ struct EntryDetailView: View {
                     .lineLimit(1)
                 if let title = source.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
                     Text(title)
-                        .font(NKMorningFont.titleLine)
+                        .nkScaledFont(.titleLine)
                         .foregroundStyle(NKMorning.textPrimary)
                         .lineLimit(2)
                         .truncationMode(.tail)
@@ -113,7 +113,7 @@ struct EntryDetailView: View {
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(NKMorningFont.disclosure)
                 .foregroundStyle(NKMorning.textTertiary)
         }
         .padding(.horizontal, NKMorningSpace.rowH)

@@ -8,6 +8,9 @@ import AppKit
 struct MorningRootView: View {
     @Bindable var model: MorningModel
     @ObservedObject var config: AppConfig
+    #if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
     #if DEBUG
     @State private var qaPath = NavigationPath()
     @State private var qaHistoryPath = NavigationPath()
@@ -20,10 +23,21 @@ struct MorningRootView: View {
             .onChange(of: config.apiToken) { _, _ in model.connectionInputsChanged() }
             .onChange(of: config.baseURLOverride) { _, _ in model.connectionInputsChanged() }
             .onChange(of: config.environment) { _, _ in Task { await model.handleConnectionChange() } }
+            #if os(iOS)
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await model.retryFailedDeviceRegistration() }
+            }
+            #endif
             #if DEBUG
-            .environment(\.nkQAReviewOpen, qaRoute == "review")
+            .environment(\.nkQAReviewOpen, qaRoute == "review" || qaRoute == "review-detail")
             .environment(\.nkQAScrollBottom, qaRoute == "bottom")
             .task { await applyQARoute() }
+            #if os(iOS)
+            .onChange(of: model.reportStackReset) { _, _ in
+                qaPath = NavigationPath()
+            }
+            #endif
             #endif
     }
 
@@ -99,10 +113,12 @@ struct MorningRootView: View {
             ReportView(slot: .latest, model: model)
                 .navigationDestination(for: QANav.self) { qaDestination($0) }
         }
+        .id(model.reportStackReset)
         #else
         NavigationStack {
             ReportView(slot: .latest, model: model)
         }
+        .id(model.reportStackReset)
         #endif
     }
 
@@ -127,18 +143,10 @@ struct MorningRootView: View {
         let state = model.state(for: model.focus)
         switch state {
         case .ready(let report):
-            if let entry = selectedDetailEntry(in: report) {
-                EntryDetailView(entry: entry, model: model)
-            } else {
-                Color.clear
-                    .morningScreen()
-                    .overlay {
-                        Text("选择左侧一条查看详情")
-                            .font(NKMorningFont.caption)
-                            .foregroundStyle(NKMorning.textSecondary)
-                    }
-            }
-        case .empty, .error(.noReport):
+            detailColumn(report, promptIfNone: true)
+        case .empty(let report):
+            detailColumn(report, promptIfNone: false)
+        case .error(.noReport):
             Color.clear.morningScreen()
         case .loading:
             MorningLoadingView().morningScreen()
@@ -152,9 +160,20 @@ struct MorningRootView: View {
         }
     }
 
-    private func selectedDetailEntry(in report: MorningReport) -> MorningEntry? {
-        guard let selectedEntryKey = model.selectedEntryKey else { return nil }
-        return report.content?.entries.first { $0.listID == selectedEntryKey }
+    @ViewBuilder private func detailColumn(_ report: MorningReport, promptIfNone: Bool) -> some View {
+        if let entry = model.detailEntry(in: report) {
+            EntryDetailView(entry: entry, model: model)
+        } else if promptIfNone {
+            Color.clear
+                .morningScreen()
+                .overlay {
+                    Text("选择左侧一条查看详情")
+                        .font(NKMorningFont.caption)
+                        .foregroundStyle(NKMorning.textSecondary)
+                }
+        } else {
+            Color.clear.morningScreen()
+        }
     }
     #endif
 
@@ -203,6 +222,17 @@ struct MorningRootView: View {
             pushFirst(document: false, slot: slot)
         case "document":
             pushFirst(document: true, slot: slot)
+        case "notify":
+            #if os(iOS)
+            // 不在这里清路径：截图要证明是点推送本身把栈退回了名单。
+            pushFirst(document: false, slot: slot)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await model.handleNotificationTap()
+            #endif
+        case "review-detail":
+            #if os(macOS)
+            selectFirstReviewEntry(slot)
+            #endif
         case "history":
             model.tab = .history
             await model.reloadHistory()
@@ -218,7 +248,7 @@ struct MorningRootView: View {
         default:
             break
         }
-        let pause: UInt64 = (qaRoute == "document" || qaRoute == "review" || qaRoute == "settings" || qaRoute == "bottom") ? 1_200_000_000 : 600_000_000
+        let pause: UInt64 = (qaRoute == "document" || qaRoute == "review" || qaRoute == "review-detail" || qaRoute == "settings" || qaRoute == "bottom" || qaRoute == "notify") ? 1_200_000_000 : 600_000_000
         try? await Task.sleep(nanoseconds: pause)
         markQAReady()
     }
@@ -268,6 +298,11 @@ struct MorningRootView: View {
         case .loading: false
         default: true
         }
+    }
+
+    private func selectFirstReviewEntry(_ slot: MorningSlot) {
+        guard let entry = model.report(for: slot)?.content?.review.listedGroups.first?.entries.first else { return }
+        model.select(entry)
     }
 
     private func pushFirst(document: Bool, slot: MorningSlot) {

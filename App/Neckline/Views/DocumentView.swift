@@ -31,11 +31,11 @@ struct DocumentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text(MorningCopy.documentHeading(title: document.title, text: document.text, sourceLabel: document.sourceLabel))
-                    .font(NKMorningFont.pageTitle)
+                    .nkScaledFont(.pageTitle)
                     .foregroundStyle(NKMorning.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(sourceLine(document))
-                    .font(NKMorningFont.caption)
+                    .nkScaledFont(.caption)
                     .foregroundStyle(NKMorning.textSecondary)
                     .monospacedDigit()
                 Text(document.text)
