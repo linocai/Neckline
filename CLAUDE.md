@@ -59,5 +59,6 @@
 - macOS `.app` 用 `ditto` 复制，不用 `cp -R`。
 - 并行 `xcodebuild archive` 必须各用独立的 `-derivedDataPath`，否则争用 `build.db`。
 - 打 wheel 由 `release.py build` 负责（venv 里没有 `build` 模块，走 `pip wheel --no-deps`）；产物放仓库外，`Backend/build/` 不进仓库。
+- `release.py switch` 只装 Neckline 自己的 wheel，不装依赖：`requirements.txt` 变了，要在切换前（避开 V4 任务时段）先 `cp -a` 备份 `/opt/neckline/.venv`，以 deploy 用户装依赖并 `pip check`。NB 走阿里云镜像，可先 `pip download` 到暂存目录再离线装。
 - TuShare `major_news` 每个账号每天最多调用 40 次（滚动计数）：彩排、冒烟、手工采集都占额度，动手前先算好次数。
 - 改 NPM 的 nk 自定义配置时，保留 `/read/` 那段不写访问日志的 location（只读网页访问码在路径里）；改前备份，`nginx -t` 通过再 reload。
