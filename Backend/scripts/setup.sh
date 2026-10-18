@@ -44,5 +44,5 @@ fi
 
 # 4) 数据库迁移必须由运维明确执行，安装脚本不会创建或迁移任何库。
 echo "==> setup 完成。激活:source ${VENV_DIR}/bin/activate"
-echo "==> 新库须显式初始化 common + K10 + notifications schema；已有库须走经过备份校验的 k10 migration。"
-echo "==> 示例(确认目标路径后执行): DB_PATH=/path/to/neckline.db ${VENV_DIR}/bin/python -c 'from pathlib import Path; import os; from neckline.db import init_schema; from neckline.k10.schema import initialize_schema; from neckline.k10.notifications import initialize_notifications_schema; p=Path(os.environ[\"DB_PATH\"]); init_schema(p); initialize_schema(p); initialize_notifications_schema(p)'"
+echo "==> 晨报库须显式初始化，安装脚本不会创建或迁移任何库。"
+echo "==> 示例(确认目标路径后执行): NECKLINE_V4_DB_PATH=/path/to/v4.db ${VENV_DIR}/bin/python -m neckline.morning.cli init-db"

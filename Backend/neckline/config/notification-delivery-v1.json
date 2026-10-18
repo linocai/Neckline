@@ -1,6 +1,0 @@
-{
-  "configVersion": "notification-delivery-v1",
-  "initialBackoffSeconds": 30,
-  "maxBackoffSeconds": 900,
-  "dispatchBatchSize": 4
-}

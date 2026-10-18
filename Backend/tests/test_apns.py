@@ -34,7 +34,7 @@ def _apns_settings(tmp_path, key_pem, **over) -> Settings:
         apns_bundle_id="top.linotsai.neckline", apns_key_path=str(p8), apns_use_sandbox=True,
     )
     kw.update(over)  # 覆盖(避免与显式 kwarg 重复传参)
-    return dataclasses.replace(Settings(tushare_token=None), **kw)
+    return dataclasses.replace(Settings(), **kw)
 
 
 # —— JWT 签名 ————————————————————————————————————————————————————————
@@ -49,7 +49,7 @@ def test_build_jwt_es256_verifiable(ec_key_pem):
 
 
 def test_get_jwt_none_without_config(monkeypatch):
-    monkeypatch.setattr(apns, "settings", Settings(tushare_token=None))
+    monkeypatch.setattr(apns, "settings", Settings())
     apns.reset_jwt_cache()
     assert apns.get_jwt() is None
 
@@ -96,10 +96,10 @@ def test_readiness_is_safe_for_missing_and_invalid_key(tmp_path, ec_key_pem, mon
 
 def test_build_payload():
     p = apns.build_payload("标题", "正文", category=apns.CATEGORY_IMPORTANT,
-                           custom={"kind": "k10_morning"})
+                           custom={"kind": "morning"})
     assert p["aps"]["alert"] == {"title": "标题", "body": "正文"}
     assert p["aps"]["category"] == "NKIMPORTANT"
-    assert p["kind"] == "k10_morning"
+    assert p["kind"] == "morning"
 
 
 def test_send_push_success_injected_transport(tmp_path, ec_key_pem, monkeypatch):
@@ -153,7 +153,7 @@ def test_send_push_sets_stable_collapse_header(tmp_path, ec_key_pem, monkeypatch
 
 
 def test_send_push_no_config_graceful(monkeypatch):
-    monkeypatch.setattr(apns, "settings", Settings(tushare_token=None))
+    monkeypatch.setattr(apns, "settings", Settings())
     apns.reset_jwt_cache()
     res = apns.send_push("t", "a", "b")               # 无凭证 + 无注入 jwt → ok=False,不抛
     assert res.ok is False and res.reason == "apns_credentials_missing"

@@ -76,8 +76,12 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(health.latestReport?.status, .available)
         XCTAssertFalse(health.readPage)
         XCTAssertFalse(health.modelKey)
+        XCTAssertEqual(health.version, "v0.0.0")
+        XCTAssertEqual(health.releaseSet, "v0.0.0-b0")
         let noLatest = try JSONDecoder().decode(MorningHealth.self, from: Data(#"{"db":"ready","latestReport":null,"readPage":false,"modelKey":false}"#.utf8))
         XCTAssertNil(noLatest.latestReport)
+        XCTAssertNil(noLatest.version)
+        XCTAssertNil(noLatest.releaseSet)
 
         let ack = try decode("devices-ok", as: MorningDeviceAck.self)
         XCTAssertTrue(ack.ok)

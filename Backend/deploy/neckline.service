@@ -1,11 +1,10 @@
-# Neckline V3 API service.  K10 scans, analysis, market collection and
-# notifications are separate durable worker/timer units; this process serves
-# FastAPI only.
+# Neckline API service. This process serves FastAPI only. Morning collection,
+# report generation and the deadline check are separate timer units.
 #
-# Keep :8002 bound for the existing reverse-proxy bridge.  Firewall policy
+# Keep :8002 bound for the existing reverse-proxy bridge. Firewall policy
 # restricts direct access to that bridge; the binding alone is not the boundary.
 [Unit]
-Description=Neckline API (FastAPI :8002): V4 morning report, read page, v3 read-only history
+Description=Neckline API (FastAPI :8002): V4 morning report and read page
 After=network-online.target
 Wants=network-online.target
 
@@ -15,16 +14,12 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-# Shared immutable K10 config binding for the API and K10 timer units.  Its
-# absence must not stop the read-only API; /configuration reports it directly.
-EnvironmentFile=-/etc/neckline/k10.env
 EnvironmentFile=-/etc/neckline/v4.env
 Environment=TZ=Asia/Shanghai
 ExecStart=/opt/neckline/.venv/bin/uvicorn neckline.api.app:app --host 0.0.0.0 --port 8002
 Restart=on-failure
 RestartSec=5
-# Preserve the established API memory guardrails.  Worker/model workload belongs
-# to neckline-k10-worker.service, not this process.
+# API process memory guard. Collection and model calls run in the timer units.
 MemoryHigh=420M
 MemoryMax=600M
 

@@ -159,6 +159,18 @@ struct MorningHealth: Codable, Equatable {
     let latestReport: MorningHealthLatest?
     let readPage: Bool
     let modelKey: Bool
+    let version: String?
+    let releaseSet: String?
+
+    init(db: String, latestReport: MorningHealthLatest?, readPage: Bool, modelKey: Bool,
+         version: String? = nil, releaseSet: String? = nil) {
+        self.db = db
+        self.latestReport = latestReport
+        self.readPage = readPage
+        self.modelKey = modelKey
+        self.version = version
+        self.releaseSet = releaseSet
+    }
 }
 
 struct MorningHealthLatest: Codable, Equatable {

@@ -1,32 +1,9 @@
-"""交易日历原语(plan 0.3;主真值源 trade_cal 落 SQLite,静态表兜底/交叉核对)。
+"""已查证的静态休市表。
 
-注意:本包名为 `calendar`,与标准库同名。包内 / 调用方一律【绝对导入】
-(`from neckline.calendar import ...` / `from neckline.calendar.trading_calendar import ...`),
-不要在任何地方裸写 `import calendar` 期望拿到标准库(继承 LinoN 教训)。
+包名 `calendar` 与标准库同名。调用方使用绝对导入
+（`from neckline.calendar.static_holidays import ...`），不要裸写 `import calendar`。
 """
 
-from neckline.calendar.trading_calendar import (
-    CN_TZ,
-    MARKET_CLOSE_TIME,
-    is_trading_day,
-    official_is_trading_day,
-    next_trading_day,
-    prev_trading_day,
-    trading_days_between,
-    trading_window,
-    verify_against_static,
-    reset_cache,
-)
+from neckline.calendar.static_holidays import CLOSED_2025, CLOSED_2026, STATIC_CLOSED, STATIC_YEARS
 
-__all__ = [
-    "CN_TZ",
-    "MARKET_CLOSE_TIME",
-    "is_trading_day",
-    "official_is_trading_day",
-    "next_trading_day",
-    "prev_trading_day",
-    "trading_days_between",
-    "trading_window",
-    "verify_against_static",
-    "reset_cache",
-]
+__all__ = ["CLOSED_2025", "CLOSED_2026", "STATIC_CLOSED", "STATIC_YEARS"]

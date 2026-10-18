@@ -34,6 +34,9 @@ WRONG_TOKEN = "not-the-fixture-token"
 DEVICE_TOKEN = "0123456789abcdef" * 4
 SCHEDULE = {"previousClose": "15:00", "windowEnd": "08:00", "deadline": "09:15"}
 CONFIG_VERSION = "screening-v1"
+# 夹具里的版本号用固定占位，发布时不必改 App 夹具；真实发布号由 test_api_app.py 断言。
+FIXTURE_VERSION = "v0.0.0"
+FIXTURE_RELEASE_SET = "v0.0.0-b0"
 CONFIG_SHA = "0" * 64
 
 
@@ -226,6 +229,7 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     health = json.loads(bodies["health.json"])
     assert health["db"] == "ready" and health["readPage"] is False and health["modelKey"] is False
     assert health["latestReport"] == {"tradeDate": "2026-10-19", "status": "available"}
+    assert health["version"] == FIXTURE_VERSION and health["releaseSet"] == FIXTURE_RELEASE_SET
 
 
 def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
@@ -241,7 +245,10 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
     state: dict[str, Path | None] = {"path": full}
 
     app = FastAPI()
-    app.include_router(create_router(require_token_dependency=require_token, db_path_provider=lambda: state["path"]))
+    app.include_router(create_router(
+        require_token_dependency=require_token, db_path_provider=lambda: state["path"],
+        version=FIXTURE_VERSION, release_set=FIXTURE_RELEASE_SET,
+    ))
     client = TestClient(app)
     auth = {"Authorization": f"Bearer {FIXTURE_TOKEN}"}
     wrong = {"Authorization": f"Bearer {WRONG_TOKEN}"}

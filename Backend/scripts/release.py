@@ -1,7 +1,7 @@
 """Build and switch a Neckline backend release.
 
 Local (from Backend/):
-    .venv/bin/python scripts/release.py build --release v3.7.0-b109 --commit HEAD --out <dir>
+    .venv/bin/python scripts/release.py build --release v4.0.0-b113 --commit HEAD --out <dir>
 
 Server (as root, from the uploaded release directory; run with --check-only first):
     /opt/neckline/.venv/bin/python /opt/neckline/releases/<release>/release.py switch \
@@ -37,14 +37,10 @@ from pathlib import Path
 
 HOST = "ser657204219523"
 ROOT = Path("/opt/neckline")
-DB = ROOT / "data/neckline.db"
-APPLICATION_ID = 1313552690
 V4_DB = ROOT / "data/v4.db"
 V4_APPLICATION_ID = 1313552704
-SERVICES = ["neckline.service", "neckline-k10-worker.service"]
-TIMERS = ["neckline-k10-collection.timer", "neckline-k10-morning.timer", "neckline-k10-evening.timer",
-          "neckline-market-update.timer", "neckline-market-retry.timer",
-          "neckline-v4-morning.timer", "neckline-v4-collect.timer", "neckline-v4-finalize.timer"]
+SERVICES = ["neckline.service"]
+TIMERS = ["neckline-v4-morning.timer", "neckline-v4-collect.timer", "neckline-v4-finalize.timer"]
 # V4 的出报与采集是一次性任务：切换前必须都不在运行，切换期间 timer 停住，结束后恢复原状态。
 V4_JOBS = ["neckline-v4-morning.service", "neckline-v4-collect.service", "neckline-v4-finalize.service"]
 RUNTIME_PREFIXES = ("neckline/", "scripts/", "deploy/")
@@ -128,14 +124,6 @@ def unit_state(unit: str) -> dict:
             "enabled": run("systemctl", "is-enabled", unit, check=False).stdout.strip()}
 
 
-def started_attempts() -> int:
-    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as con:
-        con.execute("PRAGMA query_only=ON")
-        if con.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
-            raise RuntimeError("生产库 application_id 不符")
-        return con.execute("SELECT count(*) FROM k10_external_attempts WHERE state='started'").fetchone()[0]
-
-
 def load_release(directory: Path, release: str) -> tuple[dict, dict[str, bytes], Path]:
     manifest = json.loads((directory / "backend/release-manifest.json").read_text())
     tar_path = directory / f"backend/Neckline-Backend-{release}.tar.gz"
@@ -196,12 +184,12 @@ def install_wheel(wheel: Path) -> None:
 
 
 def snapshot(directory: Path) -> dict:
-    report = snapshot_db(directory, DB, APPLICATION_ID, "pre-switch",
-                         ("k10_tasks", "k10_external_attempts", "k10_model_response_receipts",
-                          "k10_source_document_versions"))
     if V4_DB.exists():
-        report["v4"] = snapshot_db(directory, V4_DB, V4_APPLICATION_ID, "v4-pre-switch",
-                                   ("documents", "document_versions", "collection_runs", "model_receipts", "reports"))
+        report = snapshot_db(directory, V4_DB, V4_APPLICATION_ID, "v4-pre-switch",
+                             ("documents", "document_versions", "collection_runs", "model_receipts", "reports"))
+    else:
+        report = {"present": False, "productionDatabaseRestored": False,
+                  "checkedAt": datetime.now(timezone.utc).isoformat()}
     (directory / "snapshot-verification.json").write_text(json.dumps(report, indent=2))
     return report
 
@@ -243,9 +231,21 @@ def snapshot_db(directory: Path, db: Path, application_id: int, name: str, table
     return report
 
 
+def assert_ownership() -> None:
+    root_stat = ROOT.stat()
+    if (root_stat.st_uid, root_stat.st_gid, root_stat.st_mode & 0o777) != (0, 0, 0o755):
+        raise RuntimeError("/opt/neckline 属主或权限异常")
+    if not V4_DB.exists():
+        return
+    owner = (pwd.getpwnam("neckline").pw_uid, grp.getgrnam("neckline").gr_gid, 0o600)
+    v4_stat = V4_DB.stat()
+    if (v4_stat.st_uid, v4_stat.st_gid, v4_stat.st_mode & 0o777) != owner:
+        raise RuntimeError("V4 晨报库属主或权限异常")
+
+
 def health(release: str) -> None:
     for _ in range(40):
-        result = run("curl", "-s", "-m", "3", "http://127.0.0.1:8002/api/v1/health", check=False)
+        result = run("curl", "-s", "-m", "3", "http://127.0.0.1:8002/api/v4/health", check=False)
         try:
             if json.loads(result.stdout).get("releaseSet") == release:
                 return
@@ -267,18 +267,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     new, new_entries, new_wheel = load_release(new_dir, release)
     old, old_entries, old_wheel = load_release(old_dir, previous)
     verify_runtime(ROOT, old)
-    root_stat, db_stat = ROOT.stat(), DB.stat()
-    if (root_stat.st_uid, root_stat.st_gid, root_stat.st_mode & 0o777) != (0, 0, 0o755):
-        raise RuntimeError("/opt/neckline 属主或权限异常")
-    owner = (pwd.getpwnam("neckline").pw_uid, grp.getgrnam("neckline").gr_gid, 0o600)
-    if (db_stat.st_uid, db_stat.st_gid, db_stat.st_mode & 0o777) != owner:
-        raise RuntimeError("生产库属主或权限异常")
-    if V4_DB.exists():
-        v4_stat = V4_DB.stat()
-        if (v4_stat.st_uid, v4_stat.st_gid, v4_stat.st_mode & 0o777) != owner:
-            raise RuntimeError("V4 晨报库属主或权限异常")
-    if started_attempts():
-        raise RuntimeError("有进行中的外呼，稍后再切换")
+    assert_ownership()
     running = [unit for unit in V4_JOBS if unit_state(unit)["active"] in ("active", "activating", "reloading")]
     if running:
         raise RuntimeError(f"V4 任务正在运行（{', '.join(running)}），稍后再切换")
@@ -305,8 +294,6 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             time.sleep(0.25)
         else:
             raise RuntimeError("服务未停止")
-        if started_attempts():
-            raise RuntimeError("停服后仍有进行中的外呼")
         if any(unit_state(unit)["active"] in ("active", "activating", "reloading") for unit in V4_JOBS):
             raise RuntimeError("停 timer 后仍有 V4 任务在运行")
         record["snapshot"] = snapshot(new_dir)
@@ -339,7 +326,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     return {"release": release, "commit": new["commit"], "switched": switched,
             "runtimeFiles": len(new["backendFiles"]),
             "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
-            "recoveryPoint": record["snapshot"]["archive"], "units": record["unitsAfter"]}
+            "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
 
 
 def main() -> None:

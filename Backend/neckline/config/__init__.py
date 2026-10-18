@@ -1,12 +1,12 @@
-"""环境配置与本地数据路径。
+"""V4 进程配置。
 
-凭据不进入 Git。LLM Provider 与模型路由只从数据库中的设置读取，不接受旧的
-`LLM_PROVIDER` / `LLM_API_KEY` 环境变量回退。
+只从环境与 `.env` 读取晨报、鉴权、推送和资讯实际用到的变量。未知变量跳过，
+不因为服务器上暂时还留着旧变量而拒绝启动。已存在的环境变量优先于 `.env`。
+凭据不进入 Git。
 
 用法:
     from neckline.config import settings
-    settings.tushare_token   # str | None
-    settings.parquet_dir     # Path,已确保存在(ensure_data_dirs 后)
+    settings.api_token
 """
 
 from __future__ import annotations
@@ -16,121 +16,78 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 # neckline/config/__init__.py -> neckline/config -> neckline -> 项目根
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-# override=False:已存在的环境变量(如 systemd EnvironmentFile / CI 注入)优先于 .env 文件。
-# 容错:.env 存在但当前进程无读权限(ECS 上 .env 为 600 neckline:neckline,deploy 用户跑
-# 维护命令时读不到)→ 绝不崩;此时配置从进程环境变量取(systemd 已注入),读不到的 key 为 None。
-try:
-    load_dotenv(ENV_PATH, override=False)
-except OSError:
-    pass
+# 晨报命令行直接读其中一部分；Settings 只保留鉴权与 APNs 字段。
+KNOWN_ENV_KEYS = frozenset({
+    "API_TOKEN",
+    "APNS_BUNDLE_ID",
+    "APNS_KEY_ID",
+    "APNS_KEY_PATH",
+    "APNS_TEAM_ID",
+    "APNS_USE_SANDBOX",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_MODEL",
+    "JIN10_MCP_TOKEN",
+    "NECKLINE_READ_KEY",
+    "NECKLINE_V4_DB_PATH",
+    "TUSHARE_TOKEN",
+})
 
-DATA_DIR = PROJECT_ROOT / "data"
-PARQUET_DIR = DATA_DIR / "parquet"
-DB_PATH = DATA_DIR / "neckline.db"
+
+def load_env_file(path: Path | None = None) -> None:
+    """把文件里的已知变量填进环境（不覆盖已有值）。未知变量与读不到的文件都忽略。"""
+    target = ENV_PATH if path is None else path
+    try:
+        parsed = dotenv_values(target)
+    except OSError:
+        return
+    for key, value in parsed.items():
+        if key not in KNOWN_ENV_KEYS or value is None or key in os.environ:
+            continue
+        os.environ[key] = value
+
+
+if os.environ.get("PYTHON_DOTENV_DISABLED") != "1":
+    load_env_file()
 
 
 @dataclass(frozen=True)
 class Settings:
-    tushare_token: Optional[str]
-    # —— 阶段4 (4A/4B) 后端服务化(plan §五 阶段4)——
-    # API 鉴权:单用户共享密钥,Bearer + hmac.compare_digest,startup fail-fast len>=16。
     api_token: Optional[str] = None
-    # APNs token-based 推送(复用 LinoN .p8 账号级密钥,§3.6);.p8 路径指向 ECS secret 落点。
     apns_key_id: Optional[str] = None
     apns_team_id: Optional[str] = None
     apns_bundle_id: Optional[str] = None
     apns_key_path: Optional[str] = None
-    apns_use_sandbox: bool = True          # dev 直装走 sandbox 网关
-    project_root: Path = PROJECT_ROOT
-    data_dir: Path = DATA_DIR
-    parquet_dir: Path = PARQUET_DIR
-    db_path: Path = DB_PATH
-    # 当前 K10 运行包由 API 和 timer 共同从环境显式绑定。它不是策略默认值：
-    # 缺失、格式非法或目标修订不存在都由只读 API 如实报告未配置。追加在既有
-    # 字段之后，以保持旧 Settings 的位置参数兼容性。
-    k10_config_id: Optional[str] = None
-    k10_config_revision: Optional[int] = None
-    k10_config_binding_error: Optional[str] = None
-    # Operational profile is a distinct immutable binding.  It governs recovery
-    # mechanics only and must never be mistaken for a K10 strategy revision.
-    k10_execution_config_id: Optional[str] = None
-    k10_execution_config_revision: Optional[int] = None
-    k10_execution_config_binding_error: Optional[str] = None
-    k10_collection_config_id: Optional[str] = None
-    k10_collection_config_revision: Optional[int] = None
-    k10_collection_config_binding_error: Optional[str] = None
-
-    @property
-    def has_api_token(self) -> bool:
-        return bool(self.api_token and self.api_token.strip())
+    apns_use_sandbox: bool = True
 
     @property
     def has_apns_config(self) -> bool:
-        """APNs 凭证四要素齐全(KeyID/TeamID/BundleID/.p8 路径)才能真推;缺一 → 优雅降级不推。"""
+        """APNs 凭证四要素齐全才能真推；缺一则不推。"""
         return bool(
             self.apns_key_id and self.apns_team_id
             and self.apns_bundle_id and self.apns_key_path
         )
 
 
+def _clean(value: Optional[str]) -> Optional[str]:
+    text = (value or "").strip()
+    return text or None
+
+
+def _bool(value: Optional[str], default: bool) -> bool:
+    text = (value or "").strip().lower()
+    if not text:
+        return default
+    return text in ("1", "true", "yes", "on")
+
+
 def _load_settings() -> Settings:
-    def _clean(v: Optional[str]) -> Optional[str]:
-        v = (v or "").strip()
-        return v or None
-
-    def _bool(v: Optional[str], default: bool) -> bool:
-        v = (v or "").strip().lower()
-        if not v:
-            return default
-        return v in ("1", "true", "yes", "on")
-
-    def _positive_int(v: Optional[str], *, name: str) -> tuple[Optional[int], Optional[str]]:
-        raw = _clean(v)
-        if raw is None:
-            return None, None
-        try:
-            parsed = int(raw)
-        except ValueError:
-            return None, f"{name} 必须是正整数"
-        if parsed < 1 or str(parsed) != raw:
-            return None, f"{name} 必须是正整数"
-        return parsed, None
-
-    # DB_PATH 可选覆盖(默认 data/neckline.db)。ECS 部署默认路径即 /opt/neckline/data/
-    # neckline.db(相对项目根,无需设);冒烟/隔离测试可设 DB_PATH 指向临时库,不碰生产台账。
-    db_override = _clean(os.environ.get("DB_PATH"))
-    db_path = Path(db_override) if db_override else DB_PATH
-    parquet_override = _clean(os.environ.get("PARQUET_DIR"))
-    parquet_dir = Path(parquet_override) if parquet_override else PARQUET_DIR
-    k10_config_revision, k10_config_binding_error = _positive_int(
-        os.environ.get("K10_CONFIG_REVISION"), name="K10_CONFIG_REVISION"
-    )
-    k10_execution_config_revision, k10_execution_config_binding_error = _positive_int(
-        os.environ.get("K10_EXECUTION_CONFIG_REVISION"), name="K10_EXECUTION_CONFIG_REVISION"
-    )
-    k10_collection_config_revision, k10_collection_config_binding_error = _positive_int(
-        os.environ.get("K10_COLLECTION_CONFIG_REVISION"), name="K10_COLLECTION_CONFIG_REVISION"
-    )
-
     return Settings(
-        tushare_token=_clean(os.environ.get("TUSHARE_TOKEN")),
-        k10_config_id=_clean(os.environ.get("K10_CONFIG_ID")),
-        k10_config_revision=k10_config_revision,
-        k10_config_binding_error=k10_config_binding_error,
-        k10_execution_config_id=_clean(os.environ.get("K10_EXECUTION_CONFIG_ID")),
-        k10_execution_config_revision=k10_execution_config_revision,
-        k10_execution_config_binding_error=k10_execution_config_binding_error,
-        k10_collection_config_id=_clean(os.environ.get("K10_COLLECTION_CONFIG_ID")),
-        k10_collection_config_revision=k10_collection_config_revision,
-        k10_collection_config_binding_error=k10_collection_config_binding_error,
-        db_path=db_path,
-        parquet_dir=parquet_dir,
         api_token=_clean(os.environ.get("API_TOKEN")),
         apns_key_id=_clean(os.environ.get("APNS_KEY_ID")),
         apns_team_id=_clean(os.environ.get("APNS_TEAM_ID")),
@@ -144,25 +101,18 @@ settings = _load_settings()
 
 
 def reload_settings() -> Settings:
-    """重新从环境变量加载(测试 / .env 热改后用)。刷新模块级 `settings` 名字。"""
+    """重新从当前环境变量加载，并刷新模块级 `settings`。"""
     global settings
     settings = _load_settings()
     return settings
 
 
-def ensure_data_dirs() -> None:
-    """确保 `data/parquet/` 与 `data/neckline.db` 所在目录存在。"""
-    settings.parquet_dir.mkdir(parents=True, exist_ok=True)
-    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-
 __all__ = [
+    "KNOWN_ENV_KEYS",
     "Settings",
     "settings",
+    "load_env_file",
     "reload_settings",
-    "ensure_data_dirs",
     "PROJECT_ROOT",
-    "DATA_DIR",
-    "PARQUET_DIR",
-    "DB_PATH",
+    "ENV_PATH",
 ]

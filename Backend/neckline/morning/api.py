@@ -64,7 +64,8 @@ def _open(path_provider: Callable[[], Path | None]):
 
 
 def create_router(*, require_token_dependency: Callable[..., Any],
-                  db_path_provider: Callable[[], Path | None] = v4_db_path) -> APIRouter:
+                  db_path_provider: Callable[[], Path | None] = v4_db_path,
+                  version: str | None = None, release_set: str | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/v4")
 
     @router.get("/health")
@@ -79,9 +80,14 @@ def create_router(*, require_token_dependency: Callable[..., Any],
                 latest = {"tradeDate": report["trade_date"], "status": report["status"]} if report else None
             except db.NotReady:
                 state = "db_not_ready"
-        return {"db": state, "latestReport": latest,
+        body = {"db": state, "latestReport": latest,
                 "readPage": bool((os.environ.get("NECKLINE_READ_KEY") or "").strip()),
                 "modelKey": bool((os.environ.get("DEEPSEEK_API_KEY") or "").strip())}
+        if version is not None:
+            body["version"] = version
+        if release_set is not None:
+            body["releaseSet"] = release_set
+        return body
 
     auth = [Depends(require_token_dependency)]
 
