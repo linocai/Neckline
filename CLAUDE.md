@@ -1,6 +1,6 @@
 # Neckline 项目规则
 
-自用创业板消息筛选器 V4（4.0.0：后端晨报已上线，App 与 MCP 改造中；v3 选股器已于 2026-10-14 退役）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT/Claude 用的只读 MCP 服务。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
+自用创业板消息筛选器 V4（4.0.0：后端晨报与 App 已上线，MCP 待做；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT/Claude 用的只读 MCP 服务。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
 
 ## 边界
 
