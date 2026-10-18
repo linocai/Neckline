@@ -43,6 +43,7 @@ def test_health_is_public_and_names_the_release(client):
     assert body["releaseSet"] == RELEASE_SET
     assert body["db"] == "ready"
     assert body["latestReport"] is None
+    assert body["mcp"] is False and body["tushare"] is False and body["mairui"] is False
     assert TOKEN not in response.text
 
 

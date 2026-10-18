@@ -2,7 +2,8 @@
 生产验证的姿势(Bearer + `hmac.compare_digest` 恒定时间比对 + startup fail-fast)。
 
 单用户共享密钥:比对 `Authorization: Bearer <API_TOKEN>` 与 `.env` 的 `API_TOKEN`,
-用 `hmac.compare_digest`(恒定时间,防时序侧信道)。除 `/health` 外所有端点必过。
+用 `hmac.compare_digest`(恒定时间,防时序侧信道)。`/api/v4` 除 health 外走这套令牌。
+`/mcp` 用另一套 OAuth，不接受这枚 API_TOKEN。
 
 启动 fail-fast:`require_api_token_ready()` 校验 `API_TOKEN` 存在且 `len>=16`,在 app
 startup 调用——配置缺失则拒绝起服务(免裸奔)。

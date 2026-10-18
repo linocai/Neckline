@@ -280,6 +280,12 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
     state["path"] = None
     bodies["not-configured.json"] = take("GET", "/api/v4/reports/latest", 503, headers=auth)
 
+    health = json.loads(bodies["health.json"])
+    assert health["mcp"] is False and health["tushare"] is False and health["mairui"] is False
+    for key in ("mcp", "tushare", "mairui"):
+        health.pop(key)
+    bodies["health.json"] = json.dumps(health, ensure_ascii=False).encode()
+
     _assert_shapes(bodies)
     blob = b"\n".join(bodies.values()).decode()
     for secret in (FIXTURE_TOKEN, WRONG_TOKEN, DEVICE_TOKEN):

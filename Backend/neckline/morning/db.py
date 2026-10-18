@@ -339,6 +339,13 @@ def latest_report(conn: sqlite3.Connection) -> dict | None:
                                 "ORDER BY trade_date DESC LIMIT 1").fetchone())
 
 
+def latest_available_report(conn: sqlite3.Connection) -> dict | None:
+    """最新一份已经出完、能拿来对照个股的晨报。失败的那期不算。"""
+    return _report(conn.execute(
+        "SELECT * FROM reports WHERE status='available' AND content_json IS NOT NULL "
+        "ORDER BY trade_date DESC LIMIT 1").fetchone())
+
+
 def list_reports(conn: sqlite3.Connection, limit: int) -> list[dict]:
     rows = conn.execute("SELECT * FROM reports ORDER BY trade_date DESC LIMIT ?", (limit,)).fetchall()
     return [_report(r) for r in rows]

@@ -13,8 +13,13 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+from neckline.market.overview import overview
+from neckline.mcp.brief import BRIEF
 
 from . import db
 from .api import document_out, report_out, v4_db_path
@@ -41,7 +46,10 @@ main{max-width:720px;margin:0 auto;padding:16px}h1{font-size:22px;margin:4px 0}h
 ol{padding:0;list-style:none;margin:0}li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0}
 .co{font-weight:600}.tag{color:var(--muted);font-size:13px;margin-left:6px}.hl{margin:4px 0}.why{color:var(--muted);font-size:14px}
 .src{font-size:13px;margin-top:6px}a{color:var(--accent);text-decoration:none}details{margin:16px 0}summary{cursor:pointer;color:var(--muted)}
-pre{white-space:pre-wrap;word-break:break-word;font:inherit}footer{margin:28px 0 8px;font-size:13px;color:var(--muted)}
+pre{white-space:pre-wrap;word-break:break-word;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+form{margin:12px 0}input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+button{background:var(--accent);color:white;border:0}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);font-weight:400}
+footer{margin:28px 0 8px;font-size:13px;color:var(--muted)}
 """
 
 
@@ -73,15 +81,112 @@ def _entries(base: str, entries: list[dict]) -> str:
     return "<ol>" + "".join(items) + "</ol>"
 
 
+def _intro(base: str) -> str:
+    action = escape(base + "/stock", quote=True)
+    return ("<h2>简要提示词</h2>"
+            f"<pre>{escape(BRIEF)}</pre>"
+            "<h2>使用说明</h2>"
+            "<p>单票页在本页地址后面加 /stock/代码或简称，例如 /stock/300002 或 /stock/神州泰岳。"
+            "也可以在下面直接查。</p>"
+            f"<form method=\"get\" action=\"{action}\"><label for=\"q\">代码或简称</label> "
+            "<input id=\"q\" name=\"q\" maxlength=\"80\" required> "
+            "<button type=\"submit\">查看</button></form>")
+
+
+def _cell(value, places: int = 2) -> str:
+    if value is None or isinstance(value, bool):
+        return "—"
+    if isinstance(value, float):
+        return escape(f"{value:.{places}f}")
+    return escape(str(value))
+
+
+def _render_stock(base: str, data: dict) -> HTMLResponse:
+    back = f"<p><a href=\"{escape(base, quote=True)}\">返回晨报</a></p>"
+    if data.get("inPool") is False:
+        return _page("不在 K10 股票池", f"<h1>不在 K10 股票池</h1><p>{escape(data['message'])}</p>{back}")
+    if "candidates" in data:
+        items = "".join(
+            f"<li><a href=\"{escape(base, quote=True)}/stock/{escape(item['code'], quote=True)}\">"
+            f"{escape(item['name'])} {escape(item['code'])}</a></li>"
+            for item in data["candidates"])
+        return _page("请指定代码", f"<h1>请指定代码</h1><p>{escape(data['message'])}</p><ul>{items}</ul>{back}")
+    daily = data.get("daily") or {}
+    intra = data.get("intraday") or {}
+    quote = intra.get("quote") or {}
+    series = intra.get("series") or {}
+    morning = data.get("morningReport")
+    valuation = daily.get("valuation") or {}
+    flow = daily.get("moneyflow") or {}
+    window = daily.get("window20") or {}
+    averages = daily.get("averages") or {}
+    parts = [f"<h1>{escape(data['name'])} {escape(data['code'])}</h1>",
+             f"<p class=\"meta\">生成 {escape(str(data.get('generatedAt') or ''))}</p>"]
+    if data.get("gaps"):
+        parts.append("<div class=\"gap\">" + "<br>".join(escape(item) for item in data["gaps"]) + "</div>")
+    if morning:
+        parts.append("<h2>晨报</h2><p>"
+                     f"{escape(str(morning.get('tradeDate') or ''))} 第 {escape(str(morning.get('rank') or ''))} 条："
+                     f"{escape(morning.get('headline') or '')}</p>"
+                     f"<p class=\"why\">{escape(morning.get('reason') or '')}</p>")
+    else:
+        parts.append("<h2>晨报</h2><p>最新可用晨报的正式名单里没有它。</p>")
+    parts.append("<h2>收盘后</h2>")
+    if not daily:
+        parts.append("<p>没有收盘数据。</p>")
+    else:
+        ma = []
+        for width in (5, 10, 20):
+            item = averages.get(f"ma{width}")
+            ma.append(f"{width}日 —" if not item else f"{width}日 {_cell(item.get('value'), 4)}（{escape(item.get('position') or '')}）")
+        parts.append(
+            f"<p class=\"meta\">交易日 {escape(str(daily.get('tradeDate') or ''))}｜来源 TuShare｜"
+            f"{escape(daily.get('adjustment') or '不复权')}</p>"
+            f"<p>收盘 {_cell(daily.get('close'), 4)}｜涨跌幅 {_cell(daily.get('changePercent'))}%"
+            f"｜成交额 {_cell(daily.get('turnoverYi'), 4)} 亿元｜换手率 {_cell(daily.get('turnoverRate'))}%</p>"
+            f"<p>近20日：累计涨跌幅 {_cell(window.get('changePercent'))}%｜日均成交额 {_cell(window.get('averageTurnoverYi'), 4)} 亿元"
+            f"｜日均振幅 {_cell(window.get('averageAmplitudePercent'))}%"
+            f"{'' if not window.get('note') else '｜' + escape(window['note'])}</p>"
+            f"<p>收盘价相对均线：{'｜'.join(ma)}"
+            f"{'' if not daily.get('averageNote') else '｜' + escape(daily['averageNote'])}</p>"
+            f"<p class=\"meta\">市值所属交易日 {escape(str(valuation.get('tradeDate') or '—'))}"
+            f"{'' if not valuation.get('note') else '｜' + escape(valuation['note'])}</p>"
+            f"<p>总市值 {_cell(valuation.get('totalMvYi'), 4)} 亿元｜流通市值 {_cell(valuation.get('circMvYi'), 4)} 亿元"
+            f"｜市盈率TTM {_cell(valuation.get('peTtm'))}｜市净率 {_cell(valuation.get('pb'))}</p>"
+            f"<p>资金净流入 {_cell(flow.get('netInflowYi'), 4)} 亿元"
+            f"（{escape(flow.get('basis') or 'TuShare moneyflow 净流入额')}，交易日 {escape(str(flow.get('tradeDate') or '—'))}）"
+            f"{'' if not flow.get('note') else '｜' + escape(flow['note'])}</p>")
+    parts.append("<h2>盘中</h2>")
+    if not intra:
+        parts.append("<p>没有盘中数据。</p>")
+    else:
+        parts.append(f"<p class=\"meta\">分时交易日 {escape(str(intra.get('sessionDate') or ''))}</p>")
+        if quote:
+            parts.append(
+                f"<p>最新 {_cell(quote.get('latestPrice'), 4)}｜昨收 {_cell(quote.get('previousClose'), 4)}"
+                f"｜涨跌幅 {_cell(quote.get('changePercent'))}%｜成交额 {_cell(quote.get('turnoverYi'), 4)} 亿元"
+                f"｜换手率 {_cell(quote.get('turnoverRate'))}%｜数据时间 {escape(str(quote.get('asOf') or '—'))}"
+                f"{'' if not quote.get('note') else '｜' + escape(quote['note'])}</p>")
+        if series:
+            rows = "".join("<tr>" + "".join(f"<td>{escape(str(cell))}</td>" for cell in row) + "</tr>"
+                           for row in series.get("rows") or [])
+            head = "".join(f"<th>{escape(str(name))}</th>" for name in series.get("columns") or [])
+            parts.append(f"<p class=\"meta\">{escape(series.get('note') or '')}｜数据时间 {escape(str(series.get('asOf') or '—'))}</p>"
+                         f"<table><tr>{head}</tr>{rows}</table>")
+    parts.append(back)
+    return _page(f"{data['name']} {data['code']}", "".join(parts))
+
+
 def render_report(base: str, report: dict) -> HTMLResponse:
     title = f"晨报 {_day_label(report['trade_date'])}"
+    intro = _intro(base)
     if report["status"] == "failed":
-        body = (f"<h1>{escape(title)}</h1><p class=\"gap\">晨报出问题了：{escape(report['failure_reason'] or '原因未记录')}</p>")
+        body = intro + (f"<h1>{escape(title)}</h1><p class=\"gap\">晨报出问题了：{escape(report['failure_reason'] or '原因未记录')}</p>")
     elif report["status"] != "available":
-        body = f"<h1>{escape(title)}</h1><p class=\"meta\">正在出报，稍后刷新。</p>"
+        body = intro + f"<h1>{escape(title)}</h1><p class=\"meta\">正在出报，稍后刷新。</p>"
     else:
         c = report["content"]
-        body = (f"<h1>{escape(title)}</h1><div class=\"meta\">窗口 {escape(c['window']['start'][5:16].replace('T', ' '))} → "
+        body = intro + (f"<h1>{escape(title)}</h1><div class=\"meta\">窗口 {escape(c['window']['start'][5:16].replace('T', ' '))} → "
                 f"{escape(c['window']['end'][5:16].replace('T', ' '))}｜生成 {escape(c['generatedAt'][11:16])}｜"
                 f"规则 {escape(c['configVersion'])}</div>")
         if c.get("gapSummary"):
@@ -127,10 +232,12 @@ def create_router(*, db_path_provider: Callable[[], Path | None] = v4_db_path,
             report = _report(path, None)
         except HTTPException:
             if format == "json":
-                return JSONResponse({"status": "no_report"}, headers=_HEADERS)
-            return _page("晨报", "<h1>晨报</h1><p>还没有晨报。每个交易日早上 08:00 截止后出报，出来就会显示在这里。</p>")
+                return JSONResponse({"status": "no_report", "brief": BRIEF}, headers=_HEADERS)
+            return _page("晨报", _intro(f"/read/{key}") + "<h1>晨报</h1><p>还没有晨报。每个交易日早上 08:00 截止后出报，出来就会显示在这里。</p>")
         if format == "json":
-            return JSONResponse(report_out(report), headers=_HEADERS)
+            payload = report_out(report)
+            payload["brief"] = BRIEF
+            return JSONResponse(payload, headers=_HEADERS)
         return render_report(f"/read/{key}", report)
 
     @router.get("/read/{key}/day/{trade_date}")
@@ -175,5 +282,26 @@ def create_router(*, db_path_provider: Callable[[], Path | None] = v4_db_path,
                 f"{escape((out['publishedAt'] or '')[:16].replace('T', ' '))}</div>{original}<pre>{escape(out['text'])}</pre>"
                 f"<footer><a href=\"/read/{key}\">返回晨报</a></footer>")
         return _page(out["title"] or "原文", body)
+
+    @router.get("/read/{key}/stock")
+    def stock_query(key: str, q: str | None = None, format: str | None = None):
+        guard(key)
+        text = (q or "").strip()
+        if not text:
+            return _page("查股票", _intro(f"/read/{key}") + "<p>输入代码或简称。</p>")
+        target = f"/read/{key}/stock/{quote(text, safe='')}"
+        if format:
+            target += "?format=" + quote(format, safe="")
+        return RedirectResponse(target, status_code=303, headers=_HEADERS)
+
+    @router.get("/read/{key}/stock/{symbol}")
+    async def stock_page(key: str, symbol: str, format: str | None = None):
+        guard(key)
+        data = await overview(symbol)
+        if format == "json":
+            payload = dict(data)
+            payload["brief"] = BRIEF
+            return JSONResponse(payload, headers=_HEADERS)
+        return _render_stock(f"/read/{key}", data)
 
     return router

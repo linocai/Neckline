@@ -5,17 +5,21 @@
 python-dotenv==1.2.2
 pytest==9.1.1
 httpx==0.28.1
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-pydantic==2.10.6
-PyJWT==2.9.0                  # APNs token-based JWT（ES256）
+fastapi==0.143.3
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+PyJWT==2.14.0                  # APNs ES256，也供 MCP 的 pyjwt[crypto]
 cryptography==44.0.0          # PyJWT ES256 的 EC 后端 + 单测临时 EC key
 h2==4.1.0                     # httpx HTTP/2 后端（APNs）
 PyYAML==6.0.3                 # 版本治理测试读 project.yml；uvicorn[standard] 也依赖它
+mcp==2.2.0                    # 只读 MCP。2.2 里的 FastMCP 改名为 MCPServer
+python-multipart==0.0.32      # OAuth 登录页的表单
 
 # —— 传递依赖（pip freeze 钉死，保证可复现）——
+annotated-doc==0.0.5          # fastapi 0.143 直接依赖
 annotated-types==0.7.0
 anyio==4.14.2
+attrs==26.1.0                 # jsonschema
 certifi==2026.6.17
 cffi==2.1.0
 charset-normalizer==3.4.9
@@ -23,16 +27,27 @@ click==8.4.2
 h11==0.16.0
 hpack==4.2.0
 httpcore==1.0.9
+httpcore2==2.13.1             # mcp 使用的 httpx2
 httptools==0.8.0
+httpx2==2.13.1                # mcp 的 HTTP 客户端
 hyperframe==6.1.0
 idna==3.18
 iniconfig==2.3.0
+jsonschema==4.26.0            # mcp 校验工具参数
+jsonschema-specifications==2025.9.1
+mcp-types==2.2.0              # mcp 的协议类型
+opentelemetry-api==1.45.1     # fastapi 0.143 与 mcp 都直接依赖
 packaging==26.2
 pluggy==1.6.0
 pycparser==3.0
-pydantic_core==2.27.2
+pydantic_core==2.46.5
 Pygments==2.20.0              # pytest 输出着色，代码未直接 import；拿不准，保留
-starlette==0.41.3
+referencing==0.37.0           # jsonschema
+rpds-py==2026.9.1             # jsonschema
+sse-starlette==3.5.0          # mcp 的 HTTP 传输
+starlette==1.6.0
+truststore==0.10.5            # httpx2
+typing-inspection==0.4.4      # fastapi 0.143 直接依赖
 typing_extensions==4.16.0
 urllib3==2.7.0
 uvloop==0.22.1

@@ -5,7 +5,7 @@
 ## 边界
 
 - 研究、回测、策略实验在 `/Users/linotsai/Lino/whynotme`，生产代码永不 import 它。
-- 盘中行情用 `/Users/linotsai/Lino/KXMarketTool`（KX，HZ 云）的接口，Neckline 不另做行情；改 KX 时遵守 KX 自己的 AGENTS.md，它的主板池与盘中锁不能动。
+- 行情由 Neckline 自己取（2026-10-18 用户）：TuShare 用自己的 token；麦蕊借鉴 `/Users/linotsai/Lino/KXMarketTool`（KX，HZ 云）的取数代码另接。不 import KX、不共用 KX 的 MCP 工具，也不改 KX。
 - 根目录只放 `App/`、`Backend/`、`archive/`、`CLAUDE.md`、`PROJECT_PLAN.md`、`README.md`。
 - `archive/` 只是历史证据，不是规则来源；需要追溯时按文件名定位后窄读。
 - 退役的功能直接删除：生产者、消费者、路由、配置、测试、存量数据一起删，不留兼容层。

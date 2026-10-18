@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from neckline.mcp.brief import BRIEF
 from neckline.morning import db
 from neckline.morning.api import create_router as api_router
 from neckline.morning.collect import run_collection
@@ -480,6 +481,7 @@ def test_read_key_never_reaches_access_log():
         return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
                                  ("1.2.3.4:5", "GET", target, "1.1", 200), None)
     assert not HideReadKey().filter(record(f"/read/{READ_KEY}"))
+    assert not HideReadKey().filter(record(f"/read/{READ_KEY}/stock/300002"))
     assert HideReadKey().filter(record("/api/v4/reports/latest"))
     assert any(isinstance(f, HideReadKey) for f in logging.getLogger("uvicorn.access").filters)
 
@@ -503,7 +505,7 @@ def test_read_page_before_first_report(path, monkeypatch):
     app.include_router(web_router())
     client = TestClient(app)
     assert "还没有晨报" in client.get(f"/read/{READ_KEY}").text
-    assert client.get(f"/read/{READ_KEY}?format=json").json() == {"status": "no_report"}
+    assert client.get(f"/read/{READ_KEY}?format=json").json() == {"status": "no_report", "brief": BRIEF}
     monkeypatch.setenv("NECKLINE_READ_KEY", "short")
     assert client.get("/read/short").status_code == 404
 
@@ -531,11 +533,12 @@ def test_morning_report_end_to_end_api_web_and_single_push(path, monkeypatch):
     assert first_source["publishedAt"] == "2026-10-12T16:45+08:00"
     assert client.get(f"/api/v4/documents/{first_source['documentId']}").json()["text"].startswith("【海特生物")
     page = client.get(f"/read/{READ_KEY}")
-    assert page.status_code == 200 and "海特生物 300683" in page.text and page.headers["cache-control"] == "no-store"
+    assert page.status_code == 200 and "海特生物 300683" in page.text and "简要提示词" in page.text
+    assert page.headers["cache-control"] == "no-store"
     assert client.get(f"/read/{READ_KEY}?format=json").json()["content"] == latest["content"]
     assert client.get("/read/" + "x" * 32).status_code == 404
     assert client.get("/api/v4/health").json() == {"db": "ready", "latestReport": {"tradeDate": "2026-10-13", "status": "available"},
-                                                   "readPage": True, "modelKey": False}
+                                                   "readPage": True, "modelKey": False, "mcp": False, "tushare": False, "mairui": False}
 
 
 def _one_company_per_call() -> LoadedConfig:

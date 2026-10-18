@@ -10,6 +10,24 @@ _os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
 
 @pytest.fixture(autouse=True)
+def isolate_market_and_mcp(monkeypatch):
+    """行情和 MCP 凭据不从开发环境漏进测试。每个用例结束后关掉默认客户端。"""
+    for key in ("TUSHARE_TOKEN", "MAIRUI_LICENCE", "NECKLINE_PUBLIC_BASE",
+                "NECKLINE_MCP_PASSWORD_SALT", "NECKLINE_MCP_PASSWORD_HASH", "NECKLINE_MCP_AUTH_DB"):
+        monkeypatch.delenv(key, raising=False)
+    from neckline.market import services
+    from neckline.mcp.status import set_mcp_serving
+
+    set_mcp_serving(False)
+    services.use(None)
+    yield
+    set_mcp_serving(False)
+    services.use(None)
+    import asyncio
+    asyncio.run(services.close_default_services())
+
+
+@pytest.fixture(autouse=True)
 def deny_external_network(monkeypatch):
     """Offline acceptance: deny DNS and sockets except explicit loopback addresses."""
     import ipaddress
