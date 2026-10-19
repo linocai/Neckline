@@ -3,10 +3,17 @@
 import Foundation
 import Observation
 
+/// 顶层分区。iOS 是底部三个标签；macOS 侧栏只有 K10 和 KX。
 enum MorningTab: Hashable {
-    case report
-    case history
+    case k10
+    case kx
     case settings
+}
+
+/// iOS 的 K10 里在「最新」和「历史」之间切换。
+enum K10Section: Hashable {
+    case latest
+    case history
 }
 
 enum MorningSlot: Hashable {
@@ -82,7 +89,8 @@ final class MorningModel {
     private var registrationFlight: (epoch: Int, token: String)?
     private var loadCancelRetries: [MorningSlot: Int] = [:]
 
-    var tab: MorningTab = .report
+    var tab: MorningTab = .k10
+    var k10Section: K10Section = .latest
     var focus: MorningSlot = .latest
     private(set) var history: [MorningHistoryItem] = []
     private(set) var historyError: MorningClientError?
@@ -252,7 +260,8 @@ final class MorningModel {
     }
 
     func handleNotificationTap() async {
-        tab = .report
+        tab = .k10
+        k10Section = .latest
         focus = .latest
         reportStackReset += 1
         await reload(.latest)

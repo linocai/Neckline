@@ -8,21 +8,28 @@ import UIKit
 extension Color {
     /// 浅色 / 暗色各一套，随系统外观切换。
     init(light lightHex: UInt, dark darkHex: UInt, alpha: Double = 1) {
+        self.init(light: lightHex, lightAlpha: alpha, dark: darkHex, darkAlpha: alpha)
+    }
+
+    /// 浅色 / 暗色各一套，两套的透明度可以不同。
+    init(light lightHex: UInt, lightAlpha: Double, dark darkHex: UInt, darkAlpha: Double) {
         #if os(macOS)
         self.init(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
-            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? darkHex : lightHex
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let hex = isDark ? darkHex : lightHex
             return NSColor(srgbRed: Self.channel(hex, shift: 16),
                             green: Self.channel(hex, shift: 8),
                             blue: Self.channel(hex, shift: 0),
-                            alpha: alpha)
+                            alpha: isDark ? darkAlpha : lightAlpha)
         }))
         #else
         self.init(uiColor: UIColor { traits in
-            let hex = traits.userInterfaceStyle == .dark ? darkHex : lightHex
+            let isDark = traits.userInterfaceStyle == .dark
+            let hex = isDark ? darkHex : lightHex
             return UIColor(red: Self.channel(hex, shift: 16),
                             green: Self.channel(hex, shift: 8),
                             blue: Self.channel(hex, shift: 0),
-                            alpha: alpha)
+                            alpha: isDark ? darkAlpha : lightAlpha)
         })
         #endif
     }
@@ -44,6 +51,41 @@ enum NKMorning {
     static let problem = Color(light: 0xD70015, dark: 0xFF453A)
     static let selection = Color(light: 0x0754E9, dark: 0x4C8DFF, alpha: 0.12)
     static let tagFill = Color(light: 0xF2F2F7, dark: 0x3A3A3C)
+}
+
+/// KX 看板。涨红跌绿平灰是 A 股惯例；今日、昨日推荐的底色和竖条用晨报的强调色加透明度。取值与样图一致。
+enum NKKX {
+    static let up = Color(light: 0xE0312B, dark: 0xFF5A4E)
+    static let down = Color(light: 0x139A5B, dark: 0x30C67C)
+    static let flat = Color(light: 0x8E8E93, dark: 0x8E8E93)
+    static let todayFill = Color(light: 0x0754E9, lightAlpha: 0.10, dark: 0x4C8DFF, darkAlpha: 0.20)
+    static let ydayFill = Color(light: 0x0754E9, lightAlpha: 0.04, dark: 0x4C8DFF, darkAlpha: 0.08)
+    static let bar = NKMorning.accent
+    static let ydayBarOpacity = 0.35
+    /// 涨跌幅色块上的字。
+    static let pillText = Color.white
+    /// 分段控件选中项的投影。
+    static let segmentShadow = Color.black.opacity(0.12)
+}
+
+/// KX 看板的字号。看板一行要放下一整组数字，磅值固定，不随动态字体放大。
+enum NKKXFont {
+    static let title = Font.system(size: 28, weight: .semibold)
+    static let meta = Font.system(size: 12)
+    static let segment = Font.system(size: 13)
+    static let segmentOn = Font.system(size: 13, weight: .semibold)
+    static let columnHead = Font.system(size: 11)
+    static let section = Font.system(size: 12, weight: .semibold)
+    static let sectionCount = Font.system(size: 12)
+    static let name = Font.system(size: 15, weight: .medium)
+    static let nameToday = Font.system(size: 15, weight: .bold)
+    static let code = Font.system(size: 11).monospacedDigit()
+    static let cell = Font.system(size: 15).monospacedDigit()
+    static let cellBold = Font.system(size: 15, weight: .bold).monospacedDigit()
+    static let pill = Font.system(size: 13.5, weight: .semibold).monospacedDigit()
+    static let ratio = Font.system(size: 12).monospacedDigit()
+    static let rangeNote = Font.system(size: 10).monospacedDigit()
+    static let foot = Font.system(size: 10.5)
 }
 
 /// 多行文字的字号规格。只在这里写磅值、相对的文本样式和字重。

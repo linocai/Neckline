@@ -174,14 +174,16 @@ final class MorningModelTests: XCTestCase {
 
         await model.reload(.latest)
         await model.open(.date("2026-10-16"))
-        model.tab = .history
+        model.tab = .kx
+        model.k10Section = .history
         fake.latestResult = .success(empty)
         let calls = fake.latestCalls
         let beforeReset = model.reportStackReset
         await model.handleNotificationTap()
 
         XCTAssertNotEqual(model.reportStackReset, beforeReset)
-        XCTAssertEqual(model.tab, .report)
+        XCTAssertEqual(model.tab, .k10)
+        XCTAssertEqual(model.k10Section, .latest)
         XCTAssertEqual(model.focus, .latest)
         XCTAssertEqual(fake.latestCalls, calls + 1)
         XCTAssertEqual(model.state(for: .latest), .empty(empty))
@@ -191,7 +193,8 @@ final class MorningModelTests: XCTestCase {
         let callsAfterFirst = fake.latestCalls
         await model.handleNotificationTap()
         XCTAssertNotEqual(model.reportStackReset, afterFirst)
-        XCTAssertEqual(model.tab, .report)
+        XCTAssertEqual(model.tab, .k10)
+        XCTAssertEqual(model.k10Section, .latest)
         XCTAssertEqual(model.focus, .latest)
         XCTAssertEqual(fake.latestCalls, callsAfterFirst + 1)
     }

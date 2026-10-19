@@ -12,6 +12,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
 @main struct NecklineApp: App {
     @StateObject private var config: AppConfig
     @State private var model: MorningModel
+    @State private var kx: KXBoardModel
     #if os(iOS)
     @UIApplicationDelegateAdaptor(MorningPush.self) private var push
     #endif
@@ -20,16 +21,19 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         let defaults = Self.sessionDefaults()
         let config = Self.makeConfig(defaults: defaults)
         let model = MorningModel(config: config, defaults: defaults)
+        let kx = KXBoardModel(config: config)
         #if DEBUG
         Self.applyQALaunchState(to: model)
+        Self.applyQALaunchState(to: kx)
         #endif
         _config = StateObject(wrappedValue: config)
         _model = State(initialValue: model)
+        _kx = State(initialValue: kx)
     }
 
     var body: some Scene {
         WindowGroup {
-            MorningRootView(model: model, config: config)
+            MorningRootView(model: model, kx: kx, config: config)
                 .qaAppearance()
                 .task { await launch() }
         }
@@ -106,8 +110,20 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
             model.focus = .date(date)
         }
         switch ProcessInfo.processInfo.environment["NK_QA_ROUTE"] {
-        case "history": model.tab = .history
+        case "history": model.k10Section = .history
+        case "kx": model.tab = .kx
         case "settings": model.tab = .settings
+        default: break
+        }
+    }
+
+    /// 截图进程直接落在指定的分组上，省得点分段控件。
+    private static func applyQALaunchState(to kx: KXBoardModel) {
+        guard ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil else { return }
+        switch ProcessInfo.processInfo.environment["NK_QA_KX_GROUP"] {
+        case "today": kx.group = .today
+        case "volume": kx.group = .volume
+        case "trend": kx.group = .trend
         default: break
         }
     }
@@ -129,7 +145,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
               path.hasSuffix(".png") else { return }
         await model.reload(.latest)
         await model.reloadHistory()
-        let root = MorningRootView(model: model, config: config)
+        let root = MorningRootView(model: model, kx: kx, config: config)
             .qaAppearance()
             .frame(width: 1180, height: 760)
         let view = NSHostingView(rootView: root)

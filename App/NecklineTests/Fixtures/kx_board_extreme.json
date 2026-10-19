@@ -1,0 +1,202 @@
+{
+ "generatedAt": "2026-10-20T10:31:07+08:00",
+ "pool": {
+  "version": "kx-20261017",
+  "count": 4,
+  "checkedAt": "2026-10-20T10:31:07+08:00",
+  "stale": false,
+  "reason": null
+ },
+ "session": {
+  "tradeDate": "2026-10-20",
+  "inSession": true,
+  "refreshSeconds": 60,
+  "quoteTime": "2026-10-20T10:29:58+08:00"
+ },
+ "stats": {
+  "asOf": "2026-10-19"
+ },
+ "picks": {
+  "referenceDate": "2026-10-20",
+  "lastPickAt": "2026-10-20T10:20:00+08:00"
+ },
+ "gaps": [],
+ "rows": [
+  {
+   "code": "300001",
+   "name": "平潭发展",
+   "industry": "行业1",
+   "highlight": "today",
+   "lastPickedAt": "2026-10-20T10:20:00+08:00",
+   "quoteStatus": "ok",
+   "price": 1234.56,
+   "changePercent": 20.0,
+   "changeAmount": 205.76,
+   "open": 1100.0,
+   "high": 1234.56,
+   "low": 1030.0,
+   "previousClose": 1028.8,
+   "amplitudePercent": 99.99,
+   "turnoverRatePercent": 99.99,
+   "turnoverYi": 123.4,
+   "volumeLots": 12340000.0,
+   "openChangePercent": 20.0,
+   "rangePosition": 0.5,
+   "pullbackFromHighPercent": -12.3,
+   "quoteTime": "2026-10-20T10:29:58+08:00",
+   "change5dPercent": -12.3,
+   "change20dPercent": 123.4,
+   "avgTurnover20Yi": 99.9,
+   "volumeRatio": 12.3,
+   "totalMvYi": 12345.0,
+   "circMvYi": 12345.0,
+   "averages": {
+    "ma5": {
+     "value": 1180.0,
+     "position": "above"
+    },
+    "ma10": {
+     "value": 1150.0,
+     "position": "below"
+    },
+    "ma20": {
+     "value": 1100.0,
+     "position": "flat"
+    }
+   },
+   "note": null
+  },
+  {
+   "code": "300002",
+   "name": "浦发银行",
+   "industry": "行业2",
+   "highlight": "faded",
+   "lastPickedAt": "2026-10-19T14:20:00+08:00",
+   "quoteStatus": "ok",
+   "price": 1234.56,
+   "changePercent": -10.0,
+   "changeAmount": -114.31,
+   "open": 1100.0,
+   "high": 1234.56,
+   "low": 1030.0,
+   "previousClose": 1028.8,
+   "amplitudePercent": 99.99,
+   "turnoverRatePercent": 99.99,
+   "turnoverYi": 123.4,
+   "volumeLots": 12340000.0,
+   "openChangePercent": -10.0,
+   "rangePosition": 0.5,
+   "pullbackFromHighPercent": -12.3,
+   "quoteTime": "2026-10-20T10:29:58+08:00",
+   "change5dPercent": 12.3,
+   "change20dPercent": -99.9,
+   "avgTurnover20Yi": 99.9,
+   "volumeRatio": 12.3,
+   "totalMvYi": 12345.0,
+   "circMvYi": 12345.0,
+   "averages": {
+    "ma5": {
+     "value": 1180.0,
+     "position": "above"
+    },
+    "ma10": {
+     "value": 1150.0,
+     "position": "below"
+    },
+    "ma20": {
+     "value": 1100.0,
+     "position": "flat"
+    }
+   },
+   "note": null
+  },
+  {
+   "code": "300003",
+   "name": "ST平潭发",
+   "industry": "行业3",
+   "highlight": "normal",
+   "lastPickedAt": null,
+   "quoteStatus": "ok",
+   "price": 987.65,
+   "changePercent": -10.0,
+   "changeAmount": 205.76,
+   "open": 1100.0,
+   "high": 1234.56,
+   "low": 1030.0,
+   "previousClose": 1028.8,
+   "amplitudePercent": 99.99,
+   "turnoverRatePercent": 99.99,
+   "turnoverYi": 123.4,
+   "volumeLots": 12340000.0,
+   "openChangePercent": -9.99,
+   "rangePosition": 0.5,
+   "pullbackFromHighPercent": -20.0,
+   "quoteTime": "2026-10-20T10:29:58+08:00",
+   "change5dPercent": -12.3,
+   "change20dPercent": -99.9,
+   "avgTurnover20Yi": 99.9,
+   "volumeRatio": 12.3,
+   "totalMvYi": 9999.0,
+   "circMvYi": 9999.0,
+   "averages": {
+    "ma5": {
+     "value": 1180.0,
+     "position": "above"
+    },
+    "ma10": {
+     "value": 1150.0,
+     "position": "below"
+    },
+    "ma20": {
+     "value": 1100.0,
+     "position": "flat"
+    }
+   },
+   "note": null
+  },
+  {
+   "code": "300004",
+   "name": "平潭发展",
+   "industry": "行业1",
+   "highlight": "normal",
+   "lastPickedAt": null,
+   "quoteStatus": "ok",
+   "price": 1234.56,
+   "changePercent": 20.0,
+   "changeAmount": 205.76,
+   "open": 1100.0,
+   "high": 1234.56,
+   "low": 1030.0,
+   "previousClose": 1028.8,
+   "amplitudePercent": 99.99,
+   "turnoverRatePercent": 99.99,
+   "turnoverYi": 123.4,
+   "volumeLots": 12340000.0,
+   "openChangePercent": 20.0,
+   "rangePosition": 0.5,
+   "pullbackFromHighPercent": -12.3,
+   "quoteTime": "2026-10-20T10:29:58+08:00",
+   "change5dPercent": -12.3,
+   "change20dPercent": 123.4,
+   "avgTurnover20Yi": 99.9,
+   "volumeRatio": 12.3,
+   "totalMvYi": 12345.0,
+   "circMvYi": 12345.0,
+   "averages": {
+    "ma5": {
+     "value": 1180.0,
+     "position": "above"
+    },
+    "ma10": {
+     "value": 1150.0,
+     "position": "below"
+    },
+    "ma20": {
+     "value": 1100.0,
+     "position": "flat"
+    }
+   },
+   "note": null
+  }
+ ]
+}

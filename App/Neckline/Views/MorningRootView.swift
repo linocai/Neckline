@@ -1,4 +1,5 @@
-// 晨报根视图。iOS 三个标签；macOS 两栏，设置放在系统设置窗口。
+// 根视图。iOS 底部三个标签：K10、KX、设置，K10 里再分「最新」和「历史」；
+// macOS 侧栏分 K10 和 KX，K10 保持两栏，设置放在系统设置窗口。
 
 import SwiftUI
 #if DEBUG && os(macOS)
@@ -7,28 +8,44 @@ import AppKit
 
 struct MorningRootView: View {
     @Bindable var model: MorningModel
+    @Bindable var kx: KXBoardModel
     @ObservedObject var config: AppConfig
-    #if os(iOS)
     @Environment(\.scenePhase) private var scenePhase
-    #endif
     #if DEBUG
     @State private var qaPath = NavigationPath()
-    @State private var qaHistoryPath = NavigationPath()
     @State private var qaSettingsOpened = false
     #endif
 
     var body: some View {
         shell
             .tint(NKMorning.accent)
-            .onChange(of: config.apiToken) { _, _ in model.connectionInputsChanged() }
-            .onChange(of: config.baseURLOverride) { _, _ in model.connectionInputsChanged() }
-            .onChange(of: config.environment) { _, _ in Task { await model.handleConnectionChange() } }
-            #if os(iOS)
+            .onChange(of: config.apiToken) { _, _ in
+                model.connectionInputsChanged()
+                kx.connectionInputsChanged()
+            }
+            .onChange(of: config.baseURLOverride) { _, _ in
+                model.connectionInputsChanged()
+                kx.connectionInputsChanged()
+            }
+            .onChange(of: config.environment) { _, _ in
+                Task {
+                    await model.handleConnectionChange()
+                    await kx.handleConnectionChange()
+                }
+            }
+            // KX 只在页面在前台、App 处于活跃时自动续取；切到别的标签、进入后台或锁屏就停。
+            .onChange(of: model.tab) { _, tab in kx.setVisible(tab == .kx) }
             .onChange(of: scenePhase) { _, phase in
+                kx.setActive(phase == .active)
+                #if os(iOS)
                 guard phase == .active else { return }
                 Task { await model.retryFailedDeviceRegistration() }
+                #endif
             }
-            #endif
+            .onAppear {
+                kx.setActive(scenePhase == .active)
+                kx.setVisible(model.tab == .kx)
+            }
             #if DEBUG
             .environment(\.nkQAReviewOpen, qaRoute == "review" || qaRoute == "review-detail")
             .environment(\.nkQAScrollBottom, qaRoute == "bottom")
@@ -44,17 +61,17 @@ struct MorningRootView: View {
     @ViewBuilder private var shell: some View {
         #if os(macOS)
         NavigationSplitView {
-            ReportView(slot: model.focus, model: model, showsDateMenu: true)
-                .navigationSplitViewColumnWidth(min: 360, ideal: 440, max: 640)
-        } detail: {
-            #if DEBUG
-            NavigationStack(path: $qaPath) {
-                detail
-                    .navigationDestination(for: QANav.self) { qaDestination($0) }
+            List(selection: sidebarSelection) {
+                Label("K10", systemImage: "sun.max").tag(MorningTab.k10)
+                Label("KX", systemImage: "tablecells").tag(MorningTab.kx)
             }
-            #else
-            NavigationStack { detail }
-            #endif
+            .navigationSplitViewColumnWidth(min: 140, ideal: 160, max: 220)
+        } detail: {
+            if model.tab == .kx {
+                KXBoardTable(kx: kx, openSettings: { MorningChrome.openSettings(model) })
+            } else {
+                k10Panes
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
@@ -66,8 +83,12 @@ struct MorningRootView: View {
                 .help("设置")
                 Button {
                     Task {
-                        await model.reload(model.focus)
-                        await model.reloadHistory()
+                        if model.tab == .kx {
+                            await kx.refresh()
+                        } else {
+                            await model.reload(model.focus)
+                            await model.reloadHistory()
+                        }
                     }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -78,24 +99,24 @@ struct MorningRootView: View {
         }
         #else
         TabView(selection: $model.tab) {
-            reportTab
-            historyTab
+            k10Tab
+            kxTab
             settingsTab
         }
         #endif
     }
 
     #if os(iOS)
-    private var reportTab: some View {
-        reportStack
-            .tabItem { Label("晨报", systemImage: "sun.horizon") }
-            .tag(MorningTab.report)
+    private var k10Tab: some View {
+        k10Stack
+            .tabItem { Label("K10", systemImage: "sun.max") }
+            .tag(MorningTab.k10)
     }
 
-    private var historyTab: some View {
-        historyStack
-            .tabItem { Label("历史", systemImage: "calendar") }
-            .tag(MorningTab.history)
+    private var kxTab: some View {
+        KXBoardView(kx: kx, openSettings: { MorningChrome.openSettings(model) })
+            .tabItem { Label("KX", systemImage: "tablecells") }
+            .tag(MorningTab.kx)
     }
 
     private var settingsTab: some View {
@@ -107,33 +128,71 @@ struct MorningRootView: View {
         .tag(MorningTab.settings)
     }
 
-    @ViewBuilder private var reportStack: some View {
+    /// K10 一个导航栈：根页在「最新」和「历史」之间切换，点进去的详情和历史里的某一期都压在这个栈上。
+    @ViewBuilder private var k10Stack: some View {
         #if DEBUG
         NavigationStack(path: $qaPath) {
-            ReportView(slot: .latest, model: model)
+            k10Root
                 .navigationDestination(for: QANav.self) { qaDestination($0) }
+                .navigationDestination(for: QADate.self) { date in
+                    ReportView(slot: .date(date.tradeDate), model: model)
+                }
         }
         .id(model.reportStackReset)
         #else
         NavigationStack {
-            ReportView(slot: .latest, model: model)
+            k10Root
         }
         .id(model.reportStackReset)
         #endif
     }
 
-    @ViewBuilder private var historyStack: some View {
+    private var k10Root: some View {
+        Group {
+            switch model.k10Section {
+            case .latest:
+                ReportView(slot: .latest, model: model)
+            case .history:
+                HistoryView(model: model)
+            }
+        }
+        .safeAreaBar(edge: .top) {
+            NKSegmentedControl(
+                options: [(value: K10Section.latest, title: "最新"), (value: K10Section.history, title: "历史")],
+                selection: $model.k10Section
+            )
+            .padding(.horizontal, NKMorningSpace.page)
+            .padding(.bottom, 8)
+        }
+    }
+    #endif
+
+    #if os(macOS)
+    private var sidebarSelection: Binding<MorningTab?> {
+        Binding(
+            get: { model.tab == .kx ? .kx : .k10 },
+            set: { if let tab = $0 { model.tab = tab } }
+        )
+    }
+
+    /// K10 保持两栏：左边是名单，右边是详情。
+    private var k10Panes: some View {
+        HSplitView {
+            ReportView(slot: model.focus, model: model, showsDateMenu: true)
+                .frame(minWidth: 360, idealWidth: 440, maxWidth: 640)
+            k10Detail
+                .frame(minWidth: 360, maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder private var k10Detail: some View {
         #if DEBUG
-        NavigationStack(path: $qaHistoryPath) {
-            HistoryView(model: model)
-                .navigationDestination(for: QADate.self) { date in
-                    ReportView(slot: .date(date.tradeDate), model: model)
-                }
+        NavigationStack(path: $qaPath) {
+            detail
+                .navigationDestination(for: QANav.self) { qaDestination($0) }
         }
         #else
-        NavigationStack {
-            HistoryView(model: model)
-        }
+        NavigationStack { detail }
         #endif
     }
     #endif
@@ -234,8 +293,12 @@ struct MorningRootView: View {
             selectFirstReviewEntry(slot)
             #endif
         case "history":
-            model.tab = .history
+            model.tab = .k10
+            model.k10Section = .history
             await model.reloadHistory()
+        case "kx":
+            model.tab = .kx
+            await kx.refresh()
         case "settings":
             model.tab = .settings
             await runConnectionCheck()
@@ -330,10 +393,11 @@ struct MorningRootView: View {
     #if os(iOS)
     private func openHistoryDate(_ tradeDate: String) async {
         await model.reload(.date(tradeDate))
-        model.tab = .history
+        model.tab = .k10
+        model.k10Section = .history
         try? await Task.sleep(nanoseconds: 350_000_000)
-        if qaHistoryPath.isEmpty {
-            qaHistoryPath.append(QADate(tradeDate: tradeDate))
+        if qaPath.isEmpty {
+            qaPath.append(QADate(tradeDate: tradeDate))
         }
         for _ in 0..<30 where !isSettled(.date(tradeDate)) {
             try? await Task.sleep(nanoseconds: 100_000_000)
