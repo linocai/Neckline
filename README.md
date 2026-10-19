@@ -1,6 +1,6 @@
 # Neckline
 
-自用创业板消息筛选器。**现状（2026-10-18）：现役 4.0.0 B114（App 仍是 B113）。每个交易日早上出一份晨报，窗口为上个交易日 15:00 → 当天 08:00，第一期在 10/19（周一）早上；iPhone 收推送，App（iOS 三标签：晨报、历史、设置；macOS 两栏加系统设置窗口）、只读网页、`/api/v4` 和只读 MCP 都读同一份名单。v3 已在 B113 删除，服务只提供 V4。** 计划与状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，V4 详细计划见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)，项目规则见 [CLAUDE.md](CLAUDE.md)。
+自用创业板消息筛选器。**现状（2026-10-19）：现役 4.0.1 B120（App 仍是 4.0.0 B113）。每个交易日早上出一份晨报，窗口为上个交易日 15:00 → 当天 08:00，10/19 起每个交易日出报；iPhone 收推送，App（iOS 三标签：晨报、历史、设置；macOS 两栏加系统设置窗口）、只读网页、`/api/v4` 和只读 MCP 都读同一份名单。v3 已在 B113 删除，服务只提供 V4。** 计划与状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，V4 详细计划见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)，项目规则见 [CLAUDE.md](CLAUDE.md)。
 
 ## 仍然有效的运维事实
 
