@@ -1,6 +1,6 @@
 # Neckline 项目规则
 
-自用创业板消息筛选器 V4（4.0.0：后端晨报与 App 已上线，MCP 待做；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT/Claude 用的只读 MCP 服务。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
+自用创业板消息筛选器 V4（4.0.0 已建成，2026-10-19 起维护；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT、Claude、Grok 用的只读 MCP 服务（与 API 同进程）。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
 
 ## 边界
 
@@ -37,7 +37,7 @@
   **全量全绿才能发布**，没有「历史失败」基线；一项失败就是一个待处理问题。开发中可先跑相关文件，发布前必须跑全量。
 - 测试只用临时库或显式只读快照，绝不回落到工作库。自定义 `--basetemp` 时父目录要先存在；不要用 `tmp_path_retention_policy=none`（pytest 9 下它不逐项清理，会占满磁盘）。
 - 名单链路的改动走真实入口验收：定时入口 → worker → 名单记录 → API/MCP，确定性 transport，业务时钟显式传入；中断与续跑要有注入回归，且不重复计费。跨端改动要用隔离库产出的真实 API 响应喂当前 Swift 模型解码。
-- MCP 的验收必须在 ChatGPT 和 Claude 的手机端与电脑端实际调用工具，服务器冒烟测试不能代替。
+- MCP 的验收必须在 ChatGPT、Claude、Grok 的手机端与电脑端实际调用工具，服务器冒烟测试不能代替。OAuth 回调只按精确地址放行；新客户端被拒时日志会记下它的回调（`registration rejected, redirect_uris=…`）。
 - 改了 `App/` 下任何代码或资源，三条构建都要跑（在 `App/` 下）：
   ```bash
   xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' build
