@@ -1,8 +1,9 @@
-"""单用户连接口令。动态注册只放行 ChatGPT 和 Claude 的回调。"""
+"""单用户连接口令。动态注册只放行 ChatGPT、Claude 和 Grok 的回调。"""
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 from html import escape
 import re
 import secrets
@@ -20,6 +21,7 @@ from neckline.mcp.settings import McpSettings
 from neckline.mcp.state import Store
 
 SCOPE = "neckline:read"
+_LOG = logging.getLogger("neckline.mcp")
 _CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")
 _CONNECTOR = re.compile(r"/connector/oauth/[A-Za-z0-9_-]+")
 
@@ -34,11 +36,18 @@ def _same(left: str, right: str) -> bool:
     return hmac.compare_digest(left.encode(), right.encode())
 
 
+# Grok 连接器的回调：xAI 没有公开文档，按多家 MCP 服务实测报告只放行这两个精确地址
+# （现用的带结尾斜杠；旧路径一并放行）。grok.com 的其他路径、子域名、端口仍拒绝。
+_GROK_CALLBACKS = {"/connectors-oauth-exchange-code/", "/connectors/oauth/callback"}
+
+
 def allowed_redirect(value) -> bool:
     parts = urlsplit(str(value))
     if parts.scheme != "https" or parts.query or parts.fragment or parts.username:
         return False
     if parts.netloc == "chatgpt.com" and (parts.path == "/connector_platform_oauth_redirect" or _CONNECTOR.fullmatch(parts.path)):
+        return True
+    if parts.netloc == "grok.com" and parts.path in _GROK_CALLBACKS:
         return True
     return parts.netloc in {"claude.ai", "claude.com"} and parts.path == "/api/mcp/auth_callback"
 
@@ -54,7 +63,9 @@ class OwnerAuth:
 
     async def register_client(self, client_info):
         if not client_info.redirect_uris or not all(allowed_redirect(item) for item in client_info.redirect_uris):
-            raise RegistrationError("invalid_redirect_uri", "Only ChatGPT and Claude OAuth callback URLs are allowed.")
+            # 回调地址不是秘密：记下被拒的地址，新客户端接入时不用猜它的回调。
+            _LOG.warning("registration rejected, redirect_uris=%s", [str(item)[:200] for item in client_info.redirect_uris or []])
+            raise RegistrationError("invalid_redirect_uri", "Only ChatGPT, Claude and Grok OAuth callback URLs are allowed.")
         if set(client_info.grant_types) - {"authorization_code", "refresh_token"}:
             raise RegistrationError("invalid_client_metadata", "Unsupported grant type.")
         if self.store.count("client") >= 100:

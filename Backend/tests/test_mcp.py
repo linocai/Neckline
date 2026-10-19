@@ -159,7 +159,7 @@ def _login(test_client, client, redirect=CHATGPT):
     assert response.status_code == 303, response.text
     query = parse_qs(urlsplit(response.headers["location"]).query)
     assert query["state"] == ["roundtrip-state"]
-    assert urlsplit(response.headers["location"]).netloc in {"chatgpt.com", "claude.ai", "claude.com"}
+    assert urlsplit(response.headers["location"]).netloc in {"chatgpt.com", "claude.ai", "claude.com", "grok.com"}
     return query["code"][0]
 
 
@@ -208,6 +208,14 @@ def test_mcp_is_unavailable_until_configured(tmp_path, monkeypatch):
     "http://chatgpt.com/connector_platform_oauth_redirect",
     "https://claude.ai.evil.example/api/mcp/auth_callback",
     "https://claude.ai/api/mcp/auth_callback?next=evil",
+    "https://grok.com/connectors-oauth-exchange-code",
+    "https://grok.com/connectors-oauth-exchange-code/extra",
+    "https://grok.com/connectors-oauth-exchange-code/?next=evil",
+    "https://evil.grok.com/connectors-oauth-exchange-code/",
+    "https://grok.com.evil.example/connectors-oauth-exchange-code/",
+    "https://grok.com:8443/connectors-oauth-exchange-code/",
+    "http://grok.com/connectors-oauth-exchange-code/",
+    "https://grok.com/",
 ])
 def test_registration_rejects_callbacks_outside_the_allowlist(browser, url):
     test_client, _doc = browser
@@ -219,6 +227,8 @@ def test_registration_rejects_callbacks_outside_the_allowlist(browser, url):
     "https://chatgpt.com/connector/oauth/abc_DEF-1",
     CLAUDE_AI,
     CLAUDE_COM,
+    "https://grok.com/connectors-oauth-exchange-code/",
+    "https://grok.com/connectors/oauth/callback",
 ])
 def test_chatgpt_and_claude_callbacks_can_register(browser, url):
     test_client, _doc = browser
@@ -350,6 +360,20 @@ def test_token_requests_may_omit_resource_but_not_send_a_wrong_one(browser):
     renewed = test_client.post("/token", data=refresh)
     assert renewed.status_code == 200, renewed.text
     assert renewed.json()["access_token"] != traded.json()["access_token"]
+
+
+def test_grok_connector_round_trip(browser):
+    """Grok 用动态注册与固定回调 https://grok.com/connectors-oauth-exchange-code/：登录后跳回、换到令牌、能列工具。"""
+    grok = "https://grok.com/connectors-oauth-exchange-code/"
+    test_client, _doc = browser
+    client = _register(test_client, grok).json()
+    code = _login(test_client, client, grok)
+    traded = _exchange(test_client, client, code, redirect_uri=grok)
+    assert traded.status_code == 200, traded.text
+    headers = {"Authorization": "Bearer " + traded.json()["access_token"],
+               "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
+    listing = _rpc(test_client, headers, "tools/list", identifier=9)
+    assert listing.status_code == 200, listing.text
 
 
 def test_request_body_and_login_are_limited(browser):
