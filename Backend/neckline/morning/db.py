@@ -1,6 +1,7 @@
-"""V4 晨报库：原件、采集记录、模型回执、晨报、推送设备与推送记录。
+"""V4 晨报库：原件、采集记录、模型回执、晨报、推送设备与推送记录，以及 KX 看板的名单、推荐与日线统计缓存。
 
 只读路径用 mode=ro 打开且不执行 DDL；建表只在显式的 init-db 与写命令里做。时间一律存 UTC ISO（到秒）。
+库结构版本 2 在版本 1 的基础上只加三张 KX 表，init_schema 可把版本 1 的库原地升级，不动已有数据。
 """
 from __future__ import annotations
 
@@ -19,7 +20,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_UPGRADABLE_FROM = (1,)  # 这些版本的库可由 init_schema 原地升级到当前版本
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -96,6 +98,37 @@ CREATE TABLE IF NOT EXISTS push_log (
 );
 """
 
+# 版本 2 新增：三张 KX 表。只加表，不改版本 1 的任何表。
+KX_DDL = """
+CREATE TABLE IF NOT EXISTS kx_pool (
+  code TEXT PRIMARY KEY CHECK(length(code) = 6),
+  position INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  industry TEXT NOT NULL,
+  version TEXT NOT NULL,
+  verified_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kx_picks (
+  request_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK(position >= 0),
+  code TEXT NOT NULL CHECK(length(code) = 6),
+  picked_at TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  PRIMARY KEY(request_id, position),
+  UNIQUE(request_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_kx_picks_code ON kx_picks(code, picked_at);
+CREATE TABLE IF NOT EXISTS kx_daily_stats (
+  base_date TEXT NOT NULL,
+  pool_version TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('daily','basic')),
+  fetched_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY(base_date, pool_version, kind)
+);
+"""
+
 
 class NotReady(RuntimeError):
     """库不存在或不是 V4 晨报库。"""
@@ -112,28 +145,42 @@ def _dumps(value: Any) -> str:
 
 
 def init_schema(path: Path) -> None:
-    """显式建表（init-db 与写命令调用）；已存在且版本一致时什么都不改。"""
+    """显式建表（init-db 与写命令调用）。
+
+    新库一次建到当前版本；版本 1 的库在同一个事务里加上 KX 表并把版本号升到 2，任何一步失败都整体回滚，
+    已有数据不动。已经是当前版本时什么都不改。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.touch(mode=0o600)  # 生产库只给服务用户读写；发布脚本会核对这个权限
         os.chmod(path, 0o600)
-    with sqlite3.connect(path) as conn:
+    conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+    try:
         app_id = conn.execute("PRAGMA application_id").fetchone()[0]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-        if tables and (app_id, version) != (APPLICATION_ID, SCHEMA_VERSION):
+        if tables and (app_id != APPLICATION_ID or version not in (SCHEMA_VERSION, *_UPGRADABLE_FROM)):
             raise NotReady(f"{path} 不是 V4 晨报库（application_id={app_id}, user_version={version}）")
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(DDL)
-        conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
-        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if tables and version == SCHEMA_VERSION:
+            return
+        try:
+            conn.executescript(
+                "BEGIN IMMEDIATE;" + DDL + KX_DDL
+                + f"PRAGMA application_id={APPLICATION_ID};PRAGMA user_version={SCHEMA_VERSION};COMMIT;")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
 
 
 def _check(conn: sqlite3.Connection, path: Path) -> None:
     app_id = conn.execute("PRAGMA application_id").fetchone()[0]
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if (app_id, version) != (APPLICATION_ID, SCHEMA_VERSION):
-        raise NotReady(f"{path} 不是 V4 晨报库")
+        raise NotReady(f"{path} 不是当前版本的 V4 晨报库（application_id={app_id}, user_version={version}）")
 
 
 @contextmanager

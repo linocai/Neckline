@@ -1,6 +1,7 @@
 """麦蕊报价和当前交易时段的分时。证书只放在请求路径里，错误信息不带 URL。
 
-报价和分时共用 60 秒成功缓存、15 秒失败缓存。一分钟 Pro 返回 108 时改取五分钟。
+报价和分时共用 60 秒成功缓存、15 秒失败缓存（可按调用调整，KX 看板的批量行情失败缓存 10 秒）。
+一分钟 Pro 返回 108 时改取五分钟。
 """
 from __future__ import annotations
 
@@ -159,7 +160,8 @@ class Mairui:
             raise MarketError("unsupported_symbol", "只接受创业板代码，例如 300002.SZ。")
         return matched.group(1)
 
-    async def request(self, path: str, params: dict | None = None, *, pro: bool = False, ttl: int = 60):
+    async def request(self, path: str, params: dict | None = None, *, pro: bool = False, ttl: int = 60,
+                      failure_ttl: int = 15):
         cache_key = (pro, path, tuple(sorted((params or {}).items())))
 
         async def fetch():
@@ -169,7 +171,7 @@ class Mairui:
             except TimeoutError:
                 raise MarketError("upstream_timeout", "麦蕊取数超过20秒，本次未取得新数据。") from None
 
-        result, cached = await self.cache.get(cache_key, fetch, ttl, failure_ttl=15)
+        result, cached = await self.cache.get(cache_key, fetch, ttl, failure_ttl=failure_ttl)
         data, fetched = result
         return data, fetched, cached
 

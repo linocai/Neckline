@@ -283,7 +283,7 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
 
     health = json.loads(bodies["health.json"])
     assert health["mcp"] is False and health["tushare"] is False and health["mairui"] is False
-    for key in ("mcp", "tushare", "mairui"):
+    for key in ("mcp", "tushare", "mairui", "kxPool", "kxPicks"):
         health.pop(key)
     bodies["health.json"] = json.dumps(health, ensure_ascii=False).encode()
 

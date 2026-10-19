@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from starlette.routing import Route
 
 from neckline.api.deps import require_api_token_ready, require_token
+from neckline.kx.api import create_router as create_kx_router
+from neckline.kx.services import close_default_services as close_kx_services
 from neckline.market.services import close_default_services
 from neckline.mcp.gateway import MCP_ROUTES, gateway
 from neckline.mcp.status import set_mcp_serving
@@ -36,6 +38,7 @@ async def lifespan(app: FastAPI):
                     set_mcp_serving(False)
     finally:
         app.state.mcp_bundle = None
+        await close_kx_services()
         await close_default_services()
 
 
@@ -46,6 +49,7 @@ app.include_router(create_morning_router(
     version=VERSION,
     release_set=RELEASE_SET,
 ))
+app.include_router(create_kx_router(require_token_dependency=require_token))
 app.include_router(create_read_router())
 for _index, (_path, _methods) in enumerate(MCP_ROUTES):
     app.router.routes.append(Route(

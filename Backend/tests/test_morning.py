@@ -546,7 +546,8 @@ def test_morning_report_end_to_end_api_web_and_single_push(path, monkeypatch):
     assert client.get(f"/read/{READ_KEY}?format=json").json()["content"] == latest["content"]
     assert client.get("/read/" + "x" * 32).status_code == 404
     assert client.get("/api/v4/health").json() == {"db": "ready", "latestReport": {"tradeDate": "2026-10-13", "status": "available"},
-                                                   "readPage": True, "modelKey": False, "mcp": False, "tushare": False, "mairui": False}
+                                                   "readPage": True, "modelKey": False, "mcp": False, "tushare": False, "mairui": False,
+                                                   "kxPool": False, "kxPicks": False}
 
 
 def _one_company_per_call() -> LoadedConfig:
