@@ -143,6 +143,9 @@ def _start(test_client, client, redirect=CHATGPT):
     form = test_client.get(response.headers["location"])
     assert form.status_code == 200, form.text
     assert "连接 Neckline" in form.text and "ChatGPT" not in form.text
+    # 浏览器在 no-referrer 下会把表单 POST 的 Origin 报成 null，登录页必须用 same-origin。
+    assert form.headers["referrer-policy"] == "same-origin"
+    assert response.headers["referrer-policy"] == "no-referrer"
     return dict(re.findall(r'name="(request|csrf)" value="([^"]+)"', form.text))
 
 

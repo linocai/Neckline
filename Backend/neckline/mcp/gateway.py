@@ -99,14 +99,18 @@ def _replay(body: bytes, receive):
     return replay
 
 
-def _secure_send(send):
+def _secure_send(send, path: str | None = None):
+    # 登录页用 same-origin：no-referrer 会让浏览器把表单 POST 的 Origin 报成 null，
+    # 登录的 Origin 校验就永远过不了（10/19 Claude 实测 403）。same-origin 对外站仍不带来源。
+    policy = b"same-origin" if path == "/login" else b"no-referrer"
+
     async def wrapped(message):
         if message["type"] == "http.response.start":
             message = dict(message)
             headers = list(message.get("headers", []))
             headers.extend([
                 (b"cache-control", b"no-store"),
-                (b"referrer-policy", b"no-referrer"),
+                (b"referrer-policy", policy),
                 (b"x-content-type-options", b"nosniff"),
                 (b"content-security-policy", b"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
             ])
@@ -141,7 +145,7 @@ class McpGateway:
             if rejected is not None:
                 await rejected(scope, receive, send)
                 return
-        await bundle.asgi(scope, _replay(body or b"", receive), _secure_send(send))
+        await bundle.asgi(scope, _replay(body or b"", receive), _secure_send(send, scope.get("path")))
 
 
 gateway = McpGateway()
