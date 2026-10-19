@@ -23,6 +23,18 @@ The mask command may take effect before it reports failure, so the units are tre
 moment it is issued: any error from then on is recorded in ``switch-state.json`` and the units are always unmasked
 (idempotent) as part of the recovery before it propagates.
 The production database is never restored or overwritten.
+
+Database schema version. ``build`` records the commit's ``SCHEMA_VERSION`` in the manifest as ``schemaVersion``
+(a manifest without it means 1). Before anything is touched, switch reads the production ``user_version``
+(``schemaBefore``, read-only, no DDL) and plans ``none`` / ``upgrade`` / ``downgrade``; ``--check-only`` reports the plan.
+An upgrade runs ``init-db`` as the neckline user after the new files, wheel and manifest are in place and verified,
+before the units return; a downgrade (only the allow-listed add-tables-only steps, today 2 to 1) just rewrites
+``user_version`` after the services are stopped and before the files are replaced; tables are kept. Once the old files,
+wheel and manifest are back, every rollback puts ``user_version`` back to ``schemaBefore`` (services still stopped) before
+the units return and before the old release's readiness check; if that fails the units stay masked. If the old files cannot
+be restored at all, the database is left at the version that matches whatever files are in place and ``schemaNow`` in
+``switch-state.json`` says what it is. Only ``user_version`` or ``init_schema`` ever touches the database: no table is
+dropped, no business data read or written.
 """
 from __future__ import annotations
 
@@ -34,6 +46,7 @@ import io
 import json
 import os
 import pwd
+import re
 import shutil
 import socket
 import sqlite3
@@ -42,6 +55,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -55,6 +69,9 @@ TIMERS = ["neckline-v4-morning.timer", "neckline-v4-collect.timer", "neckline-v4
 V4_JOBS = ["neckline-v4-morning.service", "neckline-v4-collect.service", "neckline-v4-finalize.service"]
 RUNTIME_PREFIXES = ("neckline/", "scripts/", "deploy/")
 RUNTIME_FILES = (".env.example", "pyproject.toml", "requirements.txt")
+SERVICE_USER = "neckline"
+# 库结构只允许这些「只加了表」的降级：旧代码认得它的版本号，多出来的表保留不删。
+ADDITIVE_DOWNGRADES = frozenset({(2, 1)})
 
 
 def sha256(data: bytes) -> str:
@@ -77,6 +94,27 @@ def is_runtime_file(name: str) -> bool:
 
 # ---------------------------------------------------------------- build (local)
 
+def schema_version_at(repo: Path, commit: str) -> int:
+    """被构建的 commit 里 neckline/morning/db.py 的 SCHEMA_VERSION；只读 git 对象，不 import 任何代码。"""
+    try:
+        text = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:Backend/neckline/morning/db.py"],
+                              check=True, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"{commit[:7]} 里读不到 neckline/morning/db.py: {(exc.stderr or '').strip()[-200:]}") from exc
+    found = re.findall(r"^SCHEMA_VERSION\s*=\s*(\d+)\s*(?:#.*)?$", text, flags=re.MULTILINE)
+    if len(found) != 1 or int(found[0]) < 1:
+        raise SystemExit(f"{commit[:7]} 的 db.py 里找不到唯一的 SCHEMA_VERSION")
+    return int(found[0])
+
+
+def manifest_schema_version(manifest: dict) -> int:
+    """清单里的库结构版本；没有该字段的旧清单（B121 之前）都是 v1。"""
+    value = manifest.get("schemaVersion", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RuntimeError(f"{manifest.get('releaseSet')} 清单的 schemaVersion 无效: {value!r}")
+    return value
+
+
 def build(*, release: str, commit: str, out: Path) -> dict:
     backend = Path(__file__).resolve().parents[1]
     repo = backend.parent
@@ -87,6 +125,7 @@ def build(*, release: str, commit: str, out: Path) -> dict:
                             check=True, capture_output=True, text=True).stdout
     if f'RELEASE_SET = "{release}"' not in app_py:
         raise SystemExit(f"{full_commit[:7]} 的 RELEASE_SET 不是 {release}")
+    schema_version = schema_version_at(repo, full_commit)
     target = out / release / "backend"
     target.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory() as temp:
@@ -111,7 +150,7 @@ def build(*, release: str, commit: str, out: Path) -> dict:
             raise SystemExit("wheel 产物不唯一")
         manifest = {
             "releaseSet": release, "version": version, "build": int(build_number), "commit": full_commit,
-            "schema": 10, "publicReportSchema": 10,
+            "schema": 10, "publicReportSchema": 10, "schemaVersion": schema_version,
             "backendFiles": {name: file_sha256(path) for name, path in files.items()},
             "archiveSha256": file_sha256(tar_path), "wheel": wheels[0].name,
             "wheelSha256": file_sha256(wheels[0]),
@@ -125,8 +164,8 @@ def build(*, release: str, commit: str, out: Path) -> dict:
 
 # ---------------------------------------------------------------- switch (server)
 
-def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(list(args), check=check, capture_output=True, text=True)
+def run(*args: str, check: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(list(args), check=check, capture_output=True, text=True, cwd=cwd)
 
 
 def unit_state(unit: str) -> dict:
@@ -251,6 +290,100 @@ def assert_ownership() -> None:
     v4_stat = V4_DB.stat()
     if (v4_stat.st_uid, v4_stat.st_gid, v4_stat.st_mode & 0o777) != owner:
         raise RuntimeError("V4 晨报库属主或权限异常")
+
+
+# ---------------------------------------------------------------- database schema version
+
+class SchemaPlan:
+    """切换前定下的库结构动作；touched / restored 记录切换过程中对库做过什么。"""
+
+    def __init__(self, before: int | None, target: int, action: str) -> None:
+        self.before = before  # 切换前生产库的 user_version；库不存在为 None
+        self.target = target  # 目标清单的 schemaVersion
+        self.action = action  # none / upgrade / downgrade
+        self.touched = False  # 已对库发出过改动命令；命令可能先生效后报错，所以发出即算
+        self.restored: dict | None = None  # 回滚时恢复 user_version 的结果，写进 switch-state.json
+
+    def describe(self) -> dict:
+        return {"before": self.before, "target": self.target, "action": self.action}
+
+
+def read_schema_version() -> int | None:
+    """生产库当前的 user_version：只读连接、不执行 DDL；库不存在返回 None，application_id 不符就报错。"""
+    if not V4_DB.exists():
+        return None
+    with closing(sqlite3.connect(f"file:{V4_DB}?mode=ro", uri=True, timeout=30)) as con:
+        con.execute("PRAGMA query_only=ON")
+        if con.execute("PRAGMA application_id").fetchone()[0] != V4_APPLICATION_ID:
+            raise RuntimeError("V4 晨报库 application_id 不符")
+        return con.execute("PRAGMA user_version").fetchone()[0]
+
+
+def set_schema_version(version: int) -> None:
+    """只改 user_version（降级与回滚用）：不建表、不删表、不碰业务数据。"""
+    with closing(sqlite3.connect(f"file:{V4_DB}?mode=rw", uri=True, timeout=30, isolation_level=None)) as con:
+        if con.execute("PRAGMA application_id").fetchone()[0] != V4_APPLICATION_ID:
+            raise RuntimeError("V4 晨报库 application_id 不符")
+        con.execute(f"PRAGMA user_version={int(version)}")
+
+
+def plan_schema(new: dict) -> SchemaPlan:
+    """切换前决定库结构动作；不被支持的组合在任何改动之前报错。"""
+    target = manifest_schema_version(new)
+    before = read_schema_version()
+    if before is None or before == target:
+        return SchemaPlan(before, target, "none")
+    if target > before:
+        if before < 1:
+            raise RuntimeError(f"生产库 user_version={before}，不是可升级的 V4 晨报库，未做任何改动")
+        if shutil.which("runuser") is None:
+            raise RuntimeError("找不到 runuser，无法以 neckline 用户执行库升级，未做任何改动")
+        return SchemaPlan(before, target, "upgrade")
+    if (before, target) not in ADDITIVE_DOWNGRADES:
+        allowed = ", ".join(f"{a}→{b}" for a, b in sorted(ADDITIVE_DOWNGRADES))
+        raise RuntimeError(f"不支持库结构 {before}→{target} 的降级（只允许 {allowed}），未做任何改动")
+    return SchemaPlan(before, target, "downgrade")
+
+
+def _verify_schema(expected: int) -> None:
+    actual = read_schema_version()
+    if actual != expected:
+        raise RuntimeError(f"库 user_version 是 {actual}，应为 {expected}")
+    assert_ownership()
+
+
+def upgrade_schema(plan: SchemaPlan) -> None:
+    """新文件、新 wheel、新清单就位并校验通过后，以服务用户执行 init-db（init_schema 在单个事务里升级）。"""
+    plan.touched = True
+    try:
+        run("runuser", "-u", SERVICE_USER, "--", str(ROOT / ".venv/bin/python"), "-m", "neckline.morning.cli",
+            "--db", str(V4_DB), "init-db", cwd=ROOT)  # 和服务单元一样以 /opt/neckline 为工作目录
+    except subprocess.CalledProcessError as exc:
+        tail = (exc.stderr or "").strip()[-300:] if isinstance(exc.stderr, str) else ""
+        raise RuntimeError(f"库升级命令失败（退出码 {exc.returncode}）{tail}") from exc
+    _verify_schema(plan.target)
+
+
+def downgrade_schema(plan: SchemaPlan) -> None:
+    """白名单内的降级：服务已停、文件未换时只改 user_version，多出来的表保留。"""
+    plan.touched = True
+    set_schema_version(plan.target)
+    _verify_schema(plan.target)
+
+
+def restore_schema(plan: SchemaPlan) -> dict:
+    """回滚时把 user_version 恢复成 schemaBefore：升级过就按白名单降回去，降级过就写回原值。"""
+    current = read_schema_version()
+    if current == plan.before:
+        return {"status": "unchanged", "version": current}
+    if plan.action == "downgrade":
+        if current != plan.target:
+            raise RuntimeError(f"库 user_version 是 {current}，不是降级目标 {plan.target}，不能写回 {plan.before}")
+    elif (current, plan.before) not in ADDITIVE_DOWNGRADES:
+        raise RuntimeError(f"库 user_version 是 {current}，无法安全恢复到 {plan.before}")
+    set_schema_version(plan.before)
+    _verify_schema(plan.before)
+    return {"status": "restored", "from": current, "version": plan.before}
 
 
 READY_FLAGS = ("readPage", "modelKey", "mcp", "tushare", "mairui")
@@ -401,8 +534,21 @@ def _restore_units(before: dict) -> None:
         _raise_step("恢复单元", exc)
 
 
-def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | None, api_running: bool) -> dict:
-    """旧文件已还原后的共用收尾：取消 mask 并恢复单元，API 切换前在运行时按旧版本做就绪检查，核对单元状态。"""
+def _restore_schema_step(plan: SchemaPlan) -> None:
+    """服务停着、旧文件已还原时，把库的 user_version 恢复成切换前的值；失败即回滚失败，单元保持 mask。"""
+    try:
+        plan.restored = restore_schema(plan)
+    except Exception as exc:
+        plan.restored = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        _raise_step("恢复库结构版本", exc)
+
+
+def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | None, api_running: bool,
+                     schema: SchemaPlan | None = None) -> dict:
+    """旧文件已还原后的共用收尾：先恢复库结构版本（服务仍停着），再取消 mask 并恢复单元，
+    API 切换前在运行时按旧版本做就绪检查，核对单元状态。"""
+    if schema is not None and schema.touched:
+        _restore_schema_step(schema)
     _restore_units(before)
     if api_running:
         version = old.get("version")
@@ -422,8 +568,10 @@ def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | No
 
 
 def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
-                  new: dict, before: dict, prior: dict | None, api_running: bool) -> None:
-    """停服并还原上一版。只有文件、wheel、清单都还原且校验通过后才恢复单元。不碰生产库。"""
+                  new: dict, before: dict, prior: dict | None, api_running: bool,
+                  schema: SchemaPlan | None = None) -> None:
+    """停服并还原上一版。只有文件、wheel、清单都还原且校验通过、库结构版本回到切换前之后才恢复单元。
+    生产库只改 user_version，绝不还原或覆盖。"""
     run("systemctl", "mask", "--runtime", *SERVICES)
     try:
         run("systemctl", "stop", *TIMERS)
@@ -440,7 +588,8 @@ def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], ol
     except Exception as exc:
         _raise_step("确认服务已停", exc)
     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
-    _finish_rollback(previous=previous, old=old, before=before, prior=prior, api_running=api_running)
+    _finish_rollback(previous=previous, old=old, before=before, prior=prior, api_running=api_running,
+                     schema=schema)
 
 
 def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
@@ -459,10 +608,12 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     running = [unit for unit in V4_JOBS if unit_state(unit)["active"] in ("active", "activating", "reloading")]
     if running:
         raise RuntimeError(f"V4 任务正在运行（{', '.join(running)}），稍后再切换")
+    plan = plan_schema(new)  # 库结构动作在任何改动之前定下；不被支持的组合到这里就中止
 
     before = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
     if check_only:
         return {"release": release, "previous": previous, "preflight": "ok",
+                "schemaBefore": plan.before, "schemaTarget": plan.target, "schemaAction": plan.action,
                 "addedFiles": sorted(set(new["backendFiles"]) - set(old["backendFiles"])),
                 "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
                 "changedFiles": sorted(name for name in set(new["backendFiles"]) & set(old["backendFiles"])
@@ -479,7 +630,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     else:
         prior_health = None
     record: dict = {"release": release, "previous": previous, "startedAt": datetime.now(timezone.utc).isoformat(),
-                    "unitsBefore": before, "apiRunningBefore": api_running, "priorHealth": prior_health}
+                    "unitsBefore": before, "apiRunningBefore": api_running, "priorHealth": prior_health,
+                    "schemaBefore": plan.before, "schemaTarget": plan.target, "schemaAction": plan.action}
     switched = False
     settled = False
 
@@ -487,7 +639,12 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         return {"release": release, "commit": new["commit"], "switched": switched,
                 "runtimeFiles": len(new["backendFiles"]),
                 "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
-                "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
+                "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"],
+                "schema": plan.describe()}
+
+    def note_schema() -> None:
+        if plan.restored is not None:
+            record["schemaRollback"] = plan.restored
 
     def fail_manual(step: str, exc: BaseException) -> None:
         nonlocal settled
@@ -503,10 +660,16 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         except Exception as info_exc:
             units_now = {"error": f"{type(info_exc).__name__}: {info_exc}"}
         record["unitsAfter"] = units_now
+        try:
+            schema_now: object = read_schema_version()
+        except Exception as info_exc:
+            schema_now = f"unknown:{type(info_exc).__name__}"
+        note_schema()
         record["rollback"] = {
             "status": "failed", "release": previous, "failedStep": step,
             "error": f"{type(origin).__name__}: {origin}", "fileState": file_state,
             "recoveryPoint": (record.get("snapshot") or {}).get("archive"), "masked": _mask_state(),
+            "schemaNow": schema_now,
         }
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         try:
@@ -532,11 +695,17 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             raise RuntimeError("停 timer 后仍有 V4 任务在运行")
         record["snapshot"] = snapshot(new_dir)
         try:
+            if plan.action == "downgrade":
+                downgrade_schema(plan)
+                record["schemaAfter"] = plan.target
             write_runtime(ROOT, new_entries, set(old["backendFiles"]) - set(new["backendFiles"]))
             install_wheel(new_wheel)
             shutil.copyfile(new_dir / "backend/release-manifest.json", ROOT / "release-manifest.json")
             os.chmod(ROOT / "release-manifest.json", 0o644)
             verify_runtime(ROOT, new)
+            if plan.action == "upgrade":
+                upgrade_schema(plan)
+                record["schemaAfter"] = plan.target
             switched = True
         except Exception as swap_exc:
             record["failure"] = f"{type(swap_exc).__name__}: {swap_exc}"
@@ -546,9 +715,10 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc)
             try:
                 after_units = _finish_rollback(previous=previous, old=old, before=before, prior=prior_health,
-                                               api_running=api_running)
+                                               api_running=api_running, schema=plan)
             except Exception as unit_exc:
                 fail_manual(getattr(unit_exc, "step", "恢复单元"), unit_exc)
+            note_schema()
             record["rollback"] = {"status": "rolled_back", "release": previous}
             record["switched"] = False
             record["unitsAfter"] = after_units
@@ -564,6 +734,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 try:
                     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
                     switched = False
+                    if plan.touched:
+                        _restore_schema_step(plan)
                 except Exception as restore_exc:
                     fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc)
                 fail_manual(step, unit_exc)
@@ -591,12 +763,14 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         try:
             if switched:
                 _roll_back_to(previous=previous, old=old, old_entries=old_entries, old_wheel=old_wheel,
-                              old_dir=old_dir, new=new, before=before, prior=prior_health, api_running=api_running)
+                              old_dir=old_dir, new=new, before=before, prior=prior_health, api_running=api_running,
+                              schema=plan)
             else:
                 _finish_rollback(previous=previous, old=old, before=before, prior=prior_health,
-                                 api_running=api_running)
+                                 api_running=api_running, schema=plan)
         except Exception as rollback_exc:
             fail_manual(getattr(rollback_exc, "step", "回滚"), rollback_exc)
+        note_schema()
         record["rollback"] = {"status": "rolled_back", "release": previous}
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         try:

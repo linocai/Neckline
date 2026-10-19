@@ -29,6 +29,10 @@ from neckline.screening.prefilter import Message, Window
 from neckline.screening.select import Entry, Selection
 
 FIXTURES = Path(__file__).resolve().parents[2] / "App" / "NecklineTests" / "Fixtures"
+# KX 看板的夹具由 KX 测试从隔离库产出（Backend/tests/fixtures），App 原样复制；极限值夹具是 App 自己的。
+KX_BACKEND_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+KX_COPIED = {"kx_board_sample.json", "kx_board_degraded.json"}
+KX_APP_ONLY = {"kx_board_extreme.json"}
 FIXTURE_TOKEN = "fixture-token-not-real"
 WRONG_TOKEN = "not-the-fixture-token"
 DEVICE_TOKEN = "0123456789abcdef" * 4
@@ -300,11 +304,14 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
         for name, raw in bodies.items():
             (FIXTURES / name).write_text(pretty(raw), encoding="utf-8")
         for path in FIXTURES.glob("*.json"):
-            if path.name not in bodies:
+            if path.name not in bodies and path.name not in KX_COPIED | KX_APP_ONLY:
                 path.unlink()
 
     missing = [name for name in bodies if not (FIXTURES / name).is_file()]
     assert not missing, missing
     for name, raw in bodies.items():
         assert canon((FIXTURES / name).read_text(encoding="utf-8")) == canon(raw), name
-    assert {path.name for path in FIXTURES.glob("*.json")} == set(bodies)
+    for name in KX_COPIED:
+        assert canon((FIXTURES / name).read_text(encoding="utf-8")) == canon(
+            (KX_BACKEND_FIXTURES / name).read_text(encoding="utf-8")), name
+    assert {path.name for path in FIXTURES.glob("*.json")} == set(bodies) | KX_COPIED | KX_APP_ONLY

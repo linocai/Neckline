@@ -1,16 +1,21 @@
 """The backend release switch: exact add/replace/remove, rollback, artifact checks."""
+import gzip
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import tarfile
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from neckline.morning import db as morning_db
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release.py"
 spec = importlib.util.spec_from_file_location("neckline_release", _SCRIPT)
@@ -37,7 +42,7 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _package(directory: Path, name: str, files: dict[str, bytes]) -> dict:
+def _package(directory: Path, name: str, files: dict[str, bytes], *, schema_version: int | None = None) -> dict:
     backend = directory / "backend"
     backend.mkdir(parents=True)
     tar_path = backend / f"Neckline-Backend-{name}.tar.gz"
@@ -51,17 +56,31 @@ def _package(directory: Path, name: str, files: dict[str, bytes]) -> dict:
     manifest = {"releaseSet": name, "version": name.removeprefix("v").split("-b")[0], "commit": "c" * 40,
                 "backendFiles": {path: _digest(data) for path, data in files.items()},
                 "archiveSha256": _digest(tar_path.read_bytes()), "wheelSha256": _digest(wheel.read_bytes())}
+    if schema_version is not None:  # B121 之前的清单没有这个字段，按 1 处理
+        manifest["schemaVersion"] = schema_version
     (backend / "release-manifest.json").write_text(json.dumps(manifest))
     return manifest
 
 
-def _v4_database(path: Path) -> None:
+def _v4_database(path: Path, version: int = 1) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA application_id={release.V4_APPLICATION_ID}")
+        conn.execute(f"PRAGMA user_version={version}")
         for table in ("documents", "document_versions", "collection_runs", "model_receipts", "reports"):
             conn.execute(f"CREATE TABLE {table}(id INTEGER)")
         conn.execute("INSERT INTO reports VALUES (1)")
+
+
+def _real_v4_database(path: Path, version: int = 1) -> None:
+    """真实结构的 V4 库，带一行文档数据：v1 只有 DDL，v2 再加三张 KX 表。"""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(morning_db.DDL + (morning_db.KX_DDL if version >= 2 else ""))
+        conn.execute("INSERT INTO documents VALUES ('doc-1', 'tushare', 'n-1', 'https://example.test/1', '2026-10-18T00:00:00+00:00')")
+        conn.execute(f"PRAGMA application_id={morning_db.APPLICATION_ID}")
+        conn.execute(f"PRAGMA user_version={version}")
+        conn.commit()
 
 
 def test_runtime_file_set_excludes_tests_and_bytecode():
@@ -144,7 +163,8 @@ def test_switch_refuses_symlinked_runtime_target(tmp_path):
         release.write_runtime(root, {"neckline/a.py": b"x"}, set())
 
 
-def _prepare_switch(tmp_path, monkeypatch, *, with_v4: bool):
+def _prepare_switch(tmp_path, monkeypatch, *, with_v4: bool, db_version: int = 1, real_db: bool = False,
+                    target_schema: int | None = None, previous_schema: int | None = None):
     old_files = {f"neckline/retired/m{i:03d}.py": b"old" for i in range(320)}
     old_files["neckline/api/app.py"] = b"b112"
     new_files = {"neckline/api/app.py": b"b113", "neckline/morning/api.py": b"v4"}
@@ -152,8 +172,8 @@ def _prepare_switch(tmp_path, monkeypatch, *, with_v4: bool):
     root.mkdir()
     (root / "data").mkdir()
     previous, target = "v4.0.0-b112", "v4.0.0-b113"
-    old = _package(root / "releases" / previous, previous, old_files)
-    _package(root / "releases" / target, target, new_files)
+    old = _package(root / "releases" / previous, previous, old_files, schema_version=previous_schema)
+    _package(root / "releases" / target, target, new_files, schema_version=target_schema)
     monkeypatch.setattr(os, "geteuid", _REAL_EUID)
     release.write_runtime(root, old_files, set())
     (root / "release-manifest.json").write_text(json.dumps(old))
@@ -162,7 +182,7 @@ def _prepare_switch(tmp_path, monkeypatch, *, with_v4: bool):
     legacy.chmod(0o777)
     v4 = root / "data" / "v4.db"
     if with_v4:
-        _v4_database(v4)
+        (_real_v4_database if real_db else _v4_database)(v4, db_version)
 
     monkeypatch.setattr(release, "ROOT", root)
     monkeypatch.setattr(release, "V4_DB", v4)
@@ -191,6 +211,7 @@ def test_check_only_removes_the_previous_manifest_with_or_without_v4(tmp_path, m
         root, _old, legacy = _prepare_switch(work, monkeypatch, with_v4=present)
         result = release.switch(release="v4.0.0-b113", previous="v4.0.0-b112", check_only=True)
         assert result["preflight"] == "ok"
+        assert (result["schemaBefore"], result["schemaTarget"], result["schemaAction"]) == (1 if present else None, 1, "none")
         assert len(result["removedFiles"]) == 320
         assert all(name.startswith("neckline/retired/") for name in result["removedFiles"])
         assert (root / "neckline/api/app.py").read_bytes() == b"b112"
@@ -431,7 +452,8 @@ def test_switch_skips_readiness_when_the_api_was_not_running(tmp_path, monkeypat
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
     assert result["readiness"] == "切换前 API 未运行，已跳过就绪检查"
     assert set(result) == {"release", "commit", "switched", "runtimeFiles", "removedFiles",
-                           "recoveryPoint", "units", "readiness"}
+                           "recoveryPoint", "units", "schema", "readiness"}
+    assert result["schema"] == {"before": 1, "target": 1, "action": "none"}
     assert result["switched"] is True and result["release"] == _TARGET and result["commit"]
     assert (root / "neckline/api/app.py").read_bytes() == b"b113"
     assert len(installed) == 1 and _TARGET in installed[0].parts
@@ -607,7 +629,9 @@ def test_successful_switch_keeps_the_previous_return_keys(tmp_path, monkeypatch)
     root, _old, _legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
                                                    after=_health_body(_TARGET))
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
-    assert set(result) == {"release", "commit", "switched", "runtimeFiles", "removedFiles", "recoveryPoint", "units"}
+    assert set(result) == {"release", "commit", "switched", "runtimeFiles", "removedFiles", "recoveryPoint", "units",
+                           "schema"}
+    assert result["schema"] == {"before": 1, "target": 1, "action": "none"}
     assert result["switched"] is True and result["release"] == _TARGET
     assert (root / "neckline/api/app.py").read_bytes() == b"b113"
     assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _TARGET
@@ -749,3 +773,459 @@ def test_a_flag_that_was_false_before_is_still_a_valid_baseline():
     # 布尔值本身（含 False）合法；切换后只要求切换前为 True 的项仍为 True。
     assert release._baseline_problem(_health_body(_PREVIOUS, mcp=False, mairui=False), _PREVIOUS) is None
     assert release._baseline_problem(_health_body(_PREVIOUS, mcp=0), _PREVIOUS) == "mcp 不是布尔值"
+
+
+# ------------------------------------------------------------------ 库结构版本：manifest、升级、降级、回滚
+
+_KX_TABLES = {"kx_pool", "kx_picks", "kx_daily_stats"}
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.test",
+                    "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+
+
+def _fake_repo(tmp_path: Path, db_text: str) -> Path:
+    """只含构建所需文件的临时 git 仓库：app.py（RELEASE_SET）、db.py（SCHEMA_VERSION）和一份 release.py。"""
+    repo = tmp_path / "repo"
+    files = {"Backend/neckline/api/app.py": 'RELEASE_SET = "v9.9.9-b9"\n',
+             "Backend/neckline/morning/db.py": db_text, "Backend/pyproject.toml": "[project]\nname='x'\n"}
+    for name, text in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    (repo / "Backend/scripts").mkdir(parents=True)
+    shutil.copy(_SCRIPT, repo / "Backend/scripts/release.py")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "fixture")
+    return repo
+
+
+def _load_copy(repo: Path):
+    spec_copy = importlib.util.spec_from_file_location("neckline_release_copy", repo / "Backend/scripts/release.py")
+    module = importlib.util.module_from_spec(spec_copy)
+    spec_copy.loader.exec_module(module)
+    return module
+
+
+def test_build_records_the_schema_version_of_the_built_commit(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path, 'APPLICATION_ID = 1\nSCHEMA_VERSION = 7  # 当前库结构\n')
+    # 工作区里的改动不能影响产物：版本号只读被构建的 commit。
+    (repo / "Backend/neckline/morning/db.py").write_text("SCHEMA_VERSION = 99\n")
+    module = _load_copy(repo)
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "pip" in argv and "wheel" in argv:  # 离线：不真的打 wheel
+            (Path(argv[argv.index("-w") + 1]) / "neckline_runtime-9.9.9-py3-none-any.whl").write_bytes(b"wheel")
+            return subprocess.CompletedProcess(argv, 0)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = module.build(release="v9.9.9-b9", commit="HEAD", out=tmp_path / "out")
+    manifest = json.loads((tmp_path / "out/v9.9.9-b9/backend/release-manifest.json").read_text())
+    assert manifest["schemaVersion"] == 7 and manifest["releaseSet"] == "v9.9.9-b9"
+    assert manifest["commit"] == result["commit"] and "neckline/morning/db.py" in manifest["backendFiles"]
+
+
+def test_build_refuses_a_commit_without_exactly_one_schema_version(tmp_path):
+    cases = ("APPLICATION_ID = 1\n", "SCHEMA_VERSION = 1\nSCHEMA_VERSION = 2\n", "SCHEMA_VERSION = 0\n")
+    for index, text in enumerate(cases):
+        repo = _fake_repo(tmp_path / f"case{index}", text)
+        with pytest.raises(SystemExit, match="SCHEMA_VERSION"):
+            _load_copy(repo).schema_version_at(repo, "HEAD")
+
+
+def test_a_manifest_without_schema_version_means_one():
+    assert release.manifest_schema_version({"releaseSet": "v4.0.0-b120"}) == 1
+    assert release.manifest_schema_version({"schemaVersion": 2}) == 2
+    for bad in (0, True, "2", None, 2.0):
+        with pytest.raises(RuntimeError, match="schemaVersion"):
+            release.manifest_schema_version({"releaseSet": "x", "schemaVersion": bad})
+
+
+@pytest.mark.parametrize("db_version,target_schema,action", [(1, None, "none"), (1, 2, "upgrade"), (2, None, "downgrade")])
+def test_check_only_reports_the_schema_plan_and_changes_nothing(tmp_path, monkeypatch, db_version, target_schema, action):
+    monkeypatch.setattr(release, "unit_state", lambda unit: {"active": "inactive", "enabled": "disabled"})
+    monkeypatch.setattr(release.shutil, "which", lambda name: f"/usr/sbin/{name}")
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, db_version=db_version, real_db=True,
+                                          target_schema=target_schema, previous_schema=db_version)
+    result = release.switch(release=_TARGET, previous=_PREVIOUS, check_only=True)
+    assert result["preflight"] == "ok"
+    assert (result["schemaBefore"], result["schemaTarget"], result["schemaAction"]) == (
+        db_version, target_schema or 1, action)
+    assert _db_facts(root / "data/v4.db")["version"] == db_version
+    assert (root / "neckline/api/app.py").read_bytes() == b"b112"
+    assert not (root / "releases" / _TARGET / "switch-state.json").exists()
+
+
+def _db_facts(db_file: Path) -> dict:
+    with closing(sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)) as con:
+        return {"version": con.execute("PRAGMA user_version").fetchone()[0],
+                "tables": {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}}
+
+
+def _documents(db_file: Path) -> list:
+    with closing(sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)) as con:
+        return con.execute("SELECT document_id, source_key, external_id FROM documents").fetchall()
+
+
+def _real_migration(args):
+    """假 runuser 的默认实现：核对命令形状后，用真实的 init_schema 迁移临时库。"""
+    assert args[1:4] == ("-u", "neckline", "--"), args
+    assert args[4] == str(release.ROOT / ".venv/bin/python"), args
+    assert args[5:] == ("-m", "neckline.morning.cli", "--db", str(release.V4_DB), "init-db"), args
+    assert morning_db.SCHEMA_VERSION == 2, "库结构版本变了：更新发布脚本的升级测试"
+    morning_db.init_schema(release.V4_DB)
+
+
+def _drive_schema(tmp_path, monkeypatch, *, db_version, target_schema=None, previous_schema=None, real_db=True,
+                  migrate=None, health_after=None, install=None, service_active=True):
+    """假 systemctl / curl / runuser；health 如实反映「已装清单要求的库结构版本」和库的 user_version 是否一致，
+    所以没把版本号回到位的回滚过不了旧版本的就绪检查。calls 里 db-set / write_runtime 是内部步骤的顺序标记。"""
+    root, old, legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, db_version=db_version, real_db=real_db,
+                                        target_schema=target_schema, previous_schema=previous_schema)
+    db_file = root / "data/v4.db"
+    masking = _Masking()
+    active = {"neckline.service"} if service_active else set()
+    calls: list = []
+    cwds: list = []
+    monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(release.shutil, "which", lambda name: f"/usr/sbin/{name}")
+    monkeypatch.setattr(release, "install_wheel", install or (lambda _wheel: None))
+    original_write, original_set = release.write_runtime, release.set_schema_version
+
+    def write_runtime(root_path, entries, remove):
+        calls.append(("write_runtime",))
+        return original_write(root_path, entries, remove)
+
+    def set_schema_version(version):
+        calls.append(("db-set", version))
+        return original_set(version)
+
+    monkeypatch.setattr(release, "write_runtime", write_runtime)
+    monkeypatch.setattr(release, "set_schema_version", set_schema_version)
+
+    def health_body():
+        installed = json.loads((root / "release-manifest.json").read_text())
+        ready = _db_facts(db_file)["version"] == installed.get("schemaVersion", 1)
+        body = _health_body(installed["releaseSet"], db="ready" if ready else "db_not_ready")
+        if installed["releaseSet"] == _TARGET and health_after:
+            body.update(health_after)
+        return body
+
+    def fake_run(*args, check=True, cwd=None):
+        calls.append(args)
+        stdout, code = "", 0
+        if args[0] == "systemctl":
+            action = args[1]
+            unit = args[2] if len(args) > 2 else ""
+            if action == "is-active":
+                stdout = "active\n" if unit in active else "inactive\n"
+            elif action == "is-enabled":
+                stdout = masking.enabled(unit)
+            elif action in ("mask", "unmask"):
+                masking.apply(action, args)
+            elif action == "stop":
+                active.difference_update(args[2:])
+            elif action == "start":
+                if masking.on and unit in release.SERVICES:
+                    code = 1  # systemd 不会启动被 mask 的单元
+                else:
+                    active.add(unit)
+        elif args[0] == "curl":
+            if "neckline.service" in active:
+                stdout = json.dumps(health_body())
+            else:
+                code = 7
+        elif args[0] == "runuser":
+            cwds.append(cwd)
+            (migrate or _real_migration)(args)
+        else:
+            raise AssertionError(f"unexpected command {args}")
+        if code and check:
+            raise subprocess.CalledProcessError(code, list(args))
+        return subprocess.CompletedProcess(list(args), code, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    return SimpleNamespace(root=root, old=old, legacy=legacy, calls=calls, masking=masking, active=active,
+                           db=db_file, cwds=cwds)
+
+
+def _flow(calls) -> list:
+    """只留改变状态的步骤，按发生顺序。"""
+    steps = []
+    for args in calls:
+        if args[0] == "systemctl" and args[1] in ("mask", "unmask", "stop", "start"):
+            steps.append(args[1])
+        elif args[0] in ("runuser", "write_runtime"):
+            steps.append(args[0])
+        elif args[0] == "db-set":
+            steps.append(f"db-set:{args[1]}")
+    return steps
+
+
+def _command_failure(code=1, stderr="boom"):
+    def migrate(args):
+        raise subprocess.CalledProcessError(code, list(args), stderr=stderr)
+
+    return migrate
+
+
+def test_upgrade_moves_a_v1_database_to_v2_after_the_new_files_are_in_place(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2)
+    result = release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert result["switched"] is True and result["schema"] == {"before": 1, "target": 2, "action": "upgrade"}
+    facts = _db_facts(driven.db)
+    assert facts["version"] == 2 and _KX_TABLES <= facts["tables"]
+    assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
+    # 停服 → 恢复点 → 换文件 → 迁移 → 恢复单元；迁移不早于文件就位，也不晚于单元恢复。
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "start"]
+    assert driven.cwds == [driven.root]  # init-db 的工作目录是 /opt/neckline，和服务单元一致
+    state = _switch_state(driven.root)
+    assert (state["schemaBefore"], state["schemaTarget"], state["schemaAction"], state["schemaAfter"]) == (
+        1, 2, "upgrade", 2)
+    assert "schemaRollback" not in state and state["switched"] is True
+    assert json.loads((driven.root / "release-manifest.json").read_text())["releaseSet"] == _TARGET
+    # 恢复点是迁移之前做的：里面还是 v1。
+    archive = driven.root / "releases" / _TARGET / "recovery/v4-pre-switch.db.gz"
+    restored = tmp_path / "recovery-check.db"
+    with gzip.open(archive, "rb") as packed, restored.open("wb") as raw:
+        shutil.copyfileobj(packed, raw)
+    assert _db_facts(restored)["version"] == 1 and not _KX_TABLES & _db_facts(restored)["tables"]
+
+
+def test_upgrade_whose_readiness_check_fails_rolls_back_to_v1_and_keeps_the_data(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, health_after={"mcp": False})
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    # 回滚：停服 → 还原文件 → 库版本回 1 → 恢复单元，旧版本就绪检查（要求 db 为 ready）才过得去。
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "start",
+                                   "mask", "stop", "stop", "write_runtime", "db-set:1", "unmask", "start"]
+    facts = _db_facts(driven.db)
+    assert facts["version"] == 1 and _KX_TABLES <= facts["tables"]  # 版本回去，表不删
+    assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
+    release.verify_runtime(driven.root, driven.old)
+    assert json.loads((driven.root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
+    state = _switch_state(driven.root)
+    assert state["rollback"] == {"status": "rolled_back", "release": _PREVIOUS}
+    assert state["schemaBefore"] == 1 and state["schemaAfter"] == 2
+    assert state["schemaRollback"] == {"status": "restored", "from": 2, "version": 1}
+    assert state["unitsAfter"] == state["unitsBefore"]
+
+
+def test_failed_migration_command_rolls_back_and_the_database_stays_v1(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, migrate=_command_failure())
+    with pytest.raises(RuntimeError, match="库升级命令失败") as caught:  # 换包阶段失败：回滚后原样抛出原因
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "boom" in str(caught.value) and "已回滚" not in str(caught.value)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "write_runtime", "unmask", "start"]
+    facts = _db_facts(driven.db)
+    assert facts["version"] == 1 and not _KX_TABLES & facts["tables"]
+    assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
+    release.verify_runtime(driven.root, driven.old)
+    state = _switch_state(driven.root)
+    assert state["rollback"]["status"] == "rolled_back" and "schemaAfter" not in state
+    assert state["schemaRollback"] == {"status": "unchanged", "version": 1}  # 回滚前核对过：仍是 schemaBefore
+    assert state["switched"] is False and state["unitsAfter"] == state["unitsBefore"]
+
+
+def test_migration_that_took_effect_before_reporting_failure_is_put_back_to_v1(tmp_path, monkeypatch):
+    def migrate(args):
+        _real_migration(args)
+        raise subprocess.CalledProcessError(1, list(args), stderr="timed out after taking effect")
+
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, migrate=migrate)
+    with pytest.raises(RuntimeError, match="库升级命令失败"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _db_facts(driven.db)["version"] == 1
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 2, "version": 1}
+    assert _flow(driven.calls)[-4:] == ["write_runtime", "db-set:1", "unmask", "start"]
+
+
+def test_migration_that_leaves_the_version_unchanged_is_rejected_and_rolled_back(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, migrate=lambda _args: None)
+    with pytest.raises(RuntimeError, match="user_version 是 1，应为 2"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _db_facts(driven.db)["version"] == 1
+    release.verify_runtime(driven.root, driven.old)
+
+
+def test_wheel_failure_before_an_upgrade_never_touches_the_database(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, install=_wheel_fails_once())
+    with pytest.raises(RuntimeError, match="new wheel failed"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "runuser" not in _flow(driven.calls) and not [s for s in _flow(driven.calls) if s.startswith("db-set")]
+    assert _db_facts(driven.db) == {"version": 1, "tables": _db_facts(driven.db)["tables"]}
+    assert not _KX_TABLES & _db_facts(driven.db)["tables"]
+    state = _switch_state(driven.root)
+    assert state["rollback"]["status"] == "rolled_back" and "schemaRollback" not in state
+
+
+def test_downgrade_rewrites_only_the_version_and_keeps_every_table(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=None, previous_schema=2)
+    seen = {}
+    original = release.set_schema_version
+
+    def set_schema_version(version):
+        seen["active"] = set(driven.active)  # 降级时服务必须已经停了
+        seen["masked"] = driven.masking.on
+        seen["files"] = (driven.root / "neckline/api/app.py").read_bytes()  # 文件还没换
+        return original(version)
+
+    monkeypatch.setattr(release, "set_schema_version", set_schema_version)
+    result = release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert result["schema"] == {"before": 2, "target": 1, "action": "downgrade"}
+    assert seen == {"active": set(), "masked": True, "files": b"b112"}
+    facts = _db_facts(driven.db)
+    assert facts["version"] == 1 and _KX_TABLES <= facts["tables"]
+    assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
+    assert "runuser" not in _flow(driven.calls)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "db-set:1", "write_runtime", "unmask", "start"]
+    state = _switch_state(driven.root)
+    assert (state["schemaBefore"], state["schemaTarget"], state["schemaAction"], state["schemaAfter"]) == (
+        2, 1, "downgrade", 1)
+    assert (driven.root / "neckline/api/app.py").read_bytes() == b"b113"
+
+
+def test_failed_downgrade_swap_puts_the_original_version_back_before_the_old_api_starts(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def install(_wheel):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("new wheel failed")
+
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=None, previous_schema=2, install=install)
+    with pytest.raises(RuntimeError, match="new wheel failed"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "db-set:1", "write_runtime", "write_runtime", "db-set:2",
+                                   "unmask", "start"]
+    facts = _db_facts(driven.db)
+    assert facts["version"] == 2 and _KX_TABLES <= facts["tables"]
+    release.verify_runtime(driven.root, driven.old)
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 1, "version": 2}
+
+
+def test_downgrade_followed_by_a_failed_readiness_check_restores_the_original_version(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=None, previous_schema=2,
+                           health_after={"mcp": False})
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _db_facts(driven.db)["version"] == 2
+    assert _flow(driven.calls)[-4:] == ["write_runtime", "db-set:2", "unmask", "start"]
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 1, "version": 2}
+    release.verify_runtime(driven.root, driven.old)
+
+
+def test_downgrade_outside_the_allow_list_aborts_before_the_mask(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=3, target_schema=None, previous_schema=3, real_db=False)
+    for check_only in (False, True):
+        _allow_root_check_once(monkeypatch)
+        with pytest.raises(RuntimeError, match="不支持库结构 3→1 的降级"):
+            release.switch(release=_TARGET, previous=_PREVIOUS, check_only=check_only)
+    assert _flow(driven.calls) == [] and not {"mask", "unmask", "stop", "start"} & set(_actions(driven.calls))
+    assert not (driven.root / "releases" / _TARGET / "switch-state.json").exists()
+    assert not (driven.root / "releases" / _TARGET / "recovery").exists()
+    assert (driven.root / "neckline/api/app.py").read_bytes() == b"b112"
+    with closing(sqlite3.connect(driven.db)) as con:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert con.execute("SELECT count(*) FROM reports").fetchone()[0] == 1
+
+
+def test_upgrade_from_a_database_that_is_not_a_versioned_v4_database_aborts_before_the_mask(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=0, target_schema=2, real_db=False)
+    with pytest.raises(RuntimeError, match="不是可升级的 V4 晨报库"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert not {"mask", "stop", "start"} & set(_actions(driven.calls)) and _flow(driven.calls) == []
+
+
+def test_upgrade_without_runuser_aborts_before_the_mask(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2)
+    monkeypatch.setattr(release.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="runuser"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _flow(driven.calls) == [] and _db_facts(driven.db)["version"] == 1
+
+
+def test_rollback_that_cannot_restore_the_version_keeps_the_mask_and_records_the_scene(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, health_after={"mcp": False})
+    original = release.set_schema_version
+
+    def flaky(version):
+        if version == 1:
+            driven.calls.append(("db-set", version))
+            raise OSError("disk I/O error")
+        return original(version)
+
+    monkeypatch.setattr(release, "set_schema_version", flaky)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value) and "disk I/O error" in str(caught.value.__cause__)
+    # 恢复版本号失败后不能取消 mask、不能拉起任何服务。
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "start",
+                                   "mask", "stop", "stop", "write_runtime", "db-set:1"]
+    assert driven.masking.on is True and release._mask_state() is True
+    assert "neckline.service" not in driven.active
+    state = _switch_state(driven.root)
+    assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "恢复库结构版本"
+    assert state["rollback"]["masked"] is True and state["rollback"]["schemaNow"] == 2
+    assert state["rollback"]["fileState"] == "old"
+    assert state["schemaBefore"] == 1 and state["schemaRollback"]["status"] == "failed"
+    assert "disk I/O error" in state["schemaRollback"]["error"]
+    facts = _db_facts(driven.db)  # 没丢任何东西：版本留在 2，表和数据都在
+    assert facts["version"] == 2 and _KX_TABLES <= facts["tables"]
+    assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
+
+
+def test_restore_refuses_a_version_it_cannot_explain(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=3, target_schema=None, previous_schema=3, real_db=False)
+    upgraded = release.SchemaPlan(1, 2, "upgrade")  # 升级过：现值 3 不在白名单里，不能凭空降回 1
+    with pytest.raises(RuntimeError, match="无法安全恢复到 1"):
+        release.restore_schema(upgraded)
+    downgraded = release.SchemaPlan(2, 1, "downgrade")  # 降级过：现值必须正是降级目标
+    with pytest.raises(RuntimeError, match="不是降级目标 1"):
+        release.restore_schema(downgraded)
+    assert _db_facts(driven.db)["version"] == 3 and not [s for s in _flow(driven.calls) if s.startswith("db-set")]
+
+
+def test_unmask_failure_after_an_upgrade_still_restores_the_version_and_keeps_the_mask(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2)
+    real_run = release.run
+
+    def run_with_failing_unmask(*args, check=True, cwd=None):
+        if args[0] == "systemctl" and args[1] == "unmask":
+            driven.calls.append(args)
+            raise RuntimeError("unmask failed")
+        return real_run(*args, check=check, cwd=cwd)
+
+    monkeypatch.setattr(release, "run", run_with_failing_unmask)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "write_runtime",
+                                   "db-set:1"]
+    assert _db_facts(driven.db)["version"] == 1 and "start" not in _actions(driven.calls)
+    state = _switch_state(driven.root)
+    assert state["rollback"]["failedStep"] == "取消 mask" and state["rollback"]["masked"] is True
+    assert state["rollback"]["fileState"] == "old" and state["rollback"]["schemaNow"] == 1
+    assert state["schemaRollback"] == {"status": "restored", "from": 2, "version": 1}
+    release.verify_runtime(driven.root, driven.old)
+
+
+def test_upgrade_that_changes_the_database_ownership_is_rolled_back(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2)
+    original = release.assert_ownership
+    state = {"raised": False}
+
+    def assert_ownership():
+        if any(args[0] == "runuser" for args in driven.calls) and not state["raised"]:
+            state["raised"] = True
+            raise RuntimeError("V4 晨报库属主或权限异常")
+        return original()
+
+    monkeypatch.setattr(release, "assert_ownership", assert_ownership)
+    with pytest.raises(RuntimeError, match="V4 晨报库属主或权限异常"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert state["raised"] and _db_facts(driven.db)["version"] == 1
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 2, "version": 1}
+    release.verify_runtime(driven.root, driven.old)
