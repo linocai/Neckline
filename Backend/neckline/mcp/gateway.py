@@ -105,11 +105,11 @@ def _secure_send(send, path: str | None = None):
     # 登录页用 same-origin：no-referrer 会让浏览器把表单 POST 的 Origin 报成 null，
     # 登录的 Origin 校验就永远过不了（10/19 Claude 实测 403）。same-origin 对外站仍不带来源。
     policy = b"same-origin" if path == "/login" else b"no-referrer"
-    # Chrome 把 form-action 也用在表单提交后的重定向上：登录成功后的 303 跳回客户端回调，
-    # 只写 'self' 会被拦下（10/19 Claude 实测：登录 303 后停在原页，再点一次就 403）。
-    # 登录页只多放行 auth.allowed_redirect 认可的三个回调域名。
-    targets = b" https://chatgpt.com https://claude.ai https://claude.com" if path == "/login" else b""
-    csp = (b"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" + targets
+    # Chrome 把 form-action 用在表单提交后的整条重定向链上：登录成功后 303 跳回客户端回调，
+    # 回调页若再跳到别的域名也会被拦（10/19 实测：Claude 放行回调域名后连通，ChatGPT 仍停在原页）。
+    # 登录页只有我们自己的一个表单、内容全部转义，所以不设 form-action；其他路由仍只允许 'self'。
+    form_action = b"" if path == "/login" else b"; form-action 'self'"
+    csp = (b"default-src 'none'; style-src 'unsafe-inline'" + form_action
            + b"; frame-ancestors 'none'; base-uri 'none'")
 
     async def wrapped(message):

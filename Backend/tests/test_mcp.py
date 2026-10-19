@@ -146,10 +146,9 @@ def _start(test_client, client, redirect=CHATGPT):
     # 浏览器在 no-referrer 下会把表单 POST 的 Origin 报成 null，登录页必须用 same-origin。
     assert form.headers["referrer-policy"] == "same-origin"
     assert response.headers["referrer-policy"] == "no-referrer"
-    # 登录成功后的 303 要能跳到客户端回调：form-action 必须放行三个回调域名，其他路由仍只有 'self'。
-    login_csp = form.headers["content-security-policy"]
-    assert all(f"https://{host}" in login_csp.split("form-action", 1)[1].split(";", 1)[0]
-               for host in ("chatgpt.com", "claude.ai", "claude.com"))
+    # 登录成功后的 303 及客户端回调后续的跳转都不能被 form-action 拦下：登录页不设 form-action，其他路由仍只有 'self'。
+    assert "form-action" not in form.headers["content-security-policy"]
+    assert "default-src 'none'" in form.headers["content-security-policy"]
     assert "form-action 'self';" in response.headers["content-security-policy"]
     return dict(re.findall(r'name="(request|csrf)" value="([^"]+)"', form.text))
 
