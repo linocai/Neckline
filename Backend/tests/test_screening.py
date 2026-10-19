@@ -480,7 +480,7 @@ def test_compare_verdicts_script_on_fake_replay(tmp_path):
     ]
     verdict_path = tmp_path / "verdicts.json"
     verdict_path.write_text(json.dumps(verdicts, ensure_ascii=False), encoding="utf-8")
-    script = Path(__file__).resolve().parents[1] / ".work" / "p1-offline" / "compare_verdicts.py"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "compare_verdicts.py"
     config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v2.json"
     completed = subprocess.run([sys.executable, str(script), "--replay", str(tmp_path), "--verdicts", str(verdict_path),
                                 "--config", str(config)], check=False, capture_output=True, text=True)

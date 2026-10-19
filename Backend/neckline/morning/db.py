@@ -306,6 +306,35 @@ def source_attempt_start(conn: sqlite3.Connection, source_key: str) -> datetime 
     return None
 
 
+def _covered_pair(pair: object) -> tuple[datetime, datetime] | None:
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        return None
+    if not isinstance(pair[0], str) or not isinstance(pair[1], str):
+        return None
+    try:
+        start, end = datetime.fromisoformat(pair[0]), datetime.fromisoformat(pair[1])
+    except ValueError:
+        return None
+    if start.tzinfo is None or end.tzinfo is None:
+        return None
+    return start, end
+
+
+def source_covered(conn: sqlite3.Connection, source_key: str) -> list[tuple[datetime, datetime]]:
+    """来源记录里的 covered 切片。没有该字段的旧记录不贡献区间。"""
+    found: list[tuple[datetime, datetime]] = []
+    rows = conn.execute("SELECT sources_json FROM collection_runs ORDER BY started_at, rowid")
+    for row in rows:
+        for source in json.loads(row["sources_json"]):
+            if source.get("sourceKey") != source_key:
+                continue
+            for pair in source.get("covered") or []:
+                parsed = _covered_pair(pair)
+                if parsed is not None:
+                    found.append(parsed)
+    return found
+
+
 def collections_since(conn: sqlite3.Connection, since: datetime) -> list[dict]:
     rows = conn.execute("SELECT * FROM collection_runs WHERE slot_at >= ? ORDER BY slot_at", (utc(since),))
     return [{**dict(r), "sources": json.loads(r["sources_json"])} for r in rows]

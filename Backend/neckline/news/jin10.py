@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+import neckline
+
 from .model import SourceDocument, SourceOutcome
 
 TOOLS = frozenset({"list_flash", "list_news"})
@@ -136,7 +138,7 @@ class Jin10Client:
         if self._schemas is not None:
             return
         result, headers = self._request("initialize", {"protocolVersion": self.protocol_version, "capabilities": {},
-                                                       "clientInfo": {"name": "Neckline", "version": "4.0.0"}},
+                                                       "clientInfo": {"name": "Neckline", "version": neckline.__version__}},
                                         initialized=False)
         if result.get("protocolVersion") != self.protocol_version:
             raise Jin10Error("protocol_version_mismatch")

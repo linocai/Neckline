@@ -12,6 +12,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+import neckline
 from neckline.market.overview import overview
 from neckline.market.pool_query import lookup
 from neckline.mcp.auth import SCOPE, OwnerAuth
@@ -69,7 +70,7 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
     server = MCPServer(
         name="neckline",
         title="Neckline",
-        version="4.0.0",
+        version=neckline.__version__,
         instructions=BRIEF,
         auth_server_provider=auth,
         auth=AuthSettings(

@@ -1,6 +1,7 @@
 """TuShare ``major_news``（新闻通讯长文）按时间段取数。
 
-先按固定时长把窗口切成首尾相接的整秒片，再按时间先后逐片请求。这个接口没有可靠的翻页游标：
+先按固定时长把窗口切成首尾相接的整秒片，再从新到旧逐片请求。已经覆盖过的区间跳过。
+这个接口没有可靠的翻页游标：
 某一片返回满 400 条就视为可能截断，丢掉这一片的结果，只把这一片对半切开再取。
 切点落在整秒上，下一片从上一片结束后 1 秒开始，同一秒不会被两片重复计入。
 每天调用次数有上限，超限立刻停止，已经取到的留下。
@@ -119,8 +120,49 @@ def _document(item: Any, fetched_at: datetime) -> SourceDocument | None:
                           metadata={"provider": "tushare", "source": source or None, "rawPubTime": raw_time})
 
 
+def _merged(intervals: Sequence[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    merged: list[list[datetime]] = []
+    for lo, hi in sorted(intervals):
+        if lo > hi:
+            lo, hi = hi, lo
+        if not merged or lo > merged[-1][1] + timedelta(seconds=1):
+            merged.append([lo, hi])
+        else:
+            merged[-1][1] = max(merged[-1][1], hi)
+    return [(lo, hi) for lo, hi in merged]
+
+
+def _uncovered(start: datetime, end: datetime, covered: Sequence[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    """[start, end] 里还没被 covered 铺满的区间。相邻切片差 1 秒，这一秒不算缺口。"""
+    clipped: list[tuple[datetime, datetime]] = []
+    for lo, hi in covered:
+        if lo > hi:
+            lo, hi = hi, lo
+        lo, hi = max(lo, start), min(hi, end)
+        if lo <= hi:
+            clipped.append((lo, hi))
+    gaps: list[tuple[datetime, datetime]] = []
+    cursor = start
+    for lo, hi in _merged(clipped):
+        if lo > cursor:
+            gap_hi = lo - timedelta(seconds=1)
+            if cursor <= gap_hi:
+                gaps.append((cursor, gap_hi))
+        cursor = max(cursor, hi + timedelta(seconds=1))
+    if cursor <= end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def _note_covered(outcome: SourceOutcome, intervals: Sequence[tuple[datetime, datetime]]) -> None:
+    if not intervals:
+        return
+    outcome.covered = [[lo.isoformat(), hi.isoformat()] for lo, hi in sorted(intervals)]
+
+
 def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: datetime, slice_seconds: int,
-                     max_requests: int, clock: Callable[[], datetime]) -> SourceOutcome:
+                     max_requests: int, clock: Callable[[], datetime],
+                     covered: Sequence[tuple[datetime, datetime]] | None = None) -> SourceOutcome:
     outcome = SourceOutcome(source_key=SOURCE_KEY, requested_start=start, requested_end=end)
     if slice_seconds < 1:
         raise ValueError("slice_seconds 必须是正整数")
@@ -128,18 +170,26 @@ def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: dat
         outcome.error = "credential_missing"
         return outcome
     start_s, end_s = start.replace(microsecond=0), end.replace(microsecond=0)
-    # 栈顶是最早的一片。对半切时先压后半、再压前半，前半会先被取走，其他片留在下面不动。
-    slices = _time_slices(start_s, end_s, slice_seconds) if start_s <= end_s else [(start_s, end_s)]
-    pending = list(reversed(slices))
+    # 列表末尾是最新的一片。对半切时先压较早的一半、再压较新的一半，较新的会先被取走。
+    if start_s <= end_s:
+        slices: list[tuple[datetime, datetime]] = []
+        for gap_lo, gap_hi in _uncovered(start_s, end_s, covered or ()):
+            slices.extend(_time_slices(gap_lo, gap_hi, slice_seconds))
+    else:
+        slices = [(start_s, end_s)]
+    pending = list(slices)
+    fetched: list[tuple[datetime, datetime]] = []
     while pending:
         if outcome.requests >= max_requests:
             outcome.error = "request_bound_reached"
+            _note_covered(outcome, fetched)
             return outcome
         lo, hi = pending.pop()
         try:
             items = _items(post, token, lo, hi)
         except TuShareError as exc:
             outcome.error = exc.code
+            _note_covered(outcome, fetched)
             return outcome
         outcome.requests += 1
         if len(items) >= SATURATION:
@@ -147,11 +197,13 @@ def fetch_major_news(post: Post, token: str | None, *, start: datetime, end: dat
             seconds = int((hi - lo).total_seconds())
             if seconds < 1:
                 outcome.error = "same_second_saturated"
+                _note_covered(outcome, fetched)
                 return outcome
             mid = lo + timedelta(seconds=seconds // 2)
-            pending.append((mid + timedelta(seconds=1), hi))
             pending.append((lo, mid))
+            pending.append((mid + timedelta(seconds=1), hi))
             continue
+        fetched.append((lo, hi))
         fetched_at = clock()
         for item in items:
             document = _document(item, fetched_at)

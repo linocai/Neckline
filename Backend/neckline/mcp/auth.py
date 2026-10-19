@@ -21,6 +21,8 @@ from neckline.mcp.settings import McpSettings
 from neckline.mcp.state import Store
 
 SCOPE = "neckline:read"
+REGISTRATION_TTL_SECONDS = 3600
+REGISTRATION_LIMIT = 100
 _LOG = logging.getLogger("neckline.mcp")
 _CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")
 _CONNECTOR = re.compile(r"/connector/oauth/[A-Za-z0-9_-]+")
@@ -68,9 +70,11 @@ class OwnerAuth:
             raise RegistrationError("invalid_redirect_uri", "Only ChatGPT, Claude and Grok OAuth callback URLs are allowed.")
         if set(client_info.grant_types) - {"authorization_code", "refresh_token"}:
             raise RegistrationError("invalid_client_metadata", "Unsupported grant type.")
-        if self.store.count("client") >= 100:
+        if self.store.count_provisional("client") >= REGISTRATION_LIMIT:
+            _LOG.warning("registration limit reached")
             raise RegistrationError("invalid_client_metadata", "Registration limit reached.")
-        self.store.put("client", client_info.client_id, client_info.model_dump(mode="json"))
+        self.store.put("client", client_info.client_id, client_info.model_dump(mode="json"),
+                       time.time() + REGISTRATION_TTL_SECONDS)
 
     async def authorize(self, client, params: AuthorizationParams):
         if params.resource != self.settings.resource:
@@ -153,10 +157,17 @@ class OwnerAuth:
         self.store.put("refresh", refresh, {**common, "expires_at": now + 30 * 86400}, now + 30 * 86400)
         return OAuthToken(access_token=access, token_type="Bearer", expires_in=3600, refresh_token=refresh, scope=" ".join(scopes))
 
+    def _make_client_permanent(self, client) -> None:
+        data = self.store.get("client", client.client_id)
+        if data is None:
+            data = client.model_dump(mode="json")
+        self.store.put("client", client.client_id, data, 0)
+
     async def exchange_authorization_code(self, client, authorization_code):
         item = self.store.get("code", authorization_code.code, consume=True)
         if not item or item["client_id"] != client.client_id or item["resource"] != self.settings.resource:
             raise TokenError("invalid_grant", "Authorization code is invalid or has already been used.")
+        self._make_client_permanent(client)
         return self.issue(client.client_id, item["scopes"], item["resource"])
 
     async def load_refresh_token(self, client, refresh_token):

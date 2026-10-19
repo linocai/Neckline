@@ -43,6 +43,14 @@ class Store:
         with self.connect() as db:
             return db.execute("SELECT count(*) FROM records WHERE kind=? AND (expiry=0 OR expiry>=?)", (kind, time.time())).fetchone()[0]
 
+    def count_provisional(self, kind) -> int:
+        """未过期、且还不是永久（expiry 为 0）的记录。注册上限只数这一类。"""
+        with self.connect() as db:
+            return db.execute(
+                "SELECT count(*) FROM records WHERE kind=? AND expiry>0 AND expiry>=?",
+                (kind, time.time()),
+            ).fetchone()[0]
+
     def revoke_family(self, family) -> None:
         with self.connect() as db:
             rows = db.execute("SELECT kind,key,value FROM records WHERE kind IN ('access','refresh')").fetchall()

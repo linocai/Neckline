@@ -27,12 +27,14 @@ def _utc_now() -> datetime:
 
 def _fetch(key: str, *, start: datetime, end: datetime, settings: Mapping[str, Any], jin10_settings: Mapping[str, Any],
            tokens: Mapping[str, str | None], jin10_factory: Callable[..., jin10.Jin10Client],
-           tushare_post: tushare.Post | None, clock: Callable[[], datetime], max_pages: int | None) -> SourceOutcome:
+           tushare_post: tushare.Post | None, clock: Callable[[], datetime], max_pages: int | None,
+           covered: list[tuple[datetime, datetime]] | None = None) -> SourceOutcome:
     if key == "tushare-major-news":
         post = tushare_post or tushare.http_post(float(settings["timeoutSeconds"]))
         return tushare.fetch_major_news(post, tokens.get("TUSHARE_TOKEN"), start=start, end=end,
                                         slice_seconds=int(settings["sliceSeconds"]),
-                                        max_requests=max_pages or int(settings["maxRequests"]), clock=clock)
+                                        max_requests=max_pages or int(settings["maxRequests"]), clock=clock,
+                                        covered=covered)
     token = tokens.get("JIN10_MCP_TOKEN")
     if not token:
         outcome = SourceOutcome(source_key=key, requested_start=start, requested_end=end)
@@ -54,6 +56,7 @@ def run_collection(db_path: Path, *, now: datetime, config: Mapping[str, Any], t
         db.begin_collection(conn, run_id=run_id, slot_at=now, started_at=clock())
         marks = {key: db.source_watermark(conn, key) for key in SOURCES}
         attempts = {key: db.source_attempt_start(conn, key) for key in SOURCES}
+        covered = {key: db.source_covered(conn, key) for key in SOURCES}
     summaries = []
     for key in SOURCES:
         settings = config["sources"][key]
@@ -71,20 +74,23 @@ def run_collection(db_path: Path, *, now: datetime, config: Mapping[str, Any], t
             try:
                 outcome = _fetch(key, start=start, end=now, settings=settings, jin10_settings=config["jin10"],
                                  tokens=tokens, jin10_factory=jin10_factory, tushare_post=tushare_post,
-                                 clock=clock, max_pages=max_pages)
+                                 clock=clock, max_pages=max_pages, covered=covered[key])
             except Exception as exc:  # 异常正文可能带来源私有内容，只记类型
                 logger.warning("采集 %s 失败：%s", key, type(exc).__name__)
                 outcome = SourceOutcome(source_key=key, requested_start=start, requested_end=now)
                 outcome.error = f"source_failed:{type(exc).__name__}"
         with db.write(db_path) as conn:
             added = db.store_documents(conn, outcome.documents)
-        summaries.append({
+        summary = {
             "sourceKey": key, "requestedStart": outcome.requested_start.isoformat(),
             "requestedEnd": outcome.requested_end.isoformat(), "complete": outcome.complete, "error": outcome.error,
             "requests": outcome.requests, "documents": len(outcome.documents), "newVersions": added,
             "rejected": outcome.rejected,
             "oldestSeen": outcome.oldest_seen.isoformat() if outcome.oldest_seen else None,
-        })
+        }
+        if getattr(outcome, "covered", None):
+            summary["covered"] = outcome.covered
+        summaries.append(summary)
     if all(s["complete"] for s in summaries):
         status = "completed"
     elif any(s["documents"] for s in summaries):

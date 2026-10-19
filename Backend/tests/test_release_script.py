@@ -48,7 +48,8 @@ def _package(directory: Path, name: str, files: dict[str, bytes]) -> dict:
             bundle.addfile(info, io.BytesIO(data))
     wheel = backend / "neckline_runtime-3.7.0-py3-none-any.whl"
     wheel.write_bytes(b"wheel " + name.encode())
-    manifest = {"releaseSet": name, "backendFiles": {path: _digest(data) for path, data in files.items()},
+    manifest = {"releaseSet": name, "version": name.removeprefix("v").split("-b")[0], "commit": "c" * 40,
+                "backendFiles": {path: _digest(data) for path, data in files.items()},
                 "archiveSha256": _digest(tar_path.read_bytes()), "wheelSha256": _digest(wheel.read_bytes())}
     (backend / "release-manifest.json").write_text(json.dumps(manifest))
     return manifest
@@ -270,3 +271,155 @@ def test_ownership_ignores_a_missing_v4_database_and_checks_a_present_one(tmp_pa
     ))
     with pytest.raises(RuntimeError, match="V4"):
         release.assert_ownership()
+
+
+_PREVIOUS = "v4.0.0-b112"
+_TARGET = "v4.0.0-b113"
+_FLAGS = {"readPage": True, "modelKey": True, "mcp": True, "tushare": True, "mairui": True}
+
+
+def _health_body(release_set, **overrides):
+    body = {"releaseSet": release_set, "version": "v4.0.0", "db": "ready", **_FLAGS}
+    body.update(overrides)
+    return body
+
+
+def _drive_switch(tmp_path, monkeypatch, *, service_active, after, fail_restore=False):
+    """假 systemctl/curl。after 是文件切换完成、服务拉起来之后的 health。"""
+    root, old, legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True)
+    monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+    phase = {"down": False, "cycles": 0}
+    installed = []
+
+    def install_wheel(wheel):
+        installed.append(Path(wheel))
+
+    monkeypatch.setattr(release, "install_wheel", install_wheel)
+    if fail_restore:
+        original = release.write_runtime
+
+        def write_runtime(root_path, entries, remove):
+            if write_runtime.calls:
+                raise RuntimeError("restore failed")
+            write_runtime.calls += 1
+            return original(root_path, entries, remove)
+
+        write_runtime.calls = 0
+        monkeypatch.setattr(release, "write_runtime", write_runtime)
+
+    prior = _health_body(_PREVIOUS)
+
+    def fake_run(*args, check=True):
+        stdout = ""
+        if args and args[0] == "systemctl":
+            action = args[1]
+            if action == "is-active":
+                unit = args[2]
+                stdout = "active\n" if service_active and unit == "neckline.service" and not phase["down"] else "inactive\n"
+            elif action == "is-enabled":
+                stdout = "disabled\n"
+            elif action == "stop":
+                phase["down"] = True
+            elif action == "start" and phase["down"]:
+                phase["cycles"] += 1
+                phase["down"] = False
+            elif action == "start":
+                phase["down"] = False
+        elif args and args[0] == "curl":
+            if phase["cycles"] >= 2 or (phase["down"] and phase["cycles"] >= 1):
+                payload = prior
+            elif phase["cycles"] == 1 and not phase["down"]:
+                payload = after
+            else:
+                payload = prior
+            stdout = payload if isinstance(payload, str) else json.dumps(payload)
+        return subprocess.CompletedProcess(list(args), 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    return root, old, legacy, installed
+
+
+def _assert_database_untouched(root, legacy):
+    assert legacy.read_bytes() == b"leftover"
+    with sqlite3.connect(root / "data" / "v4.db") as conn:
+        assert conn.execute("SELECT count(*) FROM reports").fetchone()[0] == 1
+
+
+def _switch_state(root):
+    return json.loads((root / "releases" / _TARGET / "switch-state.json").read_text())
+
+
+def test_switch_rolls_back_when_health_never_becomes_ready(tmp_path, monkeypatch):
+    root, old, legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
+                                                 after=_health_body("v0.0.0-b0"))
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "health" in str(caught.value.__cause__)
+    release.verify_runtime(root, old)
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
+    assert _PREVIOUS in installed[1].parts and _TARGET in installed[0].parts
+    state = _switch_state(root)
+    assert state["rollback"] == {"status": "rolled_back", "release": _PREVIOUS}
+    _assert_database_untouched(root, legacy)
+
+
+def test_switch_rolls_back_when_db_is_not_ready(tmp_path, monkeypatch):
+    root, old, legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
+                                                 after=_health_body(_TARGET, db="db_not_ready"))
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    release.verify_runtime(root, old)
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
+    assert _PREVIOUS in installed[1].parts
+    assert _switch_state(root)["rollback"]["status"] == "rolled_back"
+    _assert_database_untouched(root, legacy)
+
+
+def test_switch_rolls_back_when_previously_true_mcp_becomes_false(tmp_path, monkeypatch):
+    root, old, legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
+                                                 after=_health_body(_TARGET, mcp=False))
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    release.verify_runtime(root, old)
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
+    assert _PREVIOUS in installed[1].parts
+    assert _switch_state(root)["rollback"]["release"] == _PREVIOUS
+    _assert_database_untouched(root, legacy)
+
+
+def test_switch_reports_manual_recovery_when_rollback_fails(tmp_path, monkeypatch):
+    root, _old, legacy, _installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
+                                                   after=_health_body("v0.0.0-b0"), fail_restore=True)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    assert (root / "neckline/morning/api.py").read_bytes() == b"v4"
+    assert not (root / "neckline/retired/m000.py").exists()
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _TARGET
+    state = _switch_state(root)
+    assert state["rollback"]["status"] == "failed"
+    assert "restore failed" in state["rollback"]["error"]
+    _assert_database_untouched(root, legacy)
+
+
+def test_switch_skips_readiness_when_the_api_was_not_running(tmp_path, monkeypatch):
+    root, _old, legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=False, after="not-json")
+    result = release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert result["readiness"] == "切换前 API 未运行，已跳过就绪检查"
+    assert set(result) == {"release", "commit", "switched", "runtimeFiles", "removedFiles",
+                           "recoveryPoint", "units", "readiness"}
+    assert result["switched"] is True and result["release"] == _TARGET and result["commit"]
+    assert (root / "neckline/api/app.py").read_bytes() == b"b113"
+    assert len(installed) == 1 and _TARGET in installed[0].parts
+    _assert_database_untouched(root, legacy)
+
+
+def test_successful_switch_keeps_the_previous_return_keys(tmp_path, monkeypatch):
+    root, _old, _legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
+                                                   after=_health_body(_TARGET))
+    result = release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert set(result) == {"release", "commit", "switched", "runtimeFiles", "removedFiles", "recoveryPoint", "units"}
+    assert result["switched"] is True and result["release"] == _TARGET
+    assert (root / "neckline/api/app.py").read_bytes() == b"b113"
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _TARGET
+    assert len(installed) == 1 and _TARGET in installed[0].parts

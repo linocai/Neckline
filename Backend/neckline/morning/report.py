@@ -62,9 +62,11 @@ def _cst(ts: datetime) -> str:
 
 
 def _covered(intervals: list[tuple[datetime, datetime]], start: datetime, end: datetime) -> bool:
+    """相邻切片差 1 秒（下一片从上片结束后 1 秒开始），这一秒不算缺口。"""
     reach = start
+    step = timedelta(seconds=1)
     for lo, hi in sorted(intervals):
-        if lo > reach:
+        if lo > reach + step:
             return False
         reach = max(reach, hi)
         if reach >= end:
@@ -72,8 +74,25 @@ def _covered(intervals: list[tuple[datetime, datetime]], start: datetime, end: d
     return reach >= end
 
 
+def _covered_pair(pair: object) -> tuple[datetime, datetime] | None:
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        return None
+    if not isinstance(pair[0], str) or not isinstance(pair[1], str):
+        return None
+    try:
+        lo, hi = datetime.fromisoformat(pair[0]), datetime.fromisoformat(pair[1])
+    except ValueError:
+        return None
+    if lo.tzinfo is None or hi.tzinfo is None:
+        return None
+    return lo, hi
+
+
 def coverage_gaps(runs: list[dict], start: datetime, end: datetime) -> list[str]:
-    """逐来源看窗口是否被完整的采集覆盖；没覆盖的写明最后一次的原因。"""
+    """逐来源看窗口是否被完整的采集覆盖；没覆盖的写明最后一次的原因。
+
+    不完整的记录若带 covered 切片，这些切片也算覆盖。没有该字段的旧记录只看 complete。
+    """
     gaps = []
     for key, label in SOURCE_LABELS.items():
         intervals, last_error = [], None
@@ -84,8 +103,13 @@ def coverage_gaps(runs: list[dict], start: datetime, end: datetime) -> list[str]
                 if source.get("complete"):
                     intervals.append((datetime.fromisoformat(source["requestedStart"]),
                                       datetime.fromisoformat(source["requestedEnd"])))
-                elif source.get("error"):
-                    last_error = source["error"]
+                else:
+                    for pair in source.get("covered") or []:
+                        parsed = _covered_pair(pair)
+                        if parsed is not None:
+                            intervals.append(parsed)
+                    if source.get("error"):
+                        last_error = source["error"]
         if not _covered(intervals, start, end):
             reason = ERROR_LABELS.get(str(last_error).split(":")[0], "没取全") if last_error else "没取全"
             gaps.append(f"{label}{reason}")

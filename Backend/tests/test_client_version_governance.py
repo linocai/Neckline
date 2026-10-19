@@ -1,8 +1,13 @@
-"""客户端版本号治理守门(§五 v1.5-⑤-E,A2)。`neckline/api/app.py::VERSION`(去 v 前缀)
-与客户端 `App/project.yml` 的 `settings.base.MARKETING_VERSION`、
-`App/Neckline.xcodeproj/project.pbxproj` 里 **Neckline app target**(非
-NecklineTests)每一处 `MARKETING_VERSION`,三者必须恒等——以后服务端升版号忘了改
-客户端,本测试当场拦下并打印各自实际值,不必等真机换包才发现漂移。
+"""版本号守门(§五 v1.5-⑤-E,A2)。分两组，组内必须恒等：
+
+- 后端：`neckline/api/app.py::VERSION`(去 v 前缀)、`neckline.__version__`、
+  `pyproject.toml` 的 version。
+- 客户端：`App/project.yml` 的 `settings.base.MARKETING_VERSION`，以及
+  `App/Neckline.xcodeproj/project.pbxproj` 里 **Neckline app target**(非
+  NecklineTests)每一处 `MARKETING_VERSION`。
+
+4.0.1 起后端可以先于 App 升版本（B120：App 仍是 4.0.0，后端 4.0.1），
+不再要求这两组彼此相等。客户端单一源仍是 project.yml。
 
 **背景(现状就是病,v1.5-⑤-E 原文)**:`project.yml` 曾长期停在 `"1.0.0"`,`pbxproj`
 被手改到 `"1.4.1"`——两边已漂移,`xcodegen generate` 一重跑就会把 app target 的版本
@@ -103,10 +108,40 @@ def test_client_and_server_marketing_version_all_equal():
         "预期 pbxproj 里 Neckline app target(Debug + Release)各一处 MARKETING_VERSION,"
         f"实际抓到 {len(pbx_versions)} 处。各方实际值:{actual}"
     )
-    assert {server, package, pyproject} == {yml_version}, f"服务端包版本与 project.yml 版本号不一致。各方实际值:{actual}"
+    assert server == package == pyproject, f"后端 VERSION、包版本与 pyproject 不一致。各方实际值:{actual}"
     assert set(pbx_versions) == {yml_version}, (
         f"pbxproj Neckline app target 版本号与 project.yml 不一致。各方实际值:{actual}"
     )
+
+
+def test_mcp_and_jin10_report_the_package_version(tmp_path):
+    """对外报的版本跟包版本走，不能再写死。"""
+    import json
+
+    import httpx
+
+    from neckline.mcp.server import _build
+    from neckline.mcp.settings import McpSettings
+    from neckline.news.jin10 import PROTOCOL_VERSION, Jin10Client
+
+    package = _package_version()
+    settings = McpSettings("https://nk.linotsai.top", "ab" * 16, "cd" * 32, tmp_path / "oauth.db")
+    assert _build(settings, object()).server.version == package
+
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body.get("method") == "notifications/initialized":
+            return httpx.Response(202)
+        result = {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}} if body.get("method") == "initialize" else {"tools": []}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result},
+                              headers={"content-type": "application/json"})
+
+    with Jin10Client(token="t", timeout_seconds=5, transport=httpx.MockTransport(handler)) as client:
+        client.pagination_argument("list_flash")
+    assert bodies[0]["params"]["clientInfo"] == {"name": "Neckline", "version": package}
 
 
 def test_app_icon_is_one_asset_set_shared_by_both_configurations():

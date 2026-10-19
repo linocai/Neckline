@@ -11,8 +11,11 @@ A release directory holds ``release.py`` plus ``backend/`` with the runtime
 archive, the wheel and ``release-manifest.json``. ``switch`` snapshots the
 database, replaces the runtime files (adding and removing files as the
 manifest says), installs the wheel and returns every service and timer to the
-state it had before; any failure restores the previous runtime. The production
-database is never restored or overwritten.
+state it had before. A failure while the files are being replaced restores the
+previous runtime immediately. If the files are already in place but the units
+do not return to their previous state, or the readiness check fails, switch
+rolls the runtime back and raises. The production database is never restored
+or overwritten.
 """
 from __future__ import annotations
 
@@ -243,16 +246,88 @@ def assert_ownership() -> None:
         raise RuntimeError("V4 晨报库属主或权限异常")
 
 
-def health(release: str) -> None:
+READY_FLAGS = ("readPage", "modelKey", "mcp", "tushare", "mairui")
+
+
+def _read_health() -> dict | None:
+    result = run("curl", "-s", "-m", "3", "http://127.0.0.1:8002/api/v4/health", check=False)
+    try:
+        body = json.loads(result.stdout)
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _version_matches(reported: object, expected: str) -> bool:
+    """就绪接口的 version 带 v 前缀，清单里的 version 不带。"""
+    if not isinstance(reported, str):
+        return False
+    return reported.removeprefix("v") == expected.removeprefix("v")
+
+
+def _health_matches(body: dict, release: str, version: str | None, prior: dict | None) -> bool:
+    if body.get("releaseSet") != release or body.get("db") != "ready":
+        return False
+    if version is not None and not _version_matches(body.get("version"), version):
+        return False
+    if prior:
+        for flag in READY_FLAGS:
+            if prior.get(flag) is True and body.get(flag) is not True:
+                return False
+    return True
+
+
+def health(release: str, *, version: str | None = None, prior: dict | None = None) -> None:
     for _ in range(40):
-        result = run("curl", "-s", "-m", "3", "http://127.0.0.1:8002/api/v4/health", check=False)
-        try:
-            if json.loads(result.stdout).get("releaseSet") == release:
-                return
-        except ValueError:
-            pass
+        body = _read_health()
+        if body is not None and _health_matches(body, release, version, prior):
+            return
         time.sleep(0.5)
     raise RuntimeError(f"health 未报告 {release}")
+
+
+def _capture_health() -> dict | None:
+    for _ in range(40):
+        body = _read_health()
+        if body is not None:
+            return body
+        time.sleep(0.5)
+    return None
+
+
+def _write_switch_state(directory: Path, record: dict) -> None:
+    (directory / "switch-state.json").write_text(json.dumps(record, indent=2))
+
+
+def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
+                  new: dict, before: dict, prior: dict | None, api_running: bool) -> None:
+    """停服，还原上一版文件、wheel 和清单，再按旧版本做就绪检查。不碰生产库。"""
+    run("systemctl", "mask", "--runtime", *SERVICES)
+    try:
+        run("systemctl", "stop", *TIMERS)
+        run("systemctl", "stop", *SERVICES)
+        for _ in range(40):
+            if all(unit_state(unit)["active"] == "inactive" for unit in SERVICES):
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("服务未停止")
+        write_runtime(ROOT, old_entries, set(new["backendFiles"]) - set(old["backendFiles"]))
+        install_wheel(old_wheel)
+        verify_runtime(ROOT, old)
+        shutil.copyfile(old_dir / "backend/release-manifest.json", ROOT / "release-manifest.json")
+        os.chmod(ROOT / "release-manifest.json", 0o644)
+    finally:
+        run("systemctl", "unmask", "--runtime", *SERVICES)
+        for unit in SERVICES + TIMERS:
+            if before[unit]["active"] == "active":
+                run("systemctl", "start", unit, check=False)
+    if not api_running:
+        return
+    version = old.get("version")
+    if not isinstance(version, str) or not version:
+        raise RuntimeError("旧清单缺少 version")
+    health(previous, version=version, prior=prior)
 
 
 def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
@@ -280,8 +355,10 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 "changedFiles": sorted(name for name in set(new["backendFiles"]) & set(old["backendFiles"])
                                        if new["backendFiles"][name] != old["backendFiles"][name]),
                 "units": before}
+    api_running = before["neckline.service"]["active"] == "active"
+    prior_health = _capture_health() if api_running else None
     record: dict = {"release": release, "previous": previous, "startedAt": datetime.now(timezone.utc).isoformat(),
-                    "unitsBefore": before}
+                    "unitsBefore": before, "apiRunningBefore": api_running, "priorHealth": prior_health}
     masked = switched = False
     try:
         run("systemctl", "mask", "--runtime", *SERVICES)
@@ -319,14 +396,42 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         record["unitsAfter"] = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
         record["switched"] = switched
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
-        (new_dir / "switch-state.json").write_text(json.dumps(record, indent=2))
-    if record["unitsAfter"] != before:
-        raise RuntimeError("服务或 timer 状态未恢复到切换前")
-    health(release)
-    return {"release": release, "commit": new["commit"], "switched": switched,
-            "runtimeFiles": len(new["backendFiles"]),
-            "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
-            "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
+        _write_switch_state(new_dir, record)
+
+    def result() -> dict:
+        return {"release": release, "commit": new["commit"], "switched": switched,
+                "runtimeFiles": len(new["backendFiles"]),
+                "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
+                "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
+
+    try:
+        if record["unitsAfter"] != before:
+            raise RuntimeError("服务或 timer 状态未恢复到切换前")
+        if not api_running:
+            note = "切换前 API 未运行，已跳过就绪检查"
+            record["readiness"] = note
+            _write_switch_state(new_dir, record)
+            return {**result(), "readiness": note}
+        version = new.get("version")
+        if not isinstance(version, str) or not version:
+            raise RuntimeError("新清单缺少 version")
+        health(release, version=version, prior=prior_health)
+    except Exception as exc:
+        record["failure"] = f"{type(exc).__name__}: {exc}"
+        try:
+            _roll_back_to(previous=previous, old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir,
+                          new=new, before=before, prior=prior_health, api_running=api_running)
+        except Exception as rollback_exc:
+            record["rollback"] = {"status": "failed", "release": previous,
+                                  "error": f"{type(rollback_exc).__name__}: {rollback_exc}"}
+            record["finishedAt"] = datetime.now(timezone.utc).isoformat()
+            _write_switch_state(new_dir, record)
+            raise RuntimeError("回滚失败，需人工处理") from rollback_exc
+        record["rollback"] = {"status": "rolled_back", "release": previous}
+        record["finishedAt"] = datetime.now(timezone.utc).isoformat()
+        _write_switch_state(new_dir, record)
+        raise RuntimeError(f"已回滚到 {previous}") from exc
+    return result()
 
 
 def main() -> None:

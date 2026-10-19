@@ -229,7 +229,11 @@ def test_tushare_splits_saturated_intervals():
 
     outcome = tushare.fetch_major_news(post, "token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "17:00"),
                                        slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "17:00"))
-    assert outcome.complete and len(seen) == 3 and seen[1][1] < seen[2][0]
+    assert outcome.complete and seen == [
+        ("2026-10-12 15:00:00", "2026-10-12 17:00:00"),
+        ("2026-10-12 16:00:01", "2026-10-12 17:00:00"),
+        ("2026-10-12 15:00:00", "2026-10-12 16:00:00"),
+    ]
     assert len(outcome.documents) == 4  # 满额那次的 400 条不留，只留两半各自的结果
     assert tushare.fetch_major_news(post, None, start=at("2026-10-12", "15:00"), end=at("2026-10-12", "17:00"),
                                     slice_seconds=10800, max_requests=8,
@@ -249,9 +253,9 @@ def test_tushare_requests_fixed_slices_in_order():
                                        slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "22:00"))
     assert outcome.complete and outcome.error is None and outcome.requests == 3
     assert seen == [
-        ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
-        ("2026-10-12 18:00:01", "2026-10-12 21:00:01"),
         ("2026-10-12 21:00:02", "2026-10-12 22:00:00"),
+        ("2026-10-12 18:00:01", "2026-10-12 21:00:01"),
+        ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
     ]
 
 
@@ -271,11 +275,11 @@ def test_tushare_bisects_only_the_saturated_slice():
     outcome = tushare.fetch_major_news(post, "token", start=at("2026-10-12", "15:00"), end=at("2026-10-12", "22:00"),
                                        slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "22:00"))
     assert seen == [
-        ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
-        saturated,
-        ("2026-10-12 18:00:01", "2026-10-12 19:30:01"),
-        ("2026-10-12 19:30:02", "2026-10-12 21:00:01"),
         ("2026-10-12 21:00:02", "2026-10-12 22:00:00"),
+        saturated,
+        ("2026-10-12 19:30:02", "2026-10-12 21:00:01"),
+        ("2026-10-12 18:00:01", "2026-10-12 19:30:01"),
+        ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
     ]
     assert outcome.complete and outcome.requests == 5 and len(outcome.documents) == 4
 
@@ -294,7 +298,7 @@ def test_tushare_stops_on_daily_quota_and_keeps_earlier_documents():
                                        slice_seconds=10800, max_requests=8, clock=lambda: at("2026-10-12", "22:00"))
     assert outcome.error == "quota_exceeded" and outcome.complete is False
     assert [doc.title for doc in outcome.documents] == ["标题甲"] and outcome.requests == 1
-    assert calls == ["2026-10-12 15:00:00", "2026-10-12 18:00:01"]
+    assert calls == ["2026-10-12 21:00:02", "2026-10-12 18:00:01"]
     assert "secret-token" not in outcome.error and "频率超限" not in outcome.error
 
     other = []
@@ -358,8 +362,10 @@ def test_incomplete_collection_resumes_from_the_first_attempt(path):
     second = run_collection(path, now=second_now, config=COLLECTION, tokens=tokens, jin10_factory=factory,
                             tushare_post=post, clock=lambda: second_now)
     tushare_second = next(s for s in second["sources"] if s["sourceKey"] == "tushare-major-news")
+    assert tushare_first["covered"] == [["2026-10-12T21:00:02+08:00", "2026-10-12T22:00:00+08:00"]]
     assert tushare_second["requestedStart"] == bootstrap.isoformat() and tushare_second["complete"]
-    assert calls[2] == ("2026-10-12 15:00:00", "2026-10-12 18:00:00")
+    assert ("2026-10-12 21:00:02", "2026-10-12 22:00:00") not in calls[2:]
+    assert calls[2] == ("2026-10-13 07:00:04", "2026-10-13 08:00:00")
     with db.read(path) as conn:
         assert db.source_watermark(conn, "tushare-major-news") == second_now
 
