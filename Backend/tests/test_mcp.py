@@ -146,6 +146,11 @@ def _start(test_client, client, redirect=CHATGPT):
     # 浏览器在 no-referrer 下会把表单 POST 的 Origin 报成 null，登录页必须用 same-origin。
     assert form.headers["referrer-policy"] == "same-origin"
     assert response.headers["referrer-policy"] == "no-referrer"
+    # 登录成功后的 303 要能跳到客户端回调：form-action 必须放行三个回调域名，其他路由仍只有 'self'。
+    login_csp = form.headers["content-security-policy"]
+    assert all(f"https://{host}" in login_csp.split("form-action", 1)[1].split(";", 1)[0]
+               for host in ("chatgpt.com", "claude.ai", "claude.com"))
+    assert "form-action 'self';" in response.headers["content-security-policy"]
     return dict(re.findall(r'name="(request|csrf)" value="([^"]+)"', form.text))
 
 
@@ -331,9 +336,27 @@ def _auth_db():
     return Path(os.environ["NECKLINE_MCP_AUTH_DB"])
 
 
+def test_token_requests_may_omit_resource_but_not_send_a_wrong_one(browser):
+    """授权码和刷新令牌签发时已绑定本服务：客户端换令牌、续期不带 resource 也要能用，带错的仍拒绝。"""
+    test_client, _doc = browser
+    client = _register(test_client).json()
+    payload = {"grant_type": "authorization_code", "client_id": client["client_id"],
+               "client_secret": client["client_secret"], "redirect_uri": CHATGPT,
+               "code": _login(test_client, client), "code_verifier": VERIFIER}
+    traded = test_client.post("/token", data=payload)
+    assert traded.status_code == 200, traded.text
+    refresh = {"grant_type": "refresh_token", "client_id": client["client_id"],
+               "client_secret": client["client_secret"], "refresh_token": traded.json()["refresh_token"]}
+    assert test_client.post("/token", data={**refresh, "resource": "https://evil.example/mcp"}).status_code == 400
+    renewed = test_client.post("/token", data=refresh)
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["access_token"] != traded.json()["access_token"]
+
+
 def test_request_body_and_login_are_limited(browser):
     test_client, _doc = browser
     assert test_client.post("/mcp", content=b"x" * 65537).status_code == 413
     for _ in range(10):
-        assert test_client.post("/login", data={}).status_code == 403
+        reused = test_client.post("/login", data={})
+        assert reused.status_code == 400 and "已经用过或已过期" in reused.text
     assert test_client.post("/login", data={}).status_code == 429

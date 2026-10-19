@@ -65,7 +65,9 @@ class LoginLimiter:
 
 def _token_guard(body: bytes, resource: str):
     form = parse_qs(body.decode("utf-8", errors="replace"))
-    if form.get("resource") != [resource]:
+    # 带了 resource 就必须是本服务；没带也放行：授权码和刷新令牌在签发时已绑定本服务，
+    # 换令牌时 OwnerAuth 还会再核对一次。避免客户端续期时不带 resource 导致连接过一小时就断。
+    if "resource" in form and form["resource"] != [resource]:
         return _json({"error": "invalid_target"}, 400)
     verifier = form.get("code_verifier", [""])[0]
     if form.get("grant_type") == ["authorization_code"] and not _VERIFIER.fullmatch(verifier):
@@ -103,6 +105,12 @@ def _secure_send(send, path: str | None = None):
     # 登录页用 same-origin：no-referrer 会让浏览器把表单 POST 的 Origin 报成 null，
     # 登录的 Origin 校验就永远过不了（10/19 Claude 实测 403）。same-origin 对外站仍不带来源。
     policy = b"same-origin" if path == "/login" else b"no-referrer"
+    # Chrome 把 form-action 也用在表单提交后的重定向上：登录成功后的 303 跳回客户端回调，
+    # 只写 'self' 会被拦下（10/19 Claude 实测：登录 303 后停在原页，再点一次就 403）。
+    # 登录页只多放行 auth.allowed_redirect 认可的三个回调域名。
+    targets = b" https://chatgpt.com https://claude.ai https://claude.com" if path == "/login" else b""
+    csp = (b"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" + targets
+           + b"; frame-ancestors 'none'; base-uri 'none'")
 
     async def wrapped(message):
         if message["type"] == "http.response.start":
@@ -112,7 +120,7 @@ def _secure_send(send, path: str | None = None):
                 (b"cache-control", b"no-store"),
                 (b"referrer-policy", policy),
                 (b"x-content-type-options", b"nosniff"),
-                (b"content-security-policy", b"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
+                (b"content-security-policy", csp),
             ])
             message["headers"] = headers
         await send(message)

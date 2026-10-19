@@ -97,7 +97,11 @@ class OwnerAuth:
         pending = str(form.get("request", ""))
         item = self.store.get("pending", pending)
         csrf = str(form.get("csrf", ""))
-        if (not item or request.headers.get("origin") != self.settings.origin or not _same(csrf, item["csrf"])
+        if not item:
+            # 已用过（授权成功后再点一次）或已过期：如实说明，不和校验失败混在一起。
+            return HTMLResponse("这次连接请求已经用过或已过期。授权成功的话回到对话客户端即可；否则请在客户端重新连接。",
+                                status_code=400)
+        if (request.headers.get("origin") != self.settings.origin or not _same(csrf, item["csrf"])
                 or not _same(request.cookies.get("__Secure-nl-login", ""), item["csrf"])):
             return HTMLResponse("连接校验失败，请回到对话客户端重试。", status_code=403)
         password = str(form.get("password", ""))
