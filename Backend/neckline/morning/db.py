@@ -16,6 +16,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from urllib.parse import unquote
 
 from neckline.news.model import SourceDocument
+from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
 SCHEMA_VERSION = 1
@@ -222,7 +223,7 @@ def iter_documents(conn: sqlite3.Connection, *, published_from: datetime, publis
                "fetchedAt": row["fetched_at"], "text": row["original_text"], "excerpt": row["excerpt"], "meta": meta}
 
 
-_DOC_REF = re.compile(r"^(doc_[0-9a-f]{32})(?:@([1-9][0-9]*))?$")
+_DOC_REF = re.compile(r"^(doc_[0-9a-f]{32})(?:@([1-9][0-9]{0,17}))?$")
 _DOC_COLUMNS = """SELECT v.document_id, v.revision, d.source_key, d.url, d.first_seen_at, v.published_at,
        v.fetched_at, v.title, v.original_text, v.excerpt, v.metadata_json
 FROM document_versions v JOIN documents d USING(document_id)"""
@@ -231,7 +232,7 @@ FROM document_versions v JOIN documents d USING(document_id)"""
 def parse_document_ref(ref: str) -> tuple[str, int | None] | None:
     """`doc_<32hex>` 取最新版本，`doc_<32hex>@<正整数>` 取精确版本。格式不对返回 None。
 
-    `%40` 与 `@` 同一写法。前导零、0、负数、大写、长度不对都算找不到。
+    `%40` 与 `@` 同一写法。版本号只接受 1–18 位数字；更长、前导零、0、负数、大写、长度不对都算找不到。
     """
     if not isinstance(ref, str) or not ref:
         return None
@@ -282,6 +283,12 @@ def finish_collection(conn: sqlite3.Connection, *, run_id: str, status: str, sou
                  (status, _dumps(list(sources)), utc(finished_at), run_id))
 
 
+def save_collection_sources(conn: sqlite3.Connection, *, run_id: str, sources: Sequence[Mapping]) -> None:
+    """一个来源取完就把它的摘要写进这条仍为 running 的记录，终态等全部结束再改。"""
+    conn.execute("UPDATE collection_runs SET sources_json=? WHERE run_id=? AND status='running'",
+                 (_dumps(list(sources)), run_id))
+
+
 def source_watermark(conn: sqlite3.Connection, source_key: str) -> datetime | None:
     """该来源最近一次完整覆盖到的时刻；下次采集从这里减去回看时长开始。"""
     best = None
@@ -320,18 +327,27 @@ def _covered_pair(pair: object) -> tuple[datetime, datetime] | None:
     return start, end
 
 
-def source_covered(conn: sqlite3.Connection, source_key: str) -> list[tuple[datetime, datetime]]:
-    """来源记录里的 covered 切片。没有该字段的旧记录不贡献区间。"""
+def source_covered(conn: sqlite3.Connection, source_key: str, *,
+                   lookback_seconds: int) -> list[tuple[datetime, datetime]]:
+    """来源记录里的 covered 切片，中断后停在 running 的记录也算。
+
+    每条记录只保留「requestedEnd − lookback_seconds」之前的部分。没有 covered 的旧记录不贡献区间。
+    """
     found: list[tuple[datetime, datetime]] = []
     rows = conn.execute("SELECT sources_json FROM collection_runs ORDER BY started_at, rowid")
     for row in rows:
         for source in json.loads(row["sources_json"]):
             if source.get("sourceKey") != source_key:
                 continue
-            for pair in source.get("covered") or []:
-                parsed = _covered_pair(pair)
-                if parsed is not None:
-                    found.append(parsed)
+            raw_end = source.get("requestedEnd")
+            if not isinstance(raw_end, str):
+                continue
+            try:
+                fetched_at = datetime.fromisoformat(raw_end)
+            except ValueError:
+                continue
+            parsed = [item for pair in source.get("covered") or [] if (item := _covered_pair(pair)) is not None]
+            found.extend(clip_covered_to_lookback(parsed, fetched_at=fetched_at, lookback_seconds=lookback_seconds))
     return found
 
 

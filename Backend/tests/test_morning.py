@@ -364,8 +364,9 @@ def test_incomplete_collection_resumes_from_the_first_attempt(path):
     tushare_second = next(s for s in second["sources"] if s["sourceKey"] == "tushare-major-news")
     assert tushare_first["covered"] == [["2026-10-12T21:00:02+08:00", "2026-10-12T22:00:00+08:00"]]
     assert tushare_second["requestedStart"] == bootstrap.isoformat() and tushare_second["complete"]
-    assert ("2026-10-12 21:00:02", "2026-10-12 22:00:00") not in calls[2:]
-    assert calls[2] == ("2026-10-13 07:00:04", "2026-10-13 08:00:00")
+    # 第一轮那片取到时还在回看里，续跑要重新覆盖 21:00 之后，不再按「整片已覆盖」跳过。
+    assert ("2026-10-12 21:00:02", "2026-10-13 00:00:02") in calls[2:]
+    assert calls[2] == ("2026-10-13 06:00:05", "2026-10-13 08:00:00")
     with db.read(path) as conn:
         assert db.source_watermark(conn, "tushare-major-news") == second_now
 

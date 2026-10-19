@@ -414,6 +414,167 @@ def test_switch_skips_readiness_when_the_api_was_not_running(tmp_path, monkeypat
     _assert_database_untouched(root, legacy)
 
 
+def _drive_scripted(tmp_path, monkeypatch, *, service_active, extra_active=(), curl=None, install=None):
+    """和 _drive_switch 同一套阶段，但记下每条命令，并允许替换 curl / wheel 安装。"""
+    root, old, legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True)
+    monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+    phase = {"down": False, "cycles": 0}
+    calls = []
+    monkeypatch.setattr(release, "install_wheel", install or (lambda _wheel: None))
+    prior = _health_body(_PREVIOUS)
+    active = {"neckline.service"} if service_active else set()
+    active.update(extra_active)
+
+    def fake_run(*args, check=True):
+        calls.append(args)
+        if args and args[0] == "curl" and curl is not None:
+            return curl()
+        stdout = ""
+        code = 0
+        if args and args[0] == "systemctl":
+            action = args[1]
+            unit = args[2] if len(args) > 2 else ""
+            if action == "is-active":
+                if phase["down"] or unit not in active:
+                    stdout = "inactive\n"
+                elif unit == "neckline-v4-morning.timer" and phase["cycles"] >= 2:
+                    stdout = "inactive\n"
+                else:
+                    stdout = "active\n"
+            elif action == "is-enabled":
+                stdout = "disabled\n"
+            elif action == "stop":
+                phase["down"] = True
+            elif action == "start" and phase["down"]:
+                phase["cycles"] += 1
+                phase["down"] = False
+            elif action == "start":
+                phase["down"] = False
+        elif args and args[0] == "curl":
+            if phase["cycles"] >= 2 or (phase["down"] and phase["cycles"] >= 1):
+                payload = prior
+            elif phase["cycles"] == 1 and not phase["down"]:
+                payload = _health_body("v0.0.0-b0")
+            else:
+                payload = prior
+            stdout = json.dumps(payload)
+        return subprocess.CompletedProcess(list(args), code, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    return root, old, legacy, calls
+
+
+def _actions(calls):
+    return [args[1] for args in calls if args and args[0] == "systemctl"]
+
+
+def test_rollback_failure_keeps_mask_and_records_the_scene(tmp_path, monkeypatch):
+    root, _old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True)
+    original = release.write_runtime
+
+    def write_runtime(root_path, entries, remove):
+        if write_runtime.calls:
+            raise RuntimeError("restore failed")
+        write_runtime.calls += 1
+        return original(root_path, entries, remove)
+
+    write_runtime.calls = 0
+    monkeypatch.setattr(release, "write_runtime", write_runtime)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    assert _actions(calls).count("unmask") == 1
+    assert _actions(calls).count("start") == 1
+    state = _switch_state(root)
+    assert state["rollback"]["status"] == "failed"
+    assert state["rollback"]["failedStep"] == "还原运行文件"
+    assert "restore failed" in state["rollback"]["error"]
+    assert state["rollback"]["fileState"] == "new"
+    assert state["rollback"]["masked"] is True
+    assert state["rollback"]["recoveryPoint"]
+    assert state["failure"]
+    assert (root / "neckline/morning/api.py").read_bytes() == b"v4"
+    _assert_database_untouched(root, legacy)
+
+
+def test_unmask_failure_after_mask_is_recorded(tmp_path, monkeypatch):
+    root, old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True)
+    real_run = release.run
+
+    def fake_run(*args, check=True):
+        if args and args[0] == "systemctl" and args[1] == "unmask":
+            calls.append(args)
+            raise RuntimeError("unmask failed")
+        return real_run(*args, check=check)
+
+    monkeypatch.setattr(release, "run", fake_run)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    assert "unmask failed" in str(caught.value.__cause__)
+    assert "start" not in _actions(calls)
+    state = _switch_state(root)
+    assert state["failure"] and state["rollback"]["status"] == "failed"
+    assert state["rollback"]["failedStep"] == "取消 mask"
+    assert state["rollback"]["masked"] is True
+    assert "unmask failed" in state["rollback"]["error"]
+    assert state["rollback"]["fileState"] == "old"
+    release.verify_runtime(root, old)
+    _assert_database_untouched(root, legacy)
+
+
+def test_old_wheel_restore_failure_is_recorded(tmp_path, monkeypatch):
+    root, old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=False)
+    calls_box = {"n": 0}
+
+    def install(_wheel):
+        calls_box["n"] += 1
+        if calls_box["n"] == 1:
+            raise RuntimeError("new wheel failed")
+        raise RuntimeError("old wheel failed")
+
+    monkeypatch.setattr(release, "install_wheel", install)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "old wheel failed" in str(caught.value.__cause__)
+    assert "unmask" not in _actions(calls) and "start" not in _actions(calls)
+    state = _switch_state(root)
+    assert state["failure"] and state["rollback"]["status"] == "failed"
+    assert state["rollback"]["failedStep"] == "安装旧 wheel"
+    assert "old wheel failed" in state["rollback"]["error"]
+    assert state["rollback"]["masked"] is True
+    release.verify_runtime(root, old)
+    _assert_database_untouched(root, legacy)
+
+
+def test_rollback_fails_when_previous_timer_does_not_come_back(tmp_path, monkeypatch):
+    root, old, legacy, _calls = _drive_scripted(
+        tmp_path, monkeypatch, service_active=True, extra_active={"neckline-v4-morning.timer"})
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    state = _switch_state(root)
+    assert state["rollback"]["status"] == "failed"
+    assert state["rollback"]["failedStep"] == "回滚后单元状态"
+    assert state["unitsBefore"]["neckline-v4-morning.timer"]["active"] == "active"
+    assert state["rollback"]["fileState"] == "old"
+    release.verify_runtime(root, old)
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
+    _assert_database_untouched(root, legacy)
+
+
+@pytest.mark.parametrize("stdout,code", [("", 28), ("not-json", 0), ("[]", 0), ("null", 0)])
+def test_switch_aborts_before_changes_when_prior_health_is_unusable(tmp_path, monkeypatch, stdout, code):
+    root, _old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True, curl=lambda: (
+        subprocess.CompletedProcess(["curl"], code, stdout=stdout, stderr="")))
+    with pytest.raises(RuntimeError, match="切换前读不到 health，未做任何改动"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "mask" not in _actions(calls) and "stop" not in _actions(calls) and "start" not in _actions(calls)
+    assert (root / "neckline/api/app.py").read_bytes() == b"b112"
+    assert not (root / "releases" / _TARGET / "switch-state.json").exists()
+    _assert_database_untouched(root, legacy)
+
+
 def test_successful_switch_keeps_the_previous_return_keys(tmp_path, monkeypatch):
     root, _old, _legacy, installed = _drive_switch(tmp_path, monkeypatch, service_active=True,
                                                    after=_health_body(_TARGET))

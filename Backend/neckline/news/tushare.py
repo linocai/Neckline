@@ -154,6 +154,25 @@ def _uncovered(start: datetime, end: datetime, covered: Sequence[tuple[datetime,
     return gaps
 
 
+def clip_covered_to_lookback(intervals: Sequence[tuple[datetime, datetime]], *,
+                             fetched_at: datetime, lookback_seconds: int) -> list[tuple[datetime, datetime]]:
+    """复用覆盖时只留下「取到的时候已经过了回看时长」的部分。
+
+    取数时刻是那条来源记录的 requestedEnd。回看窗里的切片下一轮还要再请求，
+    否则迟到的新闻会被当成已经覆盖而漏掉。
+    """
+    cutoff = fetched_at - timedelta(seconds=lookback_seconds)
+    kept: list[tuple[datetime, datetime]] = []
+    for lo, hi in intervals:
+        if lo > hi:
+            lo, hi = hi, lo
+        if hi > cutoff:
+            hi = cutoff
+        if lo <= hi:
+            kept.append((lo, hi))
+    return kept
+
+
 def _note_covered(outcome: SourceOutcome, intervals: Sequence[tuple[datetime, datetime]]) -> None:
     if not intervals:
         return

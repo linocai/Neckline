@@ -14,8 +14,11 @@ manifest says), installs the wheel and returns every service and timer to the
 state it had before. A failure while the files are being replaced restores the
 previous runtime immediately. If the files are already in place but the units
 do not return to their previous state, or the readiness check fails, switch
-rolls the runtime back and raises. The production database is never restored
-or overwritten.
+rolls the runtime back and raises. Units are started again only after the old
+files, wheel, manifest and runtime check have all succeeded. If that rollback
+fails, services stay masked and ``switch-state.json`` records the failed step.
+Any error after the units are masked is recorded there before it propagates.
+The production database is never restored or overwritten.
 """
 from __future__ import annotations
 
@@ -251,6 +254,8 @@ READY_FLAGS = ("readPage", "modelKey", "mcp", "tushare", "mairui")
 
 def _read_health() -> dict | None:
     result = run("curl", "-s", "-m", "3", "http://127.0.0.1:8002/api/v4/health", check=False)
+    if getattr(result, "returncode", 0) != 0:
+        return None
     try:
         body = json.loads(result.stdout)
     except ValueError:
@@ -299,35 +304,108 @@ def _write_switch_state(directory: Path, record: dict) -> None:
     (directory / "switch-state.json").write_text(json.dumps(record, indent=2))
 
 
+def _raise_step(step: str, exc: BaseException) -> None:
+    error = RuntimeError(f"{step}：{exc}")
+    error.step = step  # type: ignore[attr-defined]
+    raise error from exc
+
+
+def _runtime_file_state(old: dict, new: dict) -> str:
+    """旧文件、新文件，或两边都对不上（混合）。清单发布号用来区分两套内容碰巧相同的情况。"""
+    def matches(manifest: dict) -> bool:
+        try:
+            verify_runtime(ROOT, manifest)
+        except Exception:
+            return False
+        return True
+
+    old_ok, new_ok = matches(old), matches(new)
+    release_set = None
+    try:
+        release_set = json.loads((ROOT / "release-manifest.json").read_text()).get("releaseSet")
+    except Exception:
+        release_set = None
+    if old_ok and not new_ok:
+        return "old" if release_set in (None, old.get("releaseSet")) else "mixed"
+    if new_ok and not old_ok:
+        return "new" if release_set in (None, new.get("releaseSet")) else "mixed"
+    if old_ok and new_ok:
+        if release_set == old.get("releaseSet"):
+            return "old"
+        if release_set == new.get("releaseSet"):
+            return "new"
+    return "mixed"
+
+
+def _restore_runtime(*, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path, new: dict) -> None:
+    """还原旧文件、旧 wheel 和旧清单，并核对运行文件。失败时不碰服务。"""
+    remove = set(new["backendFiles"]) - set(old["backendFiles"])
+    try:
+        write_runtime(ROOT, old_entries, remove)
+    except Exception as exc:
+        _raise_step("还原运行文件", exc)
+    try:
+        install_wheel(old_wheel)
+    except Exception as exc:
+        _raise_step("安装旧 wheel", exc)
+    try:
+        shutil.copyfile(old_dir / "backend/release-manifest.json", ROOT / "release-manifest.json")
+        os.chmod(ROOT / "release-manifest.json", 0o644)
+    except Exception as exc:
+        _raise_step("还原清单", exc)
+    try:
+        verify_runtime(ROOT, old)
+    except Exception as exc:
+        _raise_step("校验旧运行文件", exc)
+
+
+def _restore_units(before: dict) -> None:
+    try:
+        run("systemctl", "unmask", "--runtime", *SERVICES)
+    except Exception as exc:
+        _raise_step("取消 mask", exc)
+    try:
+        for unit in SERVICES + TIMERS:
+            if before[unit]["active"] == "active":
+                run("systemctl", "start", unit, check=False)
+    except Exception as exc:
+        _raise_step("恢复单元", exc)
+
+
 def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
                   new: dict, before: dict, prior: dict | None, api_running: bool) -> None:
-    """停服，还原上一版文件、wheel 和清单，再按旧版本做就绪检查。不碰生产库。"""
+    """停服并还原上一版。只有文件、wheel、清单都还原且校验通过后才恢复单元。不碰生产库。"""
     run("systemctl", "mask", "--runtime", *SERVICES)
     try:
         run("systemctl", "stop", *TIMERS)
         run("systemctl", "stop", *SERVICES)
+    except Exception as exc:
+        _raise_step("停止服务", exc)
+    try:
         for _ in range(40):
             if all(unit_state(unit)["active"] == "inactive" for unit in SERVICES):
                 break
             time.sleep(0.25)
         else:
             raise RuntimeError("服务未停止")
-        write_runtime(ROOT, old_entries, set(new["backendFiles"]) - set(old["backendFiles"]))
-        install_wheel(old_wheel)
-        verify_runtime(ROOT, old)
-        shutil.copyfile(old_dir / "backend/release-manifest.json", ROOT / "release-manifest.json")
-        os.chmod(ROOT / "release-manifest.json", 0o644)
-    finally:
-        run("systemctl", "unmask", "--runtime", *SERVICES)
-        for unit in SERVICES + TIMERS:
-            if before[unit]["active"] == "active":
-                run("systemctl", "start", unit, check=False)
-    if not api_running:
-        return
-    version = old.get("version")
-    if not isinstance(version, str) or not version:
-        raise RuntimeError("旧清单缺少 version")
-    health(previous, version=version, prior=prior)
+    except Exception as exc:
+        _raise_step("确认服务已停", exc)
+    _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
+    _restore_units(before)
+    if api_running:
+        version = old.get("version")
+        if not isinstance(version, str) or not version:
+            _raise_step("旧版本就绪检查", RuntimeError("旧清单缺少 version"))
+        try:
+            health(previous, version=version, prior=prior)
+        except Exception as exc:
+            _raise_step("旧版本就绪检查", exc)
+    try:
+        after = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+    except Exception as exc:
+        _raise_step("回滚后单元状态", exc)
+    if after != before:
+        _raise_step("回滚后单元状态", RuntimeError("回滚后服务或 timer 状态与切换前不一致"))
 
 
 def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
@@ -356,10 +434,52 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                                        if new["backendFiles"][name] != old["backendFiles"][name]),
                 "units": before}
     api_running = before["neckline.service"]["active"] == "active"
-    prior_health = _capture_health() if api_running else None
+    if api_running:
+        prior_health = _capture_health()
+        if prior_health is None:
+            raise RuntimeError("切换前读不到 health，未做任何改动")
+    else:
+        prior_health = None
     record: dict = {"release": release, "previous": previous, "startedAt": datetime.now(timezone.utc).isoformat(),
                     "unitsBefore": before, "apiRunningBefore": api_running, "priorHealth": prior_health}
-    masked = switched = False
+    masked = False
+    switched = False
+    settled = False
+
+    def outcome() -> dict:
+        return {"release": release, "commit": new["commit"], "switched": switched,
+                "runtimeFiles": len(new["backendFiles"]),
+                "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
+                "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
+
+    def fail_manual(step: str, exc: BaseException, *, masked_kept: bool) -> None:
+        nonlocal settled
+        origin = exc.__cause__ if exc.__cause__ is not None else exc
+        record["failure"] = record.get("failure") or f"{type(origin).__name__}: {origin}"
+        record["switched"] = switched
+        try:
+            file_state = _runtime_file_state(old, new)
+        except Exception as info_exc:
+            file_state = f"unknown:{type(info_exc).__name__}"
+        try:
+            units_now = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+        except Exception as info_exc:
+            units_now = {"error": f"{type(info_exc).__name__}: {info_exc}"}
+        record["unitsAfter"] = units_now
+        record["rollback"] = {
+            "status": "failed", "release": previous, "failedStep": step,
+            "error": f"{type(origin).__name__}: {origin}", "fileState": file_state,
+            "recoveryPoint": (record.get("snapshot") or {}).get("archive"), "masked": masked_kept,
+        }
+        record["finishedAt"] = datetime.now(timezone.utc).isoformat()
+        try:
+            _write_switch_state(new_dir, record)
+        except Exception as write_exc:
+            settled = True
+            raise RuntimeError("回滚失败，需人工处理") from write_exc
+        settled = True
+        raise RuntimeError("回滚失败，需人工处理") from exc
+
     try:
         run("systemctl", "mask", "--runtime", *SERVICES)
         masked = True
@@ -377,61 +497,88 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         try:
             write_runtime(ROOT, new_entries, set(old["backendFiles"]) - set(new["backendFiles"]))
             install_wheel(new_wheel)
-            verify_runtime(ROOT, new)
             shutil.copyfile(new_dir / "backend/release-manifest.json", ROOT / "release-manifest.json")
             os.chmod(ROOT / "release-manifest.json", 0o644)
+            verify_runtime(ROOT, new)
             switched = True
-        except Exception:
-            write_runtime(ROOT, old_entries, set(new["backendFiles"]) - set(old["backendFiles"]))
-            install_wheel(old_wheel)
-            verify_runtime(ROOT, old)
-            shutil.copyfile(old_dir / "backend/release-manifest.json", ROOT / "release-manifest.json")
+        except Exception as swap_exc:
+            try:
+                _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
+            except Exception as restore_exc:
+                fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc, masked_kept=True)
+            try:
+                _restore_units(before)
+                after_units = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+                if after_units != before:
+                    mismatch = RuntimeError("回滚后服务或 timer 状态与切换前不一致")
+                    mismatch.step = "回滚后单元状态"  # type: ignore[attr-defined]
+                    raise mismatch
+            except Exception as unit_exc:
+                step = getattr(unit_exc, "step", "恢复单元")
+                fail_manual(step, unit_exc, masked_kept=step == "取消 mask")
+            record["failure"] = f"{type(swap_exc).__name__}: {swap_exc}"
+            record["rollback"] = {"status": "rolled_back", "release": previous}
+            record["switched"] = False
+            record["unitsAfter"] = after_units
+            record["finishedAt"] = datetime.now(timezone.utc).isoformat()
+            settled = True
+            _write_switch_state(new_dir, record)
             raise
-    finally:
-        if masked:
-            run("systemctl", "unmask", "--runtime", *SERVICES)
-        for unit in SERVICES + TIMERS:
-            if before[unit]["active"] == "active":
-                run("systemctl", "start", unit, check=False)
+        try:
+            _restore_units(before)
+        except Exception as unit_exc:
+            step = getattr(unit_exc, "step", "取消 mask")
+            if step == "取消 mask":
+                try:
+                    _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
+                    switched = False
+                except Exception as restore_exc:
+                    fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc, masked_kept=True)
+                fail_manual(step, unit_exc, masked_kept=True)
+            raise
         record["unitsAfter"] = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
-        record["switched"] = switched
+        record["switched"] = True
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         _write_switch_state(new_dir, record)
-
-    def result() -> dict:
-        return {"release": release, "commit": new["commit"], "switched": switched,
-                "runtimeFiles": len(new["backendFiles"]),
-                "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
-                "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
-
-    try:
         if record["unitsAfter"] != before:
             raise RuntimeError("服务或 timer 状态未恢复到切换前")
         if not api_running:
             note = "切换前 API 未运行，已跳过就绪检查"
             record["readiness"] = note
             _write_switch_state(new_dir, record)
-            return {**result(), "readiness": note}
+            return {**outcome(), "readiness": note}
         version = new.get("version")
         if not isinstance(version, str) or not version:
             raise RuntimeError("新清单缺少 version")
         health(release, version=version, prior=prior_health)
+        return outcome()
     except Exception as exc:
-        record["failure"] = f"{type(exc).__name__}: {exc}"
+        if not masked or settled:
+            raise
+        record["failure"] = record.get("failure") or f"{type(exc).__name__}: {exc}"
         try:
-            _roll_back_to(previous=previous, old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir,
-                          new=new, before=before, prior=prior_health, api_running=api_running)
+            if switched:
+                _roll_back_to(previous=previous, old=old, old_entries=old_entries, old_wheel=old_wheel,
+                              old_dir=old_dir, new=new, before=before, prior=prior_health, api_running=api_running)
+            else:
+                _restore_units(before)
+                restored = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+                if restored != before:
+                    mismatch = RuntimeError("回滚后服务或 timer 状态与切换前不一致")
+                    mismatch.step = "回滚后单元状态"  # type: ignore[attr-defined]
+                    raise mismatch
         except Exception as rollback_exc:
-            record["rollback"] = {"status": "failed", "release": previous,
-                                  "error": f"{type(rollback_exc).__name__}: {rollback_exc}"}
-            record["finishedAt"] = datetime.now(timezone.utc).isoformat()
-            _write_switch_state(new_dir, record)
-            raise RuntimeError("回滚失败，需人工处理") from rollback_exc
+            step = getattr(rollback_exc, "step", "回滚")
+            kept = step not in {"恢复单元", "回滚后单元状态", "旧版本就绪检查"}
+            fail_manual(step, rollback_exc, masked_kept=kept)
         record["rollback"] = {"status": "rolled_back", "release": previous}
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
+        try:
+            record["unitsAfter"] = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+        except Exception:
+            pass
         _write_switch_state(new_dir, record)
         raise RuntimeError(f"已回滚到 {previous}") from exc
-    return result()
 
 
 def main() -> None:

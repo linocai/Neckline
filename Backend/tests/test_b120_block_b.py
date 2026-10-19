@@ -143,7 +143,7 @@ def _config(*, max_requests: int, slice_seconds: int = 3600) -> dict:
                         "jin10-news": {"lookbackSeconds": 3600, "maxPages": 4, "timeoutSeconds": 5}}}
 
 
-def test_tushare_budget_gap_catches_up_without_repeating_covered_slices(tmp_path):
+def test_tushare_budget_gap_catches_up_without_repeating_slices_outside_lookback(tmp_path):
     path = tmp_path / "v4.db"
     db.init_schema(path)
     now, bootstrap = at("2026-10-12", "20:00"), at("2026-10-12", "15:00")
@@ -159,7 +159,8 @@ def test_tushare_budget_gap_catches_up_without_repeating_covered_slices(tmp_path
 
     tokens = {"TUSHARE_TOKEN": "t", "JIN10_MCP_TOKEN": "j"}
     rounds = []
-    for index in range(3):
+    mark = None
+    for _round in range(8):
         before = len(calls)
         result = run_collection(path, now=now, config=_config(max_requests=2), tokens=tokens,
                                 bootstrap_start=bootstrap, jin10_factory=factory, tushare_post=post,
@@ -169,15 +170,11 @@ def test_tushare_budget_gap_catches_up_without_repeating_covered_slices(tmp_path
         assert len(made) <= 2
         with db.read(path) as conn:
             mark = db.source_watermark(conn, "tushare-major-news")
-        if index < 2:
-            assert mark is None
-        else:
-            assert mark == now
-    assert [len(made) for _, made in rounds] == [2, 2, 1]
-    flat = [item for _, made in rounds for item in made]
-    assert len(flat) == len(set(flat)) == 5
-    assert set(rounds[0][1]).isdisjoint(rounds[1][1])
-    assert set(rounds[0][1]).isdisjoint(rounds[2][1])
+        if mark == now:
+            break
+        assert mark is None
+    else:
+        raise AssertionError("断档没有在回看截断之后补齐")
     assert rounds[0][1] == [
         ("2026-10-12 19:00:04", "2026-10-12 20:00:00"),
         ("2026-10-12 18:00:03", "2026-10-12 19:00:03"),
@@ -185,11 +182,17 @@ def test_tushare_budget_gap_catches_up_without_repeating_covered_slices(tmp_path
     first = next(source for source in rounds[0][0]["sources"] if source["sourceKey"] == "tushare-major-news")
     assert first["complete"] is False and first["error"] == "request_bound_reached"
     assert first["requestedStart"] == bootstrap.isoformat()
-    last = next(source for source in rounds[2][0]["sources"] if source["sourceKey"] == "tushare-major-news")
-    assert last["complete"] is True and last["requestedStart"] == bootstrap.isoformat()
+    # 回看窗（19:00 之后）下一轮还要再取；已经过了回看的那一段不重复。
+    assert any(start >= "2026-10-12 19:00:00" for start, _end in rounds[1][1])
+    assert ("2026-10-12 18:00:03", "2026-10-12 19:00:03") not in rounds[1][1]
+    outside = [item for _result, made in rounds for item in made if item[1] <= "2026-10-12 19:00:00"]
+    assert outside and len(outside) == len(set(outside))
+    assert rounds[-1][0]["sources"]
+    last = next(source for source in rounds[-1][0]["sources"] if source["sourceKey"] == "tushare-major-news")
+    assert last["complete"] is True and mark == now
 
 
-def test_quota_records_covered_slices_and_the_next_round_skips_them(tmp_path):
+def test_quota_records_covered_slices_and_refetches_inside_the_lookback(tmp_path):
     path = tmp_path / "v4.db"
     db.init_schema(path)
     now, bootstrap = at("2026-10-12", "22:00"), at("2026-10-12", "15:00")
@@ -218,8 +221,9 @@ def test_quota_records_covered_slices_and_the_next_round_skips_them(tmp_path):
     second = run_collection(path, now=now, config=config, tokens=tokens, jin10_factory=factory,
                             tushare_post=post, clock=lambda: now)
     made = calls[before:]
-    assert ("2026-10-12 21:00:02", "2026-10-12 22:00:00") not in made
+    # 21:00–22:00 取到时还在 1 小时回看里，不能当成已覆盖跳过。
     assert made == [
+        ("2026-10-12 21:00:02", "2026-10-12 22:00:00"),
         ("2026-10-12 18:00:01", "2026-10-12 21:00:01"),
         ("2026-10-12 15:00:00", "2026-10-12 18:00:00"),
     ]

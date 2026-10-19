@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -19,7 +20,7 @@ from neckline.screening.classify import CONTRACT, Classification, classify
 from neckline.screening.deepseek import DeepSeekClient
 from neckline.screening.pool import CompanyPool
 from neckline.screening.prefilter import Message, Window, match_history, prefilter_window
-from neckline.screening.select import Entry, Selection, select
+from neckline.screening.select import Entry, Selection, select, validate_rules
 from neckline.screening.text import section_heading
 
 from . import db
@@ -44,10 +45,99 @@ class LoadedConfig:
     profiles: dict[str, str | None]
 
 
+_HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _require(obj: object, key: str, label: str) -> object:
+    if not isinstance(obj, dict) or key not in obj:
+        raise ValueError(f"配置缺少 {label}")
+    return obj[key]
+
+
+def _require_dict(obj: object, key: str, label: str) -> dict:
+    value = _require(obj, key, label)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} 类型不对")
+    return value
+
+
+def _require_str(obj: object, key: str, label: str) -> str:
+    value = _require(obj, key, label)
+    if not isinstance(value, str):
+        raise ValueError(f"{label} 类型不对")
+    return value
+
+
+def _require_int(obj: object, key: str, label: str) -> int:
+    value = _require(obj, key, label)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} 类型不对")
+    return value
+
+
+def _require_number(obj: object, key: str, label: str) -> int | float:
+    value = _require(obj, key, label)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} 类型不对")
+    return value
+
+
+def _require_hhmm(obj: object, key: str, label: str) -> str:
+    value = _require_str(obj, key, label)
+    if _HHMM.fullmatch(value) is None:
+        raise ValueError(f"{label} 须为 HH:MM")
+    return value
+
+
+def _validate_screening_rules(rules: object) -> dict:
+    """加载时核对晨报实际会读到的每个字段；缺了或类型不对就拒绝整份配置。"""
+    if not isinstance(rules, dict):
+        raise ValueError("配置类型不对")
+    _require_str(rules, "configVersion", "configVersion")
+    _require_str(rules, "approval", "approval")
+    schedule = _require_dict(rules, "schedule", "schedule")
+    _require_hhmm(schedule, "previousClose", "schedule.previousClose")
+    _require_hhmm(schedule, "windowEnd", "schedule.windowEnd")
+    _require_hhmm(schedule, "deadline", "schedule.deadline")
+    model = _require_dict(rules, "model", "model")
+    _require_str(model, "endpoint", "model.endpoint")
+    _require_str(model, "name", "model.name")
+    _require_number(model, "timeoutSeconds", "model.timeoutSeconds")
+    _require_int(model, "maxAttempts", "model.maxAttempts")
+    pool = _require_dict(rules, "companyPool", "companyPool")
+    _require_str(pool, "file", "companyPool.file")
+    _require_str(pool, "sha256", "companyPool.sha256")
+    matching = _require_dict(rules, "matching", "matching")
+    names = _require(matching, "strictShortNames", "matching.strictShortNames")
+    if not isinstance(names, list) or any(not isinstance(item, str) for item in names):
+        raise ValueError("matching.strictShortNames 类型不对")
+    selection = _require_dict(rules, "selection", "selection")
+    try:
+        validate_rules(selection)
+    except ValueError as exc:
+        raise ValueError(f"selection：{exc}") from exc
+    classification = _require_dict(rules, "classification", "classification")
+    _require_int(classification, "batchMaxCompanies", "classification.batchMaxCompanies")
+    _require_int(classification, "batchMaxChars", "classification.batchMaxChars")
+    _require_int(classification, "concurrency", "classification.concurrency")
+    _require_int(classification, "maxAttempts", "classification.maxAttempts")
+    _require_int(classification, "profileChars", "classification.profileChars")
+    excerpt = _require_dict(classification, "excerpt", "classification.excerpt")
+    for key in ("lead", "window", "limit", "minChars", "blockMaxChars"):
+        _require_int(excerpt, key, f"classification.excerpt.{key}")
+    history = _require_dict(classification, "history", "classification.history")
+    for key in ("lookbackDays", "maxItems", "window", "snippetChars"):
+        _require_int(history, key, f"classification.history.{key}")
+    options = _require(classification, "modelOptions", "classification.modelOptions")
+    if not isinstance(options, dict):
+        raise ValueError("classification.modelOptions 类型不对")
+    return rules
+
+
 def load_config(name: str = "screening-v2.json") -> LoadedConfig:
     package = resources.files("neckline.config")
     raw = (package / name).read_bytes()
-    rules = json.loads(raw)
+    rules = _validate_screening_rules(json.loads(raw))
     pool_raw = (package / rules["companyPool"]["file"]).read_bytes()
     if hashlib.sha256(pool_raw).hexdigest() != rules["companyPool"]["sha256"]:
         raise ValueError("公司池文件与配置记录的哈希不符")
@@ -197,6 +287,15 @@ class Pusher:
         self.db_path, self.send, self.clock = db_path, send, clock
 
     def notify(self, *, report_id: str, kind: str, title: str, body: str) -> dict:
+        lock_path = Path(str(self.db_path) + ".push.lock")
+        with lock_path.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                return self._notify_locked(report_id=report_id, kind=kind, title=title, body=body)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _notify_locked(self, *, report_id: str, kind: str, title: str, body: str) -> dict:
         with db.read(self.db_path) as conn:
             tokens = db.device_tokens(conn)
         if not tokens:
@@ -253,6 +352,11 @@ def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, d
                        window_end=window[1], config_version=config.rules["configVersion"], config_sha256=config.sha256,
                        reason=reason, at=now)
         stored = db.get_report(conn, day.isoformat())
+    if stored and stored["status"] == "available":
+        return _stored_ready(pusher, report_id, stored)
+    if not stored or stored["status"] != "failed":
+        return {"tradeDate": day.isoformat(), "state": stored["status"] if stored else "running",
+                "reason": stored.get("failure_reason") if stored else reason}
     push = pusher.notify(report_id=report_id, kind="problem", title="晨报出问题了", body=stored["failure_reason"] or reason)
     return {"tradeDate": day.isoformat(), "state": stored["status"], "reason": stored["failure_reason"], "push": push}
 

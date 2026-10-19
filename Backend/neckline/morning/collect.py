@@ -56,7 +56,8 @@ def run_collection(db_path: Path, *, now: datetime, config: Mapping[str, Any], t
         db.begin_collection(conn, run_id=run_id, slot_at=now, started_at=clock())
         marks = {key: db.source_watermark(conn, key) for key in SOURCES}
         attempts = {key: db.source_attempt_start(conn, key) for key in SOURCES}
-        covered = {key: db.source_covered(conn, key) for key in SOURCES}
+        covered = {key: db.source_covered(conn, key, lookback_seconds=int(config["sources"][key]["lookbackSeconds"]))
+                   for key in SOURCES}
     summaries = []
     for key in SOURCES:
         settings = config["sources"][key]
@@ -81,16 +82,17 @@ def run_collection(db_path: Path, *, now: datetime, config: Mapping[str, Any], t
                 outcome.error = f"source_failed:{type(exc).__name__}"
         with db.write(db_path) as conn:
             added = db.store_documents(conn, outcome.documents)
-        summary = {
-            "sourceKey": key, "requestedStart": outcome.requested_start.isoformat(),
-            "requestedEnd": outcome.requested_end.isoformat(), "complete": outcome.complete, "error": outcome.error,
-            "requests": outcome.requests, "documents": len(outcome.documents), "newVersions": added,
-            "rejected": outcome.rejected,
-            "oldestSeen": outcome.oldest_seen.isoformat() if outcome.oldest_seen else None,
-        }
-        if getattr(outcome, "covered", None):
-            summary["covered"] = outcome.covered
-        summaries.append(summary)
+            summary = {
+                "sourceKey": key, "requestedStart": outcome.requested_start.isoformat(),
+                "requestedEnd": outcome.requested_end.isoformat(), "complete": outcome.complete, "error": outcome.error,
+                "requests": outcome.requests, "documents": len(outcome.documents), "newVersions": added,
+                "rejected": outcome.rejected,
+                "oldestSeen": outcome.oldest_seen.isoformat() if outcome.oldest_seen else None,
+            }
+            if getattr(outcome, "covered", None):
+                summary["covered"] = outcome.covered
+            summaries.append(summary)
+            db.save_collection_sources(conn, run_id=run_id, sources=summaries)
     if all(s["complete"] for s in summaries):
         status = "completed"
     elif any(s["documents"] for s in summaries):
