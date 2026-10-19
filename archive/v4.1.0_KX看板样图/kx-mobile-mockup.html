@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KX 看板样图</title>
+<style>
+:root{
+  --page:#F5F6F8; --card:#FFFFFF; --t1:#1C1C1E; --t2:#6E6E73; --t3:#8E8E93; --line:#E5E5EA;
+  --accent:#0754E9; --up:#E0312B; --down:#139A5B; --flat:#8E8E93;
+  --today:rgba(7,84,233,.10); --todayBar:#0754E9; --yday:rgba(7,84,233,.04); --tag:#F2F2F7;
+  --frame:#0B0B0D;
+}
+.dark{
+  --page:#1C1C1E; --card:#2C2C2E; --t1:#F5F5F7; --t2:#98989D; --t3:#636366; --line:#38383A;
+  --accent:#4C8DFF; --up:#FF5A4E; --down:#30C67C; --flat:#8E8E93;
+  --today:rgba(76,141,255,.20); --todayBar:#4C8DFF; --yday:rgba(76,141,255,.08); --tag:#3A3A3C;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#E9EBEF;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;color:#1C1C1E}
+header.doc{max-width:1700px;margin:0 auto;padding:28px 24px 8px}
+header.doc h1{margin:0 0 6px;font-size:22px}
+header.doc p{margin:4px 0;color:#555;line-height:1.6;max-width:1100px}
+.row{display:flex;flex-wrap:wrap;gap:28px;justify-content:center;padding:18px 16px 40px;max-width:1700px;margin:0 auto}
+figure{margin:0;display:flex;flex-direction:column;align-items:center;gap:10px}
+figcaption{max-width:393px;font-size:13px;color:#444;line-height:1.55}
+figcaption b{color:#111}
+.phone{width:393px;height:852px;border-radius:52px;background:var(--frame);padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+.screen{width:100%;height:100%;border-radius:42px;overflow:hidden;background:var(--page);color:var(--t1);display:flex;flex-direction:column;position:relative}
+.status{height:50px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 30px 6px;font-weight:600;font-size:15px}
+.nav{padding:4px 16px 8px}
+.nav .title{display:flex;align-items:baseline;justify-content:space-between}
+.nav h2{margin:0;font-size:28px;font-weight:600;letter-spacing:.2px}
+.nav .meta{font-size:12px;color:var(--t2)}
+.seg{display:flex;background:var(--tag);border-radius:9px;padding:2px;margin-top:10px}
+.seg span{flex:1;text-align:center;font-size:13px;padding:6px 0;border-radius:7px;color:var(--t1)}
+.seg span.on{background:var(--card);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.list{flex:1;overflow:hidden;position:relative}
+.colhead{display:flex;font-size:11px;color:var(--t3);padding:6px 16px 4px;border-bottom:.5px solid var(--line);background:var(--page);position:sticky;top:0}
+.sec{font-size:12px;font-weight:600;color:var(--t2);padding:10px 16px 4px;display:flex;justify-content:space-between}
+.sec small{font-weight:400;color:var(--t3)}
+.r{display:flex;align-items:center;padding:0 16px;height:52px;border-bottom:.5px solid var(--line);background:var(--card);position:relative}
+.r.today{background:linear-gradient(var(--today),var(--today)),var(--card)}
+.r.today::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 2px 2px 0;background:var(--todayBar)}
+.r.yday{background:linear-gradient(var(--yday),var(--yday)),var(--card)}
+.r.yday::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 2px 2px 0;background:var(--todayBar);opacity:.35}
+.name{width:80px;flex:none}
+.name .n{font-size:15px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.today .name .n{font-weight:700}
+.yday .name .n{color:var(--t2)}
+.name .c{font-size:11px;color:var(--t3);font-variant-numeric:tabular-nums}
+.cells{flex:1;display:flex;align-items:center;justify-content:flex-end;gap:0}
+.cell{text-align:right;font-variant-numeric:tabular-nums;font-size:15px}
+.today .cell.big{font-weight:700}
+.w58{width:58px}.w64{width:64px}.w70{width:70px}.w52{width:52px}.w46{width:46px}.w78{width:78px}
+.up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--flat)}
+.pill{display:inline-block;min-width:56px;padding:3px 5px;border-radius:6px;color:#fff;font-weight:600;font-size:13.5px;text-align:right}
+.pill.up{background:var(--up);color:#fff}.pill.down{background:var(--down);color:#fff}.pill.flat{background:var(--flat);color:#fff}
+.rng{width:54px;margin-left:8px;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.track{position:relative;width:50px;height:6px;border-radius:3px;background:var(--tag)}
+.track i{position:absolute;top:0;height:6px;border-radius:3px;opacity:.55}
+.track b{position:absolute;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--t1)}
+.rng em{font-style:normal;font-size:10px;color:var(--t3);font-variant-numeric:tabular-nums}
+.vr{width:36px;margin-left:6px;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.vr .bar{width:32px;height:5px;border-radius:3px;background:var(--tag);overflow:hidden}
+.vr .bar i{display:block;height:100%;background:var(--accent);opacity:.75}
+.vr span{font-size:12px;font-variant-numeric:tabular-nums;color:var(--t2)}
+.ma{width:24px;margin-left:5px;display:flex;gap:3px;justify-content:flex-end}
+.ma i{width:6px;height:6px;border-radius:50%}
+.foot{font-size:10.5px;color:var(--t3);padding:8px 16px;line-height:1.5;border-top:.5px solid var(--line);background:var(--page)}
+.tabs{height:82px;border-top:.5px solid var(--line);background:var(--card);display:flex;justify-content:space-around;padding-top:8px}
+.tabs div{display:flex;flex-direction:column;align-items:center;font-size:10px;color:var(--t3);gap:3px}
+.tabs div.on{color:var(--accent)}
+.tabs svg{width:26px;height:24px}
+.hint{position:absolute;right:10px;bottom:150px;font-size:10px;color:var(--t3);background:var(--card);border:.5px solid var(--line);padding:3px 7px;border-radius:10px}
+/* 方案 B 展开 */
+.exp{background:var(--card);padding:6px 16px 12px;border-bottom:.5px solid var(--line);display:grid;grid-template-columns:repeat(3,1fr);gap:8px 10px}
+.today + .exp{background:linear-gradient(var(--today),var(--today)),var(--card)}
+.exp div{font-size:11px;color:var(--t3)}
+.exp div b{display:block;font-size:13.5px;color:var(--t1);font-weight:500;font-variant-numeric:tabular-nums;margin-top:1px}
+</style>
+</head>
+<body>
+<header class="doc">
+  <h1>KX 看板 · 手机端样图（4.1.0，待确认）</h1>
+  <p>示例数据，不是真实行情。沿用晨报现有的配色、字号和浅色/深色两套主题；涨跌按 A 股惯例红涨绿跌。三个区：<b>今日推荐</b>（加粗、蓝色浅底、左侧竖条）、<b>昨日推荐</b>（字色变淡、更浅的底、竖条变淡），以及<b>全部</b>（按涨跌幅从高到低）。</p>
+  <p>方案 A：名称列固定，上方用分段控件切换四组列（概览、今日、量能、趋势），不用横向滑动，避免和系统返回手势抢手势。方案 B：每行只显示三项，点开一行展开全部字段。请挑一个，或者说要怎么混搭。</p>
+</header>
+
+<div class="row">
+  <figure><div class="phone"><div class="screen" id="a1"></div></div>
+    <figcaption><b>A · 概览组（默认）</b>：现价、涨跌幅色块、今日区间条（竖线是现价，色段是开盘→现价，下方是距今日最高）、量能倍数短条、均线三点（5/10/20 日，红在线上、绿在线下）。</figcaption></figure>
+  <figure><div class="phone"><div class="screen" id="a2"></div></div>
+    <figcaption><b>A · 今日组</b>：开盘涨跌（跳空）、振幅、换手率、成交额。另外两组：<b>量能</b>（成交额、成交量、20 日日均额、量能倍数）和<b>趋势</b>（5 日、20 日涨跌、流通市值、总市值）。开盘、最高、最低、昨收放在区间条里表达，不单独占列。</figcaption></figure>
+  <figure><div class="phone"><div class="screen" id="b1"></div></div>
+    <figcaption><b>B · 精简行 + 点开展开</b>：首屏信息最少、最干净；点一行原地展开 12 项。适合扫一眼涨跌，但比较多只的同一指标时要逐个点开。</figcaption></figure>
+  <figure class="dark"><div class="phone"><div class="screen" id="a3"></div></div>
+    <figcaption><b>A · 概览组（深色）</b>：深色下置顶区的底色加深一点，保证仍能一眼认出。</figcaption></figure>
+</div>
+
+<script>
+const D=[
+ {n:"平潭发展",c:"000592",p:6.77,pc:-7.77,o:7.34,h:7.38,l:6.71,yc:7.34,zf:9.13,tr:11.74,cje:15.64,v:224.8,a20:6.1,d5:-9.4,d20:12.6,lt:128.1,zs:130.9,ma:[0,0,1],s:"today"},
+ {n:"浦发银行",c:"600000",p:10.42,pc:1.36,o:10.30,h:10.48,l:10.26,yc:10.28,zf:2.14,tr:0.62,cje:18.20,v:174.6,a20:14.3,d5:2.1,d20:-1.8,lt:3058,zs:3058,ma:[1,1,0],s:"today"},
+ {n:"中国长城",c:"000066",p:17.95,pc:4.48,o:17.40,h:18.20,l:17.21,yc:17.18,zf:5.76,tr:6.95,cje:39.8,v:221.7,a20:26.4,d5:8.8,d20:15.2,lt:576,zs:579,ma:[1,1,1],s:"today"},
+ {n:"京东方Ａ",c:"000725",p:4.31,pc:0.47,o:4.29,h:4.35,l:4.27,yc:4.29,zf:1.86,tr:1.21,cje:19.3,v:448,a20:22.9,d5:-0.5,d20:3.1,lt:1586,zs:1622,ma:[1,0,1],s:"yday"},
+ {n:"中兴通讯",c:"000063",p:38.62,pc:-1.18,o:39.10,h:39.30,l:38.40,yc:39.08,zf:2.30,tr:1.40,cje:21.6,v:56,a20:30.2,d5:-3.4,d20:6.9,lt:1557,zs:1847,ma:[0,0,1],s:"yday"},
+ {n:"赛力斯",c:"601127",p:121.5,pc:6.20,o:115.0,h:122.8,l:114.2,yc:114.4,zf:7.52,tr:3.62,cje:66.1,v:54.4,a20:38.7,d5:11.3,d20:24.0,lt:1782,zs:1835,ma:[1,1,1],s:""},
+ {n:"长江电力",c:"600900",p:28.66,pc:2.25,o:28.10,h:28.80,l:28.02,yc:28.03,zf:2.78,tr:0.31,cje:21.7,v:75.8,a20:16.4,d5:3.0,d20:4.5,lt:7015,zs:7015,ma:[1,1,1],s:""},
+ {n:"格力电器",c:"000651",p:41.22,pc:0.88,o:40.90,h:41.40,l:40.71,yc:40.86,zf:1.69,tr:0.42,cje:9.6,v:23.3,a20:12.0,d5:1.2,d20:-2.6,lt:2283,zs:2310,ma:[1,0,0],s:""},
+ {n:"紫金矿业",c:"601899",p:19.03,pc:0.00,o:19.10,h:19.25,l:18.88,yc:19.03,zf:1.94,tr:0.70,cje:32.5,v:170.8,a20:41.2,d5:-1.0,d20:7.7,lt:3982,zs:5061,ma:[0,1,1],s:""},
+ {n:"美的集团",c:"000333",p:72.10,pc:-0.55,o:72.40,h:72.80,l:71.65,yc:72.50,zf:1.59,tr:0.36,cje:16.8,v:23.3,a20:21.7,d5:-2.2,d20:1.4,lt:4605,zs:5525,ma:[0,0,1],s:""},
+ {n:"海康威视",c:"002415",p:28.40,pc:-1.66,o:28.80,h:28.95,l:28.31,yc:28.88,zf:2.22,tr:0.55,cje:14.4,v:50.7,a20:18.9,d5:-4.1,d20:-6.3,lt:2525,zs:2622,ma:[0,0,0],s:""},
+ {n:"招商银行",c:"600036",p:41.05,pc:-2.31,o:41.90,h:42.00,l:40.95,yc:42.02,zf:2.50,tr:0.48,cje:41.2,v:100.4,a20:33.1,d5:-3.6,d20:-5.0,lt:8466,zs:10352,ma:[0,0,0],s:""},
+];
+const cls=v=>v>0?"up":v<0?"down":"flat";
+const sgn=(v,d=2)=>(v>0?"+":"")+v.toFixed(d);
+const tabsHTML=`<div class="tabs">
+ <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>K10</div>
+ <div class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>KX</div>
+ <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置</div></div>`;
+function head(on){return `<div class="status"><span>10:32</span><span>5G</span></div>
+<div class="nav"><div class="title"><h2>KX</h2><span class="meta">10:32 更新 · 盘中</span></div>
+<div class="seg">${["概览","今日","量能","趋势"].map(x=>`<span class="${x==on?"on":""}">${x}</span>`).join("")}</div></div>`}
+function foot(){return `<div class="foot">名单 kx-20261017-001 · 10:30 核对　报价 10:32:05<br>最后收到推荐 10/19 10:28</div>`}
+function rangeCell(r){const pos=(r.p-r.l)/(r.h-r.l||1),op=(r.o-r.l)/(r.h-r.l||1);const lo=Math.min(pos,op),hi=Math.max(pos,op);
+ const col=r.p>=r.o?"var(--up)":"var(--down)";const dd=(r.p/r.h-1)*100;
+ return `<div class="rng"><div class="track"><i style="left:${lo*50}px;width:${Math.max(2,(hi-lo)*50)}px;background:${col}"></i><b style="left:${pos*50-1.5}px"></b></div><em>距高 ${dd.toFixed(1)}%</em></div>`}
+function vrCell(r){const x=r.cje/r.a20*(10/2.5);const ratio=r.cje/r.a20*4.0; const v=(r.cje/r.a20).toFixed(1);
+ return `<div class="vr"><div class="bar"><i style="width:${Math.min(100,v/3*100)}%"></i></div><span>${v}×</span></div>`}
+function maCell(r){return `<div class="ma">${r.ma.map(a=>`<i style="background:${a?"var(--up)":"var(--down)"}"></i>`).join("")}</div>`}
+function sections(rowFn,colhead){
+ const t=D.filter(r=>r.s=="today"),y=D.filter(r=>r.s=="yday"),o=D.filter(r=>!r.s).sort((a,b)=>b.pc-a.pc);
+ return `<div class="colhead">${colhead}</div>
+ <div class="sec">今日推荐 <small>${t.length} 只</small></div>${t.map(rowFn).join("")}
+ <div class="sec">昨日推荐 <small>${y.length} 只</small></div>${y.map(rowFn).join("")}
+ <div class="sec">全部 <small>按涨跌幅</small></div>${o.map(rowFn).join("")}`}
+const nameCell=r=>`<div class="name"><div class="n">${r.n}</div><div class="c">${r.c}</div></div>`;
+function overviewRow(r){return `<div class="r ${r.s}">${nameCell(r)}<div class="cells">
+ <div class="cell big w52 ${cls(r.pc)}">${r.p.toFixed(2)}</div>
+ <div class="cell" style="margin-left:6px"><span class="pill ${cls(r.pc)}">${sgn(r.pc)}%</span></div>
+ ${rangeCell(r)}${vrCell(r)}${maCell(r)}</div></div>`}
+const ovHead=`<span style="width:80px">名称</span><span style="flex:1;text-align:right">现价　　涨跌幅　　　区间　　　量能　均线</span>`;
+function todayRow(r){const gap=(r.o/r.yc-1)*100;return `<div class="r ${r.s}">${nameCell(r)}<div class="cells">
+ <div class="cell w64 ${cls(gap)}">${sgn(gap)}%</div><div class="cell w58">${r.zf.toFixed(2)}%</div>
+ <div class="cell w58">${r.tr.toFixed(2)}%</div><div class="cell w70">${r.cje.toFixed(1)}亿</div></div></div>`}
+const tdHead=`<span style="width:80px">名称</span><span style="flex:1;text-align:right">开盘涨跌　　振幅　　换手率　　成交额</span>`;
+function bRow(r,open){return `<div class="r ${r.s}">${nameCell(r)}<div class="cells">
+ <div class="cell big w70 ${cls(r.pc)}">${r.p.toFixed(2)}</div>
+ <div class="cell" style="margin-left:14px"><span class="pill ${cls(r.pc)}">${sgn(r.pc)}%</span></div></div></div>`+(open?`<div class="exp">
+ <div>开盘涨跌<b class="${cls(r.o/r.yc-1)}">${sgn((r.o/r.yc-1)*100)}%</b></div><div>振幅<b>${r.zf.toFixed(2)}%</b></div><div>换手率<b>${r.tr.toFixed(2)}%</b></div>
+ <div>成交额<b>${r.cje.toFixed(1)} 亿</b></div><div>量能倍数<b>${(r.cje/r.a20).toFixed(1)}×</b></div><div>距今日最高<b>${((r.p/r.h-1)*100).toFixed(1)}%</b></div>
+ <div>5 日<b class="${cls(r.d5)}">${sgn(r.d5,1)}%</b></div><div>20 日<b class="${cls(r.d20)}">${sgn(r.d20,1)}%</b></div><div>均线 5/10/20<b>${r.ma.map(a=>a?"上":"下").join(" / ")}</b></div>
+ <div>开 / 高<b>${r.o.toFixed(2)} / ${r.h.toFixed(2)}</b></div><div>低 / 昨收<b>${r.l.toFixed(2)} / ${r.yc.toFixed(2)}</b></div><div>流通市值<b>${r.lt>=1000?(r.lt/1000).toFixed(2)+" 千亿":r.lt.toFixed(0)+" 亿"}</b></div></div>`:"")}
+function screen(id,on,body){document.getElementById(id).innerHTML=head(on)+`<div class="list">${body}</div>`+foot()+tabsHTML}
+screen("a1","概览",sections(overviewRow,ovHead));
+screen("a2","今日",sections(todayRow,tdHead));
+document.getElementById("b1").innerHTML=`<div class="status"><span>10:32</span><span></span></div><div class="nav"><div class="title"><h2>KX</h2><span class="meta">10:32 更新 · 盘中</span></div></div><div class="list">`+
+ sections((r)=>bRow(r,r.c=="000066"),`<span style="width:80px">名称</span><span style="flex:1;text-align:right">现价　　　　涨跌幅</span>`)+`</div>`+foot()+tabsHTML;
+screen("a3","概览",sections(overviewRow,ovHead));
+</script>
+</body>
+</html>
