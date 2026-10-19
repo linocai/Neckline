@@ -63,7 +63,8 @@ def _contains_process_token(blob: str) -> bool:
 
 def _event(company: str, **overrides) -> Event:
     fields = dict(ids=["m1"], relation="主体", type="业绩向好", direction="利好", first_disclosed=None,
-                  fresh="新", importance="高", headline="事件", reason="公告写明了事实")
+                  fresh="新", importance="高", headline="事件", reason="公告写明了事实",
+                  channel="公司公告", amount_yuan=None)
     fields.update(overrides)
     return Event(company=company, **fields)
 

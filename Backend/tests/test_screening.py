@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+import subprocess
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
 
-from neckline.screening.classify import (EVENT_TYPES, CompanyResult, Event, make_batches, parse_batch,
-                                         pick_history, render_company, system_prompt)
+from neckline.morning.report import build_content, load_config
+from neckline.screening.classify import (CHANNELS, CONTRACT, EVENT_TYPES, PROMPT_GROUPS, CompanyResult, Event,
+                                         make_batches, parse_batch, pick_history, render_company, system_prompt)
 from neckline.screening.deepseek import ChatError, DeepSeekClient, FileReceipts
 from neckline.screening.pool import Company, CompanyPool
 from neckline.screening.prefilter import Message, Window, as_of, prefilter
-from neckline.screening.select import select, validate_rules
+from neckline.screening.select import Entry, Selection, select, validate_rules
 from neckline.screening.text import excerpt_for, plain_text
 
 CST = timezone(timedelta(hours=8))
@@ -34,18 +38,14 @@ def _doc(i: int, text: str, *, published: str, seen: str = "2026-10-13T08:01:00+
             "text": text, "excerpt": None, "meta": {"title": title}}
 
 
-def _rules(**overrides) -> dict:
-    rules = {"relation": {"include": ["主体"], "review": ["受益方"]}, "direction": {"include": ["利好"]},
-             "freshness": {"include": ["新"], "review": ["不确定"]},
-             "types": {"include": ["订单合同", "业绩向好"], "review": ["回购增持"], "exclude": ["程序性事项"]},
-             "importanceMinimum": None, "maxItems": None}
-    rules.update(overrides)
-    return rules
+def _v2() -> dict:
+    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v2.json"
+    return json.loads(path.read_text(encoding="utf-8"))["selection"]
 
 
 def _event(company: str, ids: list[str], **fields) -> Event:
-    base = dict(relation="主体", type="业绩向好", direction="利好", first_disclosed=None, fresh="新",
-                importance="中", headline="h", reason="r")
+    base = dict(relation="主体", type="业绩预增", direction="利好", first_disclosed=None, fresh="新",
+                importance="中", headline="h", reason="r", channel="公司公告", amount_yuan=None)
     base.update(fields)
     return Event(company=company, ids=ids, **base)
 
@@ -141,6 +141,23 @@ def test_pick_history_prefers_titles_naming_the_company():
     assert [m.title for _, m in picked] == ["震裕科技签约", "午评"]
 
 
+def test_parse_batch_lets_one_message_carry_several_events():
+    """贝泰妮那种一份公告里有注册证、回购、分红三件事：同一编号可分属几个事件，但不能同时算提及。"""
+    def event(kind):
+        return {"ids": ["m1"], "relation": "主体", "type": kind, "direction": "利好", "channel": "公司公告",
+                "amountYuan": None, "firstDisclosed": None, "fresh": "新", "importance": "中",
+                "headline": kind, "reason": "r"}
+    expected = {"300957.SZ": ["m1", "m2"], "300082.SZ": ["m3"]}
+    content = json.dumps({"companies": [
+        {"company": "300957", "events": [event("产品获批"), event("回购增持"), event("分红")], "mentions": ["m2"]},
+        {"company": "300082", "events": [event("分红") | {"ids": ["m3"]}], "mentions": ["m3"]}]}, ensure_ascii=False)
+    results = parse_batch(content, expected)
+    good, bad = results["300957.SZ"], results["300082.SZ"]
+    assert good.error is None and [e.type for e in good.events] == ["产品获批", "回购增持", "分红"]
+    assert good.mentions == ["m2"]
+    assert bad.error == "消息编号没有对上" and not bad.events
+
+
 def test_make_batches_respects_company_and_char_limits():
     sizes = {"a": 5, "b": 5, "c": 20, "d": 1}
     assert make_batches(sizes, ["a", "b", "c", "d"], max_companies=2, max_chars=12) == [["a", "b"], ["c"], ["d"]]
@@ -149,66 +166,158 @@ def test_make_batches_respects_company_and_char_limits():
 def test_parse_batch_requires_every_message_accounted_once():
     expected = {"300953.SZ": ["m1", "m2"], "300082.SZ": ["m3"]}
     content = json.dumps({"companies": [
-        {"company": "300953", "events": [{"ids": ["m1", "m2"], "relation": "主体", "type": "业绩向好",
-                                          "direction": "利好", "firstDisclosed": "2026-10-12 17:05", "fresh": "新",
+        {"company": "300953", "events": [{"ids": ["m1", "m2"], "relation": "主体", "type": "业绩预增",
+                                          "direction": "利好", "channel": "公司公告", "amountYuan": 145000000,
+                                          "firstDisclosed": "2026-10-12 17:05", "fresh": "新",
                                           "importance": "高", "headline": "预增", "reason": "r"}], "mentions": []},
         {"company": "300082", "events": [], "mentions": ["m3", "m3"]}]}, ensure_ascii=False)
     results = parse_batch(content, expected)
     good, bad = results["300953.SZ"], results["300082.SZ"]
     assert good.error is None and good.events[0].ids == ["m1", "m2"] and good.events[0].first_disclosed == "2026-10-12 17:05"
-    assert bad.error == "消息编号没有恰好各出现一次" and not bad.events
+    assert good.events[0].channel == "公司公告" and good.events[0].amount_yuan == 145000000
+    assert bad.error == "消息编号没有对上" and not bad.events
     missing = parse_batch(json.dumps({"companies": []}), expected)
     assert all(r.error == "输出里没有这家公司" for r in missing.values())
     assert all(r.error for r in parse_batch("不是 JSON", expected).values())
     invalid = json.dumps({"companies": [{"company": "300082", "events": [{"ids": ["m3"], "relation": "主体",
-                          "type": "没这个", "direction": "利好", "fresh": "新", "importance": "低"}], "mentions": []}]})
+                          "type": "没这个", "direction": "利好", "channel": "公司公告", "amountYuan": None,
+                          "fresh": "新", "importance": "低"}], "mentions": []}]})
     assert parse_batch(invalid, {"300082.SZ": ["m3"]})["300082.SZ"].error == "事件字段无效"
+
+
+def _company_json(amount, channel="公司公告", drop_amount=False) -> str:
+    item = {"ids": ["m1"], "relation": "主体", "type": "业绩预增", "direction": "利好", "channel": channel,
+            "amountYuan": amount, "firstDisclosed": None, "fresh": "新", "importance": "高",
+            "headline": "h", "reason": "r"}
+    if drop_amount:
+        del item["amountYuan"]
+    return json.dumps({"companies": [{"company": "300953", "events": [item], "mentions": []}]}, ensure_ascii=False)
+
+
+def test_parse_batch_rejects_bad_channel_and_amount():
+    expected = {"300953.SZ": ["m1"]}
+    assert parse_batch(_company_json(None), expected)["300953.SZ"].events[0].amount_yuan is None
+    assert parse_batch(_company_json(12000000.0), expected)["300953.SZ"].events[0].amount_yuan == 12000000
+    assert parse_batch(_company_json(1.5), expected)["300953.SZ"].events[0].amount_yuan == 1.5
+    for payload in (_company_json("1000万"), _company_json(True), _company_json(None, channel="微博"),
+                    _company_json(None, drop_amount=True)):
+        result = parse_batch(payload, expected)["300953.SZ"]
+        assert result.error == "事件字段无效" and not result.events
+    assert set(CHANNELS) == {"公司公告", "媒体报道", "调研纪要", "互动平台", "第三方综述"}
 
 
 def test_system_prompt_lists_every_event_type():
     prompt = system_prompt()
+    assert CONTRACT == "screening-classify-v3"
     assert all(name in prompt for name in EVENT_TYPES)
+    assert "首次" in prompt and "业绩落地" in prompt and "互动平台" in prompt and "amountYuan" in prompt
+    body = prompt.split("只能从下列种类里选一个。\n", 1)[1].split("\n- firstDisclosed：", 1)[0]
+    groups = body.strip().split("\n\n")
+    assert len(groups) == len(PROMPT_GROUPS)
+    for chunk, (_, names) in zip(groups, PROMPT_GROUPS):
+        bullets = [line[4:].split("：", 1)[0] for line in chunk.splitlines() if line.startswith("  - ")]
+        assert bullets == list(names)
 
 
-def test_select_one_entry_per_company_and_routes_by_rules():
-    by_id = {f"m{i}": _message(i, 15 + i) for i in range(1, 9)}
-    results = {
-        "300953.SZ": CompanyResult("300953.SZ", ["m1", "m2", "m3"], events=[
-            _event("300953.SZ", ["m2"], importance="低", type="订单合同"),
-            _event("300953.SZ", ["m1", "m3"], importance="高")], mentions=[]),
-        "300082.SZ": CompanyResult("300082.SZ", ["m4", "m5", "m6", "m7", "m8"], events=[
-            _event("300082.SZ", ["m4"], type="回购增持"),
-            _event("300082.SZ", ["m5"], relation="受益方", type="订单合同"),
-            _event("300082.SZ", ["m6"], fresh="旧"),
-            _event("300082.SZ", ["m7"], fresh="不确定"),
-            _event("300082.SZ", ["m8"], type="程序性事项")], mentions=[]),
-        "300001.SZ": CompanyResult("300001.SZ", ["m9"], error="输出里没有这家公司"),
-    }
-    result = select(by_id, results, _rules())
+def test_select_collapses_company_and_leaves_review_empty():
+    by_id = {"m1": _message(1, 16), "m2": _message(2, 18), "m3": _message(3, 17)}
+    results = {"300953.SZ": CompanyResult("300953.SZ", ["m1", "m2", "m3"], events=[
+        _event("300953.SZ", ["m2"], importance="低", type="分红"),
+        _event("300953.SZ", ["m1", "m3"], importance="高")], mentions=[])}
+    result = select(by_id, results, _v2())
     main = result.sections["main"]
-    assert len(main) == 1 and main[0].primary.importance == "高" and [o.type for o in main[0].others] == ["订单合同"]
+    assert len(main) == 1 and main[0].primary.importance == "高" and [o.type for o in main[0].others] == ["分红"]
     assert [m.document_id for m in main[0].messages] == ["doc_1", "doc_3"]
-    assert [len(result.sections[n]) for n in ("review_types", "review_relation", "review_fresh", "held_old")] == [1, 1, 1, 1]
-    assert result.reasons["类型不收：程序性事项"] == 1 and [g.company for g in result.gaps] == ["300001.SZ"]
+    assert [len(result.sections[n]) for n in ("review_types", "review_relation", "review_fresh", "held_old")] == [0, 0, 0, 0]
+
+
+def test_v2_routes_examples_the_user_judged():
+    specs = [
+        ("300001.SZ", {}, "300001.SZ"),
+        ("300002.SZ", dict(type="业绩落地"), None),
+        ("300003.SZ", dict(type="临床进展"), None),
+        ("300004.SZ", dict(type="产品发布"), None),
+        ("300005.SZ", dict(type="小额订单"), None),
+        ("300006.SZ", dict(type="中标候选"), None),
+        ("300007.SZ", dict(type="出售资产", direction="利空"), "300007.SZ"),
+        ("300008.SZ", dict(type="股份转让", direction="中性"), "300008.SZ"),
+        ("300009.SZ", dict(channel="互动平台"), None),
+        ("300010.SZ", dict(type="热点合作", channel="第三方综述"), None),
+        ("300011.SZ", dict(relation="受益方"), None),
+        ("300012.SZ", dict(fresh="不确定"), None),
+        ("300013.SZ", dict(type="热点合作"), "300013.SZ"),
+        ("300014.SZ", dict(type="控制权变更"), "300014.SZ"),
+        ("300015.SZ", dict(type="订单中标", amount_yuan=7_460_000), None),
+        ("300016.SZ", dict(type="订单中标"), "300016.SZ"),
+        ("300018.SZ", dict(type="订单中标", amount_yuan=10_000_000), "300018.SZ"),
+        ("300019.SZ", dict(fresh="旧"), None),
+        ("300020.SZ", dict(type="大额采购", direction="利空"), "300020.SZ"),
+        ("300021.SZ", dict(type="产品获批", channel="调研纪要"), "300021.SZ"),
+    ]
+    by_id = {f"m{i}": _message(i, 10) for i in range(len(specs))}
+    results = {code: CompanyResult(code, [f"m{i}"], events=[_event(code, [f"m{i}"], **fields)], mentions=[])
+               for i, (code, fields, _) in enumerate(specs)}
+    results["300017.SZ"] = CompanyResult("300017.SZ", ["gap"], error="输出里没有这家公司")
+    result = select(by_id, results, _v2())
+    assert [e.company for e in result.main] == [code for code, _, keep in specs if keep]
+    assert [len(result.sections[n]) for n in ("review_types", "review_relation", "review_fresh", "held_old")] == [0, 0, 0, 0]
+    assert result.reasons["种类不收：业绩落地"] == 1
+    assert result.reasons["种类不收：临床进展"] == 1
+    assert result.reasons["种类不收：产品发布"] == 1
+    assert result.reasons["种类不收：小额订单"] == 1
+    assert result.reasons["种类不收：中标候选"] == 1
+    assert result.reasons["渠道：互动平台"] == 1
+    assert result.reasons["渠道：第三方综述无金额"] == 1
+    assert result.reasons["关系：受益方"] == 1
+    assert result.reasons["时效：不确定"] == 1
+    assert result.reasons["时效：旧"] == 1
+    assert result.reasons["金额：订单中标低于门槛"] == 1
+    assert [g.company for g in result.gaps] == ["300017.SZ"]
 
 
 def test_select_applies_threshold_and_cap():
     by_id = {"m1": _message(1, 16), "m2": _message(2, 17), "m3": _message(3, 18)}
     results = {code: CompanyResult(code, [mid], events=[_event(code, [mid], importance=level)], mentions=[])
                for code, mid, level in (("300001.SZ", "m1", "低"), ("300002.SZ", "m2", "中"), ("300003.SZ", "m3", "高"))}
-    capped = select(by_id, results, _rules(importanceMinimum="中", maxItems=1))
+    rules = _v2()
+    rules["importanceMinimum"] = "中"
+    rules["maxItems"] = 1
+    capped = select(by_id, results, rules)
     assert [e.primary.importance for e in capped.main] == ["高"]
 
 
+def _broken(mutate) -> dict:
+    rules = _v2()
+    mutate(rules)
+    return rules
+
+
 @pytest.mark.parametrize("rules, message", [
-    (_rules(types={"include": ["没这个"], "review": [], "exclude": []}), "未知事件类型"),
-    (_rules(types={"include": ["订单合同"], "review": ["订单合同"], "exclude": []}), "多个分组"),
-    (_rules(freshness={"include": ["新"], "review": ["新"]}), "freshness"),
-    ({k: v for k, v in _rules().items() if k != "maxItems"}, "maxItems"),
+    (_broken(lambda r: r["kinds"]["exclude"].append("没这个")), "未知事件类型"),
+    (_broken(lambda r: r["kinds"]["judge"].append(r["kinds"]["include"][0])), "多个分组"),
+    (_broken(lambda r: r["kinds"]["exclude"].pop()), "遗漏"),
+    (_broken(lambda r: r["freshness"].__setitem__("include", ["新", "新"])), "freshness"),
+    (_broken(lambda r: r["relation"].__setitem__("review", ["受益方"])), "relation"),
+    (_broken(lambda r: r["channels"].__setitem__("exclude", ["微博"])), "channels"),
+    (_broken(lambda r: r["channels"]["requireAmount"].append("互动平台")), "同一渠道"),
+    (_broken(lambda r: r["minimumAmountYuan"].__setitem__("没这个", 1)), "未知事件类型"),
+    (_broken(lambda r: r.__delitem__("maxItems")), "maxItems"),
+    (_broken(lambda r: r.__setitem__("importanceMinimum", "极高")), "importanceMinimum"),
 ])
 def test_validate_rules_rejects_incomplete_config(rules, message):
     with pytest.raises(ValueError, match=message):
         validate_rules(rules)
+
+
+def test_v2_config_groups_match_the_prompt_and_cover_every_kind():
+    rules = _v2()
+    validate_rules(rules)
+    assert [set(names) for _, names in PROMPT_GROUPS] == [set(rules["kinds"][key]) for key in ("include", "judge", "exclude")]
+    assert rules["relation"]["include"] == ["主体"] and rules["freshness"]["include"] == ["新"]
+    assert rules["direction"]["include"] == ["利好"]
+    assert rules["channels"]["exclude"] == ["互动平台"] and rules["channels"]["requireAmount"] == ["第三方综述"]
+    assert rules["minimumAmountYuan"] == {"订单中标": 10000000}
+    assert rules["importanceMinimum"] is None and rules["maxItems"] is None
 
 
 def test_identical_request_is_billed_once(tmp_path):
@@ -232,3 +341,154 @@ def test_identical_request_is_billed_once(tmp_path):
     assert offline.complete(prompt, {"max_tokens": 10}).from_receipt
     with pytest.raises(ChatError, match="未提供"):
         offline.complete(prompt, {"max_tokens": 11})
+
+
+def test_report_v2_keeps_review_keys_empty():
+    config = load_config()
+    assert config.rules["configVersion"] == "screening-v2"
+    assert config.rules["classification"]["contract"] == CONTRACT
+    pool = CompanyPool([Company("300001.SZ", "甲公司", ("甲公司",))])
+    by_id = {"m1": _message(1, 16)}
+    results = {"300001.SZ": CompanyResult("300001.SZ", ["m1"], events=[_event("300001.SZ", ["m1"])], mentions=[])}
+    selection = select(by_id, results, config.rules["selection"])
+    content = build_content(report_id="morning-2026-10-13", day=date(2026, 10, 13), window=WINDOW,
+                            selection=selection, pool=pool, config_version=config.rules["configVersion"],
+                            gap=None, generated_at=WINDOW.collected_by, stats={})
+    assert content["configVersion"] == "screening-v2"
+    assert list(content["review"]) == ["types", "relation", "fresh", "old"]
+    assert all(content["review"][name] == [] for name in content["review"])
+    entry = content["entries"][0]
+    assert set(entry) == {"rank", "companyCode", "companyName", "type", "importance", "relation", "fresh",
+                          "headline", "reason", "firstDisclosed", "sources", "others"}
+    assert set(entry["sources"][0]) == {"documentId", "sourceLabel", "publishedAt", "title", "url"}
+    assert entry["importance"] == "中"
+
+
+def test_digest_source_title_uses_the_company_section():
+    pool = CompanyPool([
+        Company("300683.SZ", "海特生物", ("海特生物",)),
+        Company("605189.SH", "富春染织", ("富春染织",)),
+        Company("301235.SZ", "华康洁净", ("华康洁净",)),
+        Company("300901.SZ", "中胤时尚", ("中胤时尚",)),
+        Company("300182.SZ", "捷成股份", ("捷成股份",)),
+        Company("300052.SZ", "中青宝", ("中青宝",)),
+        Company("300953.SZ", "震裕科技", ("震裕科技",)),
+        Company("300082.SZ", "奥克股份", ("奥克股份",)),
+    ])
+    digest_title = "公告精选︱富春染织：预计2026年前三季度净利润同比增加1347.69%到1519.01%"
+    digest_text = "\n".join([
+        "【热点】",
+        "海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议",
+        "海特生物公告，公司与Visara签署协议。",
+        "富春染织(605189.SH)：预计前三季度净利润同比增加",
+        "华康洁净(301235.SZ)：中标产线项目",
+    ])
+    digest = _source(1, digest_title, digest_text, {
+        "300683.SZ": ["海特生物"], "605189.SH": ["富春染织"], "301235.SZ": ["华康洁净"], "300901.SZ": ["中胤时尚"]})
+    flash = _source(2, "海特生物：与Visara签署独家合作与授权许可协议", "海特生物公告首付款。", {"300683.SZ": ["海特生物"]})
+    plain = _source(3, "震裕科技：与奥克股份合作", "震裕科技与奥克股份签署合作协议，没有分节。",
+                    {"300953.SZ": ["震裕科技"], "300082.SZ": ["奥克股份"]})
+    bracket = _source(4, "专栏｜两家公司", "【捷成股份：与吉视传媒战略合作AI微短剧】\n正文\n【中青宝：3款游戏获版号】\n正文",
+                      {"300182.SZ": ["捷成股份"], "300052.SZ": ["中青宝"]})
+    selection = Selection(sections={
+        "main": [Entry(company="300683.SZ", primary=_event("300683.SZ", ["m1"]), messages=[flash, digest]),
+                 Entry(company="300901.SZ", primary=_event("300901.SZ", ["m1"]), messages=[digest]),
+                 Entry(company="300953.SZ", primary=_event("300953.SZ", ["m1"]), messages=[plain]),
+                 Entry(company="300182.SZ", primary=_event("300182.SZ", ["m1"]), messages=[bracket])],
+        "review_types": [], "review_relation": [], "review_fresh": [], "held_old": [],
+    }, reasons={}, gaps=[])
+    content = build_content(report_id="morning-2026-10-14", day=date(2026, 10, 14), window=WINDOW,
+                            selection=selection, pool=pool, config_version="screening-v2", gap=None,
+                            generated_at=WINDOW.collected_by, stats={})
+    by_name = {entry["companyName"]: entry for entry in content["entries"]}
+    assert by_name["海特生物"]["sources"][0]["title"] == flash.title
+    assert by_name["海特生物"]["sources"][1]["title"] == "海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议"
+    assert by_name["中胤时尚"]["sources"][0]["title"] == digest_title + "（汇总稿）"
+    assert by_name["震裕科技"]["sources"][0]["title"] == plain.title
+    assert by_name["捷成股份"]["sources"][0]["title"] == "【捷成股份：与吉视传媒战略合作AI微短剧】"
+    assert digest.title == digest_title and "（汇总稿）" not in digest.text
+
+
+def test_digest_title_when_only_one_pool_company_is_named():
+    """第一节是池外主板公司、池内只点名一家时，也要显示这家公司自己的那一节。"""
+    pool = CompanyPool([Company("300683.SZ", "海特生物", ("海特生物",))])
+    digest_title = "公告精选︱富春染织：预计2026年前三季度净利润同比增加1347.69%到1519.01%"
+    digest = _source(1, digest_title, "\n".join([
+        "富春染织(605189.SH)：预计前三季度净利润同比增加",
+        "海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议",
+        "海特生物公告，公司与Visara签署协议。",
+    ]), {"300683.SZ": ["海特生物"]})
+    single = _source(2, "海特生物：签署授权协议", "海特生物公告首付款。", {"300683.SZ": ["海特生物"]})
+    selection = Selection(sections={
+        "main": [Entry(company="300683.SZ", primary=_event("300683.SZ", ["m1"]), messages=[digest, single])],
+        "review_types": [], "review_relation": [], "review_fresh": [], "held_old": [],
+    }, reasons={}, gaps=[])
+    content = build_content(report_id="morning-2026-10-14", day=date(2026, 10, 14), window=WINDOW,
+                            selection=selection, pool=pool, config_version="screening-v2", gap=None,
+                            generated_at=WINDOW.collected_by, stats={})
+    titles = [source["title"] for source in content["entries"][0]["sources"]]
+    assert titles == ["海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议", single.title]
+
+
+def _source(i: int, title: str, text: str, companies: dict) -> Message:
+    return Message(document_id=f"doc_{i}", revision=1, source_key="tushare-major-news", source_label="新浪财经",
+                   url=None, title=title, text=text, published_at=WINDOW.start, first_seen_at=WINDOW.start,
+                   companies=companies)
+
+
+def test_compare_verdicts_script_on_fake_replay(tmp_path):
+    period = tmp_path / "run-a"
+    period.mkdir()
+    def event(company, headline, **fields):
+        raw = {"company": company, "ids": [f"m-{company}-{headline}"], "relation": "主体", "direction": "利好",
+               "first_disclosed": None, "fresh": "新", "importance": "中", "headline": headline, "reason": "公告",
+               "channel": "公司公告", "amount_yuan": None, "name": company,
+               "messages": [{"publishedAt": "2026-10-12T10:00:00+08:00", "title": headline, "source": "金十快讯"}]}
+        raw.update(fields)
+        return raw
+    events = [
+        event("300001.SZ", "前三季度净利预增", type="业绩预增"),
+        event("300002.SZ", "临床首例入组", type="临床进展"),
+        event("300003.SZ", "挂牌出售子公司", type="出售资产", direction="利空"),
+        event("300004.SZ", "与吉视传媒合作AI微短剧", type="热点合作", fresh="旧"),
+        event("300005.SZ", "中标五千万订单", type="订单中标", amountYuan=50_000_000),
+        event("300006.SZ", "回购实施完毕", type="回购进展", ids=["m-a"]),
+        event("300006.SZ", "游戏获版号", type="产品获批", ids=["m-b"]),
+        event("300007.SZ", "调整定增方案", type="上市融资", fresh="旧"),
+    ]
+    del events[4]["amount_yuan"]
+    (period / "events.json").write_text(json.dumps(events, ensure_ascii=False), encoding="utf-8")
+    (period / "stats.json").write_text(json.dumps(
+        {"window": ["2026-10-12T15:00:00+08:00", "2026-10-13T08:00:00+08:00"]}), encoding="utf-8")
+    verdicts = [
+        {"batch": 1, "no": 1, "window": "2026-10-13", "run": "m1013-r1", "company": "300001.SZ", "name": "甲",
+         "event": "净利预增", "user": "进", "typeOnly": False},
+        {"batch": 1, "no": 2, "window": "2026-10-13", "run": "m1013-r1", "company": "300002.SZ", "name": "乙",
+         "event": "临床入组", "user": "不进", "typeOnly": False},
+        {"batch": 1, "no": 3, "window": "2026-10-13", "run": "m1013-r1", "company": "300003.SZ", "name": "丙",
+         "event": "出售子公司", "user": "进", "typeOnly": False},
+        {"batch": 5, "no": 8, "window": "2026-10-13", "run": "m1013-r1", "company": "300004.SZ", "name": "丁",
+         "event": "微短剧合作", "user": "进", "typeOnly": True},
+        {"batch": 2, "no": 2, "window": "2026-10-13", "run": "m1013-r1", "company": "300005.SZ", "name": "戊",
+         "event": "小订单", "user": "不进", "typeOnly": False},
+        {"batch": 2, "no": 3, "window": "2026-10-13", "run": "m1013-r1", "company": "300006.SZ", "name": "己",
+         "event": "子丑寅卯辰巳午未", "user": "进", "typeOnly": False},
+        {"batch": 5, "no": 3, "window": "2026-10-13", "run": "m1013-r1", "company": "300007.SZ", "name": "庚",
+         "event": "调整定增", "user": "不进", "typeOnly": True},
+        {"batch": 9, "no": 1, "window": "1999-01-01", "run": "missing", "company": "300008.SZ", "name": "辛",
+         "event": "没有这期", "user": "进", "typeOnly": False},
+    ]
+    verdict_path = tmp_path / "verdicts.json"
+    verdict_path.write_text(json.dumps(verdicts, ensure_ascii=False), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / ".work" / "p1-offline" / "compare_verdicts.py"
+    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v2.json"
+    completed = subprocess.run([sys.executable, str(script), "--replay", str(tmp_path), "--verdicts", str(verdict_path),
+                                "--config", str(config)], check=False, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    assert "总一致率：3/6（50.0%）" in completed.stdout
+    assert "typeOnly：1/2（50.0%）" in completed.stdout
+    body = completed.stdout.split("不一致：", 1)[1]
+    assert "甲" not in body and "丁" not in body
+    assert "用户不进｜v2 进｜种类 订单中标｜渠道 公司公告｜金额 50000000｜时效 新｜理由 公告" in body
+    assert "用户不进｜v2 种类该收｜种类 上市融资｜渠道 公司公告｜金额 null｜时效 旧｜理由 公告" in body
+    assert body.count("v2 未找到") == 2

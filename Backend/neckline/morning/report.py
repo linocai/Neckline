@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from importlib import resources
@@ -17,8 +18,9 @@ from typing import Any, Callable, Mapping
 from neckline.screening.classify import CONTRACT, Classification, classify
 from neckline.screening.deepseek import DeepSeekClient
 from neckline.screening.pool import CompanyPool
-from neckline.screening.prefilter import Window, match_history, prefilter_window
+from neckline.screening.prefilter import Message, Window, match_history, prefilter_window
 from neckline.screening.select import Entry, Selection, select
+from neckline.screening.text import section_heading
 
 from . import db
 from .schedule import CST, CalendarGap, deadline, is_trading_day, morning_window
@@ -42,7 +44,7 @@ class LoadedConfig:
     profiles: dict[str, str | None]
 
 
-def load_config(name: str = "screening-v1.json") -> LoadedConfig:
+def load_config(name: str = "screening-v2.json") -> LoadedConfig:
     package = resources.files("neckline.config")
     raw = (package / name).read_bytes()
     rules = json.loads(raw)
@@ -101,6 +103,41 @@ def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyP
     return "；".join(parts) if parts else None
 
 
+_CODE = re.compile(r"\d{6}(?:\.[A-Za-z]{2})?")
+# 汇总稿的分节：「【简称：…】」，或行首「简称(六位代码)：…」。
+_SECTION = re.compile(r"【[^】\n]{1,30}[：:][^】\n]{1,120}】|(?:^|\n)[^\S\n]*[^\s：:（(]{2,12}[（(]\d{6}(?:\.[A-Za-z]{2})?[）)][：:]")
+
+
+def source_title(message: Message, company_code: str, pool: CompanyPool) -> str | None:
+    """汇总稿点名多家公司时，用来源标题显示这家公司所在分节的小标题。
+
+    点名池内不足两家，或正文切不出至少两家的分节时，保留原文标题。
+    切得出分节但找不到这家公司的那一节，在原标题后注明「（汇总稿）」。不改消息本身。
+    """
+    original = message.title or None
+    # 池外公司（如主板）也会占分节：正文本身切得出两节以上，就按汇总稿处理，哪怕池内只点名一家。
+    sections = len(_SECTION.findall(message.text or ""))
+    if len(message.companies) < 2 and sections < 2:
+        return original
+    found: dict[str, str] = {}
+    for code in message.companies:
+        company = pool.companies.get(code)
+        if company is None:
+            continue
+        names = [company.name, *company.aliases, *message.companies.get(code, [])]
+        heading = section_heading(message.text, [n for n in names if n and not _CODE.fullmatch(n)])
+        if heading:
+            found[code] = heading
+    if len(found) < 2 and sections < 2:
+        return original
+    if company_code in found:
+        return found[company_code]
+    base = message.title or ""
+    if base.endswith("（汇总稿）"):
+        return base
+    return f"{base}（汇总稿）" if base else "（汇总稿）"
+
+
 def _entry(rank: int, e: Entry, pool: CompanyPool) -> dict:
     company, ev = pool.companies[e.company], e.primary
     return {
@@ -108,7 +145,7 @@ def _entry(rank: int, e: Entry, pool: CompanyPool) -> dict:
         "importance": ev.importance, "relation": ev.relation, "fresh": ev.fresh, "headline": ev.headline,
         "reason": ev.reason, "firstDisclosed": ev.first_disclosed,
         "sources": [{"documentId": m.document_id, "sourceLabel": m.source_label, "publishedAt": _cst(m.published_at),
-                     "title": m.title or None, "url": m.url} for m in e.messages],
+                     "title": source_title(m, e.company, pool), "url": m.url} for m in e.messages],
         "others": [{"headline": o.headline, "type": o.type, "importance": o.importance} for o in e.others],
     }
 

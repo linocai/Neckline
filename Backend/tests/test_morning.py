@@ -444,8 +444,9 @@ class FakeModel:
             body_part = block.split("窗口开始前的相关消息")[0]
             ids = re.findall(r"^\[(m\d+)\]", body_part, flags=re.M)
             if code in ("300953", "300683"):
-                companies.append({"company": code, "events": [{"ids": ids, "relation": "主体", "type": "业绩向好",
-                                  "direction": "利好", "firstDisclosed": None, "fresh": "新", "importance": "高",
+                companies.append({"company": code, "events": [{"ids": ids, "relation": "主体", "type": "业绩预增",
+                                  "direction": "利好", "channel": "公司公告", "amountYuan": None,
+                                  "firstDisclosed": None, "fresh": "新", "importance": "高",
                                   "headline": f"{code} 利好", "reason": "公告"}], "mentions": []})
             else:
                 companies.append({"company": code, "events": [], "mentions": ids})
@@ -617,5 +618,5 @@ def test_finalize_marks_stuck_report_failed_with_reason(path):
 
 def test_shipped_config_is_approved_and_pool_verified():
     config = load_config()
-    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v1"
+    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v2"
     assert len(config.pool) == 1089 and config.rules["schedule"] == SCHEDULE

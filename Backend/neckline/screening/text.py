@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import re
 from html.parser import HTMLParser
+from typing import Sequence
 
 _BLOCK_TAGS = {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "section", "table"}
 _SKIP_TAGS = {"script", "style", "iframe", "noscript"}
@@ -74,3 +75,24 @@ def excerpt_for(text: str, needles: list[str], *, lead: int, window: int, limit:
         if total >= limit:
             break
     return " …… ".join(pieces)
+
+
+def section_heading(text: str, names: Sequence[str]) -> str | None:
+    """正文里这家公司的分节小标题。认「【简称：…】」，以及行首的「简称：…」「简称(代码)：…」。"""
+    if not text:
+        return None
+    best: tuple[int, str] | None = None
+    for name in sorted({n for n in names if isinstance(n, str) and len(n) >= 2}, key=len, reverse=True):
+        escaped = re.escape(name)
+        patterns = (
+            re.compile(rf"(【{escaped}[：:][^】\n]{{1,120}}】)"),
+            re.compile(rf"(?:^|\n)\s*({escaped}(?:[（(][^）)\n]{{0,24}}[）)])?[：:][^\n]{{1,120}})"),
+        )
+        for pattern in patterns:
+            match = pattern.search(text)
+            if match is None:
+                continue
+            heading = match.group(1).strip()
+            if heading and (best is None or match.start() < best[0]):
+                best = (match.start(), heading)
+    return None if best is None else best[1]

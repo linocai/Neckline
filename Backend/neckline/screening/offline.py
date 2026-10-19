@@ -1,11 +1,12 @@
-"""P1 离线跑：拿一份只读导出走「晨报窗口粗筛 → 按公司分类 → 按配置选择」，写出名单供用户点评。
+"""P1 离线跑：拿一份只读导出走「晨报窗口粗筛 → 按公司分类 → 按配置选择」，写出名单供对照。
 
 用法（在 Backend/ 下）：
   DEEPSEEK_API_KEY=… DEEPSEEK_MODEL=… .venv/bin/python -m neckline.screening.offline \
-    --archive .work/p1-offline/archive-20261016.jsonl.gz --out .work/p1-offline/m1013-r1 \
+    --archive .work/p1-offline/archive-20261016.jsonl.gz --out .work/p1-offline/m1013-v2 \
     --window-start 2026-10-12T15:00:00+08:00 --window-end 2026-10-13T08:00:00+08:00 \
     --collected-by 2026-10-13T08:01:03+08:00
-业务时钟全部显式传入；凭据只从环境变量读取；已有回执的请求不会再次外呼。
+默认配置是 neckline/config/screening-v2.json（可用 --config 更换）。业务时钟全部显式传入；
+凭据只从环境变量读取；已有回执的请求不会再次外呼。events.json 里每个事件含 channel、amount_yuan。
 """
 from __future__ import annotations
 
@@ -56,7 +57,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--archive", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v1.json")
+    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v2.json")
     ap.add_argument("--receipts", type=Path, default=Path(".work/p1-offline/receipts"))
     ap.add_argument("--window-start", required=True)
     ap.add_argument("--window-end", required=True)
