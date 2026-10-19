@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -82,6 +83,20 @@ def _require_number(obj: object, key: str, label: str) -> int | float:
     return value
 
 
+def _require_min_int(obj: object, key: str, label: str, minimum: int) -> int:
+    value = _require_int(obj, key, label)
+    if value < minimum:
+        raise ValueError(f"{label} 须 ≥ {minimum}")
+    return value
+
+
+def _require_positive_number(obj: object, key: str, label: str) -> int | float:
+    value = _require_number(obj, key, label)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{label} 须为正数")
+    return value
+
+
 def _require_hhmm(obj: object, key: str, label: str) -> str:
     value = _require_str(obj, key, label)
     if _HHMM.fullmatch(value) is None:
@@ -102,8 +117,8 @@ def _validate_screening_rules(rules: object) -> dict:
     model = _require_dict(rules, "model", "model")
     _require_str(model, "endpoint", "model.endpoint")
     _require_str(model, "name", "model.name")
-    _require_number(model, "timeoutSeconds", "model.timeoutSeconds")
-    _require_int(model, "maxAttempts", "model.maxAttempts")
+    _require_positive_number(model, "timeoutSeconds", "model.timeoutSeconds")
+    _require_min_int(model, "maxAttempts", "model.maxAttempts", 1)
     pool = _require_dict(rules, "companyPool", "companyPool")
     _require_str(pool, "file", "companyPool.file")
     _require_str(pool, "sha256", "companyPool.sha256")
@@ -117,17 +132,17 @@ def _validate_screening_rules(rules: object) -> dict:
     except ValueError as exc:
         raise ValueError(f"selection：{exc}") from exc
     classification = _require_dict(rules, "classification", "classification")
-    _require_int(classification, "batchMaxCompanies", "classification.batchMaxCompanies")
-    _require_int(classification, "batchMaxChars", "classification.batchMaxChars")
-    _require_int(classification, "concurrency", "classification.concurrency")
-    _require_int(classification, "maxAttempts", "classification.maxAttempts")
-    _require_int(classification, "profileChars", "classification.profileChars")
+    # 调用次数、并发、批量与长度预算：0 或负数会让出报静默变成空转，必须为正。
+    for key in ("batchMaxCompanies", "batchMaxChars", "concurrency", "maxAttempts", "profileChars"):
+        _require_min_int(classification, key, f"classification.{key}", 1)
     excerpt = _require_dict(classification, "excerpt", "classification.excerpt")
-    for key in ("lead", "window", "limit", "minChars", "blockMaxChars"):
-        _require_int(excerpt, key, f"classification.excerpt.{key}")
+    # lead=0 是「不取导语」、window=0 是「只取命中词本身」，历史摘录就这样用；其余是长度预算，须为正。
+    for key, minimum in (("lead", 0), ("window", 0), ("limit", 1), ("minChars", 1), ("blockMaxChars", 1)):
+        _require_min_int(excerpt, key, f"classification.excerpt.{key}", minimum)
     history = _require_dict(classification, "history", "classification.history")
+    # lookbackDays=0 或 maxItems=0 是「不带旧消息核对」；snippetChars=0 是「只带标题」；负数都会切错片段。
     for key in ("lookbackDays", "maxItems", "window", "snippetChars"):
-        _require_int(history, key, f"classification.history.{key}")
+        _require_min_int(history, key, f"classification.history.{key}", 0)
     options = _require(classification, "modelOptions", "classification.modelOptions")
     if not isinstance(options, dict):
         raise ValueError("classification.modelOptions 类型不对")
@@ -424,6 +439,10 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     if result.fatal:
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=result.fatal, now=clock(), pusher=pusher)
+    if messages and not result.results:
+        # 有候选消息却一家也没判：绝不当成「今天没有利好」交出空名单。
+        return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
+                     reason="有候选消息但没有任何判断结果", now=clock(), pusher=pusher)
     if result.results and all(item.error for item in result.results.values()):
         reason = next(item.error for item in result.results.values() if item.error)
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,

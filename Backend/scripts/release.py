@@ -16,8 +16,12 @@ previous runtime immediately. If the files are already in place but the units
 do not return to their previous state, or the readiness check fails, switch
 rolls the runtime back and raises. Units are started again only after the old
 files, wheel, manifest and runtime check have all succeeded. If that rollback
-fails, services stay masked and ``switch-state.json`` records the failed step.
-Any error after the units are masked is recorded there before it propagates.
+fails, ``switch-state.json`` records the failed step and, from a live ``systemctl is-enabled`` query,
+whether the services are actually masked. The same readiness check against the previous release
+(``releaseSet``, manifest version, database and the flags that were true before) runs after every rollback.
+The mask command may take effect before it reports failure, so the units are treated as possibly masked from the
+moment it is issued: any error from then on is recorded in ``switch-state.json`` and the units are always unmasked
+(idempotent) as part of the recovery before it propagates.
 The production database is never restored or overwritten.
 """
 from __future__ import annotations
@@ -300,6 +304,31 @@ def _capture_health() -> dict | None:
     return None
 
 
+def _baseline_problem(body: dict, previous: str) -> str | None:
+    """切换前 health 基线必须形状完整，否则之后的「就绪」比较没有依据。"""
+    if body.get("releaseSet") != previous:
+        return f"releaseSet 不是 {previous}"
+    if body.get("db") != "ready":
+        return "db 未就绪"
+    if not isinstance(body.get("version"), str):
+        return "version 不是字符串"
+    for flag in READY_FLAGS:
+        if not isinstance(body.get(flag), bool):
+            return f"{flag} 不是布尔值"
+    return None
+
+
+def _mask_state() -> bool | str:
+    """服务单元现在是否被 mask，以 systemctl is-enabled 的实际输出为准；查不到记 unknown。"""
+    try:
+        values = [run("systemctl", "is-enabled", unit, check=False).stdout.strip() for unit in SERVICES]
+    except Exception:
+        return "unknown"
+    if not all(values):
+        return "unknown"
+    return any(value.startswith("masked") for value in values)
+
+
 def _write_switch_state(directory: Path, record: dict) -> None:
     (directory / "switch-state.json").write_text(json.dumps(record, indent=2))
 
@@ -372,6 +401,26 @@ def _restore_units(before: dict) -> None:
         _raise_step("恢复单元", exc)
 
 
+def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | None, api_running: bool) -> dict:
+    """旧文件已还原后的共用收尾：取消 mask 并恢复单元，API 切换前在运行时按旧版本做就绪检查，核对单元状态。"""
+    _restore_units(before)
+    if api_running:
+        version = old.get("version")
+        if not isinstance(version, str) or not version:
+            _raise_step("旧版本就绪检查", RuntimeError("旧清单缺少 version"))
+        try:
+            health(previous, version=version, prior=prior)
+        except Exception as exc:
+            _raise_step("旧版本就绪检查", exc)
+    try:
+        after = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+    except Exception as exc:
+        _raise_step("回滚后单元状态", exc)
+    if after != before:
+        _raise_step("回滚后单元状态", RuntimeError("回滚后服务或 timer 状态与切换前不一致"))
+    return after
+
+
 def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
                   new: dict, before: dict, prior: dict | None, api_running: bool) -> None:
     """停服并还原上一版。只有文件、wheel、清单都还原且校验通过后才恢复单元。不碰生产库。"""
@@ -391,21 +440,7 @@ def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], ol
     except Exception as exc:
         _raise_step("确认服务已停", exc)
     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
-    _restore_units(before)
-    if api_running:
-        version = old.get("version")
-        if not isinstance(version, str) or not version:
-            _raise_step("旧版本就绪检查", RuntimeError("旧清单缺少 version"))
-        try:
-            health(previous, version=version, prior=prior)
-        except Exception as exc:
-            _raise_step("旧版本就绪检查", exc)
-    try:
-        after = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
-    except Exception as exc:
-        _raise_step("回滚后单元状态", exc)
-    if after != before:
-        _raise_step("回滚后单元状态", RuntimeError("回滚后服务或 timer 状态与切换前不一致"))
+    _finish_rollback(previous=previous, old=old, before=before, prior=prior, api_running=api_running)
 
 
 def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
@@ -438,11 +473,13 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         prior_health = _capture_health()
         if prior_health is None:
             raise RuntimeError("切换前读不到 health，未做任何改动")
+        problem = _baseline_problem(prior_health, previous)
+        if problem is not None:
+            raise RuntimeError(f"切换前 health 基线无效，未做任何改动（{problem}）")
     else:
         prior_health = None
     record: dict = {"release": release, "previous": previous, "startedAt": datetime.now(timezone.utc).isoformat(),
                     "unitsBefore": before, "apiRunningBefore": api_running, "priorHealth": prior_health}
-    masked = False
     switched = False
     settled = False
 
@@ -452,7 +489,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
                 "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"]}
 
-    def fail_manual(step: str, exc: BaseException, *, masked_kept: bool) -> None:
+    def fail_manual(step: str, exc: BaseException) -> None:
         nonlocal settled
         origin = exc.__cause__ if exc.__cause__ is not None else exc
         record["failure"] = record.get("failure") or f"{type(origin).__name__}: {origin}"
@@ -469,7 +506,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         record["rollback"] = {
             "status": "failed", "release": previous, "failedStep": step,
             "error": f"{type(origin).__name__}: {origin}", "fileState": file_state,
-            "recoveryPoint": (record.get("snapshot") or {}).get("archive"), "masked": masked_kept,
+            "recoveryPoint": (record.get("snapshot") or {}).get("archive"), "masked": _mask_state(),
         }
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         try:
@@ -481,8 +518,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         raise RuntimeError("回滚失败，需人工处理") from exc
 
     try:
+        # mask 命令可能先生效、后报错：从发出命令起就当作可能已 mask，任何错误都走统一恢复与记录。
         run("systemctl", "mask", "--runtime", *SERVICES)
-        masked = True
         run("systemctl", "stop", *TIMERS)
         run("systemctl", "stop", *SERVICES)
         for _ in range(40):
@@ -502,21 +539,16 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             verify_runtime(ROOT, new)
             switched = True
         except Exception as swap_exc:
+            record["failure"] = f"{type(swap_exc).__name__}: {swap_exc}"
             try:
                 _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
             except Exception as restore_exc:
-                fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc, masked_kept=True)
+                fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc)
             try:
-                _restore_units(before)
-                after_units = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
-                if after_units != before:
-                    mismatch = RuntimeError("回滚后服务或 timer 状态与切换前不一致")
-                    mismatch.step = "回滚后单元状态"  # type: ignore[attr-defined]
-                    raise mismatch
+                after_units = _finish_rollback(previous=previous, old=old, before=before, prior=prior_health,
+                                               api_running=api_running)
             except Exception as unit_exc:
-                step = getattr(unit_exc, "step", "恢复单元")
-                fail_manual(step, unit_exc, masked_kept=step == "取消 mask")
-            record["failure"] = f"{type(swap_exc).__name__}: {swap_exc}"
+                fail_manual(getattr(unit_exc, "step", "恢复单元"), unit_exc)
             record["rollback"] = {"status": "rolled_back", "release": previous}
             record["switched"] = False
             record["unitsAfter"] = after_units
@@ -533,8 +565,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
                     switched = False
                 except Exception as restore_exc:
-                    fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc, masked_kept=True)
-                fail_manual(step, unit_exc, masked_kept=True)
+                    fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc)
+                fail_manual(step, unit_exc)
             raise
         record["unitsAfter"] = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
         record["switched"] = True
@@ -553,7 +585,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         health(release, version=version, prior=prior_health)
         return outcome()
     except Exception as exc:
-        if not masked or settled:
+        if settled:
             raise
         record["failure"] = record.get("failure") or f"{type(exc).__name__}: {exc}"
         try:
@@ -561,16 +593,10 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 _roll_back_to(previous=previous, old=old, old_entries=old_entries, old_wheel=old_wheel,
                               old_dir=old_dir, new=new, before=before, prior=prior_health, api_running=api_running)
             else:
-                _restore_units(before)
-                restored = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
-                if restored != before:
-                    mismatch = RuntimeError("回滚后服务或 timer 状态与切换前不一致")
-                    mismatch.step = "回滚后单元状态"  # type: ignore[attr-defined]
-                    raise mismatch
+                _finish_rollback(previous=previous, old=old, before=before, prior=prior_health,
+                                 api_running=api_running)
         except Exception as rollback_exc:
-            step = getattr(rollback_exc, "step", "回滚")
-            kept = step not in {"恢复单元", "回滚后单元状态", "旧版本就绪检查"}
-            fail_manual(step, rollback_exc, masked_kept=kept)
+            fail_manual(getattr(rollback_exc, "step", "回滚"), rollback_exc)
         record["rollback"] = {"status": "rolled_back", "release": previous}
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         try:

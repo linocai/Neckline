@@ -290,9 +290,13 @@ def save_collection_sources(conn: sqlite3.Connection, *, run_id: str, sources: S
 
 
 def source_watermark(conn: sqlite3.Connection, source_key: str) -> datetime | None:
-    """该来源最近一次完整覆盖到的时刻；下次采集从这里减去回看时长开始。"""
+    """该来源最近一次完整覆盖到的时刻；下次采集从这里减去回看时长开始。
+
+    来源取完就和它的文档在同一个事务里提交摘要，所以只要摘要标了 complete，
+    无论所在采集记录是 running（后面的来源中断了）、failed、partial 还是 completed，都算数。
+    """
     best = None
-    for row in conn.execute("SELECT sources_json FROM collection_runs WHERE status IN ('completed','partial')"):
+    for row in conn.execute("SELECT sources_json FROM collection_runs"):
         for source in json.loads(row["sources_json"]):
             if source.get("sourceKey") == source_key and source.get("complete"):
                 end = datetime.fromisoformat(source["requestedEnd"])

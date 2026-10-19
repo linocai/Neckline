@@ -159,9 +159,10 @@ def clip_covered_to_lookback(intervals: Sequence[tuple[datetime, datetime]], *,
     """复用覆盖时只留下「取到的时候已经过了回看时长」的部分。
 
     取数时刻是那条来源记录的 requestedEnd。回看窗里的切片下一轮还要再请求，
-    否则迟到的新闻会被当成已经覆盖而漏掉。
+    否则迟到的新闻会被当成已经覆盖而漏掉。回看起点那一秒本身也属于回看窗：
+    区间严格截止在「取数时刻 − 回看时长」之前，上界是该时刻减 1 秒。
     """
-    cutoff = fetched_at - timedelta(seconds=lookback_seconds)
+    cutoff = fetched_at - timedelta(seconds=lookback_seconds + 1)
     kept: list[tuple[datetime, datetime]] = []
     for lo, hi in intervals:
         if lo > hi:

@@ -284,9 +284,31 @@ def _health_body(release_set, **overrides):
     return body
 
 
+class _Masking:
+    """假 systemd 的 mask 状态，供 is-enabled 如实回答。
+
+    fail_after 里的动作（"mask" 或 "unmask"）会先生效、再报错一次：模拟命令超时但副作用已经发生。
+    """
+
+    def __init__(self, fail_after=()):
+        self.on = False
+        self.fail_after = set(fail_after)
+
+    def enabled(self, unit: str) -> str:
+        return "masked-runtime\n" if self.on and unit in release.SERVICES else "disabled\n"
+
+    def apply(self, action: str, args) -> None:
+        if action in ("mask", "unmask"):
+            self.on = action == "mask"
+            if action in self.fail_after:
+                self.fail_after.discard(action)
+                raise subprocess.CalledProcessError(1, list(args), stderr="timed out after taking effect")
+
+
 def _drive_switch(tmp_path, monkeypatch, *, service_active, after, fail_restore=False):
     """假 systemctl/curl。after 是文件切换完成、服务拉起来之后的 health。"""
     root, old, legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True)
+    masking = _Masking()
     monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
     phase = {"down": False, "cycles": 0}
     installed = []
@@ -317,7 +339,9 @@ def _drive_switch(tmp_path, monkeypatch, *, service_active, after, fail_restore=
                 unit = args[2]
                 stdout = "active\n" if service_active and unit == "neckline.service" and not phase["down"] else "inactive\n"
             elif action == "is-enabled":
-                stdout = "disabled\n"
+                stdout = masking.enabled(args[2])
+            elif action in ("mask", "unmask"):
+                masking.apply(action, args)
             elif action == "stop":
                 phase["down"] = True
             elif action == "start" and phase["down"]:
@@ -414,9 +438,11 @@ def test_switch_skips_readiness_when_the_api_was_not_running(tmp_path, monkeypat
     _assert_database_untouched(root, legacy)
 
 
-def _drive_scripted(tmp_path, monkeypatch, *, service_active, extra_active=(), curl=None, install=None):
-    """和 _drive_switch 同一套阶段，但记下每条命令，并允许替换 curl / wheel 安装。"""
+def _drive_scripted(tmp_path, monkeypatch, *, service_active, extra_active=(), curl=None, install=None,
+                    masking=None):
+    """和 _drive_switch 同一套阶段，但记下每条命令，并允许替换 curl / wheel 安装 / mask 行为。"""
     root, old, legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True)
+    masking = masking or _Masking()
     monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
     phase = {"down": False, "cycles": 0}
     calls = []
@@ -442,7 +468,9 @@ def _drive_scripted(tmp_path, monkeypatch, *, service_active, extra_active=(), c
                 else:
                     stdout = "active\n"
             elif action == "is-enabled":
-                stdout = "disabled\n"
+                stdout = masking.enabled(unit)
+            elif action in ("mask", "unmask"):
+                masking.apply(action, args)
             elif action == "stop":
                 phase["down"] = True
             elif action == "start" and phase["down"]:
@@ -584,3 +612,140 @@ def test_successful_switch_keeps_the_previous_return_keys(tmp_path, monkeypatch)
     assert (root / "neckline/api/app.py").read_bytes() == b"b113"
     assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _TARGET
     assert len(installed) == 1 and _TARGET in installed[0].parts
+
+
+def test_mask_that_takes_effect_before_failing_is_recovered_and_recorded(tmp_path, monkeypatch):
+    masking = _Masking(fail_after={"mask"})
+    root, old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True, masking=masking)
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
+    actions = _actions(calls)
+    assert actions.index("mask") < actions.index("unmask")
+    assert "stop" not in actions and actions.count("start") == 1
+    assert masking.on is False and release._mask_state() is False
+    state = _switch_state(root)
+    assert state["rollback"] == {"status": "rolled_back", "release": _PREVIOUS}
+    assert "CalledProcessError" in state["failure"] and state["unitsAfter"] == state["unitsBefore"]
+    release.verify_runtime(root, old)
+    _assert_database_untouched(root, legacy)
+
+
+def test_unmask_that_takes_effect_before_failing_records_the_actual_mask_state(tmp_path, monkeypatch):
+    masking = _Masking(fail_after={"unmask"})
+    root, old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True, masking=masking)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    assert "取消 mask" in str(caught.value.__cause__)
+    assert isinstance(caught.value.__cause__.__cause__, subprocess.CalledProcessError)
+    assert "start" not in _actions(calls)
+    state = _switch_state(root)
+    assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "取消 mask"
+    # unmask 已经生效，记录以 systemctl is-enabled 的查询为准，而不是凭「失败了所以还在 mask」推断。
+    assert masking.on is False and state["rollback"]["masked"] is False
+    assert state["rollback"]["fileState"] == "old"
+    release.verify_runtime(root, old)
+    _assert_database_untouched(root, legacy)
+
+
+def test_mask_state_comes_from_systemctl_and_is_unknown_when_it_cannot_be_read(monkeypatch):
+    answers = {"value": "masked-runtime\n"}
+    monkeypatch.setattr(release, "run", lambda *args, check=True: SimpleNamespace(stdout=answers["value"]))
+    assert release._mask_state() is True
+    answers["value"] = "enabled\n"
+    assert release._mask_state() is False
+    answers["value"] = ""
+    assert release._mask_state() == "unknown"
+
+    def boom(*_args, check=True):
+        raise OSError("systemctl missing")
+
+    monkeypatch.setattr(release, "run", boom)
+    assert release._mask_state() == "unknown"
+
+
+def _curl_after_baseline(*, ready_after: bool):
+    """第一次 curl 是切换前基线（正常），之后按 ready_after 回答旧版本是否就绪。"""
+    seen = {"curl": 0}
+
+    def curl():
+        seen["curl"] += 1
+        if seen["curl"] == 1 or ready_after:
+            body = _health_body(_PREVIOUS)
+        else:
+            body = _health_body(_PREVIOUS, db="db_not_ready")
+        return subprocess.CompletedProcess(["curl"], 0, stdout=json.dumps(body), stderr="")
+
+    return curl, seen
+
+
+def _wheel_fails_once():
+    calls = {"n": 0}
+
+    def install(_wheel):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("new wheel failed")
+
+    return install
+
+
+def test_wheel_failure_with_unready_old_api_is_a_failed_rollback(tmp_path, monkeypatch):
+    curl, seen = _curl_after_baseline(ready_after=False)
+    root, old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True, curl=curl,
+                                               install=_wheel_fails_once())
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    assert "health" in str(caught.value.__cause__)
+    assert seen["curl"] > 1  # 基线之后，旧版本的就绪检查确实跑过
+    state = _switch_state(root)
+    assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "旧版本就绪检查"
+    assert state["rollback"]["fileState"] == "old"
+    assert state["rollback"]["masked"] is False  # 要检查旧 API 就绪必须先取消 mask 并拉起，记录以实际查询为准
+    assert "new wheel failed" in state["failure"] and state["switched"] is False
+    assert json.loads((root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
+    release.verify_runtime(root, old)
+    _assert_database_untouched(root, legacy)
+
+
+def test_wheel_failure_rolls_back_only_after_the_old_api_is_ready(tmp_path, monkeypatch):
+    curl, seen = _curl_after_baseline(ready_after=True)
+    root, old, legacy, _calls = _drive_scripted(tmp_path, monkeypatch, service_active=True, curl=curl,
+                                                install=_wheel_fails_once())
+    with pytest.raises(RuntimeError, match="new wheel failed"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert seen["curl"] == 2  # 基线一次，旧版本就绪检查一次
+    state = _switch_state(root)
+    assert state["rollback"] == {"status": "rolled_back", "release": _PREVIOUS}
+    assert state["unitsAfter"] == state["unitsBefore"]
+    release.verify_runtime(root, old)
+    _assert_database_untouched(root, legacy)
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"detail": "Service Unavailable"},
+    _health_body("v9.9.9-b9"),
+    _health_body(_PREVIOUS, db="db_not_ready"),
+    _health_body(_PREVIOUS, version=None),
+    _health_body(_PREVIOUS, version=4),
+    _health_body(_PREVIOUS, mcp="true"),
+    _health_body(_PREVIOUS, tushare=None),
+])
+def test_switch_aborts_before_the_mask_when_the_prior_health_baseline_is_malformed(tmp_path, monkeypatch, body):
+    root, _old, legacy, calls = _drive_scripted(tmp_path, monkeypatch, service_active=True, curl=lambda: (
+        subprocess.CompletedProcess(["curl"], 0, stdout=json.dumps(body), stderr="")))
+    with pytest.raises(RuntimeError, match="切换前 health 基线无效，未做任何改动"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert not {"mask", "unmask", "stop", "start"} & set(_actions(calls))
+    assert (root / "neckline/api/app.py").read_bytes() == b"b112"
+    assert not (root / "releases" / _TARGET / "switch-state.json").exists()
+    _assert_database_untouched(root, legacy)
+
+
+def test_a_flag_that_was_false_before_is_still_a_valid_baseline():
+    # 布尔值本身（含 False）合法；切换后只要求切换前为 True 的项仍为 True。
+    assert release._baseline_problem(_health_body(_PREVIOUS, mcp=False, mairui=False), _PREVIOUS) is None
+    assert release._baseline_problem(_health_body(_PREVIOUS, mcp=0), _PREVIOUS) == "mcp 不是布尔值"
