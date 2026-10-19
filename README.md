@@ -10,7 +10,7 @@
 - 服务器是 NB 云，目录 `/opt/neckline`。API 是 `neckline.service`；V4 定时任务：`neckline-v4-morning.timer`（每天 08:00 采集，交易日接着出报并推送 iPhone）、`neckline-v4-collect.timer`（每天 20:00 采集）、`neckline-v4-finalize.timer`（09:15 还没出报就记失败并推送「晨报出问题了」）。
 - 配置：`/opt/neckline/.env`（TuShare、金十、麦蕊、APNs、API 令牌、MCP 公开地址与连接口令哈希、OAuth 状态库路径）、`/etc/neckline/v4.env`（V4 库路径、DeepSeek 密钥、网页访问码，root:neckline 0640）。V4 库 `/opt/neckline/data/v4.db`，MCP 的 OAuth 状态库 `/opt/neckline/data/mcp-auth.db`。DeepSeek 密钥已不归 App 设置页管。
 - V4 命令（以 neckline 用户、先加载两个环境文件）：`/opt/neckline/.venv/bin/python -m neckline.morning.cli {collect|morning|finalize|show}`。
-- 筛选规则在 `Backend/neckline/config/screening-v1.json`（用户批准），公司池随代码发布并按哈希核对；改规则须升版本并经用户确认。
+- 筛选规则在 `Backend/neckline/config/screening-v2.json`（用户 2026-10-18 按 50 条消息逐条点评确认，见 `archive/2026-10-18_消息偏好点评.md`），公司池随代码发布并按哈希核对；改规则须升版本并经用户确认。
 - TuShare `major_news` 每个账号每天最多调用 40 次：彩排、手工采集都占这个额度。
 - B92（2026-09-27）之前的数据永远不读取、不导入、不恢复。
 - 后端发布只走 `Backend/scripts/release.py`，用法见 CLAUDE.md「发布」。
