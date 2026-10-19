@@ -1,6 +1,7 @@
 """V4 晨报接口（/api/v4，Bearer 鉴权）与就绪检查。App、网页、MCP 读的都是同一份晨报记录。"""
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -15,6 +16,15 @@ from neckline.screening.text import plain_text
 
 from . import db
 from .schedule import CST
+
+
+def quiet_http_loggers() -> None:
+    """httpx 会把请求 URL 打进 INFO，APNs 的设备 token 在路径里，不能记。"""
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+quiet_http_loggers()
 
 _LABELS = {"jin10-flash": "金十快讯", "jin10-news": "金十资讯"}
 
@@ -42,8 +52,8 @@ def _local(value: str | None) -> str | None:
 
 
 def document_out(doc: dict) -> dict:
-    return {"documentId": doc["documentId"], "sourceLabel": source_label(doc), "title": doc["title"],
-            "text": plain_text(doc["text"] or doc["excerpt"]), "url": doc["url"],
+    return {"documentId": doc["documentId"], "revision": doc["revision"], "sourceLabel": source_label(doc),
+            "title": doc["title"], "text": plain_text(doc["text"] or doc["excerpt"]), "url": doc["url"],
             "publishedAt": _local(doc["publishedAt"]), "fetchedAt": _local(doc["fetchedAt"])}
 
 
@@ -67,6 +77,7 @@ def _open(path_provider: Callable[[], Path | None]):
 def create_router(*, require_token_dependency: Callable[..., Any],
                   db_path_provider: Callable[[], Path | None] = v4_db_path,
                   version: str | None = None, release_set: str | None = None) -> APIRouter:
+    quiet_http_loggers()
     router = APIRouter(prefix="/api/v4")
 
     @router.get("/health")

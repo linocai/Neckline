@@ -36,6 +36,16 @@ class ChatUnknown(ChatError):
     """请求可能已送达、结果不明：不重发，也不换个请求重做同一件事。"""
 
 
+class ChatRejected(ChatError):
+    """没有密钥，或对方以 401/402/403 拒绝：这批不重试。"""
+
+
+def _rejected(status: int) -> ChatRejected:
+    if status == 402:
+        return ChatRejected("DeepSeek 余额不足（http:402）")
+    return ChatRejected(f"DeepSeek 拒绝了请求（http:{status}）")
+
+
 class Receipts(Protocol):
     def lookup(self, digest: str) -> Mapping[str, Any] | None:
         """返回 {"state": started|succeeded|failed|unknown, "response": …, "seconds": …} 或 None。"""
@@ -54,35 +64,46 @@ def canonical(value: Any) -> str:
 
 
 class FileReceipts:
-    """离线调参用：只保存成功的完整响应。"""
+    """离线调参用：按回执协议原子写下 started / succeeded / failed / unknown。"""
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         directory.mkdir(parents=True, exist_ok=True)
 
+    def _path(self, digest: str) -> Path:
+        return self.directory / f"{digest}.json"
+
+    def _write(self, digest: str, payload: Mapping[str, Any]) -> None:
+        path = self._path(digest)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(canonical(dict(payload)), encoding="utf-8")
+        tmp.replace(path)
+
     def lookup(self, digest: str) -> Mapping[str, Any] | None:
-        path = self.directory / f"{digest}.json"
+        path = self._path(digest)
         if not path.exists():
             return None
         saved = json.loads(path.read_text(encoding="utf-8"))
-        return {"state": "succeeded", "response": saved["response"], "seconds": saved.get("seconds", 0.0)}
+        state = saved.get("state")
+        # 旧的成功回执只有 response、没有 state；那就是已成功，不能当成没发过再计费。
+        if state is None and "response" in saved:
+            state = "succeeded"
+        if state not in ("started", "succeeded", "failed", "unknown"):
+            return None
+        return {"state": state, "response": saved.get("response"), "seconds": saved.get("seconds", 0.0)}
 
     def begin(self, digest: str) -> None:
-        return None
+        self._write(digest, {"request_sha256": digest, "state": "started"})
 
     def succeed(self, digest: str, response: Mapping[str, Any], seconds: float) -> None:
-        path = self.directory / f"{digest}.json"
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(canonical({"request_sha256": digest, "seconds": seconds,
-                                  "received_at": datetime.now(timezone.utc).isoformat(), "response": response}),
-                       encoding="utf-8")
-        tmp.replace(path)
+        self._write(digest, {"request_sha256": digest, "state": "succeeded", "seconds": seconds,
+                             "received_at": datetime.now(timezone.utc).isoformat(), "response": response})
 
     def fail(self, digest: str, code: str) -> None:
-        return None
+        self._write(digest, {"request_sha256": digest, "state": "failed", "error_code": code})
 
     def unknown(self, digest: str, code: str) -> None:
-        return None
+        self._write(digest, {"request_sha256": digest, "state": "unknown", "error_code": code})
 
 
 class DeepSeekClient:
@@ -110,7 +131,7 @@ class DeepSeekClient:
         if saved and saved["state"] in ("started", "unknown"):
             raise ChatUnknown("上次调用结果不明，不重发")
         if not self._api_key:
-            raise ChatError("没有回执，且未提供 DeepSeek 凭据")
+            raise ChatRejected("DeepSeek 凭据缺失")
         last = "unknown"
         for attempt in range(1, self.max_attempts + 1):
             self.receipts.begin(digest)
@@ -137,6 +158,8 @@ class DeepSeekClient:
                     return self._result(payload, digest, from_receipt=False, seconds=seconds)
                 last = f"http:{response.status_code}"
                 self.receipts.fail(digest, last)
+                if response.status_code in (401, 402, 403):
+                    raise _rejected(response.status_code)
                 if response.status_code not in _RETRYABLE_STATUS:
                     break
             if attempt < self.max_attempts:

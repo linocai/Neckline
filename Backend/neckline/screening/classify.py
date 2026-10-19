@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
-from .deepseek import ChatError, ChatUnknown, DeepSeekClient
+from .deepseek import ChatError, ChatRejected, ChatUnknown, DeepSeekClient
 from .pool import CompanyPool
 from .prefilter import Message, Window
 from .text import excerpt_for
@@ -171,6 +171,7 @@ class BatchOutcome:
     seconds: float = 0.0
     from_receipt: bool = False
     error: str | None = None
+    fatal: str | None = None
 
 
 @dataclass
@@ -178,6 +179,7 @@ class Classification:
     by_id: dict[str, Message]
     results: dict[str, CompanyResult]
     batches: list[BatchOutcome]
+    fatal: str | None = None
 
 
 def _fmt(ts: datetime) -> str:
@@ -272,6 +274,60 @@ def _amount(value: Any) -> int | float | None:
     return value
 
 
+def _read_company(result: CompanyResult, row: Mapping[str, Any], ids: set[str]) -> None:
+    """解析一家公司。events 缺失或 null 当空列表；写了但不是列表，整家记「事件字段无效」。"""
+    if "events" not in row or row.get("events") is None:
+        event_items: Sequence[Any] = []
+    elif isinstance(row.get("events"), list):
+        event_items = row["events"]
+    else:
+        result.error = "事件字段无效"
+        return
+    events, used, problem = [], [], None
+    for item in event_items:
+        if not isinstance(item, dict):
+            problem = "事件字段无效"
+            break
+        fields = (_clean(item.get("relation"), RELATIONS), _clean(item.get("type"), tuple(EVENT_TYPES)),
+                  _clean(item.get("direction"), DIRECTIONS), _clean(item.get("fresh"), FRESHNESS),
+                  _clean(item.get("importance"), IMPORTANCE), _clean(item.get("channel"), CHANNELS))
+        event_ids = item.get("ids")
+        try:
+            if "amountYuan" not in item:
+                raise ValueError("缺少金额")
+            amount = _amount(item["amountYuan"])
+        except (TypeError, ValueError):
+            problem = "事件字段无效"
+            break
+        if None in fields or not isinstance(event_ids, list) or not event_ids:
+            problem = "事件字段无效"
+            break
+        first = item.get("firstDisclosed")
+        events.append(Event(company=result.company, ids=[str(i) for i in event_ids], relation=fields[0], type=fields[1],
+                            direction=fields[2], first_disclosed=first if isinstance(first, str) and first else None,
+                            fresh=fields[3], importance=fields[4],
+                            headline=str(item.get("headline") or "").strip(),
+                            reason=str(item.get("reason") or "").strip(),
+                            channel=fields[5], amount_yuan=amount))
+        used.extend(str(i) for i in event_ids)
+    # 漏写 mentions 当作没有提及；编号是否全有着落仍由下面的核对把关。写了但不是列表才算错。
+    raw_mentions = row.get("mentions", [])
+    mentions = [str(i) for i in raw_mentions] if isinstance(raw_mentions, list) else None
+    if problem is None and mentions is None:
+        problem = "mentions 缺失"
+    if problem is None:
+        # 同一条消息里有几件事时，同一个 m 编号可以出现在几个事件里；但每个编号都要有着落，
+        # 不能既算事件又算提及，提及里也不能重复，不能出现本组以外的编号。
+        in_events = set(used)
+        if (len(mentions) != len(set(mentions)) or in_events & set(mentions)
+                or in_events | set(mentions) != ids):
+            problem = "消息编号没有对上"
+    if problem:
+        result.error = problem
+        return
+    result.events, result.mentions = events, mentions
+
+
 def parse_batch(content: str, expected: Mapping[str, Sequence[str]]) -> dict[str, CompanyResult]:
     """逐家公司校验：每个 m 编号都有着落（可分属几个事件，不能同时算提及）、取值都在枚举内；不合格的公司整家标为缺口，不猜。"""
     results = {code: CompanyResult(company=code, message_ids=list(ids)) for code, ids in expected.items()}
@@ -291,51 +347,12 @@ def parse_batch(content: str, expected: Mapping[str, Sequence[str]]) -> dict[str
         if code is None or code in seen:
             continue
         seen.add(code)
-        result = results[code]
-        ids = set(expected[code])
-        events, used, problem = [], [], None
-        for item in row.get("events") or []:
-            if not isinstance(item, dict):
-                problem = "事件字段无效"
-                break
-            fields = (_clean(item.get("relation"), RELATIONS), _clean(item.get("type"), tuple(EVENT_TYPES)),
-                      _clean(item.get("direction"), DIRECTIONS), _clean(item.get("fresh"), FRESHNESS),
-                      _clean(item.get("importance"), IMPORTANCE), _clean(item.get("channel"), CHANNELS))
-            event_ids = item.get("ids")
-            try:
-                if "amountYuan" not in item:
-                    raise ValueError("缺少金额")
-                amount = _amount(item["amountYuan"])
-            except (TypeError, ValueError):
-                problem = "事件字段无效"
-                break
-            if None in fields or not isinstance(event_ids, list) or not event_ids:
-                problem = "事件字段无效"
-                break
-            first = item.get("firstDisclosed")
-            events.append(Event(company=code, ids=[str(i) for i in event_ids], relation=fields[0], type=fields[1],
-                                direction=fields[2], first_disclosed=first if isinstance(first, str) and first else None,
-                                fresh=fields[3], importance=fields[4],
-                                headline=str(item.get("headline") or "").strip(),
-                                reason=str(item.get("reason") or "").strip(),
-                                channel=fields[5], amount_yuan=amount))
-            used.extend(str(i) for i in event_ids)
-        # 漏写 mentions 当作没有提及；编号是否全有着落仍由下面的核对把关。写了但不是列表才算错。
-        raw_mentions = row.get("mentions", [])
-        mentions = [str(i) for i in raw_mentions] if isinstance(raw_mentions, list) else None
-        if problem is None and mentions is None:
-            problem = "mentions 缺失"
-        if problem is None:
-            # 同一条消息里有几件事时，同一个 m 编号可以出现在几个事件里；但每个编号都要有着落，
-            # 不能既算事件又算提及，提及里也不能重复，不能出现本组以外的编号。
-            in_events = set(used)
-            if (len(mentions) != len(set(mentions)) or in_events & set(mentions)
-                    or in_events | set(mentions) != ids):
-                problem = "消息编号没有对上"
-        if problem:
-            result.error = problem
-            continue
-        result.events, result.mentions = events, mentions
+        try:
+            _read_company(results[code], row, set(expected[code]))
+        except Exception:
+            results[code].error = "事件字段无效"
+            results[code].events = []
+            results[code].mentions = []
     for code, result in results.items():
         if code not in seen and result.error is None:
             result.error = "输出里没有这家公司"
@@ -372,6 +389,11 @@ def classify(messages: Sequence[Message], history: Sequence[Message], pool: Comp
         wanted = {c: expected[c] for c in batch}
         try:
             result = client.complete(prompt, settings["modelOptions"])
+        except ChatRejected as exc:
+            outcome.error = str(exc)
+            outcome.fatal = str(exc)
+            return outcome, {c: CompanyResult(company=c, message_ids=wanted[c], error=str(exc), retryable=False)
+                             for c in batch}
         except ChatError as exc:
             outcome.error = str(exc)
             retryable = not isinstance(exc, ChatUnknown)
@@ -380,7 +402,13 @@ def classify(messages: Sequence[Message], history: Sequence[Message], pool: Comp
         outcome.usage, outcome.seconds, outcome.from_receipt = result.usage, result.seconds, result.from_receipt
         if result.finish_reason not in ("stop", None):
             outcome.error = f"finish:{result.finish_reason}"
-        return outcome, parse_batch(result.content, wanted)
+        try:
+            parsed = parse_batch(result.content, wanted)
+        except Exception:
+            outcome.error = "输出无法解析"
+            return outcome, {c: CompanyResult(company=c, message_ids=wanted[c], error="输出无法解析", retryable=False)
+                             for c in batch}
+        return outcome, parsed
 
     pending = make_batches({c: len(b) for c, b in blocks.items()}, order,
                            max_companies=settings["batchMaxCompanies"], max_chars=settings["batchMaxChars"])
@@ -397,4 +425,5 @@ def classify(messages: Sequence[Message], history: Sequence[Message], pool: Comp
         if not retry:
             break
         pending = [[code] for code in retry]  # 重试时每家公司单独一批，避免互相拖累
-    return Classification(by_id=ids, results=results, batches=outcomes)
+    fatal = next((outcome.fatal for outcome in outcomes if outcome.fatal), None)
+    return Classification(by_id=ids, results=results, batches=outcomes, fatal=fatal)

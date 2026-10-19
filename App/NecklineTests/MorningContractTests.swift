@@ -36,7 +36,7 @@ final class MorningContractTests: XCTestCase {
         XCTAssertTrue(content.review.old.isEmpty)
 
         let document = try decode("document", as: MorningDocument.self)
-        XCTAssertEqual(document.documentId, entries[0].sources[0].documentId)
+        XCTAssertEqual(entries[0].sources[0].documentId, document.documentId + "@1")
         XCTAssertEqual(document.url, "https://example.invalid/flash/z1")
         XCTAssertEqual(document.sourceLabel, "金十快讯")
         XCTAssertEqual(document.text, "震裕科技预计前三季度净利增长 58%。")

@@ -28,6 +28,13 @@ from .report import Pusher, finalize, load_config, note_error, run_morning
 from .schedule import CST
 
 TEMPFAIL = 75  # 让 systemd 按 Restart=on-failure 重启续跑
+_LOG = logging.getLogger("neckline.morning.cli")
+
+
+def quiet_http_loggers() -> None:
+    """httpx 会把请求 URL 打进 INFO，APNs 的设备 token 在路径里，不能记。"""
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _now(value: str | None) -> datetime:
@@ -74,8 +81,29 @@ def _print(value) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=1, default=str))
 
 
+def _weekday_problem(path: Path, day, body: str, clock) -> None:
+    if day.weekday() >= 5:
+        return
+    Pusher(path, _sender(), clock).notify(report_id=f"morning-{day.isoformat()}", kind="problem",
+                                          title="晨报出问题了", body=body)
+
+
+def _config_invalid(path: Path, now: datetime, clock, *, collect: bool) -> None:
+    """筛选规则坏了：不写晨报。晨报命令仍先采集；工作日推一次，然后以 0 退出。"""
+    if collect:
+        try:
+            run_collection(path, now=now, config=_collection_config(), tokens=_tokens(), clock=clock)
+        except Exception as exc:
+            _LOG.error("采集失败：%s", type(exc).__name__)
+    try:
+        _weekday_problem(path, now.astimezone(CST).date(), "筛选规则配置无效，今天不出报", clock)
+    except Exception as exc:
+        _LOG.error("推送失败：%s", type(exc).__name__)
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    quiet_http_loggers()
     ap = argparse.ArgumentParser(prog="neckline.morning.cli")
     ap.add_argument("--db")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -115,7 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         _print(run_collection(path, now=now, config=_collection_config(), tokens=_tokens(),
                               bootstrap_start=bootstrap, max_pages=args.max_pages, clock=clock))
         return 0
-    config = load_config()
+    try:
+        config = load_config()
+    except Exception as exc:
+        _LOG.error("筛选规则配置无效：%s", type(exc).__name__)
+        _config_invalid(path, now, clock, collect=args.command == "morning")
+        return 0
     pusher = Pusher(path, _sender(), clock)
     if args.command == "finalize":
         _print(finalize(path, now=now, config=config, pusher=pusher))

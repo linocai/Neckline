@@ -144,8 +144,9 @@ def _entry(rank: int, e: Entry, pool: CompanyPool) -> dict:
         "rank": rank, "companyCode": company.short_code, "companyName": company.name, "type": ev.type,
         "importance": ev.importance, "relation": ev.relation, "fresh": ev.fresh, "headline": ev.headline,
         "reason": ev.reason, "firstDisclosed": ev.first_disclosed,
-        "sources": [{"documentId": m.document_id, "sourceLabel": m.source_label, "publishedAt": _cst(m.published_at),
-                     "title": source_title(m, e.company, pool), "url": m.url} for m in e.messages],
+        "sources": [{"documentId": f"{m.document_id}@{m.revision}", "sourceLabel": m.source_label,
+                     "publishedAt": _cst(m.published_at), "title": source_title(m, e.company, pool), "url": m.url}
+                    for m in e.messages],
         "others": [{"headline": o.headline, "type": o.type, "importance": o.importance} for o in e.others],
     }
 
@@ -192,8 +193,33 @@ class Pusher:
         return {"devices": len(tokens), "sent": sent, "failed": failed}
 
 
-def _ready_body(count: int) -> str:
-    return f"{count} 家公司" if count else "今天没有符合条件的利好"
+def _ready_body(count: int, gap: str | None = None) -> str:
+    text = f"{count} 家公司" if count else "今天没有符合条件的利好"
+    if count == 0 and gap:
+        text += "（有缺口）"
+    return text
+
+
+def _push_ready(pusher: Pusher, report_id: str, count: int, gap: str | None) -> dict:
+    return pusher.notify(report_id=report_id, kind="ready", title="晨报已出", body=_ready_body(count, gap))
+
+
+def _calendar_gap(day: date, exc: CalendarGap, pusher: Pusher, collection: str | None) -> dict:
+    """交易日历没覆盖到这一年：工作日推一次，周末不推。不写晨报记录。"""
+    result: dict[str, Any] = {"tradeDate": day.isoformat(), "state": "calendar_gap", "reason": str(exc)}
+    if collection is not None:
+        result["collection"] = collection
+    if day.weekday() < 5:
+        result["push"] = pusher.notify(report_id=f"morning-{day.isoformat()}", kind="problem", title="晨报出问题了",
+                                       body=f"交易日历未覆盖 {day.year} 年，今天不出报")
+    return result
+
+
+def _stored_ready(pusher: Pusher, report_id: str, stored: Mapping[str, Any]) -> dict:
+    entries = (stored.get("content") or {}).get("entries") or []
+    return {"tradeDate": stored["trade_date"], "state": "available", "entries": len(entries),
+            "gapSummary": stored.get("gap_summary"),
+            "push": _push_ready(pusher, report_id, len(entries), stored.get("gap_summary"))}
 
 
 def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, datetime], config: LoadedConfig,
@@ -210,25 +236,30 @@ def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, d
 def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector: Callable[[datetime], dict],
                 client_factory: Callable[[str], DeepSeekClient], pusher: Pusher,
                 clock: Callable[[], datetime]) -> dict:
-    """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。"""
+    """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。
+
+    先看当天报告：已有 running 就是续跑，不再采集，消息边界用首次写入的 started_at。
+    """
     rules = config.rules
     day = now.astimezone(CST).date()
-    collection = collector(now)
+    report_id = f"morning-{day.isoformat()}"
+    with db.read(db_path) as conn:
+        existing = db.get_report(conn, day.isoformat())
+    resuming = bool(existing and existing["status"] == "running")
+    if resuming:
+        collection = {"status": "skipped_resume"}
+    else:
+        collection = collector(now)
     try:
         trading = is_trading_day(day)
     except CalendarGap as exc:
-        return {"tradeDate": day.isoformat(), "state": "calendar_gap", "reason": str(exc), "collection": collection["status"]}
+        return _calendar_gap(day, exc, pusher, collection["status"])
     if not trading:
         return {"tradeDate": day.isoformat(), "state": "not_trading_day", "collection": collection["status"]}
     schedule = rules["schedule"]
     start, end = morning_window(day, schedule)
-    report_id = f"morning-{day.isoformat()}"
-    with db.write(db_path) as conn:
-        existing = db.get_report(conn, day.isoformat())
     if existing and existing["status"] == "available":
-        count = len(existing["content"]["entries"])
-        push = pusher.notify(report_id=report_id, kind="ready", title="晨报已出", body=_ready_body(count))
-        return {"tradeDate": day.isoformat(), "state": "available", "entries": count, "push": push}
+        return _stored_ready(pusher, report_id, existing)
     if existing and existing["status"] == "failed":
         return {"tradeDate": day.isoformat(), "state": "failed", "reason": existing["failure_reason"]}
     if now > deadline(day, schedule):
@@ -237,10 +268,15 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     if rules.get("approval") != "approved":
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason="筛选规则未经批准", now=now, pusher=pusher)
-    with db.write(db_path) as conn:
-        db.begin_report(conn, report_id=report_id, trade_date=day.isoformat(), window_start=start, window_end=end,
-                        config_version=rules["configVersion"], config_sha256=config.sha256, started_at=clock())
-    collected_by = clock()
+    if resuming:
+        collected_by = datetime.fromisoformat(existing["started_at"])
+    else:
+        collected_by = clock()
+        with db.write(db_path) as conn:
+            db.begin_report(conn, report_id=report_id, trade_date=day.isoformat(), window_start=start, window_end=end,
+                            config_version=rules["configVersion"], config_sha256=config.sha256, started_at=collected_by)
+            stored = db.get_report(conn, day.isoformat())
+        collected_by = datetime.fromisoformat(stored["started_at"])
     window = Window(start=start, end=end, collected_by=collected_by)
     settings = rules["classification"]
     with db.read(db_path) as conn:
@@ -257,6 +293,13 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     model_started = clock()
     result: Classification = classify(messages, history, config.pool, config.profiles, client_factory(report_id),
                                       window=window, settings=settings)
+    if result.fatal:
+        return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
+                     reason=result.fatal, now=clock(), pusher=pusher)
+    if result.results and all(item.error for item in result.results.values()):
+        reason = next(item.error for item in result.results.values() if item.error)
+        return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
+                     reason=reason, now=clock(), pusher=pusher)
     selection = select(result.by_id, result.results, rules["selection"])
     gaps = coverage_gaps(runs, start, end)
     summary = gap_summary(gaps, selection, config.pool)
@@ -272,29 +315,46 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
              "collectionGaps": gaps, "collection": collection["status"],
              **{name: len(entries) for name, entries in selection.sections.items()}}
+    if finished > deadline(day, schedule):
+        return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
+                     reason=f"{schedule['deadline']} 前没能出报", now=finished, pusher=pusher)
     content = build_content(report_id=report_id, day=day, window=window, selection=selection, pool=config.pool,
                             config_version=rules["configVersion"], gap=summary, generated_at=finished, stats=stats)
     with db.write(db_path) as conn:
-        db.complete_report(conn, report_id=report_id, content=content, stats=stats, gap_summary=summary,
-                           available_at=finished)
-    push = pusher.notify(report_id=report_id, kind="ready", title="晨报已出", body=_ready_body(len(content["entries"])))
+        updated = db.complete_report(conn, report_id=report_id, content=content, stats=stats, gap_summary=summary,
+                                     available_at=finished)
+    if updated == 0:
+        with db.read(db_path) as conn:
+            stored = db.get_report(conn, day.isoformat())
+        if stored and stored["status"] == "available":
+            return _stored_ready(pusher, report_id, stored)
+        return {"tradeDate": day.isoformat(), "state": stored["status"] if stored else "running",
+                "reason": stored.get("failure_reason") if stored else None}
+    push = _push_ready(pusher, report_id, len(content["entries"]), summary)
     return {"tradeDate": day.isoformat(), "state": "available", "entries": len(content["entries"]),
             "gapSummary": summary, "push": push, "stats": stats}
 
 
 def finalize(db_path: Path, *, now: datetime, config: LoadedConfig, pusher: Pusher) -> dict:
-    """截止时刻（09:15）兜底：当天还没出报的，如实记为失败并推送；已出或非交易日什么都不做。"""
+    """截止时刻（09:15）兜底：当天还没出报的，如实记为失败并推送。
+
+    已经出完或已经失败的，再推一次，只补没送到的设备。非交易日什么都不做。
+    """
     day = now.astimezone(CST).date()
     try:
         if not is_trading_day(day):
             return {"tradeDate": day.isoformat(), "state": "not_trading_day"}
     except CalendarGap as exc:
-        return {"tradeDate": day.isoformat(), "state": "calendar_gap", "reason": str(exc)}
+        return _calendar_gap(day, exc, pusher, None)
     report_id = f"morning-{day.isoformat()}"
-    with db.write(db_path) as conn:
+    with db.read(db_path) as conn:
         existing = db.get_report(conn, day.isoformat())
-    if existing and existing["status"] in ("available", "failed"):
-        return {"tradeDate": day.isoformat(), "state": existing["status"]}
+    if existing and existing["status"] == "available":
+        return _stored_ready(pusher, report_id, existing)
+    if existing and existing["status"] == "failed":
+        push = pusher.notify(report_id=report_id, kind="problem", title="晨报出问题了",
+                             body=existing["failure_reason"] or "晨报出问题了")
+        return {"tradeDate": day.isoformat(), "state": "failed", "reason": existing["failure_reason"], "push": push}
     reason = f"{config.rules['schedule']['deadline']} 前没能出报"
     if existing and existing.get("failure_reason"):
         reason += f"（{existing['failure_reason']}）"

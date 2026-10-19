@@ -339,7 +339,7 @@ def test_identical_request_is_billed_once(tmp_path):
     offline = DeepSeekClient(endpoint="https://example.invalid/chat/completions", model="m", api_key=None,
                              receipts=FileReceipts(tmp_path), timeout_seconds=5, max_attempts=1)
     assert offline.complete(prompt, {"max_tokens": 10}).from_receipt
-    with pytest.raises(ChatError, match="未提供"):
+    with pytest.raises(ChatError, match="凭据缺失"):
         offline.complete(prompt, {"max_tokens": 11})
 
 

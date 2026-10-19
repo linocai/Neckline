@@ -7,11 +7,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
+from urllib.parse import unquote
 
 from neckline.news.model import SourceDocument
 
@@ -220,16 +222,51 @@ def iter_documents(conn: sqlite3.Connection, *, published_from: datetime, publis
                "fetchedAt": row["fetched_at"], "text": row["original_text"], "excerpt": row["excerpt"], "meta": meta}
 
 
-def get_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
-    row = conn.execute("""SELECT v.*, d.source_key, d.url, d.first_seen_at FROM document_versions v
-                          JOIN documents d USING(document_id) WHERE v.document_id=?
-                          ORDER BY v.revision DESC LIMIT 1""", (doc_id,)).fetchone()
-    if row is None:
+_DOC_REF = re.compile(r"^(doc_[0-9a-f]{32})(?:@([1-9][0-9]*))?$")
+_DOC_COLUMNS = """SELECT v.document_id, v.revision, d.source_key, d.url, d.first_seen_at, v.published_at,
+       v.fetched_at, v.title, v.original_text, v.excerpt, v.metadata_json
+FROM document_versions v JOIN documents d USING(document_id)"""
+
+
+def parse_document_ref(ref: str) -> tuple[str, int | None] | None:
+    """`doc_<32hex>` 取最新版本，`doc_<32hex>@<正整数>` 取精确版本。格式不对返回 None。
+
+    `%40` 与 `@` 同一写法。前导零、0、负数、大写、长度不对都算找不到。
+    """
+    if not isinstance(ref, str) or not ref:
         return None
+    matched = _DOC_REF.fullmatch(unquote(ref))
+    if matched is None:
+        return None
+    raw = matched.group(2)
+    if raw is None:
+        return matched.group(1), None
+    revision = int(raw)
+    if revision > 2**63 - 1:
+        return None
+    return matched.group(1), revision
+
+
+def _document_row(row: sqlite3.Row) -> dict:
     return {"documentId": row["document_id"], "revision": row["revision"], "sourceKey": row["source_key"],
             "url": row["url"], "title": row["title"], "text": row["original_text"], "excerpt": row["excerpt"],
             "publishedAt": row["published_at"], "fetchedAt": row["fetched_at"], "firstSeenAt": row["first_seen_at"],
             "meta": json.loads(row["metadata_json"])}
+
+
+def get_document(conn: sqlite3.Connection, ref: str) -> dict | None:
+    parsed = parse_document_ref(ref)
+    if parsed is None:
+        return None
+    doc_id, revision = parsed
+    if revision is None:
+        row = conn.execute(_DOC_COLUMNS + " WHERE v.document_id=? ORDER BY v.revision DESC LIMIT 1",
+                           (doc_id,)).fetchone()
+    else:
+        row = conn.execute(_DOC_COLUMNS + " WHERE v.document_id=? AND v.revision=?", (doc_id, revision)).fetchone()
+    if row is None:
+        return None
+    return _document_row(row)
 
 
 # ------------------------------------------------------------------ 采集记录
@@ -361,10 +398,12 @@ def begin_report(conn: sqlite3.Connection, *, report_id: str, trade_date: str, w
 
 
 def complete_report(conn: sqlite3.Connection, *, report_id: str, content: Mapping, stats: Mapping,
-                    gap_summary: str | None, available_at: datetime) -> None:
-    conn.execute("""UPDATE reports SET status='available', content_json=?, stats_json=?, gap_summary=?, available_at=?
-                    WHERE report_id=? AND status='running'""",
-                 (_dumps(content), _dumps(stats), gap_summary, utc(available_at), report_id))
+                    gap_summary: str | None, available_at: datetime) -> int:
+    """只把仍在 running 的报告标成 available。返回更新行数；0 表示状态已经被人改过。"""
+    cursor = conn.execute("""UPDATE reports SET status='available', content_json=?, stats_json=?, gap_summary=?,
+                             available_at=? WHERE report_id=? AND status='running'""",
+                          (_dumps(content), _dumps(stats), gap_summary, utc(available_at), report_id))
+    return cursor.rowcount
 
 
 def fail_report(conn: sqlite3.Connection, *, report_id: str, trade_date: str, window_start: datetime,

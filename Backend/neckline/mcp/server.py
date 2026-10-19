@@ -95,7 +95,7 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
 
     @server.tool(name="get_document", title="读取原文", annotations=_READ)
     async def get_document(document_id: str) -> dict[str, Any]:
-        """按文档 id 读取晨报原文全文和原链接。"""
+        """按文档 id 读取晨报原文全文和原链接。可传 doc_<32位十六进制> 取最新版本，或 doc_<32位十六进制>@<正整数> 取指定版本。"""
         return _document(document_id)
 
     @server.tool(name="check_pool", title="查询股票池", annotations=_READ)

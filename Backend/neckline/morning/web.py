@@ -71,7 +71,8 @@ def _entries(base: str, entries: list[dict]) -> str:
     for e in entries:
         first = e["sources"][0]
         more = f"，另有 {len(e['sources']) - 1} 条" if len(e["sources"]) > 1 else ""
-        link = f"<a href=\"{base}/doc/{escape(first['documentId'])}\">{escape(first['sourceLabel'])} {escape(first['publishedAt'][5:16].replace('T', ' '))}</a>"
+        link = (f"<a href=\"{base}/doc/{quote(first['documentId'], safe='')}\">"
+                f"{escape(first['sourceLabel'])} {escape(first['publishedAt'][5:16].replace('T', ' '))}</a>")
         disclosed = f"｜首次公开 {escape(e['firstDisclosed'])}" if e.get("firstDisclosed") else ""
         others = "".join(f"<div class=\"why\">同公司另有：{escape(o['headline'])}</div>" for o in e.get("others", []))
         items.append(f"<li><div><span class=\"co\">{e['rank']}. {escape(e['companyName'])} {escape(e['companyCode'])}</span>"

@@ -23,7 +23,7 @@
         "relation": "主体",
         "sources": [
           {
-            "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4",
+            "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4@1",
             "publishedAt": "2026-10-16T17:05+08:00",
             "sourceLabel": "金十快讯",
             "title": "震裕科技：前三季度净利预增",
@@ -45,7 +45,7 @@
         "relation": "主体",
         "sources": [
           {
-            "documentId": "doc_456d13ced901b52aa72ff231fb8b6b02",
+            "documentId": "doc_456d13ced901b52aa72ff231fb8b6b02@1",
             "publishedAt": "2026-10-19T07:40+08:00",
             "sourceLabel": "TuShare 新闻",
             "title": null,
@@ -67,7 +67,7 @@
         "relation": "主体",
         "sources": [
           {
-            "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41",
+            "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41@1",
             "publishedAt": "2026-10-18T21:10+08:00",
             "sourceLabel": "金十资讯",
             "title": "奥克股份：新产品进入量产",
@@ -98,7 +98,7 @@
           "relation": "受益方",
           "sources": [
             {
-              "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41",
+              "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41@1",
               "publishedAt": "2026-10-18T21:10+08:00",
               "sourceLabel": "金十资讯",
               "title": "下游扩产",
@@ -122,7 +122,7 @@
           "relation": "主体",
           "sources": [
             {
-              "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4",
+              "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4@1",
               "publishedAt": "2026-10-16T17:05+08:00",
               "sourceLabel": "金十快讯",
               "title": "行业价格",
