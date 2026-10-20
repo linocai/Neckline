@@ -10,7 +10,7 @@ from typing import Iterable, Mapping, Sequence
 from .pool import CompanyPool
 from .text import plain_text
 
-_SOURCE_LABELS = {"jin10-flash": "金十快讯", "jin10-news": "金十资讯"}
+_SOURCE_LABELS = {"jin10-flash": "金十快讯", "jin10-news": "金十资讯", "cninfo-announcement": "巨潮公告"}
 _BRACKET_TITLE = re.compile(r"^【([^】]{2,80})】")
 
 

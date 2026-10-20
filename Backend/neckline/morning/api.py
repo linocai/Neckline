@@ -27,7 +27,7 @@ def quiet_http_loggers() -> None:
 
 quiet_http_loggers()
 
-_LABELS = {"jin10-flash": "金十快讯", "jin10-news": "金十资讯"}
+_LABELS = {"jin10-flash": "金十快讯", "jin10-news": "金十资讯", "cninfo-announcement": "巨潮公告"}
 
 
 def v4_db_path() -> Path | None:

@@ -29,7 +29,10 @@ from .schedule import CST, CalendarGap, deadline, is_trading_day, morning_window
 
 logger = logging.getLogger(__name__)
 
-SOURCE_LABELS = {"tushare-major-news": "TuShare 新闻", "jin10-flash": "金十快讯", "jin10-news": "金十资讯"}
+SOURCE_LABELS = {"tushare-major-news": "TuShare 新闻", "jin10-flash": "金十快讯", "jin10-news": "金十资讯",
+                 "cninfo-announcement": "巨潮公告"}
+# 后来才上线的来源：它上线之前的窗口没有采集记录，不能因此报「没取全」；有过记录就和其他来源一样核对覆盖。
+LATE_SOURCES = frozenset({"cninfo-announcement"})
 ERROR_LABELS = {
     "history_unavailable": "来源翻不到窗口起点", "page_limit": "翻页到上限", "request_bound_reached": "请求数到上限",
     "credential_missing": "凭据缺失", "unauthorized": "凭据被拒", "rate_limited": "被限流",
@@ -197,9 +200,12 @@ def coverage_gaps(runs: list[dict], start: datetime, end: datetime) -> list[str]
     """逐来源看窗口是否被完整的采集覆盖；没覆盖的写明最后一次的原因。
 
     不完整的记录若带 covered 切片，这些切片也算覆盖。没有该字段的旧记录只看 complete。
+    后来才上线的来源（LATE_SOURCES）在传入的采集记录里一条都没有时跳过：它上线之前的窗口本来就没有采过。
     """
     gaps = []
     for key, label in SOURCE_LABELS.items():
+        if key in LATE_SOURCES and not any(source.get("sourceKey") == key for run in runs for source in run["sources"]):
+            continue
         intervals, last_error = [], None
         for run in runs:
             for source in run["sources"]:
