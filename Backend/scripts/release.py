@@ -41,7 +41,11 @@ connection to a WAL database creates them when none exist), which would lock the
 root-side connection is therefore closed explicitly, and right after it the sidecar files (when present) must be
 neckline:neckline 0600: root-owned ones are handed back and recorded as ``sidecarFixes`` in ``switch-state.json`` (and in
 the output); anything that cannot be put right fails the step (abort before the mask, rollback or manual after it).
-``assert_ownership`` checks the sidecar files too.
+``assert_ownership`` checks the sidecar files too. The service owns the directory, so a sidecar may be swapped for a link
+at any moment: each one is opened once with ``O_NOFOLLOW | O_NONBLOCK`` and everything (type, link count, owner, the
+fix itself via ``fchown`` / ``fchmod``) is done on that descriptor, never by path; links, non-regular files and hard-linked
+files are refused. Before any unit is unmasked or started again (``_restore_units``: the normal path and every rollback
+path) the production database and its sidecars are checked, and fixed if needed, once more; if that fails the units stay masked.
 
 Health flags: ``kxPool`` / ``kxPicks`` follow the same rule as ``READY_FLAGS`` (true before, still true after) for a release
 whose manifest ``schemaVersion`` is at least 2 (the KX releases); a release that predates them (B120 shape, also the
@@ -50,6 +54,7 @@ target of a roll-back to it) neither reports nor needs them, and a baseline with
 from __future__ import annotations
 
 import argparse
+import errno
 import grp
 import gzip
 import hashlib
@@ -61,6 +66,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -317,7 +323,7 @@ def assert_ownership() -> None:
     if (v4_stat.st_uid, v4_stat.st_gid, v4_stat.st_mode & 0o777) != owner:
         raise RuntimeError("V4 晨报库属主或权限异常")
     for sidecar in _sidecars(V4_DB):
-        found = _owner_of(sidecar)
+        found = _sidecar_owner(sidecar)
         if found is not None and found != owner:
             raise RuntimeError(f"V4 晨报库伴随文件 {sidecar.name} 属主或权限异常")
 
@@ -335,38 +341,80 @@ def _sidecars(db: Path) -> list[Path]:
     return [Path(f"{db}{suffix}") for suffix in SIDECAR_SUFFIXES]
 
 
-def _owner_of(path: Path) -> tuple[int, int, int] | None:
-    """(uid, gid, 权限位)；文件不存在返回 None。符号链接一律拒绝。"""
-    if path.is_symlink():
-        raise RuntimeError(f"{path.name} 是符号链接")
+def _open_sidecar(path: Path) -> int | None:
+    """不跟随符号链接地打开伴随文件（只读、非阻塞）；文件不存在返回 None，符号链接直接报错。"""
     try:
-        found = path.stat()
+        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
         return None
-    return found.st_uid, found.st_gid, found.st_mode & 0o777
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise RuntimeError(f"{path.name} 是符号链接，拒绝处理") from exc
+        raise RuntimeError(f"{path.name} 无法安全打开：{exc}") from exc
+
+
+def _regular_file(path: Path, fd: int) -> os.stat_result | None:
+    """对已打开的描述符验明身份：普通文件、链接数为 1。链接数为 0 说明刚被删（服务关库时会删 -wal），当作不存在。"""
+    found = os.fstat(fd)
+    if not stat.S_ISREG(found.st_mode):
+        raise RuntimeError(f"{path.name} 不是普通文件")
+    if found.st_nlink == 0:
+        return None
+    if found.st_nlink != 1:
+        raise RuntimeError(f"{path.name} 的链接数是 {found.st_nlink}，不是 1")
+    return found
+
+
+def _sidecar_owner(path: Path) -> tuple[int, int, int] | None:
+    """(uid, gid, 权限位)；不存在返回 None。只通过不跟随链接的描述符检查，绝不按路径。"""
+    fd = _open_sidecar(path)
+    if fd is None:
+        return None
+    try:
+        found = _regular_file(path, fd)
+        return None if found is None else (found.st_uid, found.st_gid, found.st_mode & 0o777)
+    finally:
+        os.close(fd)
 
 
 def fix_sidecars(db: Path) -> None:
     """root 侧用过库之后：-wal/-shm（存在时）必须是 neckline:neckline 0600。
-    root 属主的改回来并记一笔；改不回来或属主是别人就报错（调用方按所处阶段中止或回滚）。"""
+    root 属主的改回来并记一笔；改不回来或属主是别人就报错（调用方按所处阶段中止或回滚）。
+    每个文件只打开一次（O_NOFOLLOW），核验与修改都作用在同一个描述符上，路径中途被换成链接也碰不到别的文件。"""
     uid, gid = _service_owner()
     for path in _sidecars(db):
-        found = _owner_of(path)
-        if found is None or found == (uid, gid, 0o600):
+        fd = _open_sidecar(path)
+        if fd is None:
             continue
-        if found[0] not in (0, uid):
-            raise RuntimeError(f"{path.name} 属主异常（uid={found[0]}），既不是 root 也不是 {SERVICE_USER}")
         try:
-            os.chown(path, uid, gid)
-            os.chmod(path, 0o600)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise RuntimeError(f"{path.name} 无法改回 {SERVICE_USER}:{SERVICE_USER} 0600：{exc}") from exc
-        now = _owner_of(path)
-        if now is not None and now != (uid, gid, 0o600):
-            raise RuntimeError(f"{path.name} 改回后仍不是 {SERVICE_USER}:{SERVICE_USER} 0600")
-        _SIDECAR_FIXES.append({"file": path.name, "wasUid": found[0], "wasGid": found[1], "wasMode": oct(found[2])})
+            found = _regular_file(path, fd)
+            if found is None or (found.st_uid, found.st_gid, found.st_mode & 0o777) == (uid, gid, 0o600):
+                continue
+            if found.st_uid not in (0, uid):
+                raise RuntimeError(f"{path.name} 属主异常（uid={found.st_uid}），既不是 root 也不是 {SERVICE_USER}")
+            try:
+                os.fchown(fd, uid, gid)
+                os.fchmod(fd, 0o600)
+            except OSError as exc:
+                raise RuntimeError(f"{path.name} 无法改回 {SERVICE_USER}:{SERVICE_USER} 0600：{exc}") from exc
+            now = os.fstat(fd)
+            if (now.st_uid, now.st_gid, now.st_mode & 0o777) != (uid, gid, 0o600):
+                raise RuntimeError(f"{path.name} 改回后仍不是 {SERVICE_USER}:{SERVICE_USER} 0600")
+            _SIDECAR_FIXES.append({"file": path.name, "wasUid": found.st_uid, "wasGid": found.st_gid,
+                                   "wasMode": oct(found.st_mode & 0o777)})
+        finally:
+            os.close(fd)
+
+
+def _check_database_for_service() -> None:
+    """单元要重新 unmask / 启动之前：生产库和伴随文件的属主权限必须是服务能用的样子（需要就再改回一次）。"""
+    if not V4_DB.exists():
+        return
+    try:
+        fix_sidecars(V4_DB)
+        assert_ownership()
+    except Exception as exc:
+        _raise_step("核验生产库属主权限", exc)
 
 
 @contextmanager
@@ -623,6 +671,7 @@ def _restore_runtime(*, old: dict, old_entries: dict[str, bytes], old_wheel: Pat
 
 
 def _restore_units(before: dict) -> None:
+    _check_database_for_service()  # 任何会让单元回来的路径都先过这一关；不过就保持 mask、不启动
     try:
         run("systemctl", "unmask", "--runtime", *SERVICES)
     except Exception as exc:

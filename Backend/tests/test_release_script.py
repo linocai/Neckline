@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tarfile
 from contextlib import closing
@@ -46,45 +47,85 @@ def _no_leaked_sidecar_notes():
     release._SIDECAR_FIXES.clear()
 
 
-# -wal/-shm 的属主由测试控制：真实文件由 SQLite 或测试创建，stat 报告的属主取自 owner（默认 neckline 10:20 0600），
-# os.chown / os.chmod 改的是这份记录；chown_failures 次内 chown 抛 PermissionError。
-_SIDECARS = SimpleNamespace(owner={}, chown_failures=0)
+# -wal/-shm 的属主由测试控制：release.py 只通过 os.open(O_NOFOLLOW) 得到的描述符检查和修改它们，所以这里在
+# os.open / os.fstat / os.fchown / os.fchmod / os.close 上做钩子：fstat 报告的属主取自 owner（默认 neckline 10:20
+# 0600，类型位和链接数仍取真实值），fchown / fchmod 改的是这份记录；chown_failures 次内 fchown 抛 PermissionError。
+# after_open / after_fstat 是竞态注入点；modified 记下被 fchown 的文件的 inode；按路径的 chown / chmod 一律禁止。
+_SIDECARS = SimpleNamespace(owner={}, chown_failures=0, fds={}, modified=[], after_open=None, after_fstat=None,
+                            chown_ignored=False)
 
 
 def _install_sidecar_owner(monkeypatch, db: Path) -> None:
     _SIDECARS.owner.clear()
+    _SIDECARS.fds.clear()
+    _SIDECARS.modified.clear()
     _SIDECARS.chown_failures = 0
+    _SIDECARS.after_open = _SIDECARS.after_fstat = None
+    _SIDECARS.chown_ignored = False
     names = {f"{db.name}{suffix}" for suffix in release.SIDECAR_SUFFIXES}
-    wrapped_stat = Path.stat
+    real_open, real_fstat, real_close, real_fchmod = os.open, os.fstat, os.close, os.fchmod
     real_chown, real_chmod = os.chown, os.chmod
 
     def is_sidecar(path) -> bool:
-        return Path(path).parent == db.parent and Path(path).name in names
+        return isinstance(path, (str, os.PathLike)) and Path(path).parent == db.parent and Path(path).name in names
 
-    def stat(self, *, follow_symlinks=True):
-        found = wrapped_stat(self, follow_symlinks=follow_symlinks)  # 文件不存在时照常抛 FileNotFoundError
-        if follow_symlinks and is_sidecar(self):
-            uid, gid, mode = _SIDECARS.owner.get(self.name, (10, 20, 0o600))
-            return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=mode)
-        return found
+    def open_(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if is_sidecar(path):
+            _SIDECARS.fds[fd] = Path(path).name
+            if _SIDECARS.after_open:
+                _SIDECARS.after_open(Path(path))
+        return fd
 
-    def chown(path, uid, gid, **kwargs):
-        if not is_sidecar(path):
-            return real_chown(path, uid, gid, **kwargs)
+    def fstat(fd):
+        found = real_fstat(fd)
+        name = _SIDECARS.fds.get(fd)
+        if name is None:
+            return found
+        uid, gid, mode = _SIDECARS.owner.get(name, (10, 20, 0o600))
+        result = SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=stat.S_IFMT(found.st_mode) | mode,
+                                 st_nlink=found.st_nlink, st_ino=found.st_ino)
+        if _SIDECARS.after_fstat:
+            hook, _SIDECARS.after_fstat = _SIDECARS.after_fstat, None
+            hook(Path(db.parent / name))
+        return result
+
+    def fchown(fd, uid, gid):
+        name = _SIDECARS.fds[fd]
         if _SIDECARS.chown_failures > 0:
             _SIDECARS.chown_failures -= 1
             raise PermissionError(1, "Operation not permitted")
-        _SIDECARS.owner[Path(path).name] = (uid, gid, _SIDECARS.owner.get(Path(path).name, (0, 0, 0o600))[2])
+        _SIDECARS.modified.append(real_fstat(fd).st_ino)
+        if _SIDECARS.chown_ignored:  # 命令成功返回，属主却没变（模拟不认 fchown 的文件系统）
+            return
+        _SIDECARS.owner[name] = (uid, gid, _SIDECARS.owner.get(name, (0, 0, 0o600))[2])
 
-    def chmod(path, mode, **kwargs):
-        if is_sidecar(path):
-            uid, gid, _old = _SIDECARS.owner.get(Path(path).name, (10, 20, 0o600))
-            _SIDECARS.owner[Path(path).name] = (uid, gid, mode)
-        return real_chmod(path, mode, **kwargs)
+    def fchmod(fd, mode):
+        name = _SIDECARS.fds.get(fd)
+        if name is not None:
+            uid, gid, _old = _SIDECARS.owner.get(name, (10, 20, 0o600))
+            _SIDECARS.owner[name] = (uid, gid, mode)
+        return real_fchmod(fd, mode)
 
-    monkeypatch.setattr(Path, "stat", stat)
-    monkeypatch.setattr(os, "chown", chown)
-    monkeypatch.setattr(os, "chmod", chmod)
+    def close(fd):
+        _SIDECARS.fds.pop(fd, None)
+        return real_close(fd)
+
+    def by_path(real):
+        def guarded(path, *args, **kwargs):
+            if is_sidecar(path):
+                raise AssertionError("伴随文件不能按路径 chown / chmod")
+            return real(path, *args, **kwargs)
+
+        return guarded
+
+    monkeypatch.setattr(os, "open", open_)
+    monkeypatch.setattr(os, "fstat", fstat)
+    monkeypatch.setattr(os, "fchown", fchown)
+    monkeypatch.setattr(os, "fchmod", fchmod)
+    monkeypatch.setattr(os, "close", close)
+    monkeypatch.setattr(os, "chown", by_path(real_chown))
+    monkeypatch.setattr(os, "chmod", by_path(real_chmod))
 
 
 def _digest(data: bytes) -> str:
@@ -1605,3 +1646,205 @@ def test_kx_flag_rules_in_the_baseline_and_the_readiness_comparison():
     assert release._expected_prior(before, {"schemaVersion": 2}) == before
     assert release._expected_prior(before, {"releaseSet": "b120"}) == _health_body(_PREVIOUS)
     assert release._expected_prior(None, {"releaseSet": "b120"}) is None
+
+
+# ------------------------------------------------------------------ 伴随文件：只经由不跟随链接的描述符处理
+
+def _real_sidecar(root: Path, name: str = "v4.db-wal", owner=(0, 0, 0o644)) -> Path:
+    """一个真实存在的普通伴随文件，stat 报告的属主取自 owner（默认 root 0644，要被改回来）。"""
+    path = root / "data" / name
+    path.write_bytes(b"")
+    _SIDECARS.owner[name] = owner
+    return path
+
+
+def _external_target(tmp_path: Path) -> tuple[Path, int, int]:
+    """伴随文件被换成链接时企图指向的外部文件；返回路径、真实权限位、inode。"""
+    target = tmp_path / "external-secret"
+    target.write_text("do not touch")
+    target.chmod(0o644)
+    return target, target.stat().st_mode & 0o777, target.stat().st_ino
+
+
+def _assert_untouched(target: Path, mode: int, inode: int) -> None:
+    assert target.stat().st_mode & 0o777 == mode and target.read_text() == "do not touch"
+    assert inode not in _SIDECARS.modified
+
+
+def test_a_symlinked_sidecar_is_refused_without_touching_its_target(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    target, mode, inode = _external_target(tmp_path)
+    (root / "data/v4.db-wal").symlink_to(target)
+    _SIDECARS.owner["v4.db-wal"] = (0, 0, 0o644)
+    with pytest.raises(RuntimeError, match="符号链接"):
+        release.fix_sidecars(release.V4_DB)
+    with pytest.raises(RuntimeError, match="符号链接"):
+        release.assert_ownership()
+    _assert_untouched(target, mode, inode)  # 按路径的 chown / chmod 在 _install_sidecar_owner 里一律会断言失败
+
+
+@pytest.mark.parametrize("when", ["after_fstat", "after_open"])
+def test_a_sidecar_swapped_for_a_link_during_the_fix_never_reaches_the_link_target(tmp_path, monkeypatch, when):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    wal = _real_sidecar(root)
+    original_inode = wal.stat().st_ino
+    target, mode, inode = _external_target(tmp_path)
+
+    def swap(path: Path) -> None:  # 服务用户在检查和修改之间把伴随文件换成指向外部文件的链接
+        path.unlink()
+        path.symlink_to(target)
+
+    setattr(_SIDECARS, when, swap)
+    release.fix_sidecars(release.V4_DB)
+    _assert_untouched(target, mode, inode)
+    assert wal.is_symlink()  # 换上去的链接原样留着，没有被跟随
+    if when == "after_fstat":
+        # 检查通过之后才被换：修改作用在已打开的原文件上（fchown / fchmod），不是路径。
+        assert _SIDECARS.modified == [original_inode]
+        assert [fix["file"] for fix in release._SIDECAR_FIXES] == ["v4.db-wal"]
+    else:
+        # 打开之后、核验之前被换：原文件链接数已是 0，当作刚被删，什么都不改。
+        assert _SIDECARS.modified == [] and release._SIDECAR_FIXES == []
+
+
+def test_a_sidecar_that_is_not_a_regular_file_is_refused_without_blocking(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    fifo, directory = root / "data/v4.db-wal", root / "data/v4.db-shm"
+    os.mkfifo(fifo)  # 没有 O_NONBLOCK 的 open 会在这里永远等下去
+    with pytest.raises(RuntimeError, match="不是普通文件"):
+        release.fix_sidecars(release.V4_DB)
+    with pytest.raises(RuntimeError, match="不是普通文件"):
+        release.assert_ownership()
+    fifo.unlink()
+    directory.mkdir()
+    with pytest.raises(RuntimeError, match="不是普通文件"):
+        release.fix_sidecars(release.V4_DB)
+    assert _SIDECARS.modified == []
+
+
+def test_a_sidecar_with_extra_hard_links_is_refused_and_left_alone(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    wal = _real_sidecar(root)
+    other = tmp_path / "other-name"
+    os.link(wal, other)
+    with pytest.raises(RuntimeError, match="链接数是 2"):
+        release.fix_sidecars(release.V4_DB)
+    with pytest.raises(RuntimeError, match="链接数是 2"):
+        release.assert_ownership()
+    assert _SIDECARS.modified == [] and release._SIDECAR_FIXES == []
+    assert _SIDECARS.owner["v4.db-wal"] == (0, 0, 0o644)
+
+
+def test_a_sidecar_that_was_just_deleted_is_not_an_error(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    _real_sidecar(root)
+    _SIDECARS.after_open = lambda path: path.unlink()  # 服务关库时删掉 -wal：打开的描述符链接数变 0
+    release.fix_sidecars(release.V4_DB)
+    assert _SIDECARS.modified == [] and release._SIDECAR_FIXES == []
+
+
+def test_a_fix_that_does_not_stick_is_an_error(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    _real_sidecar(root)
+    _SIDECARS.chown_ignored = True
+    with pytest.raises(RuntimeError, match="改回后仍不是 neckline:neckline 0600"):
+        release.fix_sidecars(release.V4_DB)
+    assert release._SIDECAR_FIXES == []
+
+
+# ------------------------------------------------------------------ 单元回来之前的库与伴随文件核验
+
+def _arm_before_the_recovery_point(driven, monkeypatch) -> None:
+    """恢复点开始前，root 的生产库连接就开始留下 root 属主的伴随文件。"""
+    state = {"armed": False}
+    original = release.snapshot
+
+    def snapshot(directory):
+        state["armed"] = True
+        return original(directory)
+
+    monkeypatch.setattr(release, "snapshot", snapshot)
+    _watch_production_connections(monkeypatch, driven.db,
+                                  on_close=_root_leaves_sidecars(driven.db, lambda: state["armed"]))
+
+
+def test_sidecars_that_cannot_be_fixed_at_the_recovery_point_keep_the_mask_and_start_nothing(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=None)
+    _arm_before_the_recovery_point(driven, monkeypatch)
+    _SIDECARS.chown_failures = 99
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理") as caught:
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "已回滚" not in str(caught.value)
+    # 没碰过库版本（touched 为假）也不能直接把旧服务拉起来：回滚在 unmask 之前先核验库与伴随文件。
+    assert _flow(driven.calls) == ["mask", "stop", "stop"]
+    assert driven.masking.on is True and release._mask_state() is True and not driven.active
+    state = _switch_state(driven.root)
+    assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "核验生产库属主权限"
+    assert state["rollback"]["masked"] is True and state["rollback"]["fileState"] == "old"
+    assert "无法改回 neckline:neckline 0600" in state["rollback"]["error"] or "属主" in state["rollback"]["error"]
+    assert state["failure"] and "schemaRollback" not in state
+    release.verify_runtime(driven.root, driven.old)
+    assert _db_facts(driven.db)["version"] == 1 and _documents(driven.db) == [("doc-1", "tushare", "n-1")]
+
+
+def test_a_transient_sidecar_failure_at_the_recovery_point_is_fixed_before_the_old_api_starts(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=None)
+    _arm_before_the_recovery_point(driven, monkeypatch)
+    _SIDECARS.chown_failures = 1
+    real_run, at_start = release.run, []
+
+    def run_spy(*args, check=True, cwd=None):
+        if args[0] == "systemctl" and args[1] == "start":
+            at_start.append(dict(_SIDECARS.owner))  # 启动那一刻伴随文件的属主
+        return real_run(*args, check=check, cwd=cwd)
+
+    monkeypatch.setattr(release, "run", run_spy)
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "unmask", "start"]
+    assert at_start == [{"v4.db-wal": (10, 20, 0o600), "v4.db-shm": (10, 20, 0o600)}]
+    state = _switch_state(driven.root)
+    assert state["rollback"] == {"status": "rolled_back", "release": _PREVIOUS} and state["sidecarFixes"]
+
+
+def test_sidecars_that_go_wrong_before_the_units_return_after_a_good_swap_keep_the_mask(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def install(_wheel):
+        calls["n"] += 1
+        if calls["n"] == 1:  # 换包期间（恢复单元之前）伴随文件变成 root 属主，而且改不回来
+            for name in ("v4.db-wal", "v4.db-shm"):
+                (driven.root / "data" / name).touch()
+                _SIDECARS.owner[name] = (0, 0, 0o600)
+            _SIDECARS.chown_failures = 99
+
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=None, install=install)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert "unmask" not in _flow(driven.calls) and "start" not in _flow(driven.calls)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "mask", "stop", "stop", "write_runtime"]
+    assert driven.masking.on is True and not driven.active
+    state = _switch_state(driven.root)
+    assert state["rollback"]["failedStep"] == "核验生产库属主权限" and state["rollback"]["masked"] is True
+
+
+def test_a_failed_mask_before_anything_was_touched_still_cannot_bring_the_units_back_on_bad_sidecars(
+        tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=None)
+    driven.masking.fail_after.add("mask")  # mask 生效后才报错，之后没有停服、没有恢复点
+    real_run = release.run
+
+    def run_with_bad_sidecars(*args, check=True, cwd=None):
+        if args[0] == "systemctl" and args[1] == "mask" and not _SIDECARS.owner:
+            for name in ("v4.db-wal", "v4.db-shm"):
+                (driven.root / "data" / name).touch()
+                _SIDECARS.owner[name] = (0, 0, 0o600)
+            _SIDECARS.chown_failures = 99
+        return real_run(*args, check=check, cwd=cwd)
+
+    monkeypatch.setattr(release, "run", run_with_bad_sidecars)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _flow(driven.calls) == ["mask"] and driven.masking.on is True
+    state = _switch_state(driven.root)
+    assert state["rollback"]["failedStep"] == "核验生产库属主权限" and state["rollback"]["masked"] is True
