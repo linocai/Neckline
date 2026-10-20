@@ -217,4 +217,3 @@ async def build_board(kx: KxServices, path: Path) -> dict[str, Any]:
         "gaps": gaps,
         "rows": _order(entries),
     }
-

@@ -22,6 +22,7 @@ spec = importlib.util.spec_from_file_location("neckline_release", _SCRIPT)
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 _REAL_STAT = Path.stat
+_REAL_CONNECT = sqlite3.connect  # 测试自己读库用它，不经过对 release.py 连接的监视
 _REAL_EUID = os.geteuid
 
 
@@ -36,6 +37,54 @@ def _allow_root_check_once(monkeypatch):
         return _REAL_EUID()
 
     monkeypatch.setattr(os, "geteuid", euid)
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_sidecar_notes():
+    release._SIDECAR_FIXES.clear()
+    yield
+    release._SIDECAR_FIXES.clear()
+
+
+# -wal/-shm 的属主由测试控制：真实文件由 SQLite 或测试创建，stat 报告的属主取自 owner（默认 neckline 10:20 0600），
+# os.chown / os.chmod 改的是这份记录；chown_failures 次内 chown 抛 PermissionError。
+_SIDECARS = SimpleNamespace(owner={}, chown_failures=0)
+
+
+def _install_sidecar_owner(monkeypatch, db: Path) -> None:
+    _SIDECARS.owner.clear()
+    _SIDECARS.chown_failures = 0
+    names = {f"{db.name}{suffix}" for suffix in release.SIDECAR_SUFFIXES}
+    wrapped_stat = Path.stat
+    real_chown, real_chmod = os.chown, os.chmod
+
+    def is_sidecar(path) -> bool:
+        return Path(path).parent == db.parent and Path(path).name in names
+
+    def stat(self, *, follow_symlinks=True):
+        found = wrapped_stat(self, follow_symlinks=follow_symlinks)  # 文件不存在时照常抛 FileNotFoundError
+        if follow_symlinks and is_sidecar(self):
+            uid, gid, mode = _SIDECARS.owner.get(self.name, (10, 20, 0o600))
+            return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=mode)
+        return found
+
+    def chown(path, uid, gid, **kwargs):
+        if not is_sidecar(path):
+            return real_chown(path, uid, gid, **kwargs)
+        if _SIDECARS.chown_failures > 0:
+            _SIDECARS.chown_failures -= 1
+            raise PermissionError(1, "Operation not permitted")
+        _SIDECARS.owner[Path(path).name] = (uid, gid, _SIDECARS.owner.get(Path(path).name, (0, 0, 0o600))[2])
+
+    def chmod(path, mode, **kwargs):
+        if is_sidecar(path):
+            uid, gid, _old = _SIDECARS.owner.get(Path(path).name, (10, 20, 0o600))
+            _SIDECARS.owner[Path(path).name] = (uid, gid, mode)
+        return real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(os, "chown", chown)
+    monkeypatch.setattr(os, "chmod", chmod)
 
 
 def _digest(data: bytes) -> str:
@@ -141,6 +190,9 @@ def test_snapshot_keeps_only_the_verified_archive(tmp_path, monkeypatch):
     database = tmp_path / "v4.db"
     _v4_database(database)
     monkeypatch.setattr(release, "V4_DB", database)
+    monkeypatch.setattr(release.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=10))
+    monkeypatch.setattr(release.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=20))
+    _install_sidecar_owner(monkeypatch, database)
     (tmp_path / "rel").mkdir()
     report = release.snapshot(tmp_path / "rel")
     assert report["roundTripVerified"] and report["counts"]["reports"] == 1
@@ -200,6 +252,7 @@ def _prepare_switch(tmp_path, monkeypatch, *, with_v4: bool, db_version: int = 1
         return _REAL_STAT(self, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", fake_stat)
+    _install_sidecar_owner(monkeypatch, v4)
     return root, old, legacy
 
 
@@ -666,8 +719,8 @@ def test_unmask_that_takes_effect_before_failing_records_the_actual_mask_state(t
     assert "start" not in _actions(calls)
     state = _switch_state(root)
     assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "取消 mask"
-    # unmask 已经生效，记录以 systemctl is-enabled 的查询为准，而不是凭「失败了所以还在 mask」推断。
-    assert masking.on is False and state["rollback"]["masked"] is False
+    # unmask 已经生效，所以先重新 mask（初始 mask 之外又一次）再还原文件；记录以 systemctl is-enabled 的查询为准。
+    assert _actions(calls).count("mask") == 2 and masking.on is True and state["rollback"]["masked"] is True
     assert state["rollback"]["fileState"] == "old"
     release.verify_runtime(root, old)
     _assert_database_untouched(root, legacy)
@@ -860,13 +913,13 @@ def test_check_only_reports_the_schema_plan_and_changes_nothing(tmp_path, monkey
 
 
 def _db_facts(db_file: Path) -> dict:
-    with closing(sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)) as con:
+    with closing(_REAL_CONNECT(f"file:{db_file}?mode=ro", uri=True)) as con:
         return {"version": con.execute("PRAGMA user_version").fetchone()[0],
                 "tables": {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}}
 
 
 def _documents(db_file: Path) -> list:
-    with closing(sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)) as con:
+    with closing(_REAL_CONNECT(f"file:{db_file}?mode=ro", uri=True)) as con:
         return con.execute("SELECT document_id, source_key, external_id FROM documents").fetchall()
 
 
@@ -880,7 +933,8 @@ def _real_migration(args):
 
 
 def _drive_schema(tmp_path, monkeypatch, *, db_version, target_schema=None, previous_schema=None, real_db=True,
-                  migrate=None, health_after=None, install=None, service_active=True):
+                  migrate=None, health_after=None, install=None, service_active=True, previous_kx=False,
+                  target_kx=False):
     """假 systemctl / curl / runuser；health 如实反映「已装清单要求的库结构版本」和库的 user_version 是否一致，
     所以没把版本号回到位的回滚过不了旧版本的就绪检查。calls 里 db-set / write_runtime 是内部步骤的顺序标记。"""
     root, old, legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, db_version=db_version, real_db=real_db,
@@ -910,6 +964,8 @@ def _drive_schema(tmp_path, monkeypatch, *, db_version, target_schema=None, prev
         installed = json.loads((root / "release-manifest.json").read_text())
         ready = _db_facts(db_file)["version"] == installed.get("schemaVersion", 1)
         body = _health_body(installed["releaseSet"], db="ready" if ready else "db_not_ready")
+        if (installed["releaseSet"] == _PREVIOUS and previous_kx) or (installed["releaseSet"] == _TARGET and target_kx):
+            body.update({"kxPool": True, "kxPicks": True})  # B120 的 health 没有这两项
         if installed["releaseSet"] == _TARGET and health_after:
             body.update(health_after)
         return body
@@ -1202,8 +1258,9 @@ def test_unmask_failure_after_an_upgrade_still_restores_the_version_and_keeps_th
     monkeypatch.setattr(release, "run", run_with_failing_unmask)
     with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
         release.switch(release=_TARGET, previous=_PREVIOUS)
-    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "write_runtime",
-                                   "db-set:1"]
+    # unmask 失败后先重新 mask 并停服，才还原文件和库版本。
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "mask", "stop", "stop",
+                                   "write_runtime", "db-set:1"]
     assert _db_facts(driven.db)["version"] == 1 and "start" not in _actions(driven.calls)
     state = _switch_state(driven.root)
     assert state["rollback"]["failedStep"] == "取消 mask" and state["rollback"]["masked"] is True
@@ -1229,3 +1286,322 @@ def test_upgrade_that_changes_the_database_ownership_is_rolled_back(tmp_path, mo
     assert state["raised"] and _db_facts(driven.db)["version"] == 1
     assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 2, "version": 1}
     release.verify_runtime(driven.root, driven.old)
+
+
+# ------------------------------------------------------------------ root 侧开库：显式 close 与 -wal/-shm 属主
+
+class _ClosingSpy:
+    """生产库连接的代理：记录 close，并在 close 时执行 on_close（模拟 root 的连接在旁边留下伴随文件）。"""
+
+    def __init__(self, real, events, on_close=None):
+        self._real, self._events, self._on_close = real, events, on_close
+        self.closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def close(self):
+        self.closed = True
+        self._events.append("close")
+        self._real.close()
+        if self._on_close:
+            self._on_close()
+
+
+def _watch_production_connections(monkeypatch, db: Path, *, on_close=None) -> SimpleNamespace:
+    """只代理对生产库（路径含 db）的连接；events 里按顺序有 close 和 fix（fix_sidecars 被调用）。"""
+    real_connect, real_fix = _REAL_CONNECT, release.fix_sidecars
+    watch = SimpleNamespace(spies=[], events=[])
+
+    def connect(database, *args, **kwargs):
+        connection = real_connect(database, *args, **kwargs)
+        if str(db) in str(database):
+            spy = _ClosingSpy(connection, watch.events, on_close)
+            watch.spies.append(spy)
+            return spy
+        return connection
+
+    def fix(path):
+        watch.events.append("fix")
+        return real_fix(path)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    monkeypatch.setattr(release, "fix_sidecars", fix)
+    return watch
+
+
+def _root_leaves_sidecars(db: Path, armed=lambda: True):
+    """模拟 root 的连接关闭后留下 root 属主的 -wal/-shm（文件真实存在，属主按记录报告）。"""
+    def leave():
+        if not armed():
+            return
+        for suffix in release.SIDECAR_SUFFIXES:
+            (db.parent / f"{db.name}{suffix}").touch()
+            _SIDECARS.owner[f"{db.name}{suffix}"] = (0, 0, 0o600)
+
+    return leave
+
+
+def test_every_root_side_connection_to_the_production_database_is_closed_before_the_sidecars_are_checked(
+        tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    db = root / "data/v4.db"
+    watch = _watch_production_connections(monkeypatch, db)
+    assert release.read_schema_version() == 1
+    release.set_schema_version(1)
+    release.snapshot(root / "releases" / _TARGET)
+    # 读、写、恢复点各一条生产库连接，都是先显式 close、再核对伴随文件。
+    assert watch.events == ["close", "fix"] * 3 and len(watch.spies) == 3
+    assert all(spy.closed for spy in watch.spies)
+
+
+def test_the_connection_is_closed_and_the_sidecars_are_checked_even_when_the_body_fails(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    db = root / "data/v4.db"
+    with sqlite3.connect(db) as con:
+        con.execute("PRAGMA application_id=123")
+    watch = _watch_production_connections(monkeypatch, db)
+    with pytest.raises(RuntimeError, match="application_id"):
+        release.read_schema_version()
+    with pytest.raises(RuntimeError, match="application_id"):
+        release.set_schema_version(1)
+    assert watch.events == ["close", "fix"] * 2 and all(spy.closed for spy in watch.spies)
+
+
+def test_root_owned_sidecars_are_handed_back_to_neckline_and_recorded(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    db = root / "data/v4.db"
+    (root / "data/v4.db-wal").touch()
+    (root / "data/v4.db-shm").touch()
+    _SIDECARS.owner.update({"v4.db-wal": (0, 0, 0o644), "v4.db-shm": (0, 0, 0o600)})
+    assert release.read_schema_version() == 1
+    assert _SIDECARS.owner == {"v4.db-wal": (10, 20, 0o600), "v4.db-shm": (10, 20, 0o600)}
+    assert release._SIDECAR_FIXES == [
+        {"file": "v4.db-wal", "wasUid": 0, "wasGid": 0, "wasMode": "0o644"},
+        {"file": "v4.db-shm", "wasUid": 0, "wasGid": 0, "wasMode": "0o600"}]
+    release.assert_ownership()
+    assert db.exists()
+
+
+def test_sidecar_check_leaves_good_files_alone_and_refuses_what_it_cannot_explain(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    wal = root / "data/v4.db-wal"
+    wal.touch()
+    release.fix_sidecars(release.V4_DB)  # 默认就是 neckline 0600：什么都不动
+    assert release._SIDECAR_FIXES == []
+    _SIDECARS.owner["v4.db-wal"] = (1234, 20, 0o600)  # 既不是 root 也不是 neckline
+    with pytest.raises(RuntimeError, match="属主异常"):
+        release.fix_sidecars(release.V4_DB)
+    wal.unlink()
+    wal.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(RuntimeError, match="符号链接"):
+        release.fix_sidecars(release.V4_DB)
+    wal.unlink()
+    release.fix_sidecars(release.V4_DB)  # 文件不存在：没什么可核对
+
+
+def test_ownership_check_covers_the_sidecar_files_when_they_exist(tmp_path, monkeypatch):
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    release.assert_ownership()  # 没有伴随文件
+    for name in ("v4.db-wal", "v4.db-shm"):
+        (root / "data" / name).touch()
+        release.assert_ownership()
+        for bad in ((0, 0, 0o600), (10, 20, 0o644)):
+            _SIDECARS.owner[name] = bad
+            with pytest.raises(RuntimeError, match=f"伴随文件 {name}"):
+                release.assert_ownership()
+        _SIDECARS.owner.pop(name)
+        release.assert_ownership()
+
+
+def test_switch_records_and_reports_the_sidecars_it_handed_back(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=None)
+    _watch_production_connections(monkeypatch, driven.db, on_close=_root_leaves_sidecars(driven.db))
+    result = release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert result["switched"] is True and result["sidecarFixes"]
+    state = _switch_state(driven.root)
+    assert state["sidecarFixes"] == result["sidecarFixes"]
+    assert {fix["file"] for fix in state["sidecarFixes"]} == {"v4.db-wal", "v4.db-shm"}
+    assert all(fix["wasUid"] == 0 for fix in state["sidecarFixes"])
+    assert all(owner == (10, 20, 0o600) for owner in _SIDECARS.owner.values())  # 最终都是 neckline
+
+
+def test_check_only_hands_the_sidecars_back_and_reports_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(release, "unit_state", lambda unit: {"active": "inactive", "enabled": "disabled"})
+    root, _old, _legacy = _prepare_switch(tmp_path, monkeypatch, with_v4=True, real_db=True)
+    _watch_production_connections(monkeypatch, root / "data/v4.db", on_close=_root_leaves_sidecars(root / "data/v4.db"))
+    result = release.switch(release=_TARGET, previous=_PREVIOUS, check_only=True)
+    assert result["schemaAction"] == "none" and {fix["file"] for fix in result["sidecarFixes"]} == {
+        "v4.db-wal", "v4.db-shm"}
+    assert all(owner == (10, 20, 0o600) for owner in _SIDECARS.owner.values())
+
+
+def test_sidecars_that_cannot_be_handed_back_abort_before_the_mask(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=None)
+    _watch_production_connections(monkeypatch, driven.db, on_close=_root_leaves_sidecars(driven.db))
+    for check_only in (False, True):
+        _SIDECARS.owner.clear()  # 上一轮失败后留下的 root 属主记录清掉，各轮独立
+        _SIDECARS.chown_failures = 99
+        _allow_root_check_once(monkeypatch)
+        with pytest.raises(RuntimeError, match="无法改回 neckline:neckline 0600"):
+            release.switch(release=_TARGET, previous=_PREVIOUS, check_only=check_only)
+    assert _flow(driven.calls) == [] and not {"mask", "stop", "start"} & set(_actions(driven.calls))
+    assert not (driven.root / "releases" / _TARGET / "switch-state.json").exists()
+    assert (driven.root / "neckline/api/app.py").read_bytes() == b"b112"
+
+
+def _arm_after_the_recovery_point(driven, monkeypatch) -> dict:
+    """恢复点做完（服务已停、已 mask）之后，root 的生产库连接才开始留下 root 属主的伴随文件。"""
+    state = {"armed": False}
+    original = release.snapshot
+
+    def snapshot(directory):
+        result = original(directory)
+        state["armed"] = True
+        return result
+
+    monkeypatch.setattr(release, "snapshot", snapshot)
+    _watch_production_connections(monkeypatch, driven.db,
+                                  on_close=_root_leaves_sidecars(driven.db, lambda: state["armed"]))
+    return state
+
+
+def test_sidecar_failure_after_the_mask_rolls_back_and_puts_the_version_back(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=None, previous_schema=2)
+    _arm_after_the_recovery_point(driven, monkeypatch)
+    _SIDECARS.chown_failures = 1  # 降级写完版本号后第一次改属主失败，回滚时可以
+    with pytest.raises(RuntimeError, match="无法改回 neckline:neckline 0600"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _db_facts(driven.db)["version"] == 2  # 降级已写入又被写回
+    state = _switch_state(driven.root)
+    assert state["rollback"]["status"] == "rolled_back"
+    assert state["schemaRollback"] == {"status": "restored", "from": 1, "version": 2}
+    assert state["sidecarFixes"] and all(owner == (10, 20, 0o600) for owner in _SIDECARS.owner.values())
+    release.verify_runtime(driven.root, driven.old)
+    assert _flow(driven.calls)[-4:] == ["write_runtime", "db-set:2", "unmask", "start"]
+
+
+def test_sidecars_that_stay_wrong_during_the_rollback_keep_the_mask_for_manual_recovery(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=None, previous_schema=2)
+    _arm_after_the_recovery_point(driven, monkeypatch)
+    _SIDECARS.chown_failures = 99
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    state = _switch_state(driven.root)
+    assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "恢复库结构版本"
+    assert state["rollback"]["masked"] is True and driven.masking.on is True
+    assert str(state["rollback"]["schemaNow"]).startswith("unknown:")  # 连读版本号都过不了伴随文件这一关
+    assert "start" not in _actions(driven.calls)
+    assert _db_facts(driven.db)["version"] == 1  # 版本号停在降级后的值，表和数据都在
+    assert _KX_TABLES <= _db_facts(driven.db)["tables"]
+
+
+# ------------------------------------------------------------------ unmask 已生效后的恢复
+
+def test_unmask_that_took_effect_then_a_failed_version_restore_ends_masked(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2)
+    driven.masking.fail_after.add("unmask")  # unmask 生效后才报错
+    original = release.set_schema_version
+
+    def flaky(version):
+        if version == 1:
+            driven.calls.append(("db-set", version))
+            raise OSError("disk I/O error")
+        return original(version)
+
+    monkeypatch.setattr(release, "set_schema_version", flaky)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    # unmask 生效 → 先重新 mask 并停服 → 还原文件 → 恢复版本失败；之后没有任何 unmask / start。
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "mask", "stop", "stop",
+                                   "write_runtime", "db-set:1"]
+    assert driven.masking.on is True and release._mask_state() is True and not driven.active
+    state = _switch_state(driven.root)
+    assert state["rollback"]["failedStep"] == "恢复库结构版本" and state["rollback"]["masked"] is True
+    assert state["rollback"]["schemaNow"] == 2 and state["rollback"]["fileState"] == "old"
+    assert "CalledProcessError" in state["failure"] and "unmask" in state["failure"]  # 记下的是最初的 unmask 故障
+
+
+def test_unmask_that_took_effect_then_a_failed_remask_leaves_files_and_database_alone(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2)
+    driven.masking.fail_after.add("unmask")
+    real_run = release.run
+    masks = {"n": 0}
+
+    def run_with_failing_remask(*args, check=True, cwd=None):
+        if args[0] == "systemctl" and args[1] == "mask":
+            masks["n"] += 1
+            if masks["n"] == 2:
+                driven.calls.append(args)
+                raise RuntimeError("mask failed")
+        return real_run(*args, check=check, cwd=cwd)
+
+    monkeypatch.setattr(release, "run", run_with_failing_remask)
+    with pytest.raises(RuntimeError, match="回滚失败，需人工处理"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "mask"]
+    state = _switch_state(driven.root)
+    assert state["rollback"]["failedStep"] == "重新 mask" and state["rollback"]["fileState"] == "new"
+    assert state["rollback"]["schemaNow"] == 2 and _db_facts(driven.db)["version"] == 2  # 没动文件，也没动库
+    assert state["rollback"]["masked"] is False and driven.masking.on is False  # 如实记录：此刻没有 mask
+
+
+# ------------------------------------------------------------------ KX 就绪项
+
+_KX = {"kxPool": True, "kxPicks": True}
+
+
+@pytest.mark.parametrize("flag", ["kxPool", "kxPicks"])
+def test_kx_flags_that_were_true_must_stay_true_after_the_switch(tmp_path, monkeypatch, flag):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=2, previous_schema=2,
+                           previous_kx=True, target_kx=True, health_after={flag: False})
+    with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+        release.switch(release=_TARGET, previous=_PREVIOUS)
+    release.verify_runtime(driven.root, driven.old)
+    assert _switch_state(driven.root)["rollback"] == {"status": "rolled_back", "release": _PREVIOUS}
+
+
+def test_b120_shaped_baseline_without_kx_flags_is_valid_and_not_required_afterwards(tmp_path, monkeypatch):
+    # B120 的 health 没有 kxPool / kxPicks：基线照常通过，B121 上线后它们是 false 也不拦。
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=2, previous_kx=False,
+                           target_kx=True, health_after={"kxPool": False, "kxPicks": False})
+    result = release.switch(release=_TARGET, previous=_PREVIOUS)
+    assert result["switched"] is True and result["schema"]["action"] == "upgrade"
+    assert _db_facts(driven.db)["version"] == 2
+
+
+@pytest.mark.parametrize("fail_readiness", [False, True])
+def test_switching_back_to_the_b120_shape_does_not_need_kx_flags(tmp_path, monkeypatch, fail_readiness):
+    # 回退用 B121 目录里的新脚本：目标是 B120 形状（清单没有 schemaVersion，health 没有 KX 项），线上基线却带 KX 项。
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=None, previous_schema=2,
+                           previous_kx=True, target_kx=False, health_after={"mcp": False} if fail_readiness else None)
+    if fail_readiness:
+        with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
+            release.switch(release=_TARGET, previous=_PREVIOUS)
+        # 回到 B121：它的就绪检查仍然要求 KX 项，而且过得去。
+        assert _db_facts(driven.db)["version"] == 2
+        assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 1, "version": 2}
+        release.verify_runtime(driven.root, driven.old)
+    else:
+        result = release.switch(release=_TARGET, previous=_PREVIOUS)
+        assert result["switched"] is True and result["schema"] == {"before": 2, "target": 1, "action": "downgrade"}
+        assert _db_facts(driven.db)["version"] == 1 and _KX_TABLES <= _db_facts(driven.db)["tables"]
+        assert "kxPool" not in json.loads((driven.root / "release-manifest.json").read_text())
+
+
+def test_kx_flag_rules_in_the_baseline_and_the_readiness_comparison():
+    assert release._baseline_problem(_health_body(_PREVIOUS), _PREVIOUS) is None  # B120 形状：没有 KX 项
+    assert release._baseline_problem(_health_body(_PREVIOUS, kxPool=False, kxPicks=True), _PREVIOUS) is None
+    assert release._baseline_problem(_health_body(_PREVIOUS, kxPool="yes"), _PREVIOUS) == "kxPool 不是布尔值"
+    assert release._baseline_problem(_health_body(_PREVIOUS, kxPicks=1), _PREVIOUS) == "kxPicks 不是布尔值"
+    before = _health_body(_PREVIOUS, **_KX)
+    assert release._health_matches(_health_body(_TARGET, **_KX), _TARGET, "4.0.0", before)
+    for flag in _KX:
+        assert not release._health_matches(_health_body(_TARGET, **{**_KX, flag: False}), _TARGET, "4.0.0", before)
+        assert not release._health_matches(_health_body(_TARGET), _TARGET, "4.0.0", before)  # 项消失也算丢
+    assert release._health_matches(_health_body(_TARGET, kxPool=False, kxPicks=False), _TARGET, "4.0.0",
+                                   _health_body(_PREVIOUS, kxPool=False, kxPicks=False))
+    assert release._health_matches(_health_body(_TARGET), _TARGET, "4.0.0", _health_body(_PREVIOUS))
+    assert release._expected_prior(before, {"schemaVersion": 2}) == before
+    assert release._expected_prior(before, {"releaseSet": "b120"}) == _health_body(_PREVIOUS)
+    assert release._expected_prior(None, {"releaseSet": "b120"}) is None

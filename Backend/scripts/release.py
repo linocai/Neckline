@@ -35,6 +35,17 @@ the units return and before the old release's readiness check; if that fails the
 be restored at all, the database is left at the version that matches whatever files are in place and ``schemaNow`` in
 ``switch-state.json`` says what it is. Only ``user_version`` or ``init_schema`` ever touches the database: no table is
 dropped, no business data read or written.
+
+Opening the production database as root can leave root-owned ``-wal`` / ``-shm`` files next to it (a read-only
+connection to a WAL database creates them when none exist), which would lock the neckline service out. Every
+root-side connection is therefore closed explicitly, and right after it the sidecar files (when present) must be
+neckline:neckline 0600: root-owned ones are handed back and recorded as ``sidecarFixes`` in ``switch-state.json`` (and in
+the output); anything that cannot be put right fails the step (abort before the mask, rollback or manual after it).
+``assert_ownership`` checks the sidecar files too.
+
+Health flags: ``kxPool`` / ``kxPicks`` follow the same rule as ``READY_FLAGS`` (true before, still true after) for a release
+whose manifest ``schemaVersion`` is at least 2 (the KX releases); a release that predates them (B120 shape, also the
+target of a roll-back to it) neither reports nor needs them, and a baseline without them is valid.
 """
 from __future__ import annotations
 
@@ -55,9 +66,10 @@ import tarfile
 import tempfile
 import time
 import zipfile
-from contextlib import closing
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 HOST = "ser657204219523"
 ROOT = Path("/opt/neckline")
@@ -70,6 +82,9 @@ V4_JOBS = ["neckline-v4-morning.service", "neckline-v4-collect.service", "neckli
 RUNTIME_PREFIXES = ("neckline/", "scripts/", "deploy/")
 RUNTIME_FILES = (".env.example", "pyproject.toml", "requirements.txt")
 SERVICE_USER = "neckline"
+SIDECAR_SUFFIXES = ("-wal", "-shm")
+KX_FLAGS = ("kxPool", "kxPicks")  # B121 起 health 才带这两项
+KX_SCHEMA = 2  # 清单 schemaVersion 达到它的发布才报告、也才要求 KX 项
 # 库结构只允许这些「只加了表」的降级：旧代码认得它的版本号，多出来的表保留不删。
 ADDITIVE_DOWNGRADES = frozenset({(2, 1)})
 
@@ -251,16 +266,27 @@ def snapshot_db(directory: Path, db: Path, application_id: int, name: str, table
     archive = recovery / f"{name}.db.gz"
 
     def counts(path: Path) -> dict:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
             con.execute("PRAGMA query_only=ON")
             if con.execute("PRAGMA application_id").fetchone()[0] != application_id:
                 raise RuntimeError(f"{path.name} application_id 不符")
             if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError(f"{path.name} 完整性校验失败")
             return {table: con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in tables}
+        finally:
+            con.close()
 
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as source, sqlite3.connect(copy) as target:
-        source.backup(target)
+    source = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # root 打开生产库：显式 close，之后核对伴随文件
+    try:
+        target = sqlite3.connect(copy)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+        fix_sidecars(db)
     os.chmod(copy, 0o600)
     expected = counts(copy)
     with copy.open("rb") as raw, gzip.open(archive, "wb", compresslevel=6) as packed:
@@ -286,10 +312,72 @@ def assert_ownership() -> None:
         raise RuntimeError("/opt/neckline 属主或权限异常")
     if not V4_DB.exists():
         return
-    owner = (pwd.getpwnam("neckline").pw_uid, grp.getgrnam("neckline").gr_gid, 0o600)
+    owner = (*_service_owner(), 0o600)
     v4_stat = V4_DB.stat()
     if (v4_stat.st_uid, v4_stat.st_gid, v4_stat.st_mode & 0o777) != owner:
         raise RuntimeError("V4 晨报库属主或权限异常")
+    for sidecar in _sidecars(V4_DB):
+        found = _owner_of(sidecar)
+        if found is not None and found != owner:
+            raise RuntimeError(f"V4 晨报库伴随文件 {sidecar.name} 属主或权限异常")
+
+
+# ---------------------------------------------------------------- production database access (root side)
+
+_SIDECAR_FIXES: list[dict] = []  # 本次 switch 里被改回 neckline 的伴随文件，写进 switch-state.json
+
+
+def _service_owner() -> tuple[int, int]:
+    return pwd.getpwnam(SERVICE_USER).pw_uid, grp.getgrnam(SERVICE_USER).gr_gid
+
+
+def _sidecars(db: Path) -> list[Path]:
+    return [Path(f"{db}{suffix}") for suffix in SIDECAR_SUFFIXES]
+
+
+def _owner_of(path: Path) -> tuple[int, int, int] | None:
+    """(uid, gid, 权限位)；文件不存在返回 None。符号链接一律拒绝。"""
+    if path.is_symlink():
+        raise RuntimeError(f"{path.name} 是符号链接")
+    try:
+        found = path.stat()
+    except FileNotFoundError:
+        return None
+    return found.st_uid, found.st_gid, found.st_mode & 0o777
+
+
+def fix_sidecars(db: Path) -> None:
+    """root 侧用过库之后：-wal/-shm（存在时）必须是 neckline:neckline 0600。
+    root 属主的改回来并记一笔；改不回来或属主是别人就报错（调用方按所处阶段中止或回滚）。"""
+    uid, gid = _service_owner()
+    for path in _sidecars(db):
+        found = _owner_of(path)
+        if found is None or found == (uid, gid, 0o600):
+            continue
+        if found[0] not in (0, uid):
+            raise RuntimeError(f"{path.name} 属主异常（uid={found[0]}），既不是 root 也不是 {SERVICE_USER}")
+        try:
+            os.chown(path, uid, gid)
+            os.chmod(path, 0o600)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(f"{path.name} 无法改回 {SERVICE_USER}:{SERVICE_USER} 0600：{exc}") from exc
+        now = _owner_of(path)
+        if now is not None and now != (uid, gid, 0o600):
+            raise RuntimeError(f"{path.name} 改回后仍不是 {SERVICE_USER}:{SERVICE_USER} 0600")
+        _SIDECAR_FIXES.append({"file": path.name, "wasUid": found[0], "wasGid": found[1], "wasMode": oct(found[2])})
+
+
+@contextmanager
+def _production_db(mode: str, **options) -> Iterator[sqlite3.Connection]:
+    """root 侧打开生产库：用完显式 close（不靠 with 语句或 GC），之后立刻核对 -wal/-shm 的属主。"""
+    con = sqlite3.connect(f"file:{V4_DB}?mode={mode}", uri=True, timeout=30, **options)
+    try:
+        yield con
+    finally:
+        con.close()
+        fix_sidecars(V4_DB)
 
 
 # ---------------------------------------------------------------- database schema version
@@ -312,7 +400,7 @@ def read_schema_version() -> int | None:
     """生产库当前的 user_version：只读连接、不执行 DDL；库不存在返回 None，application_id 不符就报错。"""
     if not V4_DB.exists():
         return None
-    with closing(sqlite3.connect(f"file:{V4_DB}?mode=ro", uri=True, timeout=30)) as con:
+    with _production_db("ro") as con:
         con.execute("PRAGMA query_only=ON")
         if con.execute("PRAGMA application_id").fetchone()[0] != V4_APPLICATION_ID:
             raise RuntimeError("V4 晨报库 application_id 不符")
@@ -321,7 +409,7 @@ def read_schema_version() -> int | None:
 
 def set_schema_version(version: int) -> None:
     """只改 user_version（降级与回滚用）：不建表、不删表、不碰业务数据。"""
-    with closing(sqlite3.connect(f"file:{V4_DB}?mode=rw", uri=True, timeout=30, isolation_level=None)) as con:
+    with _production_db("rw", isolation_level=None) as con:
         if con.execute("PRAGMA application_id").fetchone()[0] != V4_APPLICATION_ID:
             raise RuntimeError("V4 晨报库 application_id 不符")
         con.execute(f"PRAGMA user_version={int(version)}")
@@ -413,7 +501,7 @@ def _health_matches(body: dict, release: str, version: str | None, prior: dict |
     if version is not None and not _version_matches(body.get("version"), version):
         return False
     if prior:
-        for flag in READY_FLAGS:
+        for flag in READY_FLAGS + KX_FLAGS:
             if prior.get(flag) is True and body.get(flag) is not True:
                 return False
     return True
@@ -437,6 +525,14 @@ def _capture_health() -> dict | None:
     return None
 
 
+def _expected_prior(prior: dict | None, manifest: dict) -> dict | None:
+    """切换后要比对的切换前 health：目标发布不认识 KX（清单 schemaVersion 低于 KX_SCHEMA，如回退到 B120）就不要求 KX 项。
+    回滚时比对的是上一版自己的基线，原样使用。"""
+    if prior is None or manifest_schema_version(manifest) >= KX_SCHEMA:
+        return prior
+    return {key: value for key, value in prior.items() if key not in KX_FLAGS}
+
+
 def _baseline_problem(body: dict, previous: str) -> str | None:
     """切换前 health 基线必须形状完整，否则之后的「就绪」比较没有依据。"""
     if body.get("releaseSet") != previous:
@@ -447,6 +543,9 @@ def _baseline_problem(body: dict, previous: str) -> str | None:
         return "version 不是字符串"
     for flag in READY_FLAGS:
         if not isinstance(body.get(flag), bool):
+            return f"{flag} 不是布尔值"
+    for flag in KX_FLAGS:  # B120 的 health 没有这两项：缺失合法，出现了就必须是布尔值
+        if flag in body and not isinstance(body[flag], bool):
             return f"{flag} 不是布尔值"
     return None
 
@@ -463,6 +562,8 @@ def _mask_state() -> bool | str:
 
 
 def _write_switch_state(directory: Path, record: dict) -> None:
+    if _SIDECAR_FIXES:
+        record = {**record, "sidecarFixes": list(_SIDECAR_FIXES)}
     (directory / "switch-state.json").write_text(json.dumps(record, indent=2))
 
 
@@ -567,11 +668,8 @@ def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | No
     return after
 
 
-def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
-                  new: dict, before: dict, prior: dict | None, api_running: bool,
-                  schema: SchemaPlan | None = None) -> None:
-    """停服并还原上一版。只有文件、wheel、清单都还原且校验通过、库结构版本回到切换前之后才恢复单元。
-    生产库只改 user_version，绝不还原或覆盖。"""
+def _mask_and_stop() -> None:
+    """mask 服务单元、停 timer 和服务，并确认服务已停。mask 的错误原样抛出（可能已生效），其余带步骤名。"""
     run("systemctl", "mask", "--runtime", *SERVICES)
     try:
         run("systemctl", "stop", *TIMERS)
@@ -587,6 +685,14 @@ def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], ol
             raise RuntimeError("服务未停止")
     except Exception as exc:
         _raise_step("确认服务已停", exc)
+
+
+def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
+                  new: dict, before: dict, prior: dict | None, api_running: bool,
+                  schema: SchemaPlan | None = None) -> None:
+    """停服并还原上一版。只有文件、wheel、清单都还原且校验通过、库结构版本回到切换前之后才恢复单元。
+    生产库只改 user_version，绝不还原或覆盖。"""
+    _mask_and_stop()
     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
     _finish_rollback(previous=previous, old=old, before=before, prior=prior, api_running=api_running,
                      schema=schema)
@@ -603,6 +709,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     new_dir, old_dir = ROOT / "releases" / release, ROOT / "releases" / previous
     new, new_entries, new_wheel = load_release(new_dir, release)
     old, old_entries, old_wheel = load_release(old_dir, previous)
+    manifest_schema_version(old)  # 回滚时要用，无效就在动手前报错
+    _SIDECAR_FIXES.clear()
     verify_runtime(ROOT, old)
     assert_ownership()
     running = [unit for unit in V4_JOBS if unit_state(unit)["active"] in ("active", "activating", "reloading")]
@@ -612,13 +720,16 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
 
     before = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
     if check_only:
-        return {"release": release, "previous": previous, "preflight": "ok",
-                "schemaBefore": plan.before, "schemaTarget": plan.target, "schemaAction": plan.action,
-                "addedFiles": sorted(set(new["backendFiles"]) - set(old["backendFiles"])),
-                "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
-                "changedFiles": sorted(name for name in set(new["backendFiles"]) & set(old["backendFiles"])
-                                       if new["backendFiles"][name] != old["backendFiles"][name]),
-                "units": before}
+        report = {"release": release, "previous": previous, "preflight": "ok",
+                  "schemaBefore": plan.before, "schemaTarget": plan.target, "schemaAction": plan.action,
+                  "addedFiles": sorted(set(new["backendFiles"]) - set(old["backendFiles"])),
+                  "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
+                  "changedFiles": sorted(name for name in set(new["backendFiles"]) & set(old["backendFiles"])
+                                         if new["backendFiles"][name] != old["backendFiles"][name]),
+                  "units": before}
+        if _SIDECAR_FIXES:
+            report["sidecarFixes"] = list(_SIDECAR_FIXES)
+        return report
     api_running = before["neckline.service"]["active"] == "active"
     if api_running:
         prior_health = _capture_health()
@@ -636,11 +747,14 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     settled = False
 
     def outcome() -> dict:
-        return {"release": release, "commit": new["commit"], "switched": switched,
-                "runtimeFiles": len(new["backendFiles"]),
-                "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
-                "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"],
-                "schema": plan.describe()}
+        result = {"release": release, "commit": new["commit"], "switched": switched,
+                  "runtimeFiles": len(new["backendFiles"]),
+                  "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
+                  "recoveryPoint": record["snapshot"].get("archive"), "units": record["unitsAfter"],
+                  "schema": plan.describe()}
+        if _SIDECAR_FIXES:
+            result["sidecarFixes"] = list(_SIDECAR_FIXES)
+        return result
 
     def note_schema() -> None:
         if plan.restored is not None:
@@ -731,6 +845,13 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         except Exception as unit_exc:
             step = getattr(unit_exc, "step", "取消 mask")
             if step == "取消 mask":
+                # unmask 可能已经生效：先重新 mask 并确认服务已停，再动文件和库版本；之后一路保持 mask。
+                root_cause = unit_exc.__cause__ if unit_exc.__cause__ is not None else unit_exc
+                record["failure"] = record.get("failure") or f"{type(root_cause).__name__}: {root_cause}"
+                try:
+                    _mask_and_stop()
+                except Exception as stop_exc:
+                    fail_manual(getattr(stop_exc, "step", "重新 mask"), stop_exc)
                 try:
                     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
                     switched = False
@@ -754,7 +875,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         version = new.get("version")
         if not isinstance(version, str) or not version:
             raise RuntimeError("新清单缺少 version")
-        health(release, version=version, prior=prior_health)
+        health(release, version=version, prior=_expected_prior(prior_health, new))
         return outcome()
     except Exception as exc:
         if settled:
