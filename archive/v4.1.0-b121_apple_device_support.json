@@ -1,0 +1,42 @@
+{
+  "checked_at": "2026-10-20T02:03:47.091360+00:00",
+  "devices": [
+    {
+      "model": "iPhone17,3",
+      "os": "",
+      "build": "",
+      "validated": false,
+      "reason": "No local support cache; this connection record needs no cleanup"
+    },
+    {
+      "model": "iPhone18,4",
+      "os": "27.0.1",
+      "build": "24A446",
+      "validated": true,
+      "current_support": "/Users/linotsai/Library/Developer/Xcode/iOS DeviceSupport/iPhone18,4 27.0.1 (24A446)",
+      "symbol_sha256": {
+        "usr/lib/dyld": "0c2a1a965f1ed87612fec9272ae1bc508d8aef72d81ec7c62e8f52040291d5b8",
+        "System/Library/Frameworks/Foundation.framework/Foundation": "2c1fd06162e0f79525b681a2e03988b9b8b22efa408e0bfdc737a22c6956f8b6",
+        "System/Library/Frameworks/UIKit.framework/UIKit": "65303e9403b9caf37e85eae43fb16667b4404582fc3df8e758b9ab0b5cee0a54"
+      }
+    },
+    {
+      "model": "iPhone19,2",
+      "os": "27.0.1",
+      "build": "24A446",
+      "validated": true,
+      "current_support": "/Users/linotsai/Library/Developer/Xcode/iOS DeviceSupport/iPhone19,2 27.0.1 (24A446)",
+      "symbol_sha256": {
+        "usr/lib/dyld": "ce718b23beb9210cfeea20547ad797b8c893ebc1f2513878c3603ac6262c7327",
+        "System/Library/Frameworks/Foundation.framework/Foundation": "0ddf98163ed093630dc4ab5f6eef9411524c3c632d3aa56d9700850442bf85cd",
+        "System/Library/Frameworks/UIKit.framework/UIKit": "3b8e1bf966e44c6b01812f1f331affb81a085e82e60eaca67411426af5acedb6"
+      }
+    }
+  ],
+  "candidates": [],
+  "deleted": [],
+  "user_confirmed_unused_models": [],
+  "unused_reason": "",
+  "pending_devices": [],
+  "status": "audited"
+}
