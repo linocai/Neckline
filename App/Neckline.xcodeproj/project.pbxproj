@@ -13,6 +13,7 @@
 		0D6F880EF61399E7A9034723 /* MorningModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3597301592C33B76EF3BBF66 /* MorningModels.swift */; };
 		131E0E18B2E62F1A7D5237A1 /* EntryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6796D92CDB96A78D6277B651 /* EntryDetailView.swift */; };
 		185F8382719BE9C67BE88690 /* KXBoardContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70642E258DC95995AF29264A /* KXBoardContractTests.swift */; };
+		23E60453822D10863EEE7AE9 /* kx_board_schema2.json in Resources */ = {isa = PBXBuildFile; fileRef = A5229AE1F5AF9FD3B826B3E1 /* kx_board_schema2.json */; };
 		24A1B3F6804594A9B6D825B5 /* KXColumns.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3104552CCD552E1AF0C09F /* KXColumns.swift */; };
 		2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E32D24CA427022EEC9C9A9 /* AppConfig.swift */; };
 		2E54774157117080103B1B4D /* report-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = DAD5DF9777E116FDCD8FC584 /* report-failed.json */; };
@@ -95,6 +96,7 @@
 		9368D0D8912B2600FE4585CB /* document-not-found.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "document-not-found.json"; sourceTree = "<group>"; };
 		9A729BD02FA0543E9E16AE12 /* kx_board_degraded.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = kx_board_degraded.json; sourceTree = "<group>"; };
 		9ED7FF84C0CF8D88C3C40E81 /* MorningComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningComponents.swift; sourceTree = "<group>"; };
+		A5229AE1F5AF9FD3B826B3E1 /* kx_board_schema2.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = kx_board_schema2.json; sourceTree = "<group>"; };
 		A75B75043B9190B8F306FF1D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NecklineApp.swift; sourceTree = "<group>"; };
 		B4D7BB58A402D15EC1FC2CDB /* reports-history.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "reports-history.json"; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 				9A729BD02FA0543E9E16AE12 /* kx_board_degraded.json */,
 				F241E3FFEE7B0FA4AE998703 /* kx_board_extreme.json */,
 				4263345C85F734E37AFB340D /* kx_board_sample.json */,
+				A5229AE1F5AF9FD3B826B3E1 /* kx_board_schema2.json */,
 				45D5268003FE60EFA0761757 /* not-configured.json */,
 				E3342D8C6FE415EEF7396FFB /* not-ready.json */,
 				D9A68CEF1F959980525CF73D /* report-available.json */,
@@ -353,6 +356,7 @@
 				D4155A1E6788C13820375858 /* kx_board_degraded.json in Resources */,
 				36F7DB89C34478B1429BC7EB /* kx_board_extreme.json in Resources */,
 				495179AACD08B0444BA1B506 /* kx_board_sample.json in Resources */,
+				23E60453822D10863EEE7AE9 /* kx_board_schema2.json in Resources */,
 				903D54E0A001B3561507A639 /* not-configured.json in Resources */,
 				04D3F873585F2CC8C8B3C554 /* not-ready.json in Resources */,
 				FEFCC8FF7BD92049C31714CB /* report-available.json in Resources */,
@@ -543,7 +547,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 121;
+				CURRENT_PROJECT_VERSION = 122;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_LANGUAGE = "zh-Hans";
 				DEVELOPMENT_TEAM = HX73DFL88G;
@@ -608,7 +612,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 121;
+				CURRENT_PROJECT_VERSION = 122;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_LANGUAGE = "zh-Hans";
 				DEVELOPMENT_TEAM = HX73DFL88G;

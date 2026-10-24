@@ -62,6 +62,11 @@ enum NKKX {
     static let ydayFill = Color(light: 0x0754E9, lightAlpha: 0.04, dark: 0x4C8DFF, darkAlpha: 0.08)
     static let bar = NKMorning.accent
     static let ydayBarOpacity = 0.35
+    /// 热度徽标第 5 天起的浅红底（浅色、深色同一个值，样图如此）；首日用强调色描边，第 2 到 4 天用 NKMorning.tagFill。
+    static let heatHotFill = Color(light: 0xE0312B, lightAlpha: 0.12, dark: 0xE0312B, darkAlpha: 0.12)
+    /// 「一字板」标签：琥珀色，深色下字提亮、底稍浓。
+    static let lockText = Color(light: 0xB25E00, dark: 0xFFB340)
+    static let lockFill = Color(light: 0xFF9F0A, lightAlpha: 0.16, dark: 0xFF9F0A, darkAlpha: 0.20)
     /// 涨跌幅色块上的字。
     static let pillText = Color.white
     /// 分段控件选中项的投影。
@@ -86,6 +91,10 @@ enum NKKXFont {
     static let ratio = Font.system(size: 12).monospacedDigit()
     static let rangeNote = Font.system(size: 10).monospacedDigit()
     static let foot = Font.system(size: 10.5)
+    /// 热度徽标与一字板标签。
+    static let badge = Font.system(size: 10.5, weight: .semibold).monospacedDigit()
+    /// 手机第二行的题材。
+    static let theme = Font.system(size: 12)
 }
 
 /// 多行文字的字号规格。只在这里写磅值、相对的文本样式和字重。

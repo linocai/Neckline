@@ -8,6 +8,41 @@ extension KXRow {
     /// 报价不是当日的行（停牌等）：数字是旧的，不上涨跌色。
     var isMuted: Bool { quoteStatus == .stale }
     var hasNoQuote: Bool { quoteStatus == .missing }
+
+    /// 热度档位。没有这项数据（或不是正整数）时为空。
+    var heat: KXHeat? { KXHeat(day: heatDay) }
+    /// 一字板：只有明确写着不能买入才算；没有这项数据不当成一字板。
+    var isOneWordBoard: Bool { buyable == false }
+    /// 题材文字。空串、全是空白都当没有。
+    var themeText: String? {
+        guard let text = theme?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+    /// 手机看板的第二行：热度、一字板、题材有任何一样就加；三样都没有（schema 1 名单）行高保持 52。
+    var hasSecondLine: Bool { heat != nil || isOneWordBoard || themeText != nil }
+}
+
+/// 热度徽标的三档：入选首日；第 2 到 4 天；第 5 天起（热了很久）。
+enum KXHeat: Equatable {
+    case firstDay
+    case warm(day: Int)
+    case hot(day: Int)
+
+    init?(day: Int?) {
+        guard let day, day >= 1 else { return nil }
+        switch day {
+        case 1: self = .firstDay
+        case 2...4: self = .warm(day: day)
+        default: self = .hot(day: day)
+        }
+    }
+
+    var text: String {
+        switch self {
+        case .firstDay: return "首日"
+        case .warm(let day), .hot(let day): return "第\(day)天"
+        }
+    }
 }
 
 /// 区间条的几何，0 到 1。竖线是现价，色段从开盘到现价。缺数据就少画，不猜。
@@ -43,6 +78,34 @@ struct KXRowView: View {
     let group: KXColumnGroup
 
     var body: some View {
+        content
+            .padding(.horizontal, KXMetrics.inset)
+            .background { background }
+            .overlay(alignment: .leading) { bar }
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(NKMorning.hairline).frame(height: KXMetrics.hairline)
+            }
+            .accessibilityElement(children: .combine)
+    }
+
+    /// 第一行（名称加数据列）。没有第二行时就是整行，高 52；有第二行时整行按样图 A1 的 .r2 排：
+    /// 上内边距 7、第一行 34、间距 4、第二行 17、下内边距 6，一共 68。
+    @ViewBuilder private var content: some View {
+        if row.hasSecondLine {
+            VStack(alignment: .leading, spacing: KXMetrics.secondLineGap) {
+                firstLine
+                    .frame(minHeight: KXMetrics.firstLineHeight)
+                KXSecondLine(row: row)
+            }
+            .padding(.top, KXMetrics.twoLineTop)
+            .padding(.bottom, KXMetrics.twoLineBottom)
+        } else {
+            firstLine
+                .frame(height: KXMetrics.rowHeight)
+        }
+    }
+
+    private var firstLine: some View {
         HStack(spacing: 0) {
             KXNameCell(row: row)
             ForEach(group.columns, id: \.self) { column in
@@ -52,14 +115,6 @@ struct KXRowView: View {
                     .padding(.leading, column.leadingGap)
             }
         }
-        .padding(.horizontal, KXMetrics.inset)
-        .frame(height: KXMetrics.rowHeight)
-        .background { background }
-        .overlay(alignment: .leading) { bar }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(NKMorning.hairline).frame(height: KXMetrics.hairline)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     private var background: some View {
@@ -81,6 +136,88 @@ struct KXRowView: View {
                 .frame(width: 3)
                 .padding(.vertical, 8)
         }
+    }
+}
+
+/// 手机看板的第二行：热度徽标、一字板标签、题材。题材单行，放不下用省略号收尾，徽标不压缩、不换行。
+struct KXSecondLine: View {
+    let row: KXRow
+
+    var body: some View {
+        HStack(spacing: KXMetrics.badgeGap) {
+            if let heat = row.heat {
+                KXHeatBadge(heat: heat)
+            }
+            if row.isOneWordBoard {
+                KXOneWordBoardBadge()
+            }
+            if let theme = row.themeText {
+                Text(theme)
+                    .font(NKKXFont.theme)
+                    .foregroundStyle(row.isFaded ? NKMorning.textTertiary : NKMorning.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, minHeight: KXMetrics.secondLineHeight, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: KXMetrics.secondLineHeight, alignment: .leading)
+    }
+}
+
+/// 热度徽标：首日蓝色描边、透明底；第 2 到 4 天灰底；第 5 天起浅红底。手机第二行与 macOS 表格共用。
+struct KXHeatBadge: View {
+    let heat: KXHeat
+
+    var body: some View {
+        Text(heat.text)
+            .font(NKKXFont.badge)
+            .foregroundStyle(foreground)
+            .lineLimit(1)
+            .frame(height: KXMetrics.badgeTextHeight)
+            .padding(.vertical, KXMetrics.badgePaddingV)
+            .padding(.horizontal, KXMetrics.badgePaddingH)
+            .background(fill, in: shape)
+            .overlay {
+                if heat == .firstDay {
+                    shape.strokeBorder(NKMorning.accent, lineWidth: 1)
+                }
+            }
+            .fixedSize()
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: KXMetrics.badgeRadius, style: .continuous)
+    }
+
+    private var foreground: Color {
+        switch heat {
+        case .firstDay: return NKMorning.accent
+        case .warm: return NKMorning.textSecondary
+        case .hot: return NKKX.up
+        }
+    }
+
+    private var fill: Color {
+        switch heat {
+        case .firstDay: return .clear
+        case .warm: return NKMorning.tagFill
+        case .hot: return NKKX.heatHotFill
+        }
+    }
+}
+
+/// 一字板标签：只在不能买入时出现，琥珀色。
+struct KXOneWordBoardBadge: View {
+    var body: some View {
+        Text("一字板")
+            .font(NKKXFont.badge)
+            .foregroundStyle(NKKX.lockText)
+            .lineLimit(1)
+            .frame(height: KXMetrics.badgeTextHeight)
+            .padding(.vertical, KXMetrics.badgePaddingV)
+            .padding(.horizontal, KXMetrics.badgePaddingH)
+            .background(NKKX.lockFill, in: RoundedRectangle(cornerRadius: KXMetrics.badgeRadius, style: .continuous))
+            .fixedSize()
     }
 }
 

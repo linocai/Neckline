@@ -6,7 +6,9 @@ import SwiftUI
 /// 表里的列。顺序就是显示顺序。
 enum KXTableColumn: CaseIterable, Hashable, Identifiable {
     case name
-    case industry
+    case theme
+    case heat
+    case buyable
     case price
     case changePercent
     case changeAmount
@@ -36,7 +38,9 @@ enum KXTableColumn: CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .name: return "名称"
-        case .industry: return "行业"
+        case .theme: return "题材"
+        case .heat: return "热度"
+        case .buyable: return "可买"
         case .price: return "现价"
         case .changePercent: return "涨跌幅"
         case .changeAmount: return "涨跌额"
@@ -66,7 +70,7 @@ enum KXTableColumn: CaseIterable, Hashable, Identifiable {
     var width: ClosedRange<CGFloat> {
         switch self {
         case .name: return 110...180
-        case .industry: return 80...140
+        case .theme: return 200...320
         case .changePercent: return 70...90
         case .range: return 90...120
         case .volumeRatio: return 80...110
@@ -75,13 +79,19 @@ enum KXTableColumn: CaseIterable, Hashable, Identifiable {
         }
     }
 
-    var alignment: Alignment { self == .name || self == .industry ? .leading : .trailing }
+    /// 初始宽度。题材取样图的 260 加两侧的格内间距，常见的 20 字上下的题材一行放得下，更长的折第二行。
+    var idealWidth: CGFloat { self == .theme ? 276 : width.lowerBound + 6 }
+
+    var alignment: Alignment { self == .name || self == .theme ? .leading : .trailing }
 
     /// 排序用的值。缺数据的行不论升降都排最后。
     func sortKey(_ row: KXRow) -> KXSortKey {
         switch self {
         case .name: return .text(row.name)
-        case .industry: return .text(row.industry ?? "")
+        case .theme: return .text(row.themeText ?? "")
+        case .heat: return .number(row.heat == nil ? nil : row.heatDay.map(Double.init))
+        // 一字板排前，能买的在后，没有这项数据的最后。
+        case .buyable: return .number(row.buyable.map { $0 ? 1 : 0 })
         case .price: return .number(row.price)
         case .changePercent: return .number(row.changePercent)
         case .changeAmount: return .number(row.changeAmount)
@@ -191,7 +201,7 @@ struct KXBoardTable: View {
                 TableColumn(column.title, sortUsing: KXRowComparator(column: column)) { row in
                     KXTableCell(row: row, column: column)
                 }
-                .width(min: column.width.lowerBound, ideal: column.width.lowerBound + 6, max: column.width.upperBound)
+                .width(min: column.width.lowerBound, ideal: column.idealWidth, max: column.width.upperBound)
                 .alignment(column.alignment == .leading ? .leading : .trailing)
             }
         } rows: {
@@ -248,11 +258,28 @@ struct KXTableCell: View {
                         .foregroundStyle(NKMorning.textTertiary)
                 }
             }
-        case .industry:
-            Text(row.industry ?? KXCopy.dash)
+        case .theme:
+            // 题材放不下最多折成两行，再长用省略号收尾。没有题材（schema 1 名单）写「—」。
+            Text(row.themeText ?? KXCopy.dash)
                 .font(.system(size: 13))
-                .foregroundStyle(NKMorning.textSecondary)
-                .lineLimit(1)
+                .foregroundStyle(row.themeText == nil ? NKMorning.textTertiary : NKMorning.textSecondary)
+                .lineLimit(2)
+                .lineSpacing(2)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+        case .heat:
+            if let heat = row.heat {
+                KXHeatBadge(heat: heat)
+            } else {
+                Text(KXCopy.dash)
+                    .font(.system(size: 13))
+                    .foregroundStyle(NKMorning.textTertiary)
+            }
+        case .buyable:
+            // 能买（或没有这项数据）留空，只有一字板才出标签。
+            if row.isOneWordBoard {
+                KXOneWordBoardBadge()
+            }
         case .price:
             number(KXCopy.fixed(row.price, 2), trend: KXTrend(row.changePercent), bold: row.isToday)
         case .changePercent:
