@@ -12,10 +12,14 @@ from neckline.morning.db import utc
 
 @dataclass(frozen=True)
 class Member:
+    """名单成员。schema 1 的名单有 industry、没有后三项；schema 2 的名单有后三项、industry 为 None。"""
     code: str
     name: str
-    industry: str
+    industry: str | None
     position: int
+    theme: str | None = None
+    first_seen: date | None = None
+    buyable: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,11 @@ class PoolSnapshot:
     version: str
     members: tuple[Member, ...]
     verified_at: datetime
+
+    @property
+    def schema_version(self) -> int:
+        """KX 名单的格式：成员带题材的是 schema 2，其余是 schema 1。"""
+        return 2 if self.members and self.members[0].theme is not None else 1
 
 
 @dataclass(frozen=True)
@@ -36,25 +45,34 @@ class PickRecord:
 # ------------------------------------------------------------------ 名单
 
 def load_pool(conn: sqlite3.Connection) -> PoolSnapshot | None:
-    rows = conn.execute("SELECT code, name, industry, position, version, verified_at FROM kx_pool "
-                        "ORDER BY position").fetchall()
+    rows = conn.execute("SELECT code, name, industry, position, version, verified_at, theme, first_seen, buyable "
+                        "FROM kx_pool ORDER BY position").fetchall()
     if not rows:
         return None
     versions = {row["version"] for row in rows}
     if len(versions) != 1:  # 整体替换在同一个事务里，理论上不会出现；出现就当名单不可信
         return None
-    return PoolSnapshot(
-        version=rows[0]["version"],
-        members=tuple(Member(r["code"], r["name"], r["industry"], r["position"]) for r in rows),
-        verified_at=max(datetime.fromisoformat(r["verified_at"]) for r in rows))
+    if len({row["theme"] is None for row in rows}) != 1:  # 同理：一份名单只会是同一种格式
+        return None
+    members = tuple(
+        Member(r["code"], r["name"], r["industry"] or None, r["position"], r["theme"],
+               date.fromisoformat(r["first_seen"]) if r["first_seen"] is not None else None,
+               None if r["buyable"] is None else bool(r["buyable"]))
+        for r in rows)
+    return PoolSnapshot(version=rows[0]["version"], members=members,
+                        verified_at=max(datetime.fromisoformat(r["verified_at"]) for r in rows))
 
 
 def replace_pool(conn: sqlite3.Connection, *, version: str, members: Sequence[Member], verified_at: datetime) -> None:
     """同一个事务里整体替换名单（调用方给的是 db.write 的连接，退出时一起提交）。"""
     conn.execute("DELETE FROM kx_pool")
-    conn.executemany("INSERT INTO kx_pool(code, position, name, industry, version, verified_at) VALUES (?,?,?,?,?,?)",
-                     [(m.code, index, m.name, m.industry, version, utc(verified_at))
-                      for index, m in enumerate(members)])
+    conn.executemany(
+        "INSERT INTO kx_pool(code, position, name, industry, version, verified_at, theme, first_seen, buyable) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        [(m.code, index, m.name, m.industry or "", version, utc(verified_at), m.theme,
+          m.first_seen.isoformat() if m.first_seen is not None else None,
+          None if m.buyable is None else int(m.buyable))
+         for index, m in enumerate(members)])
 
 
 def touch_pool(conn: sqlite3.Connection, *, version: str, verified_at: datetime) -> int:

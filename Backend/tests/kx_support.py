@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,62 @@ PICKS_TOKEN = "p" * 32
 LICENCE = "test-licence"
 TUSHARE_TOKEN = "test-tushare-token"
 VERSION = "kx-20261017"
+
+
+# 库结构版本 2（B121、B122 线上）的 KX 三张表原样：kx_pool 没有 theme / first_seen / buyable。
+KX_V2_DDL = """
+CREATE TABLE IF NOT EXISTS kx_pool (
+  code TEXT PRIMARY KEY CHECK(length(code) = 6),
+  position INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  industry TEXT NOT NULL,
+  version TEXT NOT NULL,
+  verified_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kx_picks (
+  request_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK(position >= 0),
+  code TEXT NOT NULL CHECK(length(code) = 6),
+  picked_at TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  PRIMARY KEY(request_id, position),
+  UNIQUE(request_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_kx_picks_code ON kx_picks(code, picked_at);
+CREATE TABLE IF NOT EXISTS kx_daily_stats (
+  base_date TEXT NOT NULL,
+  pool_version TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('daily','basic')),
+  fetched_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY(base_date, pool_version, kind)
+);
+"""
+
+
+def make_legacy_db(path: Path, version: int) -> None:
+    """按旧库结构建库并放一份有内容的数据：版本 1 只有晨报表，版本 2 再加旧结构的三张 KX 表（kx_pool 带一份名单）。"""
+    assert version in (1, 2)
+    conn = sqlite3.connect(path)
+    conn.executescript(db.DDL + (KX_V2_DDL if version == 2 else ""))
+    conn.execute(f"PRAGMA application_id={db.APPLICATION_ID}")
+    conn.execute(f"PRAGMA user_version={version}")
+    conn.execute("INSERT INTO devices VALUES ('abcd','ios','2026-10-19T00:00:00+00:00','2026-10-19T00:00:00+00:00')")
+    conn.execute("""INSERT INTO reports(report_id, trade_date, window_start, window_end, status, config_version,
+                    config_sha256, started_at, available_at, content_json)
+                    VALUES ('r1','2026-10-19','a','b','available','screening-v2','0','2026-10-19T00:00:00+00:00',
+                            '2026-10-19T00:01:00+00:00','{"entries":[]}')""")
+    if version == 2:
+        conn.executemany("INSERT INTO kx_pool VALUES (?,?,?,?,?,?)", [
+            ("600000", 0, "浦发银行", "银行", "kx-20261017-001", "2026-10-19T01:00:00+00:00"),
+            ("000001", 1, "平安银行", "银行、保险", "kx-20261017-001", "2026-10-19T01:00:00+00:00")])
+        conn.execute("INSERT INTO kx_picks VALUES ('req-1', 0, '600000', '2026-10-19T02:00:00+00:00', '2026-10-19', "
+                     "'2026-10-19T02:00:01+00:00')")
+        conn.execute("INSERT INTO kx_daily_stats VALUES ('2026-10-16', 'kx-20261017-001', 'daily', "
+                     "'2026-10-19T01:00:00+00:00', '{\"600000\":1}')")
+    conn.commit()
+    conn.close()
 
 
 def at(day: str, hm: str = "10:30", seconds: int = 0) -> datetime:
@@ -59,15 +116,30 @@ class Clock:
         return self.mono
 
 
+FIRST_SEEN = "2026-10-19"  # schema 2 名单里成员默认的 first_seen
+
+
 @dataclass
 class FakeKx:
     members: list[tuple[str, str, str]]
     version: str = VERSION
+    schema: int = 1                   # 名单格式：1 带 sw_l2；2 带 theme、first_seen、buyable（题材由行业名换字得到）
+    first_seen: dict = field(default_factory=dict)  # schema 2：代码 -> first_seen，缺省 FIRST_SEEN
+    buyable: dict = field(default_factory=dict)     # schema 2：代码 -> buyable，缺省 True
     down: bool = False
     pending: int = 0                  # 前几次读名单先返回「正在取数」
     page_patch: object = None         # 可调用：改写名单页面 JSON，用来造坏数据
     health_patch: object = None
     calls: list[str] = field(default_factory=list)
+
+    def _row(self, code: str, name: str, industry: str) -> dict:
+        if self.schema == 1:
+            return {"stock_code": code, "name": name, "sw_l2": [{"code": "801010.SI", "name": industry}],
+                    "price": 1.0, "history": {"note": "x" * 50}}
+        # schema 2 的行：KX 还会带读取时现算的 heat_day 与行情字段，Neckline 一概不读 heat_day
+        return {"stock_code": code, "name": name, "theme": industry.replace("行业", "题材"),
+                "first_seen": self.first_seen.get(code, FIRST_SEEN), "heat_day": 99,
+                "buyable": self.buyable.get(code, True), "price": 1.0}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request.url.path)
@@ -87,10 +159,11 @@ class FakeKx:
                                                  "retry_after_seconds": 3})
             body = {"status": "partial", "checked_at": "x",
                     "pool": {"status": "ok", "version": self.version, "name": "KX热门池", "count": len(self.members),
-                             "membership_locked": False},
-                    "rows": [{"stock_code": code, "name": name, "sw_l2": [{"code": "801010.SI", "name": industry}],
-                              "price": 1.0, "history": {"note": "x" * 50}} for code, name, industry in self.members],
+                             "schema_version": self.schema, "membership_locked": False},
+                    "rows": [self._row(code, name, industry) for code, name, industry in self.members],
                     "rules": "..."}
+            if self.schema == 2:
+                body["refresh"] = {"date": "2026-10-20", "result": "updated"}
             if self.page_patch:
                 body = self.page_patch(body)
             return httpx.Response(200, json=body)
@@ -251,5 +324,5 @@ def run(coro):
     return asyncio.run(coro)
 
 
-__all__ = ["Harness", "build", "run", "at", "quote_values", "make_members", "make_stats", "make_mairui",
-           "READ_KEY", "PICKS_TOKEN", "LICENCE", "TUSHARE_TOKEN", "VERSION"]
+__all__ = ["Harness", "KX_V2_DDL", "build", "make_legacy_db", "run", "at", "quote_values", "make_members", "make_stats", "make_mairui",
+           "FIRST_SEEN", "READ_KEY", "PICKS_TOKEN", "LICENCE", "TUSHARE_TOKEN", "VERSION"]

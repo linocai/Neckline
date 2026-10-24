@@ -1,7 +1,8 @@
 """V4 晨报库：原件、采集记录、模型回执、晨报、推送设备与推送记录，以及 KX 看板的名单、推荐与日线统计缓存。
 
 只读路径用 mode=ro 打开且不执行 DDL；建表只在显式的 init-db 与写命令里做。时间一律存 UTC ISO（到秒）。
-库结构版本 2 在版本 1 的基础上只加三张 KX 表，init_schema 可把版本 1 的库原地升级，不动已有数据。
+库结构版本 2 在版本 1 的基础上只加三张 KX 表；版本 3 只给 kx_pool 加三列（题材、首次入选日、能否买入）。
+init_schema 把版本 1、2 的库原地升级到当前版本，不动已有数据。
 """
 from __future__ import annotations
 
@@ -20,8 +21,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 2
-_UPGRADABLE_FROM = (1,)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 3
+_UPGRADABLE_FROM = (1, 2)  # 这些版本的库可由 init_schema 原地升级到当前版本
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -98,7 +99,8 @@ CREATE TABLE IF NOT EXISTS push_log (
 );
 """
 
-# 版本 2 新增：三张 KX 表。只加表，不改版本 1 的任何表。
+# 版本 2 新增三张 KX 表（只加表，不改版本 1 的任何表）；版本 3 在 kx_pool 末尾加 theme / first_seen / buyable
+# （KX 名单 schema 2 的字段；schema 1 的名单这三列为 NULL，industry 为空串表示没有行业）。
 KX_DDL = """
 CREATE TABLE IF NOT EXISTS kx_pool (
   code TEXT PRIMARY KEY CHECK(length(code) = 6),
@@ -106,7 +108,10 @@ CREATE TABLE IF NOT EXISTS kx_pool (
   name TEXT NOT NULL,
   industry TEXT NOT NULL,
   version TEXT NOT NULL,
-  verified_at TEXT NOT NULL
+  verified_at TEXT NOT NULL,
+  theme TEXT,
+  first_seen TEXT,
+  buyable INTEGER
 );
 CREATE TABLE IF NOT EXISTS kx_picks (
   request_id TEXT NOT NULL,
@@ -128,6 +133,8 @@ CREATE TABLE IF NOT EXISTS kx_daily_stats (
   PRIMARY KEY(base_date, pool_version, kind)
 );
 """
+# 版本 3 的升级：已有 kx_pool 补上的列，顺序与新库的建表语句一致。
+KX_POOL_V3_COLUMNS = (("theme", "TEXT"), ("first_seen", "TEXT"), ("buyable", "INTEGER"))
 
 
 class NotReady(RuntimeError):
@@ -144,11 +151,17 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _statements(script: str) -> list[str]:
+    """把只含普通语句的 DDL 拆开（本文件的 DDL 里没有字符串或注释里的分号）。"""
+    return [part.strip() for part in script.split(";") if part.strip()]
+
+
 def init_schema(path: Path) -> None:
     """显式建表（init-db 与写命令调用）。
 
-    新库一次建到当前版本；版本 1 的库在同一个事务里加上 KX 表并把版本号升到 2，任何一步失败都整体回滚，
-    已有数据不动。已经是当前版本时什么都不改。
+    新库一次建到当前版本；版本 1、2 的库在同一个事务里补上缺的表和 kx_pool 的列并把版本号升到当前版本，
+    任何一步失败都整体回滚，已有数据不动。已有的列不会重复添加（降级只改版本号、不删列，再升级时列已在）。
+    已经是当前版本时什么都不改。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -165,9 +178,16 @@ def init_schema(path: Path) -> None:
         if tables and version == SCHEMA_VERSION:
             return
         try:
-            conn.executescript(
-                "BEGIN IMMEDIATE;" + DDL + KX_DDL
-                + f"PRAGMA application_id={APPLICATION_ID};PRAGMA user_version={SCHEMA_VERSION};COMMIT;")
+            conn.execute("BEGIN IMMEDIATE")
+            for statement in _statements(DDL) + _statements(KX_DDL):
+                conn.execute(statement)
+            present = {row[1] for row in conn.execute("PRAGMA table_info(kx_pool)")}
+            for name, kind in KX_POOL_V3_COLUMNS:
+                if name not in present:
+                    conn.execute(f"ALTER TABLE kx_pool ADD COLUMN {name} {kind}")
+            conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
+            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            conn.execute("COMMIT")
         except BaseException:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")

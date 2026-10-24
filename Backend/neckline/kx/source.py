@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 
 import httpx
 
@@ -13,6 +14,8 @@ from neckline.market.util import silence_http_logs
 
 _VERSION = re.compile(r"[A-Za-z0-9._-]{1,80}")
 _CODE = re.compile(r"[036]\d{5}")
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+MAX_TEXT = 80  # 名称、行业、题材的最长字数
 MAX_BYTES = 3_000_000
 MAX_MEMBERS = 500
 
@@ -64,8 +67,50 @@ def _industry(value: object) -> str | None:
     return "、".join(names)
 
 
+def _text(value: object) -> str | None:
+    """非空、去掉首尾空白后不超过 MAX_TEXT 字的字符串；不合格返回 None。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text if text and len(text) <= MAX_TEXT else None
+
+
+def _first_seen(value: object) -> date | None:
+    if not isinstance(value, str) or not _DAY.fullmatch(value):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _schema_version(meta: dict) -> int | None:
+    """pool.schema_version：缺失视为 1；只认整数 1 与 2（布尔、浮点、字符串和其他数都不认）。"""
+    if "schema_version" not in meta:
+        return 1
+    value = meta["schema_version"]
+    return value if type(value) is int and value in (1, 2) else None
+
+
+def _member_v1(row: dict, index: int) -> Member | None:
+    name, industry = _text(row.get("name")), _industry(row.get("sw_l2"))
+    if name is None or industry is None:
+        return None
+    return Member(row["stock_code"], name, industry, index)
+
+
+def _member_v2(row: dict, index: int) -> Member | None:
+    name, theme = _text(row.get("name")), _text(row.get("theme"))
+    first_seen, buyable = _first_seen(row.get("first_seen")), row.get("buyable")
+    if name is None or theme is None or first_seen is None or not isinstance(buyable, bool):
+        return None
+    # heat_day 不读：KX 在读取时按交易日历现算，名单不变时我们不会重读，由 Neckline 自己算。
+    return Member(row["stock_code"], name, None, index, theme, first_seen, buyable)
+
+
 def parse_pool(body: object, health: Health) -> PoolDocument:
-    """严格校验：代码格式、不重复、名称与行业齐全，数量和版本号与健康检查一致。"""
+    """严格校验：按 pool.schema_version 分支（1 要行业，2 要题材、首次入选日与能否买入），
+    代码格式、不重复，数量和版本号与健康检查一致。"""
     bad = KxError("kx_bad_pool", "KX 名单格式不合格，没有采用。")
     if not isinstance(body, dict) or body.get("status") not in ("ok", "partial"):
         raise bad
@@ -75,19 +120,23 @@ def parse_pool(body: object, health: Health) -> PoolDocument:
     version, count = meta.get("version"), meta.get("count")
     if version != health.version or count != health.count or isinstance(count, bool):
         raise KxError("kx_pool_changed", "读取 KX 名单时版本或数量与健康检查不一致，稍后再核对。")
-    if len(rows) != count:
+    schema = _schema_version(meta)
+    if schema is None or len(rows) != count:
         raise bad
+    build = _member_v1 if schema == 1 else _member_v2
     members: list[Member] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise bad
-        code, name, industry = row.get("stock_code"), row.get("name"), _industry(row.get("sw_l2"))
-        if (not isinstance(code, str) or not _CODE.fullmatch(code) or code in seen or not isinstance(name, str)
-                or not name.strip() or len(name.strip()) > 80 or industry is None):
+        code = row.get("stock_code")
+        if not isinstance(code, str) or not _CODE.fullmatch(code) or code in seen:
+            raise bad
+        member = build(row, index)
+        if member is None:
             raise bad
         seen.add(code)
-        members.append(Member(code, name.strip(), industry, index))
+        members.append(member)
     return PoolDocument(version, tuple(members))
 
 

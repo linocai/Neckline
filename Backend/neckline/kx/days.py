@@ -32,6 +32,24 @@ def trading_days_ending(end: date, count: int) -> list[date]:
     return days
 
 
+def heat_days(first_seen: date, end: date) -> int | None:
+    """热了第几天：从 first_seen 起到交易日 end 止的交易日数，含两端。
+
+    first_seen 不是交易日就从其后第一个交易日起算；first_seen 晚于 end，或日历没有覆盖到，返回 None。
+    """
+    try:
+        start = first_seen if is_trading_day(first_seen) else next_trading_day(first_seen)
+        if start > end:
+            return None
+        count, day = 0, start
+        while day <= end:
+            count += is_trading_day(day)
+            day += timedelta(days=1)
+        return count
+    except CalendarGap:
+        return None
+
+
 def pick_trade_date(picked_at: datetime) -> date:
     """推荐归属的交易日：交易日 15:00 之前归当天；15:00 起、周末与节假日归下一个交易日。"""
     local = picked_at.astimezone(CST)

@@ -91,8 +91,9 @@ SERVICE_USER = "neckline"
 SIDECAR_SUFFIXES = ("-wal", "-shm")
 KX_FLAGS = ("kxPool", "kxPicks")  # B121 起 health 才带这两项
 KX_SCHEMA = 2  # 清单 schemaVersion 达到它的发布才报告、也才要求 KX 项
-# 库结构只允许这些「只加了表」的降级：旧代码认得它的版本号，多出来的表保留不删。
-ADDITIVE_DOWNGRADES = frozenset({(2, 1)})
+# 库结构只允许这些「只加了表或列」的降级：旧代码认得它的版本号，按列名读写，多出来的表和列保留不删。
+# v3 只给 kx_pool 加了三列，旧代码的 SELECT / INSERT 都带列名，所以 3→2、3→1 也只改版本号。
+ADDITIVE_DOWNGRADES = frozenset({(2, 1), (3, 2), (3, 1)})
 
 
 def sha256(data: bytes) -> str:

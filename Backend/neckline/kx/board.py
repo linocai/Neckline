@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from neckline.kx import store
-from neckline.kx.days import BoardClock, board_clock, highlight
+from neckline.kx.days import BoardClock, board_clock, heat_days, highlight
 from neckline.kx.quotes import Quote, QuoteBook, fetch_quotes
 from neckline.kx.daily import StatsBundle
 from neckline.kx.services import KxServices
@@ -145,8 +145,11 @@ def _row(member: store.Member, book: QuoteBook, bundle: StatsBundle, clock: Boar
         notes.append(f"报价日期是 {quote.day.isoformat()}，不是 {clock.quote_day.isoformat()}")
     else:
         status = "ok"
+    first_seen = member.first_seen
     row: dict[str, Any] = {
         "code": code, "name": member.name, "industry": member.industry,
+        "theme": member.theme, "firstSeen": first_seen.isoformat() if first_seen else None,
+        "heatDay": heat_days(first_seen, clock.quote_day) if first_seen else None, "buyable": member.buyable,
         "highlight": highlight(pick.trade_date, clock) if pick else "normal",
         "lastPickedAt": _iso(pick.picked_at) if pick else None,
         "quoteStatus": status,
@@ -207,7 +210,8 @@ async def build_board(kx: KxServices, path: Path) -> dict[str, Any]:
     times = [quote.at for quote in book.quotes.values() if quote.at is not None]
     return {
         "generatedAt": _iso(now),
-        "pool": {"version": snapshot.version, "count": len(snapshot.members), "checkedAt": _iso(snapshot.verified_at),
+        "pool": {"version": snapshot.version, "schemaVersion": snapshot.schema_version,
+                 "count": len(snapshot.members), "checkedAt": _iso(snapshot.verified_at),
                  "stale": result.stale, "reason": result.reason if result.stale else None},
         "session": {"tradeDate": clock.quote_day.isoformat(), "inSession": clock.in_session,
                     "refreshSeconds": REFRESH_SECONDS if clock.in_session else None,

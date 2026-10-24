@@ -4,6 +4,7 @@
 设置环境变量 NK_WRITE_FIXTURES=1 时改写这两份文件。
   kx_board_sample.json    盘中、名单已核对、行情与日线统计齐全，有当天推荐、前一交易日推荐和普通行。
   kx_board_degraded.json  名单未能核对、一只行情没取到、一只报价不是当日、TuShare 失败：各种 null 的形状。
+  kx_board_schema2.json   KX 名单 schema 2：industry 为 null，题材、首次入选日、热了第几天、能否买入齐全（只在后端夹具里）。
 """
 from __future__ import annotations
 
@@ -117,10 +118,10 @@ def test_board_response_has_the_documented_shape(tmp_path, monkeypatch):
     with _client(harness, monkeypatch) as client:
         body = client.get("/api/v4/kx/board", headers=AUTH).json()
     assert set(body) == {"generatedAt", "pool", "session", "stats", "picks", "gaps", "rows"}
-    assert set(body["pool"]) == {"version", "count", "checkedAt", "stale", "reason"}
+    assert set(body["pool"]) == {"version", "schemaVersion", "count", "checkedAt", "stale", "reason"}
     assert set(body["session"]) == {"tradeDate", "inSession", "refreshSeconds", "quoteTime"}
     assert set(body["rows"][0]) == {
-        "code", "name", "industry", "highlight", "lastPickedAt", "quoteStatus", "note", "quoteTime", "price",
+        "code", "name", "industry", "theme", "firstSeen", "heatDay", "buyable", "highlight", "lastPickedAt", "quoteStatus", "note", "quoteTime", "price",
         "changePercent", "changeAmount", "open", "high", "low", "previousClose", "amplitudePercent",
         "turnoverRatePercent", "turnoverYi", "volumeLots", "openChangePercent", "rangePosition",
         "pullbackFromHighPercent", "change5dPercent", "change20dPercent", "avgTurnover20Yi", "volumeRatio",
@@ -150,7 +151,25 @@ def _degraded(tmp_path, monkeypatch):
     return harness
 
 
-@pytest.mark.parametrize("name,make", [("kx_board_sample.json", _sample), ("kx_board_degraded.json", _degraded)])
+def _schema2(tmp_path, monkeypatch):
+    harness = build(tmp_path, monkeypatch, count=12, now=at("2026-10-20", "10:31", 7))
+    harness.kx.schema, harness.kx.version = 2, "kx-20261020-001"
+    harness.kx.first_seen = {
+        "000000": "2026-10-20",   # 今天才进：第 1 天
+        "000001": "2026-10-19",   # 周一：第 2 天
+        "000002": "2026-10-16",   # 上周五：第 3 天
+        "000003": "2026-10-17",   # 周六进的：从周一起算，第 2 天
+        "000004": "2026-10-21",   # 晚于行情日：null
+        "600005": "2026-10-01",   # 国庆假期里进的：从节后 10-08 起算，第 9 天
+    }
+    harness.kx.buyable = {"000001": False, "600007": False}
+    _put(harness, ["600010"], "2026-10-20T10:20:00")  # 当天推荐
+    _put(harness, ["600007"], "2026-10-19T14:20:00")  # 前一交易日：变淡
+    return harness
+
+
+@pytest.mark.parametrize("name,make", [("kx_board_sample.json", _sample), ("kx_board_degraded.json", _degraded),
+                                       ("kx_board_schema2.json", _schema2)])
 def test_board_sample_responses_match_the_fixtures(tmp_path, monkeypatch, name, make):
     harness = make(tmp_path, monkeypatch)
     with _client(harness, monkeypatch) as client:
@@ -181,3 +200,21 @@ def test_sample_fixture_shapes():
     statuses = {row["code"]: row["quoteStatus"] for row in degraded["rows"]}
     assert statuses["000001"] == "missing" and statuses["000002"] == "stale" and statuses["000003"] == "ok"
     assert degraded["rows"][0]["code"] == "000003" and degraded["rows"][0]["highlight"] == "today"
+    for board in (sample, degraded):  # schema 1 的名单：行业在，题材三项与热了第几天都是 null
+        assert board["pool"]["schemaVersion"] == 1
+        assert all(row["industry"] and (row["theme"], row["firstSeen"], row["heatDay"], row["buyable"]) ==
+                   (None, None, None, None) for row in board["rows"])
+
+
+def test_schema_2_fixture_shapes():
+    board = json.loads((FIXTURES / "kx_board_schema2.json").read_text(encoding="utf-8"))
+    assert board["pool"]["schemaVersion"] == 2 and board["pool"]["count"] == 12 and board["session"]["tradeDate"] == "2026-10-20"
+    assert [row["highlight"] for row in board["rows"]] == ["today", "faded"] + ["normal"] * 10
+    assert all(row["industry"] is None and row["theme"].startswith("题材") for row in board["rows"])
+    rows = {row["code"]: row for row in board["rows"]}
+    assert {code: (row["firstSeen"], row["heatDay"], row["buyable"]) for code, row in rows.items()
+            if code in ("000000", "000001", "000002", "000003", "000004", "600005", "600007")} == {
+        "000000": ("2026-10-20", 1, True), "000001": ("2026-10-19", 2, False), "000002": ("2026-10-16", 3, True),
+        "000003": ("2026-10-17", 2, True), "000004": ("2026-10-21", None, True), "600005": ("2026-10-01", 9, True),
+        "600007": ("2026-10-19", 2, False)}
+    assert all(row["quoteStatus"] == "ok" for row in board["rows"])
