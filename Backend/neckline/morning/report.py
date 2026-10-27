@@ -10,13 +10,19 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
+from neckline.evaluation.evaluate import EvaluationRun, evaluate_candidates
+from neckline.evaluation.market import TuShareSource
+from neckline.evaluation.prepare import build_package
+from neckline.evaluation.prompt import CONTRACT as EVALUATION_CONTRACT
 from neckline.filings.fetch import FetchResult
 from neckline.screening.classify import CONTRACT, Classification, classify
 from neckline.screening.deepseek import DeepSeekClient
@@ -109,6 +115,11 @@ def _require_hhmm(obj: object, key: str, label: str) -> str:
     return value
 
 
+def _minutes(value: str) -> int:
+    hour, minute = value.split(":")
+    return int(hour) * 60 + int(minute)
+
+
 def _validate_screening_rules(rules: object) -> dict:
     """加载时核对晨报实际会读到的每个字段；缺了或类型不对就拒绝整份配置。"""
     if not isinstance(rules, dict):
@@ -161,6 +172,16 @@ def _validate_screening_rules(rules: object) -> dict:
         raise ValueError("配置缺少 evaluation.search（不联网须显式写 null）")
     if evaluation["search"] is not None:
         raise ValueError("evaluation.search 须为 null")
+    contract = _require_str(evaluation, "contract", "evaluation.contract")
+    if contract != EVALUATION_CONTRACT:
+        raise ValueError("evaluation.contract 须为 evaluation-v1")
+    cutoff = _require_hhmm(evaluation, "cutoff", "evaluation.cutoff")
+    if _minutes(cutoff) >= _minutes(schedule["deadline"]):
+        raise ValueError("evaluation.cutoff 须早于 schedule.deadline")
+    _require_min_int(evaluation, "concurrency", "evaluation.concurrency", 1)
+    model_options = _require(evaluation, "modelOptions", "evaluation.modelOptions")
+    if not isinstance(model_options, dict):
+        raise ValueError("evaluation.modelOptions 类型不对")
     package_limits = _require_dict(evaluation, "package", "evaluation.package")
     for key in ("pdfMaxPages", "originalChars", "openingChars", "headingsMax", "mediaChars", "maxMedia", "pdfMaxBytes"):
         _require_min_int(package_limits, key, f"evaluation.package.{key}", 1)
@@ -380,6 +401,36 @@ def _stored_ready(pusher: Pusher, report_id: str, stored: Mapping[str, Any]) -> 
             "push": _push_ready(pusher, report_id, len(entries), stored.get("gap_summary"))}
 
 
+def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window, candidates: list,
+                    config: LoadedConfig, client: DeepSeekClient, clock: Callable[[], datetime],
+                    pdf: Callable[[str], FetchResult]) -> EvaluationRun:
+    """select 之后准备并评估。没有候选时也返回一份空统计。"""
+    settings = config.rules["evaluation"]
+    if not candidates:
+        return evaluate_candidates([], report_id=report_id, db_path=db_path, prepare=lambda _candidate: {},
+                                   client=client, settings=settings, clock=clock)
+    market = TuShareSource((os.environ.get("TUSHARE_TOKEN") or "").strip() or None,
+                           timeout=float(settings["market"]["timeoutSeconds"]), now=clock)
+    pool_view = SimpleNamespace(pool=config.pool, profiles=config.profiles)
+
+    def prepare(candidate: object) -> dict:
+        package = build_package(candidate, trade_date=day, window=window, pool=pool_view, market=market,
+                                filings_store=DbFilingReads(db_path), fetcher=pdf,
+                                settings=settings["package"], clock=clock)
+        package["report"] = {
+            "tradeDate": day.isoformat(),
+            "windowStart": window.start.astimezone(CST).isoformat(timespec="seconds"),
+            "windowEnd": window.end.astimezone(CST).isoformat(timespec="seconds"),
+        }
+        return package
+
+    try:
+        return evaluate_candidates(candidates, report_id=report_id, db_path=db_path, prepare=prepare,
+                                   client=client, settings=settings, clock=clock)
+    finally:
+        market.close()
+
+
 def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, datetime], config: LoadedConfig,
           reason: str, now: datetime, pusher: Pusher) -> dict:
     with db.write(db_path) as conn:
@@ -452,18 +503,19 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     filings_dir = db_path.parent / "filings"
     filings_settings = rules["filings"]
     purge_old_pdfs(filings_dir, cache_days=int(filings_settings["cacheDays"]), now=clock())
+    pdf = fetcher or pdf_fetcher(filings_dir, filings_settings)
     filing_stats: EnrichStats = enrich_filings(
-        messages, store=DbFilingReads(db_path),
-        fetcher=fetcher or pdf_fetcher(filings_dir, filings_settings),
-        settings=filings_settings, clock=clock)
+        messages, store=DbFilingReads(db_path), fetcher=pdf, settings=filings_settings, clock=clock)
     candidates = config.pool.subset({code for m in messages for code in m.companies})
     with db.read(db_path) as conn:
         history = match_history(db.iter_documents(conn, published_from=start - timedelta(days=settings["history"]["lookbackDays"]),
                                                   published_to=start, fetched_by=collected_by, include_end=False),
                                 candidates)
+    client = client_factory(report_id)
     model_started = clock()
-    result: Classification = classify(messages, history, config.pool, config.profiles, client_factory(report_id),
+    result: Classification = classify(messages, history, config.pool, config.profiles, client,
                                       window=window, settings=settings)
+    classified_at = clock()
     if result.fatal:
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=result.fatal, now=clock(), pusher=pusher)
@@ -476,6 +528,11 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=reason, now=clock(), pusher=pusher)
     selection = select(result.by_id, result.results, rules["selection"])
+    evaluation = _run_evaluation(db_path, report_id=report_id, day=day, window=window,
+                                 candidates=selection.candidates, config=config, client=client, clock=clock, pdf=pdf)
+    if evaluation.fatal:
+        return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
+                     reason=evaluation.fatal, now=clock(), pusher=pusher)
     gaps = coverage_gaps(runs, start, end)
     summary = gap_summary(gaps, selection, config.pool)
     usage: dict[str, int] = {}
@@ -485,8 +542,11 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     finished = clock()
     stats = {"contract": CONTRACT, "inWindow": in_window, "duplicates": duplicates, "unmatched": unmatched,
              "messages": len(messages), "history": len(history), "companies": len(result.results),
-             "calls": len(result.batches), "fromReceipt": sum(b.from_receipt for b in result.batches),
-             "modelSeconds": round((finished - model_started).total_seconds(), 1), "usage": usage,
+             "classification": {"calls": len(result.batches),
+                                "fromReceipt": sum(b.from_receipt for b in result.batches),
+                                "usage": usage,
+                                "seconds": round((classified_at - model_started).total_seconds(), 1)},
+             "evaluation": evaluation.stats, "prepareSeconds": evaluation.prepare_seconds,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
              "collectionGaps": gaps, "collection": collection["status"],
              "candidates": len(selection.candidates), "filings": filing_stats.as_dict()}

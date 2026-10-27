@@ -572,7 +572,8 @@ def test_crash_mid_report_resumes_without_rebilling(path):
     model.crash_companies = ()
     result = _run(path, model, apns, at("2026-10-13", "08:05"), config)
     # 已付费的两次读回执；崩溃时在途的那次结果不明，不重发、不换请求重做，震裕科技记为缺口。
-    assert model.hits == before and result["stats"]["fromReceipt"] == 2
+    # 分类回执仍是 2 次；续跑补做评估，剩下的 1 家各调用一次。
+    assert model.hits == before + 1 and result["stats"]["classification"]["fromReceipt"] == 2
     assert result["state"] == "available" and result["entries"] == 1
     assert "震裕科技没能完成判断" in result["gapSummary"]
 

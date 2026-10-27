@@ -293,14 +293,16 @@ def test_resume_freezes_the_request_and_skips_collection(path, monkeypatch, caps
     capsys.readouterr()
     assert cli.main(argv) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert collects == [1] and model.hits == 3
-    assert payload["stats"]["collection"] == "skipped_resume" and payload["stats"]["fromReceipt"] == 2
-    assert sorted(lookups) == sorted(first_lookups) == first
+    assert collects == [1] and model.hits == 5
+    assert payload["stats"]["collection"] == "skipped_resume"
+    assert payload["stats"]["classification"]["fromReceipt"] == 2
+    assert sorted(first_lookups) == first
+    assert set(first) <= set(lookups) and len(lookups) == len(first) + 2
     with db.read(path) as conn:
         stored = db.get_report(conn, "2026-10-13")
         digests = sorted(row[0] for row in conn.execute("SELECT request_sha256 FROM model_receipts"))
     assert stored["started_at"] == started and stored["status"] == "available"
-    assert digests == first
+    assert set(first) < set(digests) and len(digests) == len(first) + 2
     assert "续跑不该看到" not in json.dumps(stored["content"], ensure_ascii=False)
 
 
@@ -460,7 +462,7 @@ def test_cli_morning_round_trip_reads_back_through_api_and_mcp(path, monkeypatch
     monkeypatch.setattr(cli, "DeepSeekClient", Wrapped)
     apns = _patch_sender(monkeypatch)
     assert cli.main(["--db", str(path), "morning", "--now", "2026-10-13T08:02:00+08:00"]) == 0
-    assert collects == [1] and model.hits == 1 and apns.sent == [(TOKEN, "晨报已出", "2 家公司")]
+    assert collects == [1] and model.hits == 3 and apns.sent == [(TOKEN, "晨报已出", "2 家公司")]
     printed = json.loads(capsys.readouterr().out)
     assert printed["state"] == "available" and printed["entries"] == 2
     app = FastAPI()

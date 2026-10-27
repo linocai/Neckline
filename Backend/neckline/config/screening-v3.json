@@ -146,6 +146,19 @@
   },
   "evaluation": {
     "note": "长度参数待 B7 用真实公告实测后定稿",
+    "contract": "evaluation-v1",
+    "cutoff": "09:05",
+    "concurrency": 6,
+    "modelOptions": {
+      "max_tokens": 16384,
+      "thinking": {
+        "type": "enabled"
+      },
+      "reasoning_effort": "high",
+      "response_format": {
+        "type": "json_object"
+      }
+    },
     "search": null,
     "package": {
       "pdfMaxPages": 40,

@@ -562,6 +562,69 @@ def fail_report(conn: sqlite3.Connection, *, report_id: str, trade_date: str, wi
                  (reason, utc(at), report_id))
 
 
+# ------------------------------------------------------------------ 评估
+
+def _evaluation(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["package"] = json.loads(data.pop("package_json"))
+    raw_output = data.pop("output_json")
+    if raw_output is None:
+        data["output"] = None
+    else:
+        try:
+            data["output"] = json.loads(raw_output)
+        except ValueError:
+            data["output"] = raw_output
+    data["usage"] = json.loads(data.pop("usage_json") or "{}")
+    return data
+
+
+def insert_prepared(conn: sqlite3.Connection, *, report_id: str, company: str, contract: str,
+                    package: Mapping, prepared_at: datetime) -> bool:
+    """写入 prepared。同一期同一家已经有行时不覆盖，续跑沿用原来的数据包。"""
+    if len(company) != 6:
+        raise ValueError("公司代码须为六位")
+    cursor = conn.execute(
+        """INSERT INTO evaluations(report_id, company, contract, state, package_json, prepared_at)
+           VALUES (?,?,?,'prepared',?,?)
+           ON CONFLICT(report_id, company) DO NOTHING""",
+        (report_id, company, contract, _dumps(package), utc(prepared_at)))
+    return cursor.rowcount == 1
+
+
+def get_evaluation(conn: sqlite3.Connection, report_id: str, company: str) -> dict | None:
+    row = conn.execute("SELECT * FROM evaluations WHERE report_id=? AND company=?", (report_id, company)).fetchone()
+    return None if row is None else _evaluation(row)
+
+
+def list_evaluations(conn: sqlite3.Connection, report_id: str) -> list[dict]:
+    rows = conn.execute("SELECT * FROM evaluations WHERE report_id=? ORDER BY company", (report_id,)).fetchall()
+    return [_evaluation(row) for row in rows]
+
+
+def settle_evaluation(conn: sqlite3.Connection, *, report_id: str, company: str, state: str, settled_at: datetime,
+                      verdict: str | None = None, output: Any = None, error: str | None = None,
+                      usage: Mapping | None = None, seconds: float | None = None) -> int:
+    """只允许从 prepared 收成 succeeded、invalid 或 gap。返回更新行数。"""
+    if state not in ("succeeded", "invalid", "gap"):
+        raise ValueError("评估状态只能收成 succeeded、invalid 或 gap")
+    if state == "succeeded" and verdict not in ("推", "不推"):
+        raise ValueError("verdict 无效")
+    if state != "succeeded":
+        verdict = None
+    if isinstance(output, str):
+        output_json = output
+    elif output is None:
+        output_json = None
+    else:
+        output_json = _dumps(output)
+    cursor = conn.execute(
+        """UPDATE evaluations SET state=?, verdict=?, output_json=?, error=?, usage_json=?, seconds=?, settled_at=?
+           WHERE report_id=? AND company=? AND state='prepared'""",
+        (state, verdict, output_json, error, _dumps(dict(usage or {})), seconds, utc(settled_at), report_id, company))
+    return cursor.rowcount
+
+
 # ------------------------------------------------------------------ 推送
 
 def upsert_device(conn: sqlite3.Connection, *, token: str, platform: str, at: datetime) -> None:
