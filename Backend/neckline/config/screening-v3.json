@@ -143,5 +143,22 @@
         "type": "json_object"
       }
     }
+  },
+  "evaluation": {
+    "note": "长度参数待 B7 用真实公告实测后定稿",
+    "search": null,
+    "package": {
+      "pdfMaxPages": 40,
+      "originalChars": 12000,
+      "openingChars": 3000,
+      "headingsMax": 60,
+      "mediaChars": 2000,
+      "maxMedia": 5,
+      "pdfMaxBytes": 30000000
+    },
+    "market": {
+      "concurrency": 4,
+      "timeoutSeconds": 20
+    }
   }
 }

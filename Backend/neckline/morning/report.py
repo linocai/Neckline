@@ -155,6 +155,18 @@ def _validate_screening_rules(rules: object) -> dict:
     for key in ("maxBytes", "maxPages", "concurrency", "cacheDays"):
         _require_min_int(filings, key, f"filings.{key}", 1)
     _require_positive_number(filings, "timeoutSeconds", "filings.timeoutSeconds")
+    evaluation = _require_dict(rules, "evaluation", "evaluation")
+    # 不联网必须写明，不能靠缺省。联网接上之前只允许 null。
+    if "search" not in evaluation:
+        raise ValueError("配置缺少 evaluation.search（不联网须显式写 null）")
+    if evaluation["search"] is not None:
+        raise ValueError("evaluation.search 须为 null")
+    package_limits = _require_dict(evaluation, "package", "evaluation.package")
+    for key in ("pdfMaxPages", "originalChars", "openingChars", "headingsMax", "mediaChars", "maxMedia", "pdfMaxBytes"):
+        _require_min_int(package_limits, key, f"evaluation.package.{key}", 1)
+    market_limits = _require_dict(evaluation, "market", "evaluation.market")
+    for key in ("concurrency", "timeoutSeconds"):
+        _require_min_int(market_limits, key, f"evaluation.market.{key}", 1)
     return rules
 
 
