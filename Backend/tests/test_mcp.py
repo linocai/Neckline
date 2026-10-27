@@ -296,6 +296,7 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
     report = _payload(_rpc(test_client, headers, "tools/call", {"name": "get_morning_report", "arguments": {}}, 4))
     assert report["tradeDate"] == "2026-10-16"
     assert report["content"]["entries"][0]["headline"] == "订单落地"
+    assert "importance" not in report["content"]["entries"][0] and "review" not in report["content"]
     document = _payload(_rpc(test_client, headers, "tools/call",
                              {"name": "get_document", "arguments": {"document_id": doc_id}}, 5))
     assert document["text"] == "公告原文写了金额" and document["url"] == "https://example.test/news"
@@ -315,6 +316,7 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
     assert page.headers["referrer-policy"] == "no-referrer"
     latest = test_client.get(f"/read/{READ_KEY}?format=json").json()
     assert latest["brief"] == BRIEF and latest["content"]["entries"][0]["headline"] == "订单落地"
+    assert "订单｜高" not in page.text and "待定" not in page.text
     assert READ_KEY not in json.dumps(latest, ensure_ascii=False)
     missing = test_client.get(f"/read/{READ_KEY}/stock/平安银行")
     assert missing.status_code == 200 and "不在 K10 股票池" in missing.text

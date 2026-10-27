@@ -38,14 +38,14 @@ def _doc(i: int, text: str, *, published: str, seen: str = "2026-10-13T08:01:00+
             "text": text, "excerpt": None, "meta": {"title": title}}
 
 
-def _v2() -> dict:
-    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v2.json"
+def _v3() -> dict:
+    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v3.json"
     return json.loads(path.read_text(encoding="utf-8"))["selection"]
 
 
 def _event(company: str, ids: list[str], **fields) -> Event:
     base = dict(relation="主体", type="业绩预增", direction="利好", first_disclosed=None, fresh="新",
-                importance="中", headline="h", reason="r", channel="公司公告", amount_yuan=None)
+                headline="h", reason="r", channel="公司公告", amount_yuan=None)
     base.update(fields)
     return Event(company=company, ids=ids, **base)
 
@@ -208,9 +208,32 @@ def test_parse_batch_rejects_bad_channel_and_amount():
 
 def test_system_prompt_lists_every_event_type():
     prompt = system_prompt()
-    assert CONTRACT == "screening-classify-v3"
+    assert CONTRACT == "screening-classify-v4"
+    assert "importance" not in prompt and "重要程度" not in prompt
     assert all(name in prompt for name in EVENT_TYPES)
     assert "首次" in prompt and "业绩落地" in prompt and "互动平台" in prompt and "amountYuan" in prompt
+    for phrase in (
+        "必须看得到净利润同比增长或扭亏的数字",
+        "看不到数字用业绩不明",
+        "读数显示亏损、净利下降用业绩下滑",
+        "只算首次披露的协议转让",
+        "完成过户、补充协议用交易进展",
+        "解除一致行动、表决权委托到期",
+        "只算首次筹划或首次公告",
+        "完成过户、实施情况、补充协议用交易进展",
+        "不含诉讼胜诉或诉讼进展收到的款项",
+        "定期报告披露提示性公告",
+        "完成过户、补充协议、诉讼进展及其收到的款项",
+        "广和通重大资产购买之标的资产完成过户",
+        "工大科雅股东协议转让完成过户",
+        "兆日科技控股股东签股份转让补充协议",
+        "昊志机电签署招商引资合同的补充协议",
+        "永福股份诉讼进展暨收到款项",
+        "汉嘉数智控股股东部分股份协议转让完成过户",
+        "舒泰神股东解除一致行动关系并权益变动",
+        "「XX：2026年三季度报告」只有标题",
+    ):
+        assert phrase in prompt, phrase
     body = prompt.split("只能从下列种类里选一个。\n", 1)[1].split("\n- firstDisclosed：", 1)[0]
     groups = body.strip().split("\n\n")
     assert len(groups) == len(PROMPT_GROUPS)
@@ -219,19 +242,26 @@ def test_system_prompt_lists_every_event_type():
         assert bullets == list(names)
 
 
-def test_select_collapses_company_and_leaves_review_empty():
-    by_id = {"m1": _message(1, 16), "m2": _message(2, 18), "m3": _message(3, 17)}
-    results = {"300953.SZ": CompanyResult("300953.SZ", ["m1", "m2", "m3"], events=[
-        _event("300953.SZ", ["m2"], importance="低", type="分红"),
-        _event("300953.SZ", ["m1", "m3"], importance="高")], mentions=[])}
-    result = select(by_id, results, _v2())
-    main = result.sections["main"]
-    assert len(main) == 1 and main[0].primary.importance == "高" and [o.type for o in main[0].others] == ["分红"]
-    assert [m.document_id for m in main[0].messages] == ["doc_1", "doc_3"]
-    assert [len(result.sections[n]) for n in ("review_types", "review_relation", "review_fresh", "held_old")] == [0, 0, 0, 0]
+def test_select_keeps_the_earliest_event_and_orders_by_first_public_time():
+    by_id = {"m1": _message(1, 16), "m2": _message(2, 18), "m3": _message(3, 17),
+             "m4": _message(4, 16), "m5": _message(5, 17)}
+    by_id["m4"].document_id = "doc_4"
+    results = {
+        "300953.SZ": CompanyResult("300953.SZ", ["m1", "m2", "m3"], events=[
+            _event("300953.SZ", ["m2"], type="分红"),
+            _event("300953.SZ", ["m1", "m3"])], mentions=[]),
+        "300082.SZ": CompanyResult("300082.SZ", ["m4"], events=[_event("300082.SZ", ["m4"], type="订单中标")], mentions=[]),
+        "300001.SZ": CompanyResult("300001.SZ", ["m5"], events=[_event("300001.SZ", ["m5"], type="回购增持")], mentions=[]),
+    }
+    result = select(by_id, results, _v3())
+    assert [entry.company for entry in result.candidates] == ["300082.SZ", "300953.SZ", "300001.SZ"]
+    primary = result.candidates[1]
+    assert primary.primary.type == "业绩预增" and [other.type for other in primary.others] == ["分红"]
+    assert [message.document_id for message in primary.messages] == ["doc_1", "doc_3"]
+    assert not hasattr(result, "sections") and not hasattr(result, "main")
 
 
-def test_v2_routes_examples_the_user_judged():
+def test_v3_routes_examples_the_user_judged():
     specs = [
         ("300001.SZ", {}, "300001.SZ"),
         ("300002.SZ", dict(type="业绩落地"), None),
@@ -258,9 +288,8 @@ def test_v2_routes_examples_the_user_judged():
     results = {code: CompanyResult(code, [f"m{i}"], events=[_event(code, [f"m{i}"], **fields)], mentions=[])
                for i, (code, fields, _) in enumerate(specs)}
     results["300017.SZ"] = CompanyResult("300017.SZ", ["gap"], error="输出里没有这家公司")
-    result = select(by_id, results, _v2())
-    assert [e.company for e in result.main] == [code for code, _, keep in specs if keep]
-    assert [len(result.sections[n]) for n in ("review_types", "review_relation", "review_fresh", "held_old")] == [0, 0, 0, 0]
+    result = select(by_id, results, _v3())
+    assert [e.company for e in result.candidates] == [code for code, _, keep in specs if keep]
     assert result.reasons["种类不收：业绩落地"] == 1
     assert result.reasons["种类不收：临床进展"] == 1
     assert result.reasons["种类不收：产品发布"] == 1
@@ -275,19 +304,24 @@ def test_v2_routes_examples_the_user_judged():
     assert [g.company for g in result.gaps] == ["300017.SZ"]
 
 
-def test_select_applies_threshold_and_cap():
-    by_id = {"m1": _message(1, 16), "m2": _message(2, 17), "m3": _message(3, 18)}
-    results = {code: CompanyResult(code, [mid], events=[_event(code, [mid], importance=level)], mentions=[])
-               for code, mid, level in (("300001.SZ", "m1", "低"), ("300002.SZ", "m2", "中"), ("300003.SZ", "m3", "高"))}
-    rules = _v2()
+def test_select_rejects_importance_and_keeps_every_candidate():
+    by_id = {"m1": _message(1, 18), "m2": _message(2, 16), "m3": _message(3, 17)}
+    results = {code: CompanyResult(code, [mid], events=[_event(code, [mid])], mentions=[])
+               for code, mid in (("300001.SZ", "m1"), ("300002.SZ", "m2"), ("300003.SZ", "m3"))}
+    chosen = select(by_id, results, _v3())
+    assert [entry.company for entry in chosen.candidates] == ["300002.SZ", "300003.SZ", "300001.SZ"]
+    rules = _v3()
     rules["importanceMinimum"] = "中"
+    with pytest.raises(ValueError, match="importanceMinimum"):
+        select(by_id, results, rules)
+    rules = _v3()
     rules["maxItems"] = 1
-    capped = select(by_id, results, rules)
-    assert [e.primary.importance for e in capped.main] == ["高"]
+    with pytest.raises(ValueError, match="maxItems"):
+        select(by_id, results, rules)
 
 
 def _broken(mutate) -> dict:
-    rules = _v2()
+    rules = _v3()
     mutate(rules)
     return rules
 
@@ -301,7 +335,7 @@ def _broken(mutate) -> dict:
     (_broken(lambda r: r["channels"].__setitem__("exclude", ["微博"])), "channels"),
     (_broken(lambda r: r["channels"]["requireAmount"].append("互动平台")), "同一渠道"),
     (_broken(lambda r: r["minimumAmountYuan"].__setitem__("没这个", 1)), "未知事件类型"),
-    (_broken(lambda r: r.__delitem__("maxItems")), "maxItems"),
+    (_broken(lambda r: r.__setitem__("maxItems", 1)), "maxItems"),
     (_broken(lambda r: r.__setitem__("importanceMinimum", "极高")), "importanceMinimum"),
 ])
 def test_validate_rules_rejects_incomplete_config(rules, message):
@@ -309,15 +343,38 @@ def test_validate_rules_rejects_incomplete_config(rules, message):
         validate_rules(rules)
 
 
-def test_v2_config_groups_match_the_prompt_and_cover_every_kind():
-    rules = _v2()
+def test_v3_config_groups_match_the_prompt_and_cover_every_kind():
+    rules = _v3()
     validate_rules(rules)
     assert [set(names) for _, names in PROMPT_GROUPS] == [set(rules["kinds"][key]) for key in ("include", "judge", "exclude")]
     assert rules["relation"]["include"] == ["主体"] and rules["freshness"]["include"] == ["新"]
     assert rules["direction"]["include"] == ["利好"]
     assert rules["channels"]["exclude"] == ["互动平台"] and rules["channels"]["requireAmount"] == ["第三方综述"]
     assert rules["minimumAmountYuan"] == {"订单中标": 10000000}
-    assert rules["importanceMinimum"] is None and rules["maxItems"] is None
+    assert "importanceMinimum" not in rules and "maxItems" not in rules
+    assert "交易进展" in rules["kinds"]["exclude"] and "业绩不明" in rules["kinds"]["exclude"]
+
+
+def test_v3_config_requires_filings_and_rejects_leftover_importance(tmp_path):
+    config = load_config()
+    assert config.rules["configVersion"] == "screening-v3"
+    assert config.rules["classification"]["contract"] == CONTRACT
+    assert config.rules["filings"] == {"maxBytes": 20000000, "maxPages": 6, "concurrency": 4,
+                                       "timeoutSeconds": 20, "cacheDays": 3}
+    path = tmp_path / "rules.json"
+
+    def rejected(mutate, message):
+        rules = json.loads(json.dumps(config.rules))
+        mutate(rules)
+        path.write_text(json.dumps(rules), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            load_config(path=path)
+
+    rejected(lambda rules: rules.pop("filings"), "filings")
+    rejected(lambda rules: rules["filings"].__setitem__("maxPages", 0), "filings.maxPages")
+    rejected(lambda rules: rules["filings"].__setitem__("timeoutSeconds", 0), "filings.timeoutSeconds")
+    rejected(lambda rules: rules["selection"].__setitem__("importanceMinimum", None), "importanceMinimum")
+    rejected(lambda rules: rules["selection"].__setitem__("maxItems", None), "maxItems")
 
 
 def test_identical_request_is_billed_once(tmp_path):
@@ -343,25 +400,25 @@ def test_identical_request_is_billed_once(tmp_path):
         offline.complete(prompt, {"max_tokens": 11})
 
 
-def test_report_v2_keeps_review_keys_empty():
+def test_report_content_has_candidates_without_importance_or_review():
     config = load_config()
-    assert config.rules["configVersion"] == "screening-v2"
+    assert config.rules["configVersion"] == "screening-v3"
     assert config.rules["classification"]["contract"] == CONTRACT
     pool = CompanyPool([Company("300001.SZ", "甲公司", ("甲公司",))])
     by_id = {"m1": _message(1, 16)}
-    results = {"300001.SZ": CompanyResult("300001.SZ", ["m1"], events=[_event("300001.SZ", ["m1"])], mentions=[])}
+    results = {"300001.SZ": CompanyResult("300001.SZ", ["m1"], events=[
+        _event("300001.SZ", ["m1"]), _event("300001.SZ", ["m1"], type="分红", headline="分红")], mentions=[])}
     selection = select(by_id, results, config.rules["selection"])
     content = build_content(report_id="morning-2026-10-13", day=date(2026, 10, 13), window=WINDOW,
                             selection=selection, pool=pool, config_version=config.rules["configVersion"],
                             gap=None, generated_at=WINDOW.collected_by, stats={})
-    assert content["configVersion"] == "screening-v2"
-    assert list(content["review"]) == ["types", "relation", "fresh", "old"]
-    assert all(content["review"][name] == [] for name in content["review"])
+    assert content["configVersion"] == "screening-v3" and "review" not in content
     entry = content["entries"][0]
-    assert set(entry) == {"rank", "companyCode", "companyName", "type", "importance", "relation", "fresh",
+    assert set(entry) == {"rank", "companyCode", "companyName", "type", "relation", "fresh",
                           "headline", "reason", "firstDisclosed", "sources", "others"}
     assert set(entry["sources"][0]) == {"documentId", "sourceLabel", "publishedAt", "title", "url"}
-    assert entry["importance"] == "中"
+    assert entry["others"] == [{"headline": "分红", "type": "分红"}]
+    assert "importance" not in json.dumps(content, ensure_ascii=False)
 
 
 def test_digest_source_title_uses_the_company_section():
@@ -390,15 +447,14 @@ def test_digest_source_title_uses_the_company_section():
                     {"300953.SZ": ["震裕科技"], "300082.SZ": ["奥克股份"]})
     bracket = _source(4, "专栏｜两家公司", "【捷成股份：与吉视传媒战略合作AI微短剧】\n正文\n【中青宝：3款游戏获版号】\n正文",
                       {"300182.SZ": ["捷成股份"], "300052.SZ": ["中青宝"]})
-    selection = Selection(sections={
-        "main": [Entry(company="300683.SZ", primary=_event("300683.SZ", ["m1"]), messages=[flash, digest]),
-                 Entry(company="300901.SZ", primary=_event("300901.SZ", ["m1"]), messages=[digest]),
-                 Entry(company="300953.SZ", primary=_event("300953.SZ", ["m1"]), messages=[plain]),
-                 Entry(company="300182.SZ", primary=_event("300182.SZ", ["m1"]), messages=[bracket])],
-        "review_types": [], "review_relation": [], "review_fresh": [], "held_old": [],
-    }, reasons={}, gaps=[])
+    selection = Selection(candidates=[
+        Entry(company="300683.SZ", primary=_event("300683.SZ", ["m1"]), messages=[flash, digest]),
+        Entry(company="300901.SZ", primary=_event("300901.SZ", ["m1"]), messages=[digest]),
+        Entry(company="300953.SZ", primary=_event("300953.SZ", ["m1"]), messages=[plain]),
+        Entry(company="300182.SZ", primary=_event("300182.SZ", ["m1"]), messages=[bracket]),
+    ], reasons={}, gaps=[])
     content = build_content(report_id="morning-2026-10-14", day=date(2026, 10, 14), window=WINDOW,
-                            selection=selection, pool=pool, config_version="screening-v2", gap=None,
+                            selection=selection, pool=pool, config_version="screening-v3", gap=None,
                             generated_at=WINDOW.collected_by, stats={})
     by_name = {entry["companyName"]: entry for entry in content["entries"]}
     assert by_name["海特生物"]["sources"][0]["title"] == flash.title
@@ -419,12 +475,11 @@ def test_digest_title_when_only_one_pool_company_is_named():
         "海特生物公告，公司与Visara签署协议。",
     ]), {"300683.SZ": ["海特生物"]})
     single = _source(2, "海特生物：签署授权协议", "海特生物公告首付款。", {"300683.SZ": ["海特生物"]})
-    selection = Selection(sections={
-        "main": [Entry(company="300683.SZ", primary=_event("300683.SZ", ["m1"]), messages=[digest, single])],
-        "review_types": [], "review_relation": [], "review_fresh": [], "held_old": [],
-    }, reasons={}, gaps=[])
+    selection = Selection(candidates=[
+        Entry(company="300683.SZ", primary=_event("300683.SZ", ["m1"]), messages=[digest, single]),
+    ], reasons={}, gaps=[])
     content = build_content(report_id="morning-2026-10-14", day=date(2026, 10, 14), window=WINDOW,
-                            selection=selection, pool=pool, config_version="screening-v2", gap=None,
+                            selection=selection, pool=pool, config_version="screening-v3", gap=None,
                             generated_at=WINDOW.collected_by, stats={})
     titles = [source["title"] for source in content["entries"][0]["sources"]]
     assert titles == ["海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议", single.title]
@@ -481,7 +536,7 @@ def test_compare_verdicts_script_on_fake_replay(tmp_path):
     verdict_path = tmp_path / "verdicts.json"
     verdict_path.write_text(json.dumps(verdicts, ensure_ascii=False), encoding="utf-8")
     script = Path(__file__).resolve().parents[1] / "scripts" / "compare_verdicts.py"
-    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v2.json"
+    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v3.json"
     completed = subprocess.run([sys.executable, str(script), "--replay", str(tmp_path), "--verdicts", str(verdict_path),
                                 "--config", str(config)], check=False, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr

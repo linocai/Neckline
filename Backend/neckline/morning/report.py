@@ -17,8 +17,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from neckline.filings.fetch import FetchResult
 from neckline.screening.classify import CONTRACT, Classification, classify
 from neckline.screening.deepseek import DeepSeekClient
+from neckline.screening.enrich import DbFilingReads, EnrichStats, enrich_filings, pdf_fetcher, purge_old_pdfs
 from neckline.screening.pool import CompanyPool
 from neckline.screening.prefilter import Message, Window, match_history, prefilter_window
 from neckline.screening.select import Entry, Selection, select, validate_rules
@@ -149,12 +151,16 @@ def _validate_screening_rules(rules: object) -> dict:
     options = _require(classification, "modelOptions", "classification.modelOptions")
     if not isinstance(options, dict):
         raise ValueError("classification.modelOptions 类型不对")
+    filings = _require_dict(rules, "filings", "filings")
+    for key in ("maxBytes", "maxPages", "concurrency", "cacheDays"):
+        _require_min_int(filings, key, f"filings.{key}", 1)
+    _require_positive_number(filings, "timeoutSeconds", "filings.timeoutSeconds")
     return rules
 
 
-def load_config(name: str = "screening-v2.json") -> LoadedConfig:
+def load_config(name: str = "screening-v3.json", *, path: Path | None = None) -> LoadedConfig:
     package = resources.files("neckline.config")
-    raw = (package / name).read_bytes()
+    raw = path.read_bytes() if path is not None else (package / name).read_bytes()
     rules = _validate_screening_rules(json.loads(raw))
     pool_raw = (package / rules["companyPool"]["file"]).read_bytes()
     if hashlib.sha256(pool_raw).hexdigest() != rules["companyPool"]["sha256"]:
@@ -277,26 +283,22 @@ def _entry(rank: int, e: Entry, pool: CompanyPool) -> dict:
     company, ev = pool.companies[e.company], e.primary
     return {
         "rank": rank, "companyCode": company.short_code, "companyName": company.name, "type": ev.type,
-        "importance": ev.importance, "relation": ev.relation, "fresh": ev.fresh, "headline": ev.headline,
+        "relation": ev.relation, "fresh": ev.fresh, "headline": ev.headline,
         "reason": ev.reason, "firstDisclosed": ev.first_disclosed,
         "sources": [{"documentId": f"{m.document_id}@{m.revision}", "sourceLabel": m.source_label,
                      "publishedAt": _cst(m.published_at), "title": source_title(m, e.company, pool), "url": m.url}
                     for m in e.messages],
-        "others": [{"headline": o.headline, "type": o.type, "importance": o.importance} for o in e.others],
+        "others": [{"headline": o.headline, "type": o.type} for o in e.others],
     }
 
 
 def build_content(*, report_id: str, day: date, window: Window, selection: Selection, pool: CompanyPool,
                   config_version: str, gap: str | None, generated_at: datetime, stats: Mapping[str, Any]) -> dict:
-    sections = selection.sections
     return {
         "reportId": report_id, "tradeDate": day.isoformat(), "kind": "morning",
         "window": {"start": _cst(window.start), "end": _cst(window.end)}, "generatedAt": _cst(generated_at),
         "configVersion": config_version, "gapSummary": gap,
-        "entries": [_entry(i, e, pool) for i, e in enumerate(sections["main"], 1)],
-        "review": {name: [_entry(i, e, pool) for i, e in enumerate(sections[key], 1)]
-                   for name, key in (("types", "review_types"), ("relation", "review_relation"),
-                                     ("fresh", "review_fresh"), ("old", "held_old"))},
+        "entries": [_entry(i, e, pool) for i, e in enumerate(selection.candidates, 1)],
         "stats": dict(stats),
     }
 
@@ -384,7 +386,8 @@ def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, d
 
 def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector: Callable[[datetime], dict],
                 client_factory: Callable[[str], DeepSeekClient], pusher: Pusher,
-                clock: Callable[[], datetime]) -> dict:
+                clock: Callable[[], datetime],
+                fetcher: Callable[[str], FetchResult] | None = None) -> dict:
     """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。
 
     先看当天报告：已有 running 就是续跑，不再采集，消息边界用首次写入的 started_at。
@@ -434,6 +437,13 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
         runs = db.collections_since(conn, start - timedelta(days=3))
     messages, in_window, duplicates, unmatched = prefilter_window(docs, config.pool)
     del docs
+    filings_dir = db_path.parent / "filings"
+    filings_settings = rules["filings"]
+    purge_old_pdfs(filings_dir, cache_days=int(filings_settings["cacheDays"]), now=clock())
+    filing_stats: EnrichStats = enrich_filings(
+        messages, store=DbFilingReads(db_path),
+        fetcher=fetcher or pdf_fetcher(filings_dir, filings_settings),
+        settings=filings_settings, clock=clock)
     candidates = config.pool.subset({code for m in messages for code in m.companies})
     with db.read(db_path) as conn:
         history = match_history(db.iter_documents(conn, published_from=start - timedelta(days=settings["history"]["lookbackDays"]),
@@ -467,7 +477,7 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
              "modelSeconds": round((finished - model_started).total_seconds(), 1), "usage": usage,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
              "collectionGaps": gaps, "collection": collection["status"],
-             **{name: len(entries) for name, entries in selection.sections.items()}}
+             "candidates": len(selection.candidates), "filings": filing_stats.as_dict()}
     if finished > deadline(day, schedule):
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=f"{schedule['deadline']} 前没能出报", now=finished, pusher=pusher)

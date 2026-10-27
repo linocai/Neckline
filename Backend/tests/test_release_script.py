@@ -951,7 +951,8 @@ def test_a_manifest_without_schema_version_means_one():
 
 @pytest.mark.parametrize("db_version,target_schema,action", [
     (1, None, "none"), (1, 2, "upgrade"), (2, None, "downgrade"),
-    (1, 3, "upgrade"), (2, 3, "upgrade"), (3, 2, "downgrade"), (3, None, "downgrade")])
+    (1, 3, "upgrade"), (2, 3, "upgrade"), (3, 2, "downgrade"), (3, None, "downgrade"),
+    (3, 4, "upgrade"), (4, 3, "downgrade"), (4, 2, "downgrade"), (4, None, "downgrade")])
 def test_check_only_reports_the_schema_plan_and_changes_nothing(tmp_path, monkeypatch, db_version, target_schema, action):
     monkeypatch.setattr(release, "unit_state", lambda unit: {"active": "inactive", "enabled": "disabled"})
     monkeypatch.setattr(release.shutil, "which", lambda name: f"/usr/sbin/{name}")
@@ -982,7 +983,7 @@ def _real_migration(args):
     assert args[1:4] == ("-u", "neckline", "--"), args
     assert args[4] == str(release.ROOT / ".venv/bin/python"), args
     assert args[5:] == ("-m", "neckline.morning.cli", "--db", str(release.V4_DB), "init-db"), args
-    assert morning_db.SCHEMA_VERSION == 3, "库结构版本变了：更新发布脚本的升级测试"
+    assert morning_db.SCHEMA_VERSION == 4, "库结构版本变了：更新发布脚本的升级测试"
     morning_db.init_schema(release.V4_DB)
 
 
@@ -1082,19 +1083,20 @@ def _command_failure(code=1, stderr="boom"):
     return migrate
 
 
-def test_upgrade_moves_a_v1_database_to_v3_after_the_new_files_are_in_place(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3)
+def test_upgrade_moves_a_v1_database_to_v4_after_the_new_files_are_in_place(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4)
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
-    assert result["switched"] is True and result["schema"] == {"before": 1, "target": 3, "action": "upgrade"}
+    assert result["switched"] is True and result["schema"] == {"before": 1, "target": 4, "action": "upgrade"}
     facts = _db_facts(driven.db)
-    assert facts["version"] == 3 and _KX_TABLES <= facts["tables"]
+    assert facts["version"] == 4 and _KX_TABLES <= facts["tables"]
+    assert {"filing_reads", "evaluations"} <= facts["tables"]
     assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
     # 停服 → 恢复点 → 换文件 → 迁移 → 恢复单元；迁移不早于文件就位，也不晚于单元恢复。
     assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "start"]
     assert driven.cwds == [driven.root]  # init-db 的工作目录是 /opt/neckline，和服务单元一致
     state = _switch_state(driven.root)
     assert (state["schemaBefore"], state["schemaTarget"], state["schemaAction"], state["schemaAfter"]) == (
-        1, 3, "upgrade", 3)
+        1, 4, "upgrade", 4)
     assert "schemaRollback" not in state and state["switched"] is True
     assert json.loads((driven.root / "release-manifest.json").read_text())["releaseSet"] == _TARGET
     # 恢复点是迁移之前做的：里面还是 v1。
@@ -1106,7 +1108,7 @@ def test_upgrade_moves_a_v1_database_to_v3_after_the_new_files_are_in_place(tmp_
 
 
 def test_upgrade_whose_readiness_check_fails_rolls_back_to_v1_and_keeps_the_data(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3, health_after={"mcp": False})
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4, health_after={"mcp": False})
     with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
         release.switch(release=_TARGET, previous=_PREVIOUS)
     # 回滚：停服 → 还原文件 → 库版本回 1 → 恢复单元，旧版本就绪检查（要求 db 为 ready）才过得去。
@@ -1119,8 +1121,8 @@ def test_upgrade_whose_readiness_check_fails_rolls_back_to_v1_and_keeps_the_data
     assert json.loads((driven.root / "release-manifest.json").read_text())["releaseSet"] == _PREVIOUS
     state = _switch_state(driven.root)
     assert state["rollback"] == {"status": "rolled_back", "release": _PREVIOUS}
-    assert state["schemaBefore"] == 1 and state["schemaAfter"] == 3
-    assert state["schemaRollback"] == {"status": "restored", "from": 3, "version": 1}
+    assert state["schemaBefore"] == 1 and state["schemaAfter"] == 4
+    assert state["schemaRollback"] == {"status": "restored", "from": 4, "version": 1}
     assert state["unitsAfter"] == state["unitsBefore"]
 
 
@@ -1149,7 +1151,7 @@ def test_migration_that_took_effect_before_reporting_failure_is_put_back_to_v1(t
     with pytest.raises(RuntimeError, match="库升级命令失败"):
         release.switch(release=_TARGET, previous=_PREVIOUS)
     assert _db_facts(driven.db)["version"] == 1
-    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 3, "version": 1}
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 4, "version": 1}
     assert _flow(driven.calls)[-4:] == ["write_runtime", "db-set:1", "unmask", "start"]
 
 
@@ -1229,25 +1231,26 @@ def test_downgrade_followed_by_a_failed_readiness_check_restores_the_original_ve
 
 
 def test_the_additive_downgrade_allow_list_is_exactly_the_documented_set():
-    # v2 加三张表、v3 只给 kx_pool 加三列：旧代码都按列名读写，降级只改 user_version
-    assert release.ADDITIVE_DOWNGRADES == {(2, 1), (3, 2), (3, 1)}
+    # v2 加三张表、v3 只给 kx_pool 加三列、v4 只加两张表：旧代码都按列名读写，降级只改 user_version
+    assert release.ADDITIVE_DOWNGRADES == {(2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1)}
 
 
-def test_upgrade_moves_a_v2_database_to_v3_and_keeps_every_kx_row(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=3, previous_schema=2,
+def test_upgrade_moves_a_v2_database_to_v4_and_keeps_every_kx_row(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=4, previous_schema=2,
                            previous_kx=True, target_kx=True)
     assert "theme" not in _kx_pool_facts(driven.db)["columns"]
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
-    assert result["switched"] is True and result["schema"] == {"before": 2, "target": 3, "action": "upgrade"}
+    assert result["switched"] is True and result["schema"] == {"before": 2, "target": 4, "action": "upgrade"}
     facts, kx = _db_facts(driven.db), _kx_pool_facts(driven.db)
-    assert facts["version"] == 3 and _KX_TABLES <= facts["tables"]
+    assert facts["version"] == 4 and _KX_TABLES <= facts["tables"]
+    assert {"filing_reads", "evaluations"} <= facts["tables"]
     assert kx["columns"][-3:] == ["theme", "first_seen", "buyable"]
     assert kx["rows"] == [("600000", "浦发银行", "银行", "kx-20261017-001")]
     assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
     assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "start"]
     state = _switch_state(driven.root)
     assert (state["schemaBefore"], state["schemaTarget"], state["schemaAction"], state["schemaAfter"]) == (
-        2, 3, "upgrade", 3)
+        2, 4, "upgrade", 4)
     archive = driven.root / "releases" / _TARGET / "recovery/v4-pre-switch.db.gz"
     restored = tmp_path / "recovery-check.db"  # 恢复点是迁移之前做的：里面还是 v2 的结构
     with gzip.open(archive, "rb") as packed, restored.open("wb") as raw:
@@ -1255,8 +1258,8 @@ def test_upgrade_moves_a_v2_database_to_v3_and_keeps_every_kx_row(tmp_path, monk
     assert _db_facts(restored)["version"] == 2 and "theme" not in _kx_pool_facts(restored)["columns"]
 
 
-def test_failed_readiness_after_a_v2_to_v3_upgrade_puts_the_version_back_and_keeps_the_new_columns(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=3, previous_schema=2,
+def test_failed_readiness_after_a_v2_to_v4_upgrade_puts_the_version_back_and_keeps_the_new_columns(tmp_path, monkeypatch):
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=2, target_schema=4, previous_schema=2,
                            previous_kx=True, target_kx=True, health_after={"mcp": False})
     with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
         release.switch(release=_TARGET, previous=_PREVIOUS)
@@ -1265,7 +1268,7 @@ def test_failed_readiness_after_a_v2_to_v3_upgrade_puts_the_version_back_and_kee
     assert _db_facts(driven.db)["version"] == 2  # 旧代码的就绪检查要求 user_version 是 2
     kx = _kx_pool_facts(driven.db)
     assert kx["columns"][-3:] == ["theme", "first_seen", "buyable"] and len(kx["rows"]) == 1  # 列与数据都留着
-    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 3, "version": 2}
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 4, "version": 2}
     release.verify_runtime(driven.root, driven.old)
 
 
@@ -1331,17 +1334,17 @@ def test_v3_downgrade_followed_by_a_failed_readiness_check_restores_version_thre
 
 
 def test_downgrade_outside_the_allow_list_aborts_before_the_mask(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=4, target_schema=None, previous_schema=4, real_db=False)
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=5, target_schema=None, previous_schema=5, real_db=False)
     for check_only in (False, True):
         _allow_root_check_once(monkeypatch)
-        with pytest.raises(RuntimeError, match="不支持库结构 4→1 的降级"):
+        with pytest.raises(RuntimeError, match="不支持库结构 5→1 的降级"):
             release.switch(release=_TARGET, previous=_PREVIOUS, check_only=check_only)
     assert _flow(driven.calls) == [] and not {"mask", "unmask", "stop", "start"} & set(_actions(driven.calls))
     assert not (driven.root / "releases" / _TARGET / "switch-state.json").exists()
     assert not (driven.root / "releases" / _TARGET / "recovery").exists()
     assert (driven.root / "neckline/api/app.py").read_bytes() == b"b112"
     with closing(sqlite3.connect(driven.db)) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 5
         assert con.execute("SELECT count(*) FROM reports").fetchone()[0] == 1
 
 
@@ -1361,7 +1364,7 @@ def test_upgrade_without_runuser_aborts_before_the_mask(tmp_path, monkeypatch):
 
 
 def test_rollback_that_cannot_restore_the_version_keeps_the_mask_and_records_the_scene(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3, health_after={"mcp": False})
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4, health_after={"mcp": False})
     original = release.set_schema_version
 
     def flaky(version):
@@ -1381,28 +1384,28 @@ def test_rollback_that_cannot_restore_the_version_keeps_the_mask_and_records_the
     assert "neckline.service" not in driven.active
     state = _switch_state(driven.root)
     assert state["rollback"]["status"] == "failed" and state["rollback"]["failedStep"] == "恢复库结构版本"
-    assert state["rollback"]["masked"] is True and state["rollback"]["schemaNow"] == 3
+    assert state["rollback"]["masked"] is True and state["rollback"]["schemaNow"] == 4
     assert state["rollback"]["fileState"] == "old"
     assert state["schemaBefore"] == 1 and state["schemaRollback"]["status"] == "failed"
     assert "disk I/O error" in state["schemaRollback"]["error"]
-    facts = _db_facts(driven.db)  # 没丢任何东西：版本留在 2，表和数据都在
-    assert facts["version"] == 3 and _KX_TABLES <= facts["tables"]
+    facts = _db_facts(driven.db)  # 没丢任何东西：版本留在 4，表和数据都在
+    assert facts["version"] == 4 and _KX_TABLES <= facts["tables"]
     assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
 
 
 def test_restore_refuses_a_version_it_cannot_explain(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=4, target_schema=None, previous_schema=4, real_db=False)
-    upgraded = release.SchemaPlan(1, 2, "upgrade")  # 升级过：现值 4 不在白名单里，不能凭空降回 1
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=5, target_schema=None, previous_schema=5, real_db=False)
+    upgraded = release.SchemaPlan(1, 2, "upgrade")  # 升级过：现值 5 不在白名单里，不能凭空降回 1
     with pytest.raises(RuntimeError, match="无法安全恢复到 1"):
         release.restore_schema(upgraded)
     downgraded = release.SchemaPlan(2, 1, "downgrade")  # 降级过：现值必须正是降级目标
     with pytest.raises(RuntimeError, match="不是降级目标 1"):
         release.restore_schema(downgraded)
-    assert _db_facts(driven.db)["version"] == 4 and not [s for s in _flow(driven.calls) if s.startswith("db-set")]
+    assert _db_facts(driven.db)["version"] == 5 and not [s for s in _flow(driven.calls) if s.startswith("db-set")]
 
 
 def test_unmask_failure_after_an_upgrade_still_restores_the_version_and_keeps_the_mask(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3)
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4)
     real_run = release.run
 
     def run_with_failing_unmask(*args, check=True, cwd=None):
@@ -1421,12 +1424,12 @@ def test_unmask_failure_after_an_upgrade_still_restores_the_version_and_keeps_th
     state = _switch_state(driven.root)
     assert state["rollback"]["failedStep"] == "取消 mask" and state["rollback"]["masked"] is True
     assert state["rollback"]["fileState"] == "old" and state["rollback"]["schemaNow"] == 1
-    assert state["schemaRollback"] == {"status": "restored", "from": 3, "version": 1}
+    assert state["schemaRollback"] == {"status": "restored", "from": 4, "version": 1}
     release.verify_runtime(driven.root, driven.old)
 
 
 def test_upgrade_that_changes_the_database_ownership_is_rolled_back(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3)
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4)
     original = release.assert_ownership
     state = {"raised": False}
 
@@ -1440,7 +1443,7 @@ def test_upgrade_that_changes_the_database_ownership_is_rolled_back(tmp_path, mo
     with pytest.raises(RuntimeError, match="V4 晨报库属主或权限异常"):
         release.switch(release=_TARGET, previous=_PREVIOUS)
     assert state["raised"] and _db_facts(driven.db)["version"] == 1
-    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 3, "version": 1}
+    assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 4, "version": 1}
     release.verify_runtime(driven.root, driven.old)
 
 
@@ -1655,7 +1658,7 @@ def test_sidecars_that_stay_wrong_during_the_rollback_keep_the_mask_for_manual_r
 # ------------------------------------------------------------------ unmask 已生效后的恢复
 
 def test_unmask_that_took_effect_then_a_failed_version_restore_ends_masked(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3)
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4)
     driven.masking.fail_after.add("unmask")  # unmask 生效后才报错
     original = release.set_schema_version
 
@@ -1674,12 +1677,12 @@ def test_unmask_that_took_effect_then_a_failed_version_restore_ends_masked(tmp_p
     assert driven.masking.on is True and release._mask_state() is True and not driven.active
     state = _switch_state(driven.root)
     assert state["rollback"]["failedStep"] == "恢复库结构版本" and state["rollback"]["masked"] is True
-    assert state["rollback"]["schemaNow"] == 3 and state["rollback"]["fileState"] == "old"
+    assert state["rollback"]["schemaNow"] == 4 and state["rollback"]["fileState"] == "old"
     assert "CalledProcessError" in state["failure"] and "unmask" in state["failure"]  # 记下的是最初的 unmask 故障
 
 
 def test_unmask_that_took_effect_then_a_failed_remask_leaves_files_and_database_alone(tmp_path, monkeypatch):
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3)
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4)
     driven.masking.fail_after.add("unmask")
     real_run = release.run
     masks = {"n": 0}
@@ -1698,7 +1701,7 @@ def test_unmask_that_took_effect_then_a_failed_remask_leaves_files_and_database_
     assert _flow(driven.calls) == ["mask", "stop", "stop", "write_runtime", "runuser", "unmask", "mask"]
     state = _switch_state(driven.root)
     assert state["rollback"]["failedStep"] == "重新 mask" and state["rollback"]["fileState"] == "new"
-    assert state["rollback"]["schemaNow"] == 3 and _db_facts(driven.db)["version"] == 3  # 没动文件，也没动库
+    assert state["rollback"]["schemaNow"] == 4 and _db_facts(driven.db)["version"] == 4  # 没动文件，也没动库
     assert state["rollback"]["masked"] is False and driven.masking.on is False  # 如实记录：此刻没有 mask
 
 
@@ -1719,11 +1722,11 @@ def test_kx_flags_that_were_true_must_stay_true_after_the_switch(tmp_path, monke
 
 def test_b120_shaped_baseline_without_kx_flags_is_valid_and_not_required_afterwards(tmp_path, monkeypatch):
     # B120 的 health 没有 kxPool / kxPicks：基线照常通过，B121 上线后它们是 false 也不拦。
-    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=3, previous_kx=False,
+    driven = _drive_schema(tmp_path, monkeypatch, db_version=1, target_schema=4, previous_kx=False,
                            target_kx=True, health_after={"kxPool": False, "kxPicks": False})
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
     assert result["switched"] is True and result["schema"]["action"] == "upgrade"
-    assert _db_facts(driven.db)["version"] == 3
+    assert _db_facts(driven.db)["version"] == 4
 
 
 @pytest.mark.parametrize("fail_readiness", [False, True])

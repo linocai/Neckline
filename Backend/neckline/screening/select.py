@@ -1,19 +1,17 @@
-"""按配置规则从分类结果里选出晨报。规则全部来自配置，这里不设默认值；每家公司只占名单里的一条。
+"""按配置规则从分类结果里选出晨报候选。规则全部来自配置，这里不设默认值；每家公司只占一条。
 
-screening-v2 不再分出待定节。review 的四个列表保持为空，供已经上线的晨报结构使用。
+主事件取该公司入选事件里消息最早发布时间最早的那条，其余入选事件放进 others。
+名单按首次公开时间先后、再按代码排。不设待定节，也不按重要程度取舍。
 """
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
-from .classify import CHANNELS, DIRECTIONS, EVENT_TYPES, FRESHNESS, IMPORTANCE, RELATIONS, CompanyResult, Event
+from .classify import CHANNELS, DIRECTIONS, EVENT_TYPES, FRESHNESS, RELATIONS, CompanyResult, Event
 from .prefilter import Message
-
-_RANK = {level: i for i, level in enumerate(IMPORTANCE)}
-SECTIONS = ("main", "review_types", "review_relation", "review_fresh", "held_old")
 
 
 @dataclass
@@ -21,7 +19,7 @@ class Entry:
     company: str
     primary: Event
     messages: list[Message]          # 主事件的消息，按发布时间排
-    others: list[Event] = field(default_factory=list)  # 同一家公司在本节的其他事件
+    others: list[Event] = field(default_factory=list)  # 同一家公司的其他入选事件
 
     @property
     def first_message(self) -> Message:
@@ -30,13 +28,9 @@ class Entry:
 
 @dataclass
 class Selection:
-    sections: dict[str, list[Entry]]
+    candidates: list[Entry]
     reasons: Counter
     gaps: list[CompanyResult]
-
-    @property
-    def main(self) -> list[Entry]:
-        return self.sections["main"]
 
 
 def _strings(values: Any, label: str) -> list[str]:
@@ -46,10 +40,13 @@ def _strings(values: Any, label: str) -> list[str]:
 
 
 def validate_rules(rules: Mapping[str, Any]) -> None:
-    for key in ("kinds", "relation", "freshness", "direction", "channels", "minimumAmountYuan",
-                "importanceMinimum", "maxItems"):
+    for key in ("kinds", "relation", "freshness", "direction", "channels", "minimumAmountYuan"):
         if key not in rules:
             raise ValueError(f"配置缺少 {key}（未决定时须显式写 null）")
+    if "importanceMinimum" in rules:
+        raise ValueError("selection 不再包含 importanceMinimum")
+    if "maxItems" in rules:
+        raise ValueError("selection 不再包含 maxItems")
     kinds = rules["kinds"]
     if not isinstance(kinds, dict):
         raise ValueError("配置缺少 kinds")
@@ -95,43 +92,36 @@ def validate_rules(rules: Mapping[str, Any]) -> None:
             raise ValueError(f"配置里有未知事件类型：{[key]}")
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             raise ValueError("minimumAmountYuan 无效")
-    minimum = rules["importanceMinimum"]
-    if minimum is not None and minimum not in IMPORTANCE:
-        raise ValueError("importanceMinimum 无效")
-    cap = rules["maxItems"]
-    if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 0):
-        raise ValueError("maxItems 无效")
 
 
-def _route(event: Event, rules: Mapping[str, Any]) -> tuple[str | None, str]:
-    """先看关系、时效、渠道，再看种类和方向，最后看已知金额是否低于门槛。"""
+def _route(event: Event, rules: Mapping[str, Any]) -> str:
+    """先看关系、时效、渠道，再看种类和方向，最后看已知金额是否低于门槛。入选返回「入选」。"""
     if event.relation not in rules["relation"]["include"]:
-        return None, f"关系：{event.relation}"
+        return f"关系：{event.relation}"
     if event.fresh not in rules["freshness"]["include"]:
-        return None, f"时效：{event.fresh}"
+        return f"时效：{event.fresh}"
     if event.channel in rules["channels"]["exclude"]:
-        return None, f"渠道：{event.channel}"
+        return f"渠道：{event.channel}"
     if event.channel in rules["channels"]["requireAmount"] and event.amount_yuan is None:
-        return None, f"渠道：{event.channel}无金额"
+        return f"渠道：{event.channel}无金额"
     kinds = rules["kinds"]
     if event.type in kinds["exclude"] or event.type not in (*kinds["include"], *kinds["judge"]):
-        return None, f"种类不收：{event.type}"
+        return f"种类不收：{event.type}"
     if event.type in kinds["include"] and event.direction not in rules["direction"]["include"]:
-        return None, f"方向：{event.direction}"
+        return f"方向：{event.direction}"
     threshold = rules["minimumAmountYuan"].get(event.type)
     if threshold is not None and event.amount_yuan is not None and event.amount_yuan < threshold:
-        return None, f"金额：{event.type}低于门槛"
-    return "main", "入选"
+        return f"金额：{event.type}低于门槛"
+    return "入选"
 
 
-def _key(event: Event, by_id: Mapping[str, Message]) -> tuple:
-    earliest = min(by_id[i].published_at for i in event.ids)
-    return (_RANK[event.importance], earliest)
+def _earliest(event: Event, by_id: Mapping[str, Message]) -> datetime:
+    return min(by_id[i].published_at for i in event.ids)
 
 
 def select(by_id: Mapping[str, Message], results: Mapping[str, CompanyResult], rules: Mapping[str, Any]) -> Selection:
     validate_rules(rules)
-    buckets: dict[str, dict[str, list[Event]]] = {name: {} for name in SECTIONS}
+    chosen: dict[str, list[Event]] = {}
     reasons: Counter = Counter()
     gaps = []
     for code, result in results.items():
@@ -140,23 +130,15 @@ def select(by_id: Mapping[str, Message], results: Mapping[str, CompanyResult], r
             continue
         reasons["仅提及或误匹配（消息）"] += len(result.mentions)
         for event in result.events:
-            section, reason = _route(event, rules)
+            reason = _route(event, rules)
             reasons[reason] += 1
-            if section:
-                buckets[section].setdefault(code, []).append(event)
-    sections: dict[str, list[Entry]] = {}
-    for name, per_company in buckets.items():
-        entries = []
-        for code, events in per_company.items():
-            events.sort(key=lambda e: _key(e, by_id))
-            primary = events[0]
-            messages = sorted((by_id[i] for i in primary.ids), key=lambda m: (m.published_at, m.ref))
-            entries.append(Entry(company=code, primary=primary, messages=messages, others=events[1:]))
-        entries.sort(key=lambda e: (_RANK[e.primary.importance], e.first_message.published_at, e.company))
-        sections[name] = entries
-    minimum = rules["importanceMinimum"]
-    if minimum is not None:
-        sections["main"] = [e for e in sections["main"] if _RANK[e.primary.importance] <= _RANK[minimum]]
-    if rules["maxItems"] is not None:
-        sections["main"] = sections["main"][: rules["maxItems"]]
-    return Selection(sections=sections, reasons=reasons, gaps=sorted(gaps, key=lambda g: g.company))
+            if reason == "入选":
+                chosen.setdefault(code, []).append(event)
+    entries = []
+    for code, events in chosen.items():
+        events.sort(key=lambda event: (_earliest(event, by_id), tuple(event.ids)))
+        primary = events[0]
+        messages = sorted((by_id[i] for i in primary.ids), key=lambda message: (message.published_at, message.ref))
+        entries.append(Entry(company=code, primary=primary, messages=messages, others=events[1:]))
+    entries.sort(key=lambda entry: (entry.first_message.published_at, entry.company))
+    return Selection(candidates=entries, reasons=reasons, gaps=sorted(gaps, key=lambda gap: gap.company))

@@ -67,7 +67,7 @@ def _contains_process_token(blob: str) -> bool:
 
 def _event(company: str, **overrides) -> Event:
     fields = dict(ids=["m1"], relation="主体", type="业绩向好", direction="利好", first_disclosed=None,
-                  fresh="新", importance="高", headline="事件", reason="公告写明了事实",
+                  fresh="新", headline="事件", reason="公告写明了事实",
                   channel="公司公告", amount_yuan=None)
     fields.update(overrides)
     return Event(company=company, **fields)
@@ -95,8 +95,7 @@ def _selection(pool: CompanyPool, flash_id: str, news_id: str, wire_id: str) -> 
         primary=_event("300953.SZ", headline="前三季度净利预增", reason="公告预计净利增长 58%"),
         messages=[_message(flash_id, "jin10-flash", "金十快讯", at("2026-10-16", "17:05"),
                            "https://example.invalid/flash/z1", "震裕科技：前三季度净利预增")],
-        others=[_event("300953.SZ", type="订单合同", importance="中", headline="签订设备采购合同",
-                       reason="公告披露采购金额")],
+        others=[_event("300953.SZ", type="订单合同", headline="签订设备采购合同", reason="公告披露采购金额")],
     )
     haite = Entry(
         company="300683.SZ",
@@ -106,36 +105,15 @@ def _selection(pool: CompanyPool, flash_id: str, news_id: str, wire_id: str) -> 
     )
     aoke = Entry(
         company="300082.SZ",
-        primary=_event("300082.SZ", type="商业化进展", importance="中", headline="新产品进入量产",
-                       reason="公告写明开始量产"),
+        primary=_event("300082.SZ", type="商业化进展", headline="新产品进入量产", reason="公告写明开始量产"),
         messages=[_message(news_id, "jin10-news", "金十资讯", at("2026-10-18", "21:10"),
                            "https://example.invalid/news/o1", "奥克股份：新产品进入量产")],
     )
-    huichuan = Entry(
-        company="300124.SZ",
-        primary=_event("300124.SZ", type="行业动态", importance="低", headline="行业价格上涨", reason="稿件只写了行业"),
-        messages=[_message(flash_id, "jin10-flash", "金十快讯", at("2026-10-16", "17:05"),
-                           "https://example.invalid/flash/z1", "行业价格")],
-    )
-    yiwei = Entry(
-        company="300014.SZ",
-        primary=_event("300014.SZ", relation="受益方", type="订单合同", importance="中", headline="下游客户扩产",
-                       reason="稿件写的是客户，不是公司自己的订单"),
-        messages=[_message(news_id, "jin10-news", "金十资讯", at("2026-10-18", "21:10"),
-                           "https://example.invalid/news/o1", "下游扩产")],
-    )
-    return Selection(sections={
-        "main": [zhenyu, haite, aoke],
-        "review_types": [huichuan],
-        "review_relation": [yiwei],
-        "review_fresh": [],
-        "held_old": [],
-    }, reasons=Counter(), gaps=[])
+    return Selection(candidates=[zhenyu, haite, aoke], reasons=Counter(), gaps=[])
 
 
 def _empty_selection() -> Selection:
-    return Selection(sections={name: [] for name in ("main", "review_types", "review_relation", "review_fresh", "held_old")},
-                     reasons=Counter(), gaps=[])
+    return Selection(candidates=[], reasons=Counter(), gaps=[])
 
 
 def _content(pool: CompanyPool, selection: Selection, day: str, gap: str | None, generated: datetime, messages: int) -> dict:
@@ -197,13 +175,12 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     available = json.loads(bodies["report-available.json"])
     entries = available["content"]["entries"]
     sources = [source for entry in entries for source in entry["sources"]]
-    review = available["content"]["review"]
     assert available["status"] == "available" and available["tradeDate"] == "2026-10-19"
+    assert "review" not in available["content"] and "importance" not in json.dumps(entries, ensure_ascii=False)
     assert len(entries) >= 2 and any(entry["others"] for entry in entries)
     assert any(entry["firstDisclosed"] is None for entry in entries)
     assert any(entry["firstDisclosed"] for entry in entries)
     assert any(source["url"] is None for source in sources) and any(source["url"] for source in sources)
-    assert sum(bool(review[name]) for name in ("types", "relation", "fresh", "old")) >= 2
     assert available["gapSummary"]
     assert available["content"]["window"] == {"start": "2026-10-16T15:00+08:00", "end": "2026-10-19T08:00+08:00"}
     assert available["content"]["generatedAt"] == "2026-10-19T08:03+08:00"
@@ -211,8 +188,7 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     assert available["windowEnd"] == "2026-10-19T00:00:00+00:00"
 
     empty = json.loads(bodies["report-empty.json"])
-    assert empty["content"]["entries"] == []
-    assert all(empty["content"]["review"][name] == [] for name in ("types", "relation", "fresh", "old"))
+    assert empty["content"]["entries"] == [] and "review" not in empty["content"]
 
     failed = json.loads(bodies["report-failed.json"])
     assert failed["status"] == "failed" and failed["content"] is None and failed["failureReason"]

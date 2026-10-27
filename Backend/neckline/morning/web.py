@@ -22,7 +22,7 @@ from neckline.market.overview import overview
 from neckline.mcp.brief import BRIEF
 
 from . import db
-from .api import document_out, report_out, v4_db_path
+from .api import document_out, present_content, report_out, v4_db_path
 
 _HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"}
 
@@ -76,7 +76,7 @@ def _entries(base: str, entries: list[dict]) -> str:
         disclosed = f"｜首次公开 {escape(e['firstDisclosed'])}" if e.get("firstDisclosed") else ""
         others = "".join(f"<div class=\"why\">同公司另有：{escape(o['headline'])}</div>" for o in e.get("others", []))
         items.append(f"<li><div><span class=\"co\">{e['rank']}. {escape(e['companyName'])} {escape(e['companyCode'])}</span>"
-                     f"<span class=\"tag\">{escape(e['type'])}｜{escape(e['importance'])}{disclosed}</span></div>"
+                     f"<span class=\"tag\">{escape(e['type'])}{disclosed}</span></div>"
                      f"<div class=\"hl\">{escape(e['headline'])}</div><div class=\"why\">{escape(e['reason'])}</div>"
                      f"{others}<div class=\"src\">来源：{link}{more}</div></li>")
     return "<ol>" + "".join(items) + "</ol>"
@@ -186,18 +186,13 @@ def render_report(base: str, report: dict) -> HTMLResponse:
     elif report["status"] != "available":
         body = intro + f"<h1>{escape(title)}</h1><p class=\"meta\">正在出报，稍后刷新。</p>"
     else:
-        c = report["content"]
+        c = present_content(report["content"])
         body = intro + (f"<h1>{escape(title)}</h1><div class=\"meta\">窗口 {escape(c['window']['start'][5:16].replace('T', ' '))} → "
                 f"{escape(c['window']['end'][5:16].replace('T', ' '))}｜生成 {escape(c['generatedAt'][11:16])}｜"
                 f"规则 {escape(c['configVersion'])}</div>")
         if c.get("gapSummary"):
             body += f"<div class=\"gap\">缺口：{escape(c['gapSummary'])}</div>"
         body += _entries(base, c["entries"]) if c["entries"] else "<p>今天没有符合条件的利好。</p>"
-        for key, label in (("types", "待定：类型不在收录清单"), ("relation", "待定：受益方"),
-                           ("fresh", "待定：看不出是否窗口内首次公开"), ("old", "判为旧事的利好")):
-            entries = c["review"].get(key) or []
-            if entries:
-                body += f"<details><summary>{label}（{len(entries)}）</summary>{_entries(base, entries)}</details>"
     body += (f"<footer><a href=\"{base}/history\">历史</a>　·　<a href=\"{base}/day/{escape(report['trade_date'])}?format=json\">JSON</a>"
              f"</footer>")
     return _page(title, body)

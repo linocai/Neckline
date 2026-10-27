@@ -624,7 +624,44 @@ def test_finalize_marks_stuck_report_failed_with_reason(path):
     assert nothing["reason"] == "09:15 前没能出报（出报任务没有运行）"
 
 
+def test_old_report_output_drops_importance_and_review_without_rewriting_the_row(path):
+    from neckline.morning.api import report_out
+    from neckline.morning.web import render_report
+
+    content = {
+        "reportId": "morning-2026-10-13", "tradeDate": "2026-10-13", "kind": "morning",
+        "window": {"start": "2026-10-12T15:00+08:00", "end": "2026-10-13T08:00+08:00"},
+        "generatedAt": "2026-10-13T08:02+08:00", "configVersion": "screening-v2", "gapSummary": None,
+        "entries": [{"rank": 1, "companyCode": "300683", "companyName": "海特生物", "type": "订单",
+                     "importance": "极高", "headline": "授权", "reason": "公告",
+                     "sources": [{"documentId": "doc_h", "sourceLabel": "金十快讯",
+                                  "publishedAt": "2026-10-12T16:45+08:00", "title": "授权", "url": None}],
+                     "others": [{"headline": "另一件", "type": "分红", "importance": "低"}]}],
+        "review": {"types": [{"rank": 1, "companyName": "汇川技术", "type": "行业动态", "importance": "低",
+                              "headline": "行业", "sources": [], "others": []}],
+                   "relation": [], "fresh": [], "old": []},
+    }
+    stored = json.loads(json.dumps(content))
+    now = at("2026-10-13", "08:02")
+    with db.write(path) as conn:
+        start, end = morning_window(date(2026, 10, 13), SCHEDULE)
+        db.begin_report(conn, report_id="morning-2026-10-13", trade_date="2026-10-13", window_start=start,
+                        window_end=end, config_version="screening-v2", config_sha256="0", started_at=now)
+        db.complete_report(conn, report_id="morning-2026-10-13", content=content, stats={}, gap_summary=None,
+                           available_at=now)
+        report = db.get_report(conn, "2026-10-13")
+    shown = report_out(report)
+    assert "review" not in shown["content"]
+    assert "importance" not in shown["content"]["entries"][0]
+    assert "importance" not in shown["content"]["entries"][0]["others"][0]
+    assert report["content"] == stored
+    page = render_report("/read/k", report).body.decode()
+    assert "极高" not in page and "待定" not in page and "汇川技术" not in page
+    with db.read(path) as conn:
+        assert db.get_report(conn, "2026-10-13")["content"] == stored
+
+
 def test_shipped_config_is_approved_and_pool_verified():
     config = load_config()
-    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v2"
+    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v3"
     assert len(config.pool) == 1089 and config.rules["schedule"] == SCHEDULE

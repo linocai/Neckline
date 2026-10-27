@@ -1,153 +1,160 @@
-"""P1 离线跑：拿一份只读导出走「晨报窗口粗筛 → 按公司分类 → 按配置选择」，写出名单供对照。
+"""离线回放：只读打开一份 V4 晨报库快照，按线上同一套流程重跑某一期的一级初筛。
 
 用法（在 Backend/ 下）：
   DEEPSEEK_API_KEY=… DEEPSEEK_MODEL=… .venv/bin/python -m neckline.screening.offline \
-    --archive .work/p1-offline/archive-20261016.jsonl.gz --out .work/p1-offline/m1013-v2 \
-    --window-start 2026-10-12T15:00:00+08:00 --window-end 2026-10-13T08:00:00+08:00 \
-    --collected-by 2026-10-13T08:01:03+08:00
-默认配置是 neckline/config/screening-v2.json（可用 --config 更换）。业务时钟全部显式传入；
-凭据只从环境变量读取；已有回执的请求不会再次外呼。events.json 里每个事件含 channel、amount_yuan。
+    --db .work/replay-4.2.0/replay.db --trade-date 2026-10-22 \
+    --receipts .work/replay-4.2.0/receipts --filings-cache .work/replay-4.2.0/filings \
+    --out .work/replay-4.2.0/out-1022
+不给 --collected-by 时，用快照 reports 表里该日的 started_at。
+默认配置是 neckline/config/screening-v3.json。凭据只从环境变量读取，不打印。
+快照以只读方式打开，PDF 读数写在内存里，不写回快照。
 """
 from __future__ import annotations
 
 import argparse
-import gzip
 import json
 import os
-import time
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+from neckline.morning import db
+from neckline.morning.report import load_config
+from neckline.morning.schedule import morning_window
+from neckline.screening.enrich import MemoryFilingReads, enrich_filings, pdf_fetcher, purge_old_pdfs
 
 from .classify import CONTRACT, CST, classify
 from .deepseek import DeepSeekClient, FileReceipts
 from .pool import CompanyPool
-from .prefilter import Window, prefilter
+from .prefilter import Window, match_history, prefilter_window
 from .select import Entry, select
-
-_TITLES = {
-    "main": "名单",
-    "review_types": "待定：利好、新、公司是主体，但类型不在收录清单",
-    "review_relation": "待定：受益方（事件主体是别人，消息点名该公司受益）",
-    "review_fresh": "待定：利好，但看不出是不是窗口内首次公开",
-    "held_old": "判为旧事的利好（用来核对时效判断）",
-}
 
 
 def _when(ts: datetime) -> str:
     return ts.astimezone(CST).strftime("%m-%d %H:%M")
 
 
-def _entry_md(n: int, e: Entry, pool: CompanyPool) -> str:
-    c, ev, first = pool.companies[e.company], e.primary, e.first_message
-    disclosed = f"｜首次公开 {ev.first_disclosed}" if ev.first_disclosed else ""
+def _candidate(entry: Entry, pool: CompanyPool) -> dict:
+    company, event = pool.companies[entry.company], entry.primary
+    return {
+        "code": company.short_code, "name": company.name, "type": event.type, "direction": event.direction,
+        "fresh": event.fresh, "headline": event.headline, "reason": event.reason,
+        "sources": [{"source": message.source_label, "publishedAt": message.published_at.isoformat(),
+                     "title": message.title, "url": message.url} for message in entry.messages],
+        "others": [{"headline": other.headline, "type": other.type, "direction": other.direction,
+                    "fresh": other.fresh, "reason": other.reason} for other in entry.others],
+    }
+
+
+def _entry_md(n: int, entry: Entry, pool: CompanyPool) -> str:
+    company, event, first = pool.companies[entry.company], entry.primary, entry.first_message
     src = f"{first.source_label} {_when(first.published_at)}"
     if first.url:
         src = f"[{src}]({first.url})"
     title = f"《{first.title}》" if first.title else ""
-    more = f"；另有 {len(e.messages) - 1} 条同事件" if len(e.messages) > 1 else ""
-    lines = [f"{n}. **{c.name} {c.short_code}**｜{ev.type}｜{ev.importance}{disclosed}",
-             f"   - 事件：{ev.headline}", f"   - 理由：{ev.reason}", f"   - 来源：{src}{title}{more}"]
-    for other in e.others:
-        lines.append(f"   - 同公司另有：{other.headline}（{other.type}｜{other.importance}）")
+    more = f"；另有 {len(entry.messages) - 1} 条同事件" if len(entry.messages) > 1 else ""
+    lines = [f"{n}. **{company.name} {company.short_code}**｜{event.type}｜{event.fresh}",
+             f"   - 事件：{event.headline}", f"   - 理由：{event.reason}", f"   - 来源：{src}{title}{more}"]
+    for other in entry.others:
+        lines.append(f"   - 同公司另有：{other.headline}（{other.type}）")
     return "\n".join(lines)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--archive", type=Path, required=True)
+def _collected_by(db_path: Path, trade_date: str, given: str | None) -> datetime:
+    if given:
+        return datetime.fromisoformat(given)
+    with db.read(db_path) as conn:
+        report = db.get_report(conn, trade_date)
+    if report is None or not report.get("started_at"):
+        raise SystemExit(f"快照里没有 {trade_date} 的晨报，无法确定 collected-by")
+    return datetime.fromisoformat(report["started_at"])
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description="用 V4 库快照离线重跑一期一级初筛")
+    ap.add_argument("--db", type=Path, required=True)
+    ap.add_argument("--trade-date", required=True)
+    ap.add_argument("--collected-by", default=None)
+    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v3.json")
+    ap.add_argument("--receipts", type=Path, required=True)
+    ap.add_argument("--filings-cache", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v2.json")
-    ap.add_argument("--receipts", type=Path, default=Path(".work/p1-offline/receipts"))
-    ap.add_argument("--window-start", required=True)
-    ap.add_argument("--window-end", required=True)
-    ap.add_argument("--collected-by", required=True)
-    ap.add_argument("--endpoint", default="https://api.deepseek.com/chat/completions")
     ap.add_argument("--model", default=os.environ.get("DEEPSEEK_MODEL"))
-    ap.add_argument("--compare", type=Path)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if not args.model:
         raise SystemExit("必须显式给出模型名（--model 或 DEEPSEEK_MODEL）")
-
-    config = json.loads(args.config.read_text(encoding="utf-8"))
-    settings = config["classification"]
-    docs, companies = [], []
-    with gzip.open(args.archive, "rt", encoding="utf-8") as fh:
-        for line in fh:
-            row = json.loads(line)
-            if row["kind"] == "doc":
-                docs.append(row)
-            elif row["kind"] == "company":
-                companies.append(row)
-    pool = CompanyPool.from_rows(companies, config["matching"]["strictShortNames"])
-    profiles = {row["code"]: row["index"].get("summary") for row in companies}
-    window = Window(start=datetime.fromisoformat(args.window_start), end=datetime.fromisoformat(args.window_end),
-                    collected_by=datetime.fromisoformat(args.collected_by))
-
-    started = time.monotonic()
-    pre = prefilter(docs, pool, window, history_days=settings["history"]["lookbackDays"])
-    prefilter_seconds = round(time.monotonic() - started, 1)
-    client = DeepSeekClient(endpoint=args.endpoint, model=args.model, api_key=os.environ.get("DEEPSEEK_API_KEY"),
-                            receipts=FileReceipts(args.receipts), timeout_seconds=600, max_attempts=2)
-    model_started = time.monotonic()
-    result = classify(pre.messages, pre.history, pool, profiles, client, window=window, settings=settings)
-    model_seconds = round(time.monotonic() - model_started, 1)
-    selection = select(result.by_id, result.results, config["selection"])
-
-    usage = Counter()
-    for o in result.batches:
+    day = date.fromisoformat(args.trade_date)
+    loaded = load_config(path=args.config)
+    rules = loaded.rules
+    collected_by = _collected_by(args.db, day.isoformat(), args.collected_by)
+    start, end = morning_window(day, rules["schedule"])
+    window = Window(start=start, end=end, collected_by=collected_by)
+    settings = rules["classification"]
+    pool: CompanyPool = loaded.pool
+    with db.read(args.db) as conn:
+        docs = list(db.iter_documents(conn, published_from=start, published_to=end, fetched_by=collected_by,
+                                      include_end=True))
+        messages, in_window, duplicates, unmatched = prefilter_window(docs, pool)
+        history = match_history(
+            db.iter_documents(conn, published_from=start - timedelta(days=settings["history"]["lookbackDays"]),
+                              published_to=start, fetched_by=collected_by, include_end=False),
+            pool.subset({code for message in messages for code in message.companies}))
+    filings = rules["filings"]
+    clock = lambda: datetime.now(timezone.utc)  # noqa: E731 — 缓存过期看墙上时钟，窗口用 collected_by
+    purge_old_pdfs(args.filings_cache, cache_days=int(filings["cacheDays"]), now=clock())
+    enrich_stats = enrich_filings(messages, store=MemoryFilingReads(), fetcher=pdf_fetcher(args.filings_cache, filings),
+                                  settings=filings, clock=clock)
+    client = DeepSeekClient(endpoint=rules["model"]["endpoint"], model=args.model,
+                            api_key=os.environ.get("DEEPSEEK_API_KEY"), receipts=FileReceipts(args.receipts),
+                            timeout_seconds=float(rules["model"]["timeoutSeconds"]),
+                            max_attempts=int(rules["model"]["maxAttempts"]))
+    result = classify(messages, history, pool, loaded.profiles, client, window=window, settings=settings)
+    selection = select(result.by_id, result.results, rules["selection"])
+    usage: Counter = Counter()
+    for batch in result.batches:
         for key in ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens"):
-            usage[key] += int(o.usage.get(key) or 0)
-        usage["reasoning_tokens"] += int((o.usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
-    events = [e for r in result.results.values() for e in r.events]
+            usage[key] += int(batch.usage.get(key) or 0)
+    events = [event for company in result.results.values() for event in company.events]
     stats = {
-        "contract": CONTRACT, "config": config["configVersion"], "model": args.model,
+        "contract": CONTRACT, "config": rules["configVersion"], "model": args.model,
         "window": [window.start.isoformat(), window.end.isoformat()], "collectedBy": window.collected_by.isoformat(),
-        "inWindow": pre.input_count, "duplicates": pre.duplicate_count, "unmatched": pre.unmatched_count,
-        "messages": len(pre.messages), "history": len(pre.history), "companies": len(result.results),
-        "calls": len(result.batches), "fromReceipt": sum(o.from_receipt for o in result.batches),
-        "retries": sum(o.attempt > 1 for o in result.batches), "batchErrors": [o.error for o in result.batches if o.error],
-        "prefilterSeconds": prefilter_seconds, "modelSeconds": model_seconds,
-        "slowestCallSeconds": max((o.seconds for o in result.batches), default=0), "usage": dict(usage),
-        "events": len(events), "gaps": [(g.company, g.error) for g in selection.gaps],
-        **{name: len(entries) for name, entries in selection.sections.items()},
+        "inWindow": in_window, "duplicates": duplicates, "unmatched": unmatched,
+        "messages": len(messages), "history": len(history), "companies": len(result.results),
+        "calls": len(result.batches), "fromReceipt": sum(batch.from_receipt for batch in result.batches),
+        "tokens": {"prompt": usage["prompt_tokens"], "completion": usage["completion_tokens"],
+                   "cacheHit": usage["prompt_cache_hit_tokens"]},
+        "seconds": round(sum(batch.seconds for batch in result.batches), 3),
+        "enrich": enrich_stats.as_dict(), "candidates": len(selection.candidates),
+        "gaps": [(gap.company, gap.error) for gap in selection.gaps],
         "reasons": dict(selection.reasons.most_common()),
     }
-
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "events.json").write_text(json.dumps([
-        {**e.__dict__, "name": pool.companies[e.company].name,
-         "messages": [{"id": i, "ref": result.by_id[i].ref, "source": result.by_id[i].source_label,
-                       "publishedAt": result.by_id[i].published_at.isoformat(), "title": result.by_id[i].title,
-                       "url": result.by_id[i].url} for i in e.ids]} for e in events], ensure_ascii=False, indent=1),
-        encoding="utf-8")
-    (args.out / "stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=1), encoding="utf-8")
-
-    day = window.end.astimezone(CST).strftime("%m-%d")
-    md = [f"# {day} 晨报（离线，窗口 {_when(window.start)} → {_when(window.end)}，规则 {config['configVersion']}）", "",
-          f"窗口内消息 {pre.input_count} 条，去重 {pre.duplicate_count} 条，未点名公司池 {pre.unmatched_count} 条；"
-          f"送模型 {len(pre.messages)} 条、涉及 {len(result.results)} 家公司，另附窗口前相关消息 {len(pre.history)} 条供核对；"
-          f"{len(result.batches)} 次调用，模型用时 {model_seconds} 秒。"]
+    candidates = [_candidate(entry, pool) for entry in selection.candidates]
+    event_rows = [{
+        "company": event.company, "name": pool.companies[event.company].name, "type": event.type,
+        "direction": event.direction, "fresh": event.fresh, "headline": event.headline, "reason": event.reason,
+        "channel": event.channel, "amountYuan": event.amount_yuan, "ids": event.ids,
+        "sources": [{"id": mid, "source": result.by_id[mid].source_label, "title": result.by_id[mid].title,
+                     "url": result.by_id[mid].url, "publishedAt": result.by_id[mid].published_at.isoformat()}
+                    for mid in event.ids],
+    } for event in events]
+    lines = [f"# {day.isoformat()} 晨报（离线，窗口 {_when(window.start)} → {_when(window.end)}，规则 {rules['configVersion']}）",
+             "",
+             f"窗口内消息 {in_window} 条，去重 {duplicates} 条，未点名公司池 {unmatched} 条；"
+             f"送模型 {len(messages)} 条、涉及 {len(result.results)} 家公司；"
+             f"{len(result.batches)} 次调用。", ""]
     if selection.gaps:
-        md.append(f"缺口：{len(selection.gaps)} 家公司没能完成判断，未列入（"
-                  + "、".join(pool.companies[g.company].name for g in selection.gaps) + "）。")
-    for name, title in _TITLES.items():
-        entries = selection.sections[name]
-        md += ["", f"## {title}（{len(entries)} 家）", ""]
-        md += [_entry_md(i, e, pool) for i, e in enumerate(entries, 1)]
-    md += ["", "## 拦下的原因", ""]
-    md += [f"- {k}：{v}" for k, v in selection.reasons.most_common()]
-    if args.compare and args.compare.exists():
-        md += ["", "## 对照", ""]
-        by_company: dict[str, list] = {}
-        for e in events:
-            by_company.setdefault(e.company, []).append(e)
-        for card in json.loads(args.compare.read_text(encoding="utf-8")):
-            found = by_company.get(card["code"], [])
-            verdict = "；".join(sorted({f"{e.relation}/{e.type}/{e.direction}/{e.fresh}" for e in found})) or (
-                "只在罗列中出现" if card["code"] in result.results else "窗口内没有点名它的消息")
-            md.append(f"- {card['name']} {card['code'][:6]}（{card['note']}）→ {verdict}")
-    (args.out / "list.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+        lines.append("缺口：" + "、".join(pool.companies[gap.company].name for gap in selection.gaps) + "。")
+        lines.append("")
+    lines.append(f"## 候选（{len(selection.candidates)} 家）")
+    lines.append("")
+    lines.extend(_entry_md(i, entry, pool) for i, entry in enumerate(selection.candidates, 1))
+    lines += ["", "## 拦下的原因", ""]
+    lines.extend(f"- {reason}：{count}" for reason, count in selection.reasons.most_common())
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=1), encoding="utf-8")
+    (args.out / "events.json").write_text(json.dumps(event_rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    (args.out / "stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=1), encoding="utf-8")
+    (args.out / "list.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(stats, ensure_ascii=False, indent=1))
 
 

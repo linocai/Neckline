@@ -28,7 +28,7 @@ Database schema version. ``build`` records the commit's ``SCHEMA_VERSION`` in th
 (a manifest without it means 1). Before anything is touched, switch reads the production ``user_version``
 (``schemaBefore``, read-only, no DDL) and plans ``none`` / ``upgrade`` / ``downgrade``; ``--check-only`` reports the plan.
 An upgrade runs ``init-db`` as the neckline user after the new files, wheel and manifest are in place and verified,
-before the units return; a downgrade (only the allow-listed add-tables-only steps, today 2 to 1) just rewrites
+before the units return; a downgrade (only the allow-listed add-tables-only steps, 2→1, 3→2, 3→1, 4→3, 4→2 and 4→1) just rewrites
 ``user_version`` after the services are stopped and before the files are replaced; tables are kept. Once the old files,
 wheel and manifest are back, every rollback puts ``user_version`` back to ``schemaBefore`` (services still stopped) before
 the units return and before the old release's readiness check; if that fails the units stay masked. If the old files cannot
@@ -92,8 +92,9 @@ SIDECAR_SUFFIXES = ("-wal", "-shm")
 KX_FLAGS = ("kxPool", "kxPicks")  # B121 起 health 才带这两项
 KX_SCHEMA = 2  # 清单 schemaVersion 达到它的发布才报告、也才要求 KX 项
 # 库结构只允许这些「只加了表或列」的降级：旧代码认得它的版本号，按列名读写，多出来的表和列保留不删。
-# v3 只给 kx_pool 加了三列，旧代码的 SELECT / INSERT 都带列名，所以 3→2、3→1 也只改版本号。
-ADDITIVE_DOWNGRADES = frozenset({(2, 1), (3, 2), (3, 1)})
+# v3 只给 kx_pool 加了三列，v4 只加 filing_reads 与 evaluations。旧代码的 SELECT / INSERT 都带列名，
+# 所以 3→2、3→1、4→3、4→2、4→1 也只改版本号。
+ADDITIVE_DOWNGRADES = frozenset({(2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1)})
 
 
 def sha256(data: bytes) -> str:

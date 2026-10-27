@@ -1,8 +1,8 @@
 {
-  "configVersion": "screening-v2",
+  "configVersion": "screening-v3",
   "approval": "approved",
-  "approvedAt": "2026-10-18",
-  "note": "用户 2026-10-18 确认的消息偏好，依据 archive/2026-10-18_消息偏好点评.md。只收首次披露且公司是主体的事件；收与不收按事件种类，不单看利好。出售资产、股份转让、大额采购方向不限，正常放进名单，不另作标记。不设待定分节。",
+  "approvedAt": "2026-10-27",
+  "note": "K10-v5，用户 10/27 确认，依据 whynotme/K10.md 第四节与 archive/v4.2.0_execution.md §3；与 v2 相比删除重要程度、新增不收种类「交易进展」「业绩不明」、只有标题的定期报告先读 PDF 数字。",
   "schedule": {
     "previousClose": "15:00",
     "windowEnd": "08:00",
@@ -18,6 +18,13 @@
     "file": "company-pool-k10-v2-20260909.jsonl",
     "sha256": "078e59d90b66045ae503645309627c0572daf1faea99f661dab4835309f9d6db",
     "source": "已批准的 1,089 家创业板公司与资料（k10-v2-initial-20260909 / k10-v2-profiles-20260909，screening_index sha256 c2ddfa74…）"
+  },
+  "filings": {
+    "maxBytes": 20000000,
+    "maxPages": 6,
+    "concurrency": 4,
+    "timeoutSeconds": 20,
+    "cacheDays": 3
   },
   "selection": {
     "relation": {
@@ -65,7 +72,9 @@
         "融资进展",
         "回购进展",
         "重组进展",
+        "交易进展",
         "业绩落地",
+        "业绩不明",
         "普通合作",
         "小额订单",
         "中标候选",
@@ -90,9 +99,7 @@
     },
     "minimumAmountYuan": {
       "订单中标": 10000000
-    },
-    "importanceMinimum": null,
-    "maxItems": null
+    }
   },
   "matching": {
     "note": "这些简称是常用词或地名，来源还会给它们自动插入股票代码；简称只在「简称：」「【简称」格式里才算点名，全称照常匹配。依据：2026-10-16 对 9/28 以来 30,035 篇原件的抽查。",
@@ -107,7 +114,7 @@
     ]
   },
   "classification": {
-    "contract": "screening-classify-v3",
+    "contract": "screening-classify-v4",
     "batchMaxCompanies": 8,
     "batchMaxChars": 16000,
     "concurrency": 6,

@@ -39,13 +39,34 @@ def source_label(doc: dict) -> str:
     return _LABELS.get(doc["sourceKey"]) or (doc["meta"].get("source") or "TuShare 新闻")
 
 
+def _without_importance(entry: dict) -> dict:
+    cleaned = {key: value for key, value in entry.items() if key != "importance"}
+    others = cleaned.get("others")
+    if isinstance(others, list):
+        cleaned["others"] = [
+            {key: value for key, value in item.items() if key != "importance"} if isinstance(item, dict) else item
+            for item in others]
+    return cleaned
+
+
+def present_content(content: object) -> object:
+    """输出用的晨报正文。旧晨报里的 importance 和 review 去掉，不改库里存的内容。"""
+    if not isinstance(content, dict):
+        return content
+    shown = {key: value for key, value in content.items() if key != "review"}
+    entries = shown.get("entries")
+    if isinstance(entries, list):
+        shown["entries"] = [_without_importance(item) if isinstance(item, dict) else item for item in entries]
+    return shown
+
+
 def report_out(report: dict) -> dict:
     return {"reportId": report["report_id"], "tradeDate": report["trade_date"], "status": report["status"],
             "windowStart": report["window_start"], "windowEnd": report["window_end"],
             "availableAt": report["available_at"], "failedAt": report["failed_at"],
             "failureReason": report["failure_reason"] if report["status"] == "failed" else None,
             "gapSummary": report["gap_summary"], "configVersion": report["config_version"],
-            "content": report["content"]}
+            "content": present_content(report["content"])}
 
 
 def _local(value: str | None) -> str | None:

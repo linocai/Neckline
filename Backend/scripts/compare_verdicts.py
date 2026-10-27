@@ -72,7 +72,7 @@ def _event(raw: dict) -> Event | None:
             company=str(raw["company"]), ids=ids, relation=str(raw["relation"]), type=str(raw["type"]),
             direction=str(raw["direction"]),
             first_disclosed=raw.get("first_disclosed") if "first_disclosed" in raw else raw.get("firstDisclosed"),
-            fresh=str(raw["fresh"]), importance=str(raw["importance"]), headline=str(raw.get("headline") or ""),
+            fresh=str(raw["fresh"]), headline=str(raw.get("headline") or ""),
             reason=str(raw.get("reason") or ""), channel=channel, amount_yuan=amount)
     except KeyError:
         return None
@@ -121,7 +121,7 @@ def selected_keys(events: list[dict], rules: dict) -> set[tuple[str, tuple[str, 
         return set()
     selection = select(by_id, results, rules)
     chosen = set()
-    for entry in selection.main:
+    for entry in selection.candidates:
         for event in (entry.primary, *entry.others):
             chosen.add((event.company, tuple(event.ids), event.headline))
     return chosen
@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--replay", type=Path, required=True)
     parser.add_argument("--verdicts", type=Path,
                         default=_BACKEND / ".work" / "p1-offline" / "verdicts-20261018.json")
-    parser.add_argument("--config", type=Path, default=_BACKEND / "neckline" / "config" / "screening-v2.json")
+    parser.add_argument("--config", type=Path, default=_BACKEND / "neckline" / "config" / "screening-v3.json")
     args = parser.parse_args(argv)
     if not args.replay.is_dir():
         raise SystemExit(f"找不到回放目录：{args.replay}")

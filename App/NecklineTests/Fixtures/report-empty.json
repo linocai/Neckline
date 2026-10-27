@@ -8,12 +8,6 @@
     "generatedAt": "2026-10-14T08:01+08:00",
     "kind": "morning",
     "reportId": "morning-2026-10-14",
-    "review": {
-      "fresh": [],
-      "old": [],
-      "relation": [],
-      "types": []
-    },
     "stats": {
       "messages": 0
     },

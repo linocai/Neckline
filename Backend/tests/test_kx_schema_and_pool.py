@@ -42,7 +42,7 @@ def _expect_refused(path):
 def test_v1_database_upgrades_in_place_and_keeps_data(tmp_path):
     path = tmp_path / "v1.db"
     make_legacy_db(path, 1)
-    assert db.SCHEMA_VERSION == 3
+    assert db.SCHEMA_VERSION == 4
     _expect_refused(path)  # 只读路径不升级，也不执行 DDL
     assert _version(path) == 1
     with closing(sqlite3.connect(path)) as conn:
@@ -50,10 +50,10 @@ def test_v1_database_upgrades_in_place_and_keeps_data(tmp_path):
 
     db.init_schema(path)
     with db.read(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("PRAGMA application_id").fetchone()[0] == db.APPLICATION_ID
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {"kx_pool", "kx_picks", "kx_daily_stats"} <= tables
+        assert {"kx_pool", "kx_picks", "kx_daily_stats", "filing_reads", "evaluations"} <= tables
         assert V3_COLUMNS <= {row[1] for row in conn.execute("PRAGMA table_info(kx_pool)")}
         assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
         assert db.latest_report(conn)["report_id"] == "r1"
@@ -74,11 +74,11 @@ def test_v2_database_upgrades_to_v3_keeping_every_row(tmp_path):
     path = tmp_path / "v2.db"
     make_legacy_db(path, 2)
     assert V3_COLUMNS.isdisjoint(name for name, _kind in _columns(path))
-    _expect_refused(path)  # v3 的代码不碰 v2 的库，直到显式升级
+    _expect_refused(path)  # 当前代码不碰 v2 的库，直到显式升级
     assert _version(path) == 2
 
     db.init_schema(path)
-    assert _version(path) == 3
+    assert _version(path) == 4
     with db.read(path) as conn:
         snapshot = store.load_pool(conn)
         assert snapshot.version == "kx-20261017-001" and snapshot.schema_version == 1
@@ -106,11 +106,13 @@ def test_v2_database_upgrades_to_v3_keeping_every_row(tmp_path):
 def test_every_upgrade_path_ends_in_the_same_layout_as_a_fresh_database(tmp_path):
     fresh = tmp_path / "fresh.db"
     db.init_schema(fresh)
-    from_v1, from_v2 = tmp_path / "v1.db", tmp_path / "v2.db"
+    from_v1, from_v2, from_v3 = tmp_path / "v1.db", tmp_path / "v2.db", tmp_path / "v3.db"
     make_legacy_db(from_v1, 1)
     make_legacy_db(from_v2, 2)
+    _make_v3(from_v3)
     db.init_schema(from_v1)
     db.init_schema(from_v2)
+    db.init_schema(from_v3)
 
     def layout(path):
         with closing(sqlite3.connect(path)) as conn:
@@ -118,7 +120,8 @@ def test_every_upgrade_path_ends_in_the_same_layout_as_a_fresh_database(tmp_path
                       for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         return tables
 
-    assert layout(from_v1) == layout(fresh) == layout(from_v2)
+    assert layout(from_v1) == layout(fresh) == layout(from_v2) == layout(from_v3)
+    assert {"filing_reads", "evaluations"} <= set(layout(fresh))
     assert [name for name, _kind in _columns(fresh)] == [
         "code", "position", "name", "industry", "version", "verified_at", "theme", "first_seen", "buyable"]
 
@@ -143,12 +146,12 @@ def test_a_failed_upgrade_rolls_back_as_a_whole(tmp_path, monkeypatch, legacy):
             assert conn.execute("SELECT count(*) FROM kx_pool").fetchone()[0] == 2
     monkeypatch.undo()
     db.init_schema(path)  # 修好之后可以重来
-    assert _version(path) == 3 and V3_COLUMNS <= {name for name, _kind in _columns(path)}
+    assert _version(path) == 4 and V3_COLUMNS <= {name for name, _kind in _columns(path)}
 
 
-@pytest.mark.parametrize("old_version", [1, 2])
+@pytest.mark.parametrize("old_version", [1, 2, 3])
 def test_a_database_that_was_only_version_downgraded_upgrades_again(tmp_path, old_version):
-    """发布脚本降级（3→2、3→1）只改 user_version，列和表都还在；再升级时不能因为列已存在而失败。"""
+    """发布脚本降级（4→3、4→2、4→1、3→2、3→1）只改 user_version，列和表都还在；再升级时不能因为列已存在而失败。"""
     path = tmp_path / "x.db"
     db.init_schema(path)
     with db.write(path) as conn:
@@ -159,13 +162,13 @@ def test_a_database_that_was_only_version_downgraded_upgrades_again(tmp_path, ol
         conn.commit()
     _expect_refused(path)
     db.init_schema(path)
-    assert _version(path) == 3
+    assert _version(path) == 4
     with db.read(path) as conn:
         member = store.load_pool(conn).members[0]
     assert (member.theme, member.first_seen, member.buyable) == ("钢铁复苏", date(2026, 10, 19), True)
 
 
-@pytest.mark.parametrize("version", [0, 4])
+@pytest.mark.parametrize("version", [0, 5])
 def test_init_schema_refuses_other_versions_and_foreign_databases(tmp_path, version):
     path = tmp_path / "x.db"
     conn = sqlite3.connect(path)
@@ -178,12 +181,40 @@ def test_init_schema_refuses_other_versions_and_foreign_databases(tmp_path, vers
         db.init_schema(path)
 
 
-def test_a_fresh_database_is_created_at_version_three(tmp_path):
+def _make_v3(path):
+    """版本 3：v2 的三张 KX 表，外加 kx_pool 的三列，还没有 filing_reads / evaluations。"""
+    make_legacy_db(path, 2)
+    with closing(sqlite3.connect(path)) as conn:
+        for name, kind in (("theme", "TEXT"), ("first_seen", "TEXT"), ("buyable", "INTEGER")):
+            conn.execute(f"ALTER TABLE kx_pool ADD COLUMN {name} {kind}")
+        conn.execute("PRAGMA user_version=3")
+        conn.commit()
+
+
+def test_a_v3_database_upgrades_in_place_and_keeps_rows(tmp_path):
+    path = tmp_path / "v3.db"
+    _make_v3(path)
+    _expect_refused(path)
+    db.init_schema(path)
+    assert _version(path) == 4
+    with db.read(path) as conn:
+        assert conn.execute("SELECT code FROM kx_pool ORDER BY position").fetchall()[0][0] == "600000"
+        assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
+    db.init_schema(path)
+    assert _version(path) == 4
+    with db.read(path) as conn:
+        assert conn.execute("SELECT count(*) FROM kx_pool").fetchone()[0] == 2
+
+
+def test_a_fresh_database_is_created_at_version_four(tmp_path):
     path = tmp_path / "fresh.db"
     db.init_schema(path)
     with db.read(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("SELECT count(*) FROM kx_pool").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
 
 
 def test_the_previous_build_still_reads_and_writes_kx_pool_by_column_name(tmp_path):
@@ -201,7 +232,7 @@ def test_the_previous_build_still_reads_and_writes_kx_pool_by_column_name(tmp_pa
         conn.execute("INSERT INTO kx_pool(code, position, name, industry, version, verified_at) VALUES (?,?,?,?,?,?)",
                      ("600000", 0, "浦发银行", "银行", "kx-20261017-001", "2026-10-19T01:00:00+00:00"))
         conn.commit()
-    db.init_schema(path)  # 版本号没动：v3 库上这一步什么都不做
+    db.init_schema(path)  # 版本号没动：当前版本的库上这一步什么都不做
     with db.read(path) as conn:
         member = store.load_pool(conn).members[0]
     assert member == store.Member("600000", "浦发银行", "银行", 0)

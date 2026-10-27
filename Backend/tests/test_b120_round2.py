@@ -77,7 +77,7 @@ def _install_rules(monkeypatch, rules: dict) -> None:
             self._real = original(package)
 
         def __truediv__(self, name: str):
-            if name == "screening-v2.json":
+            if name == "screening-v3.json":
                 return _File()
             return self._real / name
 

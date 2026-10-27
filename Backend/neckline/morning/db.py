@@ -2,7 +2,8 @@
 
 只读路径用 mode=ro 打开且不执行 DDL；建表只在显式的 init-db 与写命令里做。时间一律存 UTC ISO（到秒）。
 库结构版本 2 在版本 1 的基础上只加三张 KX 表；版本 3 只给 kx_pool 加三列（题材、首次入选日、能否买入）。
-init_schema 把版本 1、2 的库原地升级到当前版本，不动已有数据。
+版本 4 只加 filing_reads 与 evaluations 两张表。
+init_schema 把版本 1、2、3 的库原地升级到当前版本，不动已有数据。
 """
 from __future__ import annotations
 
@@ -21,8 +22,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 3
-_UPGRADABLE_FROM = (1, 2)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 4
+_UPGRADABLE_FROM = (1, 2, 3)  # 这些版本的库可由 init_schema 原地升级到当前版本
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -136,6 +137,37 @@ CREATE TABLE IF NOT EXISTS kx_daily_stats (
 # 版本 3 的升级：已有 kx_pool 补上的列，顺序与新库的建表语句一致。
 KX_POOL_V3_COLUMNS = (("theme", "TEXT"), ("first_seen", "TEXT"), ("buyable", "INTEGER"))
 
+# 版本 4 只加两张表：公告 PDF 读数，以及留给后续评估层的 evaluations。不改已有表。
+V4_DDL = """
+CREATE TABLE IF NOT EXISTS filing_reads (
+  document_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('ok','error')),
+  error TEXT,
+  figures_json TEXT,
+  summary TEXT,
+  read_at TEXT NOT NULL,
+  PRIMARY KEY(document_id, revision)
+);
+CREATE TABLE IF NOT EXISTS evaluations (
+  report_id TEXT NOT NULL,
+  company TEXT NOT NULL CHECK(length(company) = 6),
+  contract TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('prepared','succeeded','invalid','gap')),
+  verdict TEXT CHECK(verdict IN ('推','不推')),
+  package_json TEXT NOT NULL,
+  output_json TEXT,
+  error TEXT,
+  usage_json TEXT NOT NULL DEFAULT '{}',
+  seconds REAL,
+  prepared_at TEXT NOT NULL,
+  settled_at TEXT,
+  PRIMARY KEY(report_id, company)
+);
+"""
+
 
 class NotReady(RuntimeError):
     """库不存在或不是 V4 晨报库。"""
@@ -159,7 +191,7 @@ def _statements(script: str) -> list[str]:
 def init_schema(path: Path) -> None:
     """显式建表（init-db 与写命令调用）。
 
-    新库一次建到当前版本；版本 1、2 的库在同一个事务里补上缺的表和 kx_pool 的列并把版本号升到当前版本，
+    新库一次建到当前版本；版本 1、2、3 的库在同一个事务里补上缺的表和 kx_pool 的列并把版本号升到当前版本，
     任何一步失败都整体回滚，已有数据不动。已有的列不会重复添加（降级只改版本号、不删列，再升级时列已在）。
     已经是当前版本时什么都不改。
     """
@@ -179,7 +211,7 @@ def init_schema(path: Path) -> None:
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for statement in _statements(DDL) + _statements(KX_DDL):
+            for statement in _statements(DDL) + _statements(KX_DDL) + _statements(V4_DDL):
                 conn.execute(statement)
             present = {row[1] for row in conn.execute("PRAGMA table_info(kx_pool)")}
             for name, kind in KX_POOL_V3_COLUMNS:
