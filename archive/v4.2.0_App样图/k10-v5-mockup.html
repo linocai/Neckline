@@ -1,0 +1,248 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>K10-v5 晨报样图</title><style>
+:root{
+  --page:#F5F6F8; --card:#FFFFFF; --t1:#1C1C1E; --t2:#6E6E73; --t3:#8E8E93; --line:#E5E5EA;
+  --accent:#0754E9; --tag:#F2F2F7; --sel:rgba(7,84,233,.12);
+  --red:#FF3B30; --redFill:rgba(255,59,48,.08); --blue:#007AFF; --blueFill:rgba(0,122,255,.07);
+  --frame:#0B0B0D;
+}
+.dark{
+  --page:#1C1C1E; --card:#2C2C2E; --t1:#F5F5F7; --t2:#98989D; --t3:#636366; --line:#38383A;
+  --accent:#4C8DFF; --tag:#3A3A3C; --sel:rgba(76,141,255,.12);
+  --red:#FF453A; --redFill:rgba(255,69,58,.14); --blue:#0A84FF; --blueFill:rgba(10,132,255,.14);
+}
+*{box-sizing:border-box}
+body{margin:0;background:#E9EBEF;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;color:#1C1C1E}
+header.doc{max-width:1700px;margin:0 auto;padding:28px 24px 8px}
+header.doc h1{margin:0 0 6px;font-size:22px}
+header.doc p{margin:4px 0;color:#555;line-height:1.6;max-width:1150px}
+.row{display:flex;flex-wrap:wrap;gap:28px;justify-content:center;padding:18px 16px 40px;max-width:1700px;margin:0 auto}
+figure{margin:0;display:flex;flex-direction:column;align-items:center;gap:10px}
+figcaption{max-width:393px;font-size:13px;color:#444;line-height:1.55}
+figcaption b{color:#111}
+.phone{width:393px;height:852px;border-radius:52px;background:var(--frame);padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+.screen{width:100%;height:100%;border-radius:42px;overflow:hidden;background:var(--page);color:var(--t1);display:flex;flex-direction:column}
+.status{height:50px;flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:0 30px 6px;font-weight:600;font-size:15px}
+.nav{padding:4px 16px 8px;flex:none}
+.nav h2{margin:0;font-size:28px;font-weight:600}
+.nav .meta{font-size:12px;color:var(--t2);margin-top:2px}
+.nav .gap{font-size:12px;color:var(--t2);margin-top:4px}
+.navbar{height:44px;flex:none;display:flex;align-items:center;padding:0 12px;font-size:17px;font-weight:600;position:relative}
+.navbar .back{color:var(--accent);font-weight:400;display:flex;align-items:center;gap:2px}
+.navbar .ttl{position:absolute;left:0;right:0;text-align:center;pointer-events:none}
+.scroll{flex:1;overflow:hidden;padding-bottom:12px}
+.list{margin:6px 16px;background:var(--card);border-radius:12px;overflow:hidden}
+.item{padding:11px 14px;border-bottom:.5px solid var(--line)}
+.item:last-child{border-bottom:none}
+.item.sel{background:var(--sel)}
+.l1{display:flex;align-items:baseline;gap:8px}
+.l1 .n{font-size:16px;font-weight:600}
+.l1 .c{font-size:13px;color:var(--t2);font-variant-numeric:tabular-nums}
+.l1 .tag{font-size:11px;color:var(--t2);background:var(--tag);border-radius:5px;padding:1px 6px}
+.l1 .time{margin-left:auto;font-size:12px;color:var(--t3);font-variant-numeric:tabular-nums}
+.l2{font-size:15px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.l3{font-size:13px;color:var(--t2);margin-top:3px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tabbar{height:82px;flex:none;border-top:.5px solid var(--line);background:var(--card);display:flex;justify-content:space-around;padding-top:8px;font-size:10px;color:var(--t3)}
+.tabbar span{display:flex;flex-direction:column;align-items:center;gap:3px}
+.tabbar span.on{color:var(--accent)}
+.tabbar i{width:24px;height:22px;border-radius:6px;background:currentColor;opacity:.85;display:block}
+.detail{padding:4px 16px 0}
+.dhead{display:flex;align-items:baseline;gap:8px}
+.dhead .n{font-size:20px;font-weight:600}
+.dhead .c{font-size:15px;color:var(--t2);font-variant-numeric:tabular-nums}
+.dmeta{font-size:12px;color:var(--t2);margin-top:4px;font-variant-numeric:tabular-nums}
+.dtitle{font-size:19px;font-weight:600;margin-top:10px;line-height:1.35}
+.concl{font-size:15px;line-height:1.55;margin-top:8px}
+.sect{font-size:12px;font-weight:500;color:var(--t3);margin:16px 0 6px}
+.card{background:var(--card);border-radius:12px;padding:4px 14px}
+.q{padding:9px 0;border-bottom:.5px solid var(--line)}
+.q:last-child{border-bottom:none}
+.q b{display:block;font-size:12px;font-weight:600;color:var(--t2);margin-bottom:2px}
+.q p{margin:0;font-size:14px;line-height:1.5}
+.risk{margin-top:14px;display:flex;gap:8px;align-items:flex-start;color:var(--red);font-size:14px;line-height:1.5;background:var(--redFill);border-radius:10px;padding:9px 12px}
+.risk .ic{flex:none;font-weight:700}
+.views{background:var(--blueFill);border-radius:12px;padding:4px 14px}
+.v{padding:8px 0;border-bottom:.5px solid rgba(127,127,127,.18);color:var(--blue);font-size:14px;line-height:1.5}
+.v:last-child{border-bottom:none}
+.v small{display:block;font-size:11.5px;opacity:.85;margin-bottom:1px}
+.src{display:flex;align-items:center;padding:9px 0;border-bottom:.5px solid var(--line)}
+.src:last-child{border-bottom:none}
+.src .s1{font-size:12px;color:var(--t2);font-variant-numeric:tabular-nums}
+.src .s2{font-size:14px;margin-top:2px}
+.src .chev{margin-left:auto;color:var(--t3);padding-left:8px}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--t2);padding:0 40px;text-align:center}
+.empty .big{font-size:18px;font-weight:600;color:var(--t1)}
+.mac{width:1180px;height:760px;border-radius:12px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.18);background:var(--page);color:var(--t1);display:flex;flex-direction:column}
+.mac .bar{height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:.5px solid var(--line);background:var(--card)}
+.mac .bar .dot{width:12px;height:12px;border-radius:6px;background:#FF5F57}
+.mac .bar .dot:nth-child(2){background:#FEBC2E}.mac .bar .dot:nth-child(3){background:#28C840}
+.mac .bar .seg{margin-left:24px;display:flex;background:var(--tag);border-radius:7px;padding:2px}
+.mac .bar .seg span{font-size:12px;padding:3px 14px;border-radius:5px}
+.mac .bar .seg span.on{background:var(--card);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.mac .body{flex:1;display:flex;min-height:0}
+.mac .left{width:400px;flex:none;border-right:.5px solid var(--line);overflow:hidden;padding-top:8px}
+.mac .left .hd{padding:6px 16px 4px}
+.mac .left .hd h3{margin:0;font-size:20px;font-weight:600}
+.mac .left .hd .meta{font-size:12px;color:var(--t2)}
+.mac .right{flex:1;overflow:hidden;padding:20px 28px}
+.mac .right .detail{padding:0;max-width:720px}
+.note{font-size:12px;color:#777;text-align:center;margin-top:-18px;padding-bottom:30px}
+</style></head><body>
+<header class="doc">
+  <h1>K10-v5 晨报样图（Neckline 4.2.0，待确认）</h1>
+  <p><b>改了什么：</b>
+    <ul style="margin:4px 0;padding-left:20px;line-height:1.6">
+      <li>名单里只有评估判「推」的，最多 10 条，按首次公开时间先后排列，没有序号。</li>
+      <li>每行三层：名称、代码和事件种类；一句话标题；结论（最多两行）。</li>
+      <li>去掉了「重要程度」标签和「其他」。</li>
+    </ul>
+  </p>
+  <p><b>详情页从上到下：</b>
+    <ul style="margin:4px 0;padding-left:20px;line-height:1.6">
+      <li>标题、结论；</li>
+      <li>四个问题；</li>
+      <li>风险：单独一行，系统红；</li>
+      <li>各方怎么看：单独一栏，系统蓝，每条注明来自媒体、券商还是公司；</li>
+      <li>原文：链接与发布时间。</li>
+    </ul>
+  </p>
+  <p><b>深色模式：</b>颜色跟随系统红、系统蓝的深色变体。</p>
+  <p style="color:#B25E00">图里的评估文字都是示意，正式内容由评估生成；数字取自光力科技三季报原文。</p>
+</header>
+
+<div class="row">
+  <figure>
+    <div class="phone"><div class="screen">
+      <div class="status"><span>8:12</span><span>●●●</span></div>
+      <div class="nav"><h2>10月22日 晨报</h2><div class="meta">10/21 15:00 – 10/22 08:00 · 3 家公司</div></div>
+      <div class="scroll">
+        <div class="list">
+          <div class="item"><div class="l1"><span class="n">光力科技</span><span class="c">300480</span><span class="tag">业绩</span><span class="time">10-21 17:01</span></div>
+            <div class="l2">三季度扣非净利同比增 424%，环比继续抬升</div>
+            <div class="l3">主业驱动的增长，扣非与归母基本一致；此前一个月已有涨幅，明显高开不追。</div></div>
+          <div class="item"><div class="l1"><span class="n">建新股份</span><span class="c">300107</span><span class="tag">业绩</span><span class="time">10-21 18:38</span></div>
+            <div class="l2">前三季度净利 9,896 万元，同比增 1,556%</div>
+            <div class="l3">去年基数很低，增幅看着大；单季仍在改善，回落企稳再看。</div></div>
+          <div class="item"><div class="l1"><span class="n">科新机电</span><span class="c">300092</span><span class="tag">收购</span><span class="time">10-21 16:02</span></div>
+            <div class="l2">取得参股公司控制权，纳入合并范围</div>
+            <div class="l3">并表能增加收入，但标的盈利与对价公告未披露，确定性一般，先看后续公告。</div></div>
+        </div>
+      </div>
+      <div class="tabbar"><span class="on"><i></i>K10</span><span><i></i>KX</span><span><i></i>历史</span><span><i></i>设置</span></div>
+    </div></div>
+    <figcaption><b>① iPhone 名单（浅色）。</b>一屏能看完 10 条；点进去看详情。</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone"><div class="screen">
+      <div class="status"><span>8:13</span><span>●●●</span></div>
+      <div class="navbar"><span class="back">‹ 晨报</span><span class="ttl">光力科技</span></div>
+      <div class="scroll"><div class="detail">
+        <div class="dhead"><span class="n">光力科技</span><span class="c">300480</span></div>
+        <div class="dmeta">业绩 · 首次公开 10-21 17:01</div>
+        <div class="dtitle">三季度扣非净利同比增 424%，环比继续抬升</div>
+        <div class="concl">增长来自主业，扣非与归母基本一致，单季环比继续改善；但此前一个月涨幅不小，开盘若明显高开不追。</div>
+        <div class="sect">四个问题</div>
+        <div class="card">
+          <div class="q"><b>① 利好值多少</b><p>第三季度扣非净利 5,343 万元、同比增 424%，非经常性损益只占一成左右，增长是真的。</p></div>
+          <div class="q"><b>② 市场已反映多少</b><p>此前 20 个交易日已有一段涨幅，站在各条均线上方，但还没有提前异动。</p></div>
+          <div class="q"><b>③ 资金为什么买、为什么不买</b><p>业绩兑现带来重新定价的理由；不买的理由是半导体设备题材近期分歧大，兑现就卖的压力在。</p></div>
+          <div class="q"><b>④ 价格划不划算</b><p>明显高开不追，回落到前一日收盘附近企稳再看。</p></div>
+        </div>
+        <div class="risk"><span class="ic">!</span><span>风险：半导体设备订单的持续性还没有在公告中体现，后续季度可能放缓。</span></div>
+        <div class="sect">各方怎么看</div>
+        <div class="views">
+          <div class="v"><small>媒体 · 财联社</small>前三季度净利润同比增长 259.8%。</div>
+          <div class="v"><small>公司 · 三季度报告</small>营收增长主要来自半导体封测装备业务放量。</div>
+        </div>
+        <div class="sect">原文</div>
+        <div class="card">
+          <div class="src"><div><div class="s1">巨潮公告 · 10-22 00:00</div><div class="s2">光力科技：2026年三季度报告</div></div><span class="chev">›</span></div>
+          <div class="src"><div><div class="s1">新浪财经 · 10-21 17:01</div><div class="s2">第三季度归母净利润5723万元 同比增404.7%</div></div><span class="chev">›</span></div>
+        </div>
+      </div></div>
+    </div></div>
+    <figcaption><b>② iPhone 详情（浅色）。</b>风险是一行红字，配浅红底；各方观点是一栏蓝字，配浅蓝底；原文点进去看全文。</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone dark"><div class="screen">
+      <div class="status"><span>8:13</span><span>●●●</span></div>
+      <div class="navbar"><span class="back">‹ 晨报</span><span class="ttl">光力科技</span></div>
+      <div class="scroll"><div class="detail">
+        <div class="dhead"><span class="n">光力科技</span><span class="c">300480</span></div>
+        <div class="dmeta">业绩 · 首次公开 10-21 17:01</div>
+        <div class="dtitle">三季度扣非净利同比增 424%，环比继续抬升</div>
+        <div class="concl">增长来自主业，扣非与归母基本一致，单季环比继续改善；但此前一个月涨幅不小，开盘若明显高开不追。</div>
+        <div class="sect">四个问题</div>
+        <div class="card">
+          <div class="q"><b>① 利好值多少</b><p>第三季度扣非净利 5,343 万元、同比增 424%，非经常性损益只占一成左右，增长是真的。</p></div>
+          <div class="q"><b>② 市场已反映多少</b><p>此前 20 个交易日已有一段涨幅，站在各条均线上方，但还没有提前异动。</p></div>
+          <div class="q"><b>③ 资金为什么买、为什么不买</b><p>业绩兑现带来重新定价的理由；不买的理由是半导体设备题材近期分歧大，兑现就卖的压力在。</p></div>
+          <div class="q"><b>④ 价格划不划算</b><p>明显高开不追，回落到前一日收盘附近企稳再看。</p></div>
+        </div>
+        <div class="risk"><span class="ic">!</span><span>风险：半导体设备订单的持续性还没有在公告中体现，后续季度可能放缓。</span></div>
+        <div class="sect">各方怎么看</div>
+        <div class="views">
+          <div class="v"><small>媒体 · 财联社</small>前三季度净利润同比增长 259.8%。</div>
+          <div class="v"><small>公司 · 三季度报告</small>营收增长主要来自半导体封测装备业务放量。</div>
+        </div>
+      </div></div>
+    </div></div>
+    <figcaption><b>③ iPhone 详情（深色）。</b>红、蓝用系统色的深色变体。</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone"><div class="screen">
+      <div class="status"><span>8:09</span><span>●●●</span></div>
+      <div class="nav"><h2>10月23日 晨报</h2><div class="meta">10/22 15:00 – 10/23 08:00</div></div>
+      <div class="empty"><div class="big">今天没有值得推的</div><div>评估了 18 家公司的隔夜消息，没有满足要求的。</div></div>
+      <div class="tabbar"><span class="on"><i></i>K10</span><span><i></i>KX</span><span><i></i>历史</span><span><i></i>设置</span></div>
+    </div></div>
+    <figcaption><b>④ 0 条。</b>推送也是「今天没有值得推的」，这样能和出错区分开。第二行是否显示评估了几家，请你定（可以去掉）。</figcaption>
+  </figure>
+</div>
+
+<div class="row">
+  <figure>
+    <div class="mac">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><div class="seg"><span class="on">K10</span><span>KX</span></div></div>
+      <div class="body">
+        <div class="left">
+          <div class="hd"><h3>10月22日 晨报</h3><div class="meta">10/21 15:00 – 10/22 08:00 · 3 家公司</div></div>
+          <div class="list" style="margin:8px 12px">
+            <div class="item sel"><div class="l1"><span class="n">光力科技</span><span class="c">300480</span><span class="tag">业绩</span><span class="time">10-21 17:01</span></div>
+              <div class="l2">三季度扣非净利同比增 424%，环比继续抬升</div>
+              <div class="l3">主业驱动的增长，扣非与归母基本一致；此前一个月已有涨幅，明显高开不追。</div></div>
+            <div class="item"><div class="l1"><span class="n">建新股份</span><span class="c">300107</span><span class="tag">业绩</span><span class="time">10-21 18:38</span></div>
+              <div class="l2">前三季度净利 9,896 万元，同比增 1,556%</div>
+              <div class="l3">去年基数很低，增幅看着大；单季仍在改善，回落企稳再看。</div></div>
+            <div class="item"><div class="l1"><span class="n">科新机电</span><span class="c">300092</span><span class="tag">收购</span><span class="time">10-21 16:02</span></div>
+              <div class="l2">取得参股公司控制权，纳入合并范围</div>
+              <div class="l3">并表能增加收入，但标的盈利与对价公告未披露，确定性一般。</div></div>
+          </div>
+        </div>
+        <div class="right"><div class="detail">
+          <div class="dhead"><span class="n">光力科技</span><span class="c">300480</span></div>
+          <div class="dmeta">业绩 · 首次公开 10-21 17:01</div>
+          <div class="dtitle">三季度扣非净利同比增 424%，环比继续抬升</div>
+          <div class="concl">增长来自主业，扣非与归母基本一致，单季环比继续改善；但此前一个月涨幅不小，开盘若明显高开不追。</div>
+          <div class="sect">四个问题</div>
+          <div class="card">
+            <div class="q"><b>① 利好值多少</b><p>第三季度扣非净利 5,343 万元、同比增 424%，非经常性损益只占一成左右，增长是真的。</p></div>
+            <div class="q"><b>② 市场已反映多少</b><p>此前 20 个交易日已有一段涨幅，站在各条均线上方，但还没有提前异动。</p></div>
+            <div class="q"><b>③ 资金为什么买、为什么不买</b><p>业绩兑现带来重新定价的理由；不买的理由是半导体设备题材近期分歧大，兑现就卖的压力在。</p></div>
+            <div class="q"><b>④ 价格划不划算</b><p>明显高开不追，回落到前一日收盘附近企稳再看。</p></div>
+          </div>
+          <div class="risk"><span class="ic">!</span><span>风险：半导体设备订单的持续性还没有在公告中体现，后续季度可能放缓。</span></div>
+          <div class="sect">各方怎么看</div>
+          <div class="views">
+            <div class="v"><small>媒体 · 财联社</small>前三季度净利润同比增长 259.8%。</div>
+            <div class="v"><small>公司 · 三季度报告</small>营收增长主要来自半导体封测装备业务放量。</div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+    <figcaption style="max-width:1180px"><b>⑤ Mac 两栏（浅色）。</b>左栏是名单，右栏是详情，铺满窗口，和现在的结构一致。</figcaption>
+  </figure>
+</div>
+</body></html>
