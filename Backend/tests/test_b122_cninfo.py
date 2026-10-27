@@ -43,10 +43,19 @@ def ann(i: int, when: datetime, *, name: str = "某某科技", code: str = "3000
 
 
 class Server:
-    """按 pageNum 切页的假巨潮；script 里按页放要依次消耗的步骤（异常，或返回响应的函数），其余页走正常数据。"""
+    """按 pageNum 切页的假巨潮；默认按 announcementTime 倒序（与真接口一致）。script 里按页放步骤，sort=False 可关排序。"""
 
-    def __init__(self, rows: list[dict], *, script: dict[int, list] | None = None) -> None:
-        self.rows = rows
+    def __init__(self, rows: list[dict], *, script: dict[int, list] | None = None, sort: bool = True) -> None:
+        if sort:
+            def _time_key(r: object) -> int | float:
+                if not isinstance(r, dict):
+                    return 0
+                t = r.get("announcementTime")
+                return t if isinstance(t, (int, float)) and not isinstance(t, bool) else 0
+
+            self.rows = sorted(rows, key=_time_key, reverse=True)
+        else:
+            self.rows = rows
         self.script = script or {}
         self.requests: list[tuple[httpx.Request, dict[str, str]]] = []
 
@@ -109,7 +118,7 @@ def test_request_shape_and_field_mapping():
                                           "?url=disclosure/list/search")
     assert form == {"pageNum": "1", "pageSize": "30", "column": "szse", "tabName": "fulltext", "plate": "szcy",
                     "stock": "", "searchkey": "", "secid": "", "category": "", "trade": "",
-                    "seDate": "2026-10-19~2026-10-20", "sortName": "", "sortType": "", "isHLtitle": "true"}
+                    "seDate": "2026-10-19~2026-10-20", "sortName": "time", "sortType": "desc", "isHLtitle": "true"}
 
     (document,) = outcome.documents
     assert document.source_key == "cninfo-announcement" and document.external_id == "1225610007"
@@ -132,7 +141,7 @@ def test_pages_until_total_with_delay_between_pages():
     assert outcome.complete and outcome.error is None
     assert outcome.requests == 3 and [f["pageNum"] for f in server.forms] == ["1", "2", "3"]
     assert sleeps == [cninfo.PAGE_DELAY_SECONDS, cninfo.PAGE_DELAY_SECONDS] and cninfo.PAGE_DELAY_SECONDS == 0.5
-    assert [d.external_id for d in outcome.documents] == [str(1225610000 + i) for i in range(70)]
+    assert [d.external_id for d in outcome.documents] == [str(1225610000 + i) for i in range(69, -1, -1)]
 
 
 def test_window_boundaries_and_cross_day_sedate():
@@ -246,6 +255,76 @@ def test_multi_company_announcement_keeps_every_name_and_code_matchable():
     assert document.original_text == "甲公司,乙公司（300001,300002）公告：联合公告"
 
 
+def test_stops_on_second_page_when_floor_reached_no_third_page():
+    start, end = at("2026-10-19", "18:00"), at("2026-10-20", "08:00")
+    rows = [ann(i, at("2026-10-19", "20:00") + timedelta(seconds=i)) for i in range(30)]
+    rows += [ann(30 + i, at("2026-10-19", "19:00") + timedelta(seconds=i)) for i in range(9)]
+    rows.append(ann(39, at("2026-10-19", "17:00")))
+    rows += [ann(40 + i, at("2026-10-19", "16:00") + timedelta(seconds=i)) for i in range(30)]
+    server = Server(rows)
+    outcome = fetch(server, start=start, end=end, max_pages=10)
+    assert outcome.complete and outcome.error is None
+    assert [f["pageNum"] for f in server.forms] == ["1", "2"]
+    assert len(outcome.documents) == 39
+
+
+def test_stops_after_first_page_when_window_is_short():
+    start, end = at("2026-10-20", "08:30"), at("2026-10-20", "10:00")
+    rows = [ann(1, at("2026-10-20", "10:00")), ann(2, at("2026-10-20", "09:00")),
+            ann(3, at("2026-10-20", "08:00"))]
+    rows += [ann(4 + i, at("2026-10-19", "20:00") + timedelta(seconds=i)) for i in range(30)]
+    server = Server(rows)
+    outcome = fetch(server, start=start, end=end, max_pages=5)
+    assert outcome.complete and outcome.error is None
+    assert [f["pageNum"] for f in server.forms] == ["1"]
+    assert {d.external_id for d in outcome.documents} == {"1225610001", "1225610002"}
+
+
+def test_in_page_order_violation_is_order_unexpected_and_keeps_documents():
+    start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
+    rows = [ann(1, at("2026-10-19", "20:00")), ann(2, at("2026-10-19", "19:00")),
+            ann(3, at("2026-10-19", "21:00"))]
+    outcome = fetch(Server(rows, sort=False), start=start, end=end)
+    assert outcome.error == "order_unexpected" and not outcome.complete
+    assert len(outcome.documents) == 2 and outcome.documents[0].external_id == "1225610001"
+
+
+def test_cross_page_order_violation_is_order_unexpected():
+    start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
+    page1 = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(30)]
+    page2 = [ann(30, at("2026-10-19", "21:00"))]
+    server = Server(page1 + page2, sort=False)
+
+    server.script = {2: [lambda: httpx.Response(200, json=server.page(2))]}
+    outcome = fetch(server, start=start, end=end, max_pages=5)
+    assert outcome.error == "order_unexpected" and not outcome.complete
+    assert len(outcome.documents) == 30
+
+
+def test_duplicate_across_pages_after_insertion_still_complete():
+    start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
+    base = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(35)]
+    page1 = base[:30]
+    # 翻第 2 页前有新公告插入，偏移后本页开头重复上一页末尾那条（时间相同或更旧）
+    page2 = [*base[29:35]]
+    server = Server(page1 + base[30:35], sort=False)
+    server.script = {2: [lambda: httpx.Response(200, json={"totalAnnouncement": 36, "hasMore": False,
+                                                            "announcements": page2})]}
+    outcome = fetch(server, start=start, end=end, max_pages=5)
+    assert outcome.complete and outcome.error is None
+    assert [f["pageNum"] for f in server.forms] == ["1", "2"]
+    assert len(outcome.documents) == 35
+    assert len({d.external_id for d in outcome.documents}) == 35
+
+
+def test_page_limit_when_many_pages_before_floor():
+    start, end = at("2026-10-19", "07:00"), at("2026-10-20", "08:00")
+    rows = [ann(i, at("2026-10-19", "20:00") + timedelta(seconds=i)) for i in range(100)]
+    outcome = fetch(Server(rows), start=start, end=end, max_pages=2)
+    assert outcome.error == "page_limit" and not outcome.complete
+    assert outcome.requests == 2 and len(outcome.documents) == 60
+
+
 # ------------------------------------------------------------------ 接入采集
 
 @pytest.fixture
@@ -270,9 +349,10 @@ def summary(result: dict, key: str = KEY) -> dict:
 
 def test_packaged_config_declares_the_new_source():
     config = packaged_collection()
-    assert config["collectionVersion"] == "collection-v4-2" and "巨潮" in config["note"]
+    assert config["collectionVersion"] == "collection-v4-3" and "巨潮" in config["note"]
+    assert "按时间倒序翻到起点就停" in config["note"]
     assert set(config["sources"]) == set(SOURCES) and SOURCES[-1] == KEY
-    assert config["sources"][KEY] == {"lookbackSeconds": 3600, "maxPages": 40, "timeoutSeconds": 20,
+    assert config["sources"][KEY] == {"lookbackSeconds": 3600, "maxPages": 120, "timeoutSeconds": 20,
                                       "bootstrapSeconds": 172800}
     assert LATE_SOURCES == {KEY} and SOURCE_LABELS[KEY] == "巨潮公告"
 

@@ -1,8 +1,9 @@
 """巨潮资讯（cninfo.com.cn）公开公告查询：创业板上市公司公告，只取标题，不解析 PDF。
 
-按 [start, end] 覆盖的北京时间日期取 seDate，从第 1 页翻到取完（服务端每页最多 30 条），再只留发布时间落在
-[start, end] 内的公告。翻页上限由配置给出，超限如实记为 page_limit（不完整）。每页最多重试一次，
-页与页之间留间隔，不给公开接口压力。网络、状态码、非 JSON、结构不对都只记为这个来源的错误，不影响别的来源。
+按 [start, end] 覆盖的北京时间日期取 seDate，显式按 announcementTime 倒序从第 1 页往后翻（每页最多 30 条），
+只留发布时间落在 [start, end] 内的公告；某一页一旦出现早于起点 floor 的公告即视为已翻过窗口起点，判完整并停止。
+页内与跨页顺序须非递增（相等允许），无法解析时间的条目不参与比较，乱序如实记 order_unexpected（不完整，已收保留）。
+翻页上限仅防异常循环，超限记 page_limit。每页最多重试一次，页间留间隔。网络、状态码、非 JSON、结构不对只记本来源错误。
 """
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ class CninfoError(RuntimeError):
 def _form(page: int, se_date: str) -> dict[str, str]:
     return {"pageNum": str(page), "pageSize": str(PAGE_SIZE), "column": "szse", "tabName": "fulltext",
             "plate": "szcy", "stock": "", "searchkey": "", "secid": "", "category": "", "trade": "",
-            "seDate": se_date, "sortName": "", "sortType": "", "isHLtitle": "true"}
+            "seDate": se_date, "sortName": "time", "sortType": "desc", "isHLtitle": "true"}
 
 
 def _clean(value: object) -> str | None:
@@ -109,6 +110,18 @@ def _post_page(client: httpx.Client, form: Mapping[str, str]) -> Any:
         raise CninfoError("json_invalid") from exc
 
 
+def _row_published_at(row: object) -> datetime | None:
+    if not isinstance(row, Mapping):
+        return None
+    millis = _plain_number(row.get("announcementTime"))
+    if millis is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(millis) // 1000, tz=CST)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _parse_page(body: object) -> tuple[list[Any], int, bool]:
     if not isinstance(body, Mapping):
         raise CninfoError("page_shape_invalid")
@@ -133,6 +146,7 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
     se_date = f"{start.astimezone(CST):%Y-%m-%d}~{end.astimezone(CST):%Y-%m-%d}"
     pages = raw_seen = 0
     seen_ids: set[str] = set()
+    prev_page_last_time: datetime | None = None
     with httpx.Client(transport=transport, timeout=httpx.Timeout(timeout_seconds, connect=5.0),
                       follow_redirects=False, headers=HEADERS) as client:
         try:
@@ -156,7 +170,17 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
                 rows, total, has_more = _parse_page(body)
                 raw_seen += len(rows)
                 fetched_at = clock()
+                page_times: list[datetime] = []
                 for row in rows:
+                    when = _row_published_at(row)
+                    if when is not None:
+                        if page_times and when > page_times[-1]:
+                            outcome.error = "order_unexpected"
+                            return outcome
+                        if prev_page_last_time is not None and not page_times and when > prev_page_last_time:
+                            outcome.error = "order_unexpected"
+                            return outcome
+                        page_times.append(when)
                     try:
                         document = normalize_item(row, fetched_at)
                     except CninfoError:
@@ -168,6 +192,11 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
                     outcome.documents.append(document)
                     if outcome.oldest_seen is None or document.published_at < outcome.oldest_seen:
                         outcome.oldest_seen = document.published_at
+                if page_times:
+                    prev_page_last_time = page_times[-1]
+                if any(when < floor for when in page_times):
+                    outcome.complete = True
+                    return outcome
                 if raw_seen >= total:
                     outcome.complete = True
                     return outcome

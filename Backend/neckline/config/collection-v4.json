@@ -1,6 +1,6 @@
 {
-  "collectionVersion": "collection-v4-2",
-  "note": "每天 08:00、20:00 各采一次（周末节假日也采）。每个来源从上次完整覆盖处减去回看时长开始取到当下；首次上线须显式给出起点（巨潮公告除外）。TuShare major_news 每个账号每天最多调用 40 次，按 3 小时切片后一次 13 小时的采集约 5 次请求。巨潮公告（cninfo 创业板公告，只取标题）每页 30 条、页间隔约 0.5 秒，没有历史时从当下往前 bootstrapSeconds 取起，之后与其他来源一样续采。",
+  "collectionVersion": "collection-v4-3",
+  "note": "每天 08:00、20:00 各采一次（周末节假日也采）。每个来源从上次完整覆盖处减去回看时长开始取到当下；首次上线须显式给出起点（巨潮公告除外）。TuShare major_news 每个账号每天最多调用 40 次，按 3 小时切片后一次 13 小时的采集约 5 次请求。巨潮公告（cninfo 创业板公告，只取标题）每页 30 条、页间隔约 0.5 秒，按时间倒序翻到起点就停，没有历史时从当下往前 bootstrapSeconds 取起，之后与其他来源一样续采。",
   "jin10": {
     "endpoint": "https://mcp.jin10.com/mcp",
     "protocolVersion": "2025-11-25"
@@ -24,7 +24,7 @@
     },
     "cninfo-announcement": {
       "lookbackSeconds": 3600,
-      "maxPages": 40,
+      "maxPages": 120,
       "timeoutSeconds": 20,
       "bootstrapSeconds": 172800
     }
