@@ -14,6 +14,7 @@ h2==4.1.0                     # httpx HTTP/2 后端（APNs）
 PyYAML==6.0.3                 # 版本治理测试读 project.yml；uvicorn[standard] 也依赖它
 mcp==2.2.0                    # 只读 MCP。2.2 里的 FastMCP 改名为 MCPServer
 python-multipart==0.0.32      # OAuth 登录页的表单
+pypdf==6.21.2                 # 公告 PDF 读文本：定期报告主要会计数据、业绩预告与快报；纯 Python，无额外依赖
 
 # —— 传递依赖（pip freeze 钉死，保证可复现）——
 annotated-doc==0.0.5          # fastapi 0.143 直接依赖
