@@ -522,7 +522,10 @@ def test_config_requires_cutoff_concurrency_and_model_options(tmp_path: Path) ->
     assert evaluation["cutoff"] == "09:05" and evaluation["concurrency"] == 6
     assert evaluation["modelOptions"]["thinking"] == {"type": "enabled"}
     assert evaluation["modelOptions"]["max_tokens"] == 16384
-    assert evaluation["search"] is None
+    # 10/28 用户定的联网参数（B126）
+    assert {key: evaluation["search"][key] for key in ("endpoint", "count", "summaryChars", "timeoutSeconds", "maxAttempts")} == {
+        "endpoint": "https://api.deepseek.com/v1/tools/search", "count": 10, "summaryChars": 1000,
+        "timeoutSeconds": 30, "maxAttempts": 2}
     assert loaded.rules["delivery"] == {"maxItems": 10}
 
     def rejected(mutate, message: str) -> None:

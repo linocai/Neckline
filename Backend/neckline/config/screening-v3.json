@@ -1,7 +1,7 @@
 {
   "configVersion": "screening-v3",
   "approval": "approved",
-  "approvedAt": "2026-10-27",
+  "approvedAt": "2026-10-28",
   "note": "K10-v5，用户 10/27 确认，依据 whynotme/K10.md 第四节与 archive/v4.2.0_execution.md §3；与 v2 相比删除重要程度、新增不收种类「交易进展」「业绩不明」、只有标题的定期报告先读 PDF 数字。",
   "schedule": {
     "previousClose": "15:00",
@@ -159,7 +159,14 @@
         "type": "json_object"
       }
     },
-    "search": null,
+    "search": {
+      "note": "D4 方案 A，用户 10/28 定：每条候选搜一次，只补背景和各方观点；参数依据四期回放，见 archive/v4.2.0-b126_execution.md §3",
+      "endpoint": "https://api.deepseek.com/v1/tools/search",
+      "count": 10,
+      "summaryChars": 1000,
+      "timeoutSeconds": 30,
+      "maxAttempts": 2
+    },
     "package": {
       "pdfMaxPages": 40,
       "originalChars": 12000,

@@ -80,7 +80,10 @@ def path(tmp_path: Path) -> Path:
 
 
 def test_search_config_accepts_null_and_rejects_incomplete_objects(tmp_path: Path) -> None:
-    assert load_config().rules["evaluation"]["search"] is None
+    evaluation = load_config().rules["evaluation"]
+    assert {key: evaluation["search"][key] for key in ("endpoint", "count", "summaryChars", "timeoutSeconds", "maxAttempts")} == {
+        "endpoint": "https://api.deepseek.com/v1/tools/search", "count": 10, "summaryChars": 1000,
+        "timeoutSeconds": 30, "maxAttempts": 2}
     loaded = load_config(path=_rules_path(tmp_path, None))
     assert loaded.rules["evaluation"]["search"] is None
     enabled = load_config(path=_rules_path(tmp_path, VALID))
@@ -604,7 +607,10 @@ def test_cli_skips_the_search_client_when_search_is_null(tmp_path: Path, monkeyp
     from neckline.morning import cli
 
     config = load_config()
-    assert cli._search_factory(tmp_path / "v4.db", config) is None
+    off = json.loads(json.dumps(config.rules))
+    off["evaluation"]["search"] = None
+    disabled = LoadedConfig(rules=off, sha256=config.sha256, pool=config.pool, profiles=config.profiles)
+    assert cli._search_factory(tmp_path / "v4.db", disabled) is None
     rules = json.loads(json.dumps(config.rules))
     rules["evaluation"]["search"] = dict(VALID)
     enabled = LoadedConfig(rules=rules, sha256=config.sha256, pool=config.pool, profiles=config.profiles)

@@ -504,7 +504,9 @@ def test_snapshot_capture_skips_existing_codes_and_prints_counts_only(tmp_path: 
 def test_evaluation_config_requires_positive_integers(tmp_path: Path) -> None:
     config = load_config()
     evaluation = config.rules["evaluation"]
-    assert evaluation["search"] is None
+    assert {key: evaluation["search"][key] for key in ("endpoint", "count", "summaryChars", "timeoutSeconds", "maxAttempts")} == {
+        "endpoint": "https://api.deepseek.com/v1/tools/search", "count": 10, "summaryChars": 1000,
+        "timeoutSeconds": 30, "maxAttempts": 2}
     assert evaluation["note"] == "长度参数待 B7 用真实公告实测后定稿"
     assert evaluation["package"]["pdfMaxPages"] == 40
     assert evaluation["package"]["originalChars"] == 12000

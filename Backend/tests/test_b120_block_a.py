@@ -254,6 +254,7 @@ def test_resume_freezes_the_request_and_skips_collection(path, monkeypatch, caps
     def tiny():
         config = _one_company_per_call()
         config.rules["classification"]["concurrency"] = 1
+        config.rules["evaluation"]["search"] = None  # 这里只核对聊天请求冻结，搜索回执另测
         return config
 
     monkeypatch.setattr(cli, "load_config", tiny)
