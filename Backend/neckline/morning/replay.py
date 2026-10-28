@@ -76,7 +76,9 @@ def _replace_copy(src: Path, dest: Path) -> None:
             sidecar.unlink()
     if dest.exists():
         dest.unlink()
-    shutil.copy2(src, dest)
+    # 只复制内容、不带权限：快照常设成只读，工作库要能写。
+    shutil.copyfile(src, dest)
+    dest.chmod(0o600)
 
 
 def _started_at(path: Path, trade_date: str) -> datetime:

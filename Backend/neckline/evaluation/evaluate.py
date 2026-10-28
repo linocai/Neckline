@@ -38,6 +38,8 @@ class Evaluation:
     risk: str
     views: list[dict[str, str]]
     dropped_views: int = 0
+    vetoed: bool = False  # 模型判了推，但它自己的①或②不过关：按一票否决记为不推
+
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +49,7 @@ class Evaluation:
             "questions": self.questions,
             "risk": self.risk,
             "views": self.views,
+            **({"vetoed": True} if self.vetoed else {}),
         }
 
 
@@ -67,6 +70,7 @@ class _Hit:
     from_receipt: bool = False
     usage: dict[str, int] | None = None
     dropped: int = 0
+    vetoed: bool = False
 
 
 @dataclass
@@ -165,14 +169,15 @@ def parse_output(content: str, package: Mapping) -> Evaluation | str:
     questions = _questions(data.get("questions"))
     if isinstance(questions, str):
         return questions
-    if verdict == "推" and (not questions["value"]["pass"] or not questions["priced"]["pass"]):
-        return "①或②不过关却判了推"
+    vetoed = verdict == "推" and (not questions["value"]["pass"] or not questions["priced"]["pass"])
+    if vetoed:
+        verdict = "不推"  # 自相矛盾时以它自己的①②为准，宁缺毋滥
     views = _views(data.get("views"), _refs(package))
     if isinstance(views, str):
         return views
     kept, dropped = views
     return Evaluation(title=title, verdict=verdict, conclusion=conclusion, questions=questions, risk=risk,
-                      views=kept, dropped_views=dropped)
+                      views=kept, dropped_views=dropped, vetoed=vetoed)
 
 
 def json_loads(content: str) -> Any:
@@ -342,7 +347,8 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
             return index, _Hit(item=EvaluationItem(company, "invalid", None, None, parsed), **common)
         _settle(db_path, report_id=report_id, company=company, state="succeeded", settled_at=clock(),
                 verdict=parsed.verdict, output=parsed.as_dict(), usage=usage, seconds=result.seconds)
-        return index, _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views, **common)
+        return index, _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views,
+                           vetoed=parsed.vetoed, **common)
 
     call_started = time.monotonic()
     if pending:
@@ -354,7 +360,7 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
 
     done = [item for item in items if item is not None]
     usage = _empty_usage()
-    calls = from_receipt = dropped = 0
+    calls = from_receipt = dropped = vetoed = 0
     fatal = None
     verdicts = {"推": 0, "不推": 0}
     invalid = gap = 0
@@ -367,6 +373,7 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
             for key in _USAGE:
                 usage[key] += hit.usage.get(key, 0)
         dropped += hit.dropped
+        vetoed += hit.vetoed
         if hit.fatal and fatal is None:
             fatal = hit.fatal
     for item in done:
@@ -386,5 +393,6 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
         "invalid": invalid,
         "gap": gap,
         "droppedViews": dropped,
+        "vetoed": vetoed,
     }
     return EvaluationRun(items=done, stats=stats, prepare_seconds=prepare_seconds, fatal=fatal)

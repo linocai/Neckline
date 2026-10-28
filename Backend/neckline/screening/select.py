@@ -20,6 +20,8 @@ class Entry:
     primary: Event
     messages: list[Message]          # 主事件的消息，按发布时间排
     others: list[Event] = field(default_factory=list)  # 同一家公司的其他入选事件
+    # 本条主事件与其他事件引用的 m 编号 → 消息（只含这家公司的事件），供数据准备找原文和媒体报道
+    by_id: Mapping[str, Message] = field(default_factory=dict, repr=False)
 
     @property
     def first_message(self) -> Message:
@@ -139,6 +141,7 @@ def select(by_id: Mapping[str, Message], results: Mapping[str, CompanyResult], r
         events.sort(key=lambda event: (_earliest(event, by_id), tuple(event.ids)))
         primary = events[0]
         messages = sorted((by_id[i] for i in primary.ids), key=lambda message: (message.published_at, message.ref))
-        entries.append(Entry(company=code, primary=primary, messages=messages, others=events[1:]))
+        refs = {i: by_id[i] for event in events for i in event.ids if i in by_id}
+        entries.append(Entry(company=code, primary=primary, messages=messages, others=events[1:], by_id=refs))
     entries.sort(key=lambda entry: (entry.first_message.published_at, entry.company))
     return Selection(candidates=entries, reasons=reasons, gaps=sorted(gaps, key=lambda gap: gap.company))

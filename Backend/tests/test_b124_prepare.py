@@ -494,3 +494,29 @@ def test_evaluation_config_requires_positive_integers(tmp_path: Path) -> None:
     rejected(lambda rules: rules["evaluation"]["package"].pop("pdfMaxBytes"), "pdfMaxBytes")
     rejected(lambda rules: rules["evaluation"]["market"].__setitem__("timeoutSeconds", 0), "timeoutSeconds")
     rejected(lambda rules: rules["evaluation"]["market"].__setitem__("concurrency", True), "concurrency")
+
+
+def test_selected_entry_with_classification_ids_carries_original_and_media() -> None:
+    """一级给的事件编号是 m0001 这类分类编号；select 产出的条目要带上自己的编号表，原文与媒体报道才对得上。"""
+    from neckline.screening.classify import EVENT_TYPES, CompanyResult
+    from neckline.screening.select import select
+
+    flash = _message(1, 18, text="甲公司签下 2 亿元订单，媒体称是公司历史最大单。")
+    notice = _message(2, 19, source="cninfo-announcement", title="甲公司：关于签订重大合同的公告",
+                      text="甲公司（300001）公告：关于签订重大合同的公告", url="http://static.cninfo.com.cn/x/1.PDF")
+    unrelated = _message(3, 20, text="乙公司的消息，不属于本条。")
+    by_id = {"m0001": flash, "m0002": notice, "m0003": unrelated}
+    result = CompanyResult(company="300001.SZ", message_ids=["m0001", "m0002"],
+                           events=[_event(["m0001", "m0002"], amount_yuan=200_000_000)], mentions=[])
+    rules = {"relation": {"include": ["主体"]}, "freshness": {"include": ["新"]}, "direction": {"include": ["利好"]},
+             "channels": {"exclude": [], "requireAmount": []}, "minimumAmountYuan": {},
+             "kinds": {"include": ["订单中标"], "judge": [],
+                       "exclude": [kind for kind in EVENT_TYPES if kind != "订单中标"]}}
+    (entry,) = select(by_id, {"300001.SZ": result}, rules).candidates
+    assert set(entry.by_id) == {"m0001", "m0002"}
+
+    package = _build(entry)
+    assert "主事件没有对上消息" not in package["gaps"]
+    assert [m["ref"] for m in package["messages"]] == ["doc_1@1", "doc_2@1"]
+    assert package["original"]["documents"] and package["original"]["media"]
+    assert "乙公司" not in json.dumps(package, ensure_ascii=False)

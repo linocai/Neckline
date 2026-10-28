@@ -196,8 +196,11 @@ def test_parse_accepts_push_and_skip_and_rejects_contradictions() -> None:
     skipped = parse_output(json.dumps(_answer("不推", value_pass=False)), package)
     assert isinstance(pushed, Evaluation) and pushed.verdict == "推" and pushed.dropped_views == 0
     assert isinstance(skipped, Evaluation) and skipped.verdict == "不推"
-    assert parse_output(json.dumps(_answer("推", value_pass=False)), package) == "①或②不过关却判了推"
-    assert parse_output(json.dumps(_answer("推", priced_pass=False)), package) == "①或②不过关却判了推"
+    for contradiction in (_answer("推", value_pass=False), _answer("推", priced_pass=False)):
+        vetoed = parse_output(json.dumps(contradiction), package)
+        assert isinstance(vetoed, Evaluation) and vetoed.verdict == "不推" and vetoed.vetoed
+        assert vetoed.as_dict()["vetoed"] is True and vetoed.as_dict()["verdict"] == "不推"
+    assert "vetoed" not in pushed.as_dict()
     assert parse_output(json.dumps(_answer(title="字" * 40)), package).title == "字" * 40
     assert parse_output(json.dumps(_answer(title="字" * 41)), package) == "title 无效"
     assert parse_output(json.dumps(_answer(title="  ")), package) == "title 无效"
@@ -278,7 +281,7 @@ def test_two_verdicts_stats_and_dropped_views(path: Path) -> None:
     assert rows[0]["package"]["company"]["code"] == "300001"
 
 
-def test_contradiction_non_json_and_length_are_invalid(path: Path) -> None:
+def test_contradiction_is_vetoed_non_json_and_length_are_invalid(path: Path) -> None:
     raw = {
         "300001": json.dumps(_answer("推", value_pass=False), ensure_ascii=False),
         "300002": "这不是 JSON",
@@ -291,17 +294,19 @@ def test_contradiction_non_json_and_length_are_invalid(path: Path) -> None:
         return _http(raw[code], finish=finish)
 
     result = _run(path, handler, [_candidate(code) for code in raw])
-    assert [item.state for item in result.items] == ["invalid", "invalid", "invalid"]
-    assert result.items[0].error == "①或②不过关却判了推"
+    assert [item.state for item in result.items] == ["succeeded", "invalid", "invalid"]
+    assert result.items[0].verdict == "不推" and result.items[0].evaluation.vetoed
     assert result.items[1].error == "输出不是 JSON 对象"
     assert result.items[2].error == "finish:length"
-    assert result.stats["invalid"] == 3 and result.stats["verdicts"] == {"推": 0, "不推": 0}
+    assert result.stats["invalid"] == 2 and result.stats["verdicts"] == {"推": 0, "不推": 1}
+    assert result.stats["vetoed"] == 1
     with db.read(path) as conn:
         stored = {
             row["company"]: row
             for row in conn.execute("SELECT company, verdict, output_json, error FROM evaluations ORDER BY company")
         }
-    assert stored["300001"]["verdict"] is None and stored["300001"]["output_json"] == raw["300001"]
+    vetoed = json.loads(stored["300001"]["output_json"])
+    assert stored["300001"]["verdict"] == "不推" and vetoed["verdict"] == "不推" and vetoed["vetoed"] is True
     assert stored["300002"]["output_json"] == "这不是 JSON"
     assert stored["300003"]["output_json"] == raw["300003"] and stored["300003"]["error"] == "finish:length"
 
