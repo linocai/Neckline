@@ -118,7 +118,7 @@ def test_request_shape_and_field_mapping():
                                           "?url=disclosure/list/search")
     assert form == {"pageNum": "1", "pageSize": "30", "column": "szse", "tabName": "fulltext", "plate": "szcy",
                     "stock": "", "searchkey": "", "secid": "", "category": "", "trade": "",
-                    "seDate": "2026-10-19~2026-10-20", "sortName": "time", "sortType": "desc", "isHLtitle": "true"}
+                    "seDate": "2026-10-19~2026-10-20", "sortName": "", "sortType": "", "isHLtitle": "true"}
 
     (document,) = outcome.documents
     assert document.source_key == "cninfo-announcement" and document.external_id == "1225610007"
@@ -522,3 +522,16 @@ def test_gap_reported_once_the_new_source_has_records_but_did_not_cover():
     # 早先有过记录、窗口内这次没采到：照样要报，不能因为「窗口内没记录」就放过
     stale = _run([_src(KEY, at("2026-10-18", "08:00"), at("2026-10-20", "08:00"))])
     assert coverage_gaps([stale, _run(base)], start, end) == ["巨潮公告没取全"]
+
+
+
+def test_unstable_pagination_is_reported_not_trusted():
+    """并列时刻翻页不稳（每页都重复上一页的内容）时，不能当作取全。"""
+    when = at("2026-10-20", "00:00")
+    rows = [ann(i, when) for i in range(200)]
+    server = Server(rows)
+    server.page = lambda number: {"totalAnnouncement": 200, "hasMore": True,
+                                  "announcements": rows[:cninfo.PAGE_SIZE]}  # 每页都给同一批
+    outcome = fetch(server, start=at("2026-10-19", "15:00"), end=at("2026-10-20", "08:00"))
+    assert outcome.error == "pagination_unstable" and not outcome.complete
+    assert len(outcome.documents) == cninfo.PAGE_SIZE and outcome.requests == 3

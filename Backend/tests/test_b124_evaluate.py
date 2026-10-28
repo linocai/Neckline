@@ -532,3 +532,16 @@ def test_morning_rejection_fails_the_report(path: Path) -> None:
     assert apns.sent[-1][1:] == ("晨报出问题了", "DeepSeek 余额不足（http:402）")
     with db.read(path) as conn:
         assert db.get_report(conn, "2026-10-13")["status"] == "failed"
+
+
+def test_risk_written_inside_questions_is_accepted_as_is() -> None:
+    package = _package()
+    answer = _answer("不推", value_pass=False)
+    risk = answer.pop("risk")
+    answer["questions"]["risk"] = risk
+    parsed = parse_output(json.dumps(answer, ensure_ascii=False), package)
+    assert isinstance(parsed, Evaluation) and parsed.risk == risk
+    answer["questions"]["risk"] = {"text": risk}
+    assert parse_output(json.dumps(answer, ensure_ascii=False), package).risk == risk
+    del answer["questions"]["risk"]
+    assert parse_output(json.dumps(answer, ensure_ascii=False), package) == "risk 为空"

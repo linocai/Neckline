@@ -1,9 +1,9 @@
 """巨潮资讯（cninfo.com.cn）公开公告查询：创业板上市公司公告，只取标题，不解析 PDF。
 
-按 [start, end] 覆盖的北京时间日期取 seDate，显式按 announcementTime 倒序从第 1 页往后翻（每页最多 30 条），
+按 [start, end] 覆盖的北京时间日期取 seDate，用接口默认排序（按 announcementTime 倒序、并列稳定）从第 1 页往后翻（每页最多 30 条），
 只留发布时间落在 [start, end] 内的公告；某一页一旦出现早于起点 floor 的公告即视为已翻过窗口起点，判完整并停止。
 页内与跨页顺序须非递增（相等允许），无法解析时间的条目不参与比较，乱序如实记 order_unexpected（不完整，已收保留）。
-翻页上限仅防异常循环，超限记 page_limit。每页最多重试一次，页间留间隔。网络、状态码、非 JSON、结构不对只记本来源错误。
+跨页重复超过一页的量记 pagination_unstable。翻页上限仅防异常循环，超限记 page_limit。每页最多重试一次，页间留间隔。网络、状态码、非 JSON、结构不对只记本来源错误。
 """
 from __future__ import annotations
 
@@ -22,6 +22,10 @@ QUERY_URL = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
 FILE_BASE = "http://static.cninfo.com.cn/"
 PAGE_SIZE = 30  # 服务端上限，传更大的值也只给 30
 PAGE_DELAY_SECONDS = 0.5
+# 默认排序本身按时间倒序，并列时刻的先后也稳定。显式传 sortName=time 在并列时刻翻页会重复、漏项：
+# 10/28 实测 10/26～10/27 共 1,708 条，按 time 倒序翻完只拿到 1,363 条不重复的，默认排序 1,708 条全齐。
+# 稳定排序下跨页重复只来自翻页途中插到最前面的新公告，超过一页的量就说明分页不稳，如实记为不完整。
+REPEAT_LIMIT = PAGE_SIZE
 CST = timezone(timedelta(hours=8))
 
 HEADERS = {
@@ -46,7 +50,7 @@ class CninfoError(RuntimeError):
 def _form(page: int, se_date: str) -> dict[str, str]:
     return {"pageNum": str(page), "pageSize": str(PAGE_SIZE), "column": "szse", "tabName": "fulltext",
             "plate": "szcy", "stock": "", "searchkey": "", "secid": "", "category": "", "trade": "",
-            "seDate": se_date, "sortName": "time", "sortType": "desc", "isHLtitle": "true"}
+            "seDate": se_date, "sortName": "", "sortType": "", "isHLtitle": "true"}
 
 
 def _clean(value: object) -> str | None:
@@ -146,6 +150,8 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
     se_date = f"{start.astimezone(CST):%Y-%m-%d}~{end.astimezone(CST):%Y-%m-%d}"
     pages = raw_seen = 0
     seen_ids: set[str] = set()
+    row_ids: set[str] = set()  # 翻到过的全部条目（不论是否在窗口内），用来发现分页不稳
+    repeats = 0
     prev_page_last_time: datetime | None = None
     with httpx.Client(transport=transport, timeout=httpx.Timeout(timeout_seconds, connect=5.0),
                       follow_redirects=False, headers=HEADERS) as client:
@@ -172,6 +178,14 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
                 fetched_at = clock()
                 page_times: list[datetime] = []
                 for row in rows:
+                    raw_id = row.get("announcementId") if isinstance(row, Mapping) else None
+                    if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
+                        if str(raw_id) in row_ids:
+                            repeats += 1
+                            if repeats > REPEAT_LIMIT:
+                                outcome.error = "pagination_unstable"
+                                return outcome
+                        row_ids.add(str(raw_id))
                     when = _row_published_at(row)
                     if when is not None:
                         if page_times and when > page_times[-1]:

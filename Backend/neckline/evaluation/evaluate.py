@@ -165,6 +165,10 @@ def parse_output(content: str, package: Mapping) -> Evaluation | str:
         return "conclusion 为空"
     risk = _text(data.get("risk"))
     if not risk:
+        # 模型偶尔把风险写进 questions 里；只认这一种放错位置，内容照原文取，不补写
+        nested = data.get("questions", {}).get("risk") if isinstance(data.get("questions"), dict) else None
+        risk = _text(nested.get("text")) if isinstance(nested, dict) else _text(nested)
+    if not risk:
         return "risk 为空"
     questions = _questions(data.get("questions"))
     if isinstance(questions, str):
