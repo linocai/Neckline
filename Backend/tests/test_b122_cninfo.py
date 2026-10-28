@@ -614,3 +614,30 @@ def test_second_pass_shift_with_unchanged_total_is_still_caught():
     server.page = paged
     outcome = fetch(server, start=start, end=end, max_pages=10)
     assert outcome.error == "pagination_shifted" and not outcome.complete
+
+
+def test_more_repeats_of_the_same_id_on_the_second_pass_count_as_a_shift():
+    """第一遍某条重复 1 次；核对那一遍同一条重复 2 次（新增与撤回同时发生、总数不变）：不能判取全。"""
+    start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
+    base = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(70)]
+    base += [ann(500 + i, at("2026-10-19", "14:00") - timedelta(seconds=i)) for i in range(5)]  # 早于起点
+    calls = {"n": 0}
+
+    def paged(number: int) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            rows = base
+        elif calls["n"] <= 3:          # 第一遍第 2、3 页：插入了 1 条
+            rows = [ann(900, at("2026-10-19", "20:30")), *base]
+        elif calls["n"] == 4:          # 核对那一遍第 1 页：已稳定
+            rows = [ann(900, at("2026-10-19", "20:30")), *base]
+        else:                          # 核对那一遍第 2 页起：又插入 1 条、撤回 1 条，总数不变，同一条再重复
+            rows = [ann(901, at("2026-10-19", "20:40")), ann(900, at("2026-10-19", "20:30")), *base[:-1]]
+        chunk = rows[(number - 1) * cninfo.PAGE_SIZE:number * cninfo.PAGE_SIZE]
+        return {"totalAnnouncement": len(rows), "hasMore": number * cninfo.PAGE_SIZE < len(rows),
+                "announcements": chunk or None}
+
+    server = Server(base, sort=False)
+    server.page = paged
+    outcome = fetch(server, start=start, end=end, max_pages=12)
+    assert outcome.error == "pagination_shifted" and not outcome.complete
