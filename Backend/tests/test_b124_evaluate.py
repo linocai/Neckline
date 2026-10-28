@@ -449,6 +449,9 @@ def test_resume_reuses_the_stored_package_and_does_not_rebill(path: Path) -> Non
     client = _eval_client(path, handler)
     settings = _settings(concurrency=1)
 
+    class Killed(BaseException):
+        """模拟进程被杀：普通异常会被收成单条缺口，只有这一类会冒出去。"""
+
     class Boom:
         def __init__(self, inner: DeepSeekClient) -> None:
             self.inner = inner
@@ -458,10 +461,10 @@ def test_resume_reuses_the_stored_package_and_does_not_rebill(path: Path) -> Non
             result = self.inner.complete(messages, options)
             self.n += 1
             if self.n >= 2:
-                raise RuntimeError("crash after receipt")
+                raise Killed("crash after receipt")
             return result
 
-    with pytest.raises(RuntimeError, match="crash after receipt"):
+    with pytest.raises(Killed, match="crash after receipt"):
         _run(path, handler, [_candidate("300001"), _candidate("300002")], settings=settings,
              prepare=prepare, client=Boom(client))
     with db.read(path) as conn:
@@ -627,3 +630,39 @@ def test_risk_written_inside_questions_is_accepted_as_is() -> None:
     assert parse_output(json.dumps(answer, ensure_ascii=False), package).risk == risk
     del answer["questions"]["risk"]
     assert parse_output(json.dumps(answer, ensure_ascii=False), package) == "risk 为空"
+
+
+def test_worker_error_becomes_a_gap_and_others_still_finish(path: Path) -> None:
+    """单条在工作线程里出错（不是模型调用的错），只把这一条记为缺口，其他条目照常评完。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _http(_answer("不推", value_pass=False))
+
+    def prepare(candidate: SimpleNamespace) -> dict:
+        code = candidate.company.split(".")[0]
+        if code == "300001":
+            raise ValueError("材料里混进了坏数据")
+        return _package(code)
+
+    result = _run(path, handler, [_candidate("300001"), _candidate("300002")], prepare=prepare)
+    by_company = {item.company: item for item in result.items}
+    assert by_company["300001"].state == "gap" and by_company["300001"].error == "评估出错：ValueError"
+    assert by_company["300002"].state == "succeeded" and by_company["300002"].verdict == "不推"
+    assert result.stats["gap"] == 1 and result.fatal is None
+
+
+def test_result_returning_after_cutoff_is_a_gap(path: Path) -> None:
+    """调用在收口前发出、收口后才回来：结果不交付，记为缺口，回执照常落库。"""
+    now = {"t": datetime(2026, 10, 13, 9, 4, 50, tzinfo=CST)}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        now["t"] = datetime(2026, 10, 13, 9, 5, 1, tzinfo=CST)  # 模型回来时已过 09:05
+        return _http(_answer("推"))
+
+    result = _run(path, handler, [_candidate("300001")], clock=lambda: now["t"])
+    (item,) = result.items
+    assert item.state == "gap" and item.verdict is None and result.stats["verdicts"]["推"] == 0
+    with db.read(path) as conn:
+        row = conn.execute("SELECT state, error FROM evaluations").fetchone()
+        receipts = conn.execute("SELECT state FROM model_receipts").fetchall()
+    assert row["state"] == "gap" and row["error"] == "收口时刻前没评完"
+    assert [r["state"] for r in receipts] == ["succeeded"]

@@ -427,3 +427,32 @@ def test_cli_prints_local_pdf_and_rejects_other_hosts(tmp_path: Path, capsys: py
     assert "5.75 亿元" in out and "9895.98 万元" in out
     assert main(["http://example.com/a.PDF", "--cache-dir", str(tmp_path)]) == 0
     assert "error: url_not_allowed" in capsys.readouterr().out
+
+
+def test_concurrent_downloads_of_the_same_pdf_do_not_collide(tmp_path: Path) -> None:
+    """几条候选同时下载同一份公告：各用各的临时文件，都拿到完整文件，不出现虚假的下载失败。"""
+    import threading
+    import time
+
+    url = "http://static.cninfo.com.cn/finalpage/2026-10-22/1225613658.PDF"
+    body = b"%PDF-1.7\n" + b"x" * 4096
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        time.sleep(0.05)  # 让几条下载在途时重叠
+        return httpx.Response(200, content=body)
+
+    results = []
+
+    def one() -> None:
+        results.append(fetch_pdf(url, cache_dir=tmp_path, max_bytes=1_000_000, timeout_seconds=5,
+                                 transport=httpx.MockTransport(handler)))
+
+    threads = [threading.Thread(target=one) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert all(result.error is None and result.path is not None for result in results)
+    assert {result.path for result in results} == {tmp_path / "2026-10-22_1225613658.pdf"}
+    assert (tmp_path / "2026-10-22_1225613658.pdf").read_bytes() == body
+    assert not list(tmp_path.glob(".*.part"))

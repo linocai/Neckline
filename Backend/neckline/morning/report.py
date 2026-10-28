@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -19,6 +20,8 @@ from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping
+
+import httpx
 
 from neckline.evaluation.evaluate import EvaluationRun, evaluate_candidates
 from neckline.evaluation.market import MarketSource, TuShareSource
@@ -620,6 +623,23 @@ def _stored_ready(pusher: Pusher, report_id: str, stored: Mapping[str, Any]) -> 
             "push": _push_ready(pusher, report_id, len(entries), stored.get("gap_summary"))}
 
 
+def _bounded_client(client: DeepSeekClient, *, day: date, schedule: Mapping[str, Any],
+                    clock: Callable[[], datetime]) -> DeepSeekClient:
+    """评估用的客户端：单次调用最多等到截止时刻、不重试。
+
+    收口后主线程不再等在途调用，但进程退出时仍会等这些线程；这样它们最晚在截止前后结束，
+    不会把服务拖过 systemd 的时限。超时与次数不进请求体，回执不受影响。
+    """
+    if not isinstance(client, DeepSeekClient):
+        return client
+    remaining = (deadline(day, schedule) - clock()).total_seconds()
+    seconds = max(30.0, min(float(client.timeout.read or 600.0), remaining))
+    bounded = copy.copy(client)
+    bounded.timeout = httpx.Timeout(seconds, connect=15.0)
+    bounded.max_attempts = 1
+    return bounded
+
+
 def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window, candidates: list,
                     config: LoadedConfig, client: DeepSeekClient, clock: Callable[[], datetime],
                     pdf: Callable[[str], FetchResult], market: MarketSource | None = None) -> EvaluationRun:
@@ -645,9 +665,10 @@ def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window,
         }
         return package
 
+    bounded = _bounded_client(client, day=day, schedule=config.rules["schedule"], clock=clock)
     try:
         return evaluate_candidates(candidates, report_id=report_id, db_path=db_path, prepare=prepare,
-                                   client=client, settings=settings, clock=clock)
+                                   client=bounded, settings=settings, clock=clock)
     finally:
         if owns_market:
             market.close()

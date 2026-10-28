@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -55,7 +56,8 @@ def fetch_pdf(url: str, *, cache_dir: Path, max_bytes: int, timeout_seconds: flo
         dest = cache_dir / _cache_name(url)
         if dest.is_file():
             return FetchResult(dest, None, True)
-        partial = cache_dir / f".{dest.name}.{os.getpid()}.part"
+        # 同一份公告可能被几条候选同时下载：临时文件各用各的，改名时后到的覆盖同样的内容
+        partial = cache_dir / f".{dest.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
         timeout = httpx.Timeout(timeout_seconds)
         headers = {"User-Agent": "Mozilla/5.0"}
         with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False, headers=headers) as client:

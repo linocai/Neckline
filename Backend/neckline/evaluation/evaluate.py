@@ -427,6 +427,12 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
         usage = _usage(result.usage)
         receipt = bool(result.from_receipt)
         common = {"counted_call": not receipt, "from_receipt": receipt, "usage": usage}
+        if _cutoff_reached(clock(), cutoff):
+            # 回来时已过收口时刻：按「到点没评完」记缺口；原文留在库里供复盘，回执已由客户端落库
+            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(),
+                    error=_GAP, output=result.content, usage=usage, seconds=result.seconds)
+            return _align(db_path, report_id, company,
+                          _Hit(item=EvaluationItem(company, "gap", None, None, _GAP), **common))
         if result.finish_reason != "stop":
             reason = f"finish:{result.finish_reason}"
             _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
@@ -445,23 +451,33 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
                       _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views,
                            vetoed=parsed.vetoed, **common))
 
+    def _outcome(fut, company: str) -> _Hit:
+        """取一条的结果；工作线程抛了普通异常就把这一条记为缺口，不让它拖住其他条目和收口。"""
+        try:
+            return fut.result()
+        except Exception as exc:  # 异常正文可能带外部内容，只记类型
+            reason = f"评估出错：{type(exc).__name__}"
+            try:
+                _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(), error=reason)
+            except Exception:
+                pass
+            return _Hit(item=EvaluationItem(company, "gap", None, None, reason))
+
     items: list[EvaluationItem | None] = [None] * len(coded)
     hits: list[_Hit] = []
     executor = ThreadPoolExecutor(max_workers=min(workers, len(coded)))
     futures = {executor.submit(work, job): job[0] for job in coded}
     pending_futs = set(futures)
-    abandoned = False
     call_started = time.monotonic()
     try:
         while pending_futs:
             if _cutoff_reached(clock(), cutoff):
-                abandoned = True
                 now = clock()
                 for fut in list(pending_futs):
                     index = futures[fut]
                     company = coded[index][1]
                     if fut.done() and not fut.cancelled():
-                        hit = fut.result()
+                        hit = _outcome(fut, company)
                         row = _load(db_path, report_id, company)
                         if row is not None and row["state"] not in ("prepared", hit.item.state):
                             stored = _reuse(company, row)
@@ -477,11 +493,12 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
                 break
             done, pending_futs = wait(pending_futs, timeout=_WAIT_SECONDS, return_when=FIRST_COMPLETED)
             for fut in done:
-                hit = fut.result()
+                hit = _outcome(fut, coded[futures[fut]][1])
                 items[futures[fut]] = hit.item
                 hits.append(hit)
     finally:
-        executor.shutdown(wait=not abandoned, cancel_futures=abandoned)
+        # 正常结束时已没有在途任务；过了收口或中途出错都不等迟到的线程
+        executor.shutdown(wait=False, cancel_futures=True)
     call_seconds = round(time.monotonic() - call_started, 3)
     done_items = [item for item in items if item is not None]
     with prepare_lock:
