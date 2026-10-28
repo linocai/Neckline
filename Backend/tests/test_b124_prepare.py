@@ -556,3 +556,25 @@ def test_selected_entry_with_classification_ids_carries_original_and_media() -> 
     assert [m["ref"] for m in package["messages"]] == ["doc_1@1", "doc_2@1"]
     assert package["original"]["documents"] and package["original"]["media"]
     assert "乙公司" not in json.dumps(package, ensure_ascii=False)
+
+
+def test_single_quarter_forecast_is_used_as_the_quarter_without_subtracting() -> None:
+    """预告期间是 7–9 月时，区间本身就是第三季度，不能再减半年累计；上年同期也不拿 TuShare 的累计数顶替。"""
+    from neckline.evaluation.prepare import _base, _current_quarter
+
+    line = {"state": "盈利", "current": {"low": 30_000_000.0, "high": 40_000_000.0}, "prior": None,
+            "yoy": {"low": None, "high": None}}
+    empty = {"state": None, "current": {"low": None, "high": None}, "prior": None, "yoy": {"low": None, "high": None}}
+    figures = {"period": "2026年7月1日至2026年9月30日", "net_profit": line, "deducted": empty}
+    income = [_income("20260630", "20260820", 500, 60_000_000), _income("20250930", "20251025", 600, 90_000_000)]
+    quarter = _current_quarter("forecast", "q3", figures, income, [], 2026)
+    assert (quarter["netProfit"]["low"], quarter["netProfit"]["high"]) == (30_000_000.0, 40_000_000.0)
+    assert quarter["netProfit"]["source"] == "pdf"
+    assert _base("forecast", "q3", 2026, figures, income)["netProfit"]["value"] is None
+
+    cumulative = dict(figures, period="2026年1月1日至2026年9月30日")
+    subtracted = _current_quarter("forecast", "q3", cumulative, income, [], 2026)
+    assert (subtracted["netProfit"]["low"], subtracted["netProfit"]["high"]) == (-30_000_000.0, -20_000_000.0)
+
+    odd = dict(figures, period="2026年4月1日至2026年9月30日")
+    assert _current_quarter("forecast", "q3", odd, income, [], 2026)["netProfit"]["missing"]

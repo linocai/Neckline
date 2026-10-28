@@ -38,6 +38,10 @@ def _message(i: int, title: str, *, source: str = "cninfo-announcement", url: st
                    companies={"300953.SZ": ["震裕科技"]})
 
 
+# 真实三季报（光力科技）的文本夹具：读得出主要数字，才算读数成功
+REAL_Q3 = (Path(__file__).resolve().parent / "fixtures" / "filings" / "q3-guangli.txt").read_text(encoding="utf-8")
+
+
 def _pdf(text: str) -> PdfText:
     return PdfText(pages=[text], page_count=1, truncated=False, error=None)
 
@@ -61,7 +65,7 @@ def test_enrich_appends_the_reading_and_reuses_the_store(tmp_path, monkeypatch):
         calls.append(url)
         return FetchResult(tmp_path / "cached.pdf", None, False)
 
-    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf("净利润同比增长 12%"))
+    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf(REAL_Q3))
     store = MemoryFilingReads()
     first = _message(1, "震裕科技：2026年第三季度报告")
     stats = enrich_filings([first], store=store, fetcher=fetcher, settings=SETTINGS, clock=lambda: WHEN)
@@ -74,7 +78,7 @@ def test_enrich_appends_the_reading_and_reuses_the_store(tmp_path, monkeypatch):
 
 
 def test_enriched_classify_request_is_stable_across_a_resume(tmp_path, monkeypatch):
-    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf("营业收入同比增长 8%"))
+    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf(REAL_Q3))
     store = MemoryFilingReads()
     seen: list[bytes] = []
 
@@ -105,7 +109,7 @@ def test_enriched_classify_request_is_stable_across_a_resume(tmp_path, monkeypat
 
 
 def test_download_failure_is_a_gap_and_does_not_stop_the_others(tmp_path, monkeypatch):
-    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf("净利润同比增长 3%"))
+    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf(REAL_Q3))
     calls = []
 
     def fetcher(url: str) -> FetchResult:
@@ -131,7 +135,7 @@ def test_db_store_survives_a_second_run(tmp_path, monkeypatch):
 
     path = tmp_path / "v4.db"
     db.init_schema(path)
-    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda *_args, **_kwargs: _pdf("净利润同比下降 5%"))
+    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda *_args, **_kwargs: _pdf(REAL_Q3))
     calls = []
 
     def fetcher(url: str) -> FetchResult:
@@ -149,7 +153,7 @@ def test_db_store_survives_a_second_run(tmp_path, monkeypatch):
 
 
 def test_store_put_failure_raises_and_classify_is_not_called(tmp_path, monkeypatch):
-    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf("净利润同比增长 1%"))
+    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf(REAL_Q3))
     classified: list[int] = []
 
     class Broken:
@@ -190,3 +194,25 @@ def test_purge_old_pdfs_only_removes_stale_files_in_that_directory(tmp_path):
     purge_old_pdfs(tmp_path, cache_days=3, now=WHEN)
     assert not old.exists()
     assert fresh.exists() and note.exists() and buried.exists()
+
+
+def test_pdf_with_text_but_no_net_profit_counts_as_a_failed_read(tmp_path, monkeypatch):
+    """有文字但净利润一个数都没读出：读数说明照样附上（续跑文本不变），但记为失败，进缺口摘要。"""
+    import neckline.screening.enrich as enrich_module
+    from neckline.filings.fetch import FetchResult
+    from neckline.screening.enrich import MemoryFilingReads, enrich_filings
+
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+    monkeypatch.setattr(enrich_module, "read_pdf",
+                        lambda _path, max_pages: _pdf("某某科技 2026年第三季度报告\n表格是图片，读不出数字"))
+    message = _message(1, "震裕科技：2026年三季度报告")
+    store = MemoryFilingReads()
+    stats = enrich_filings([message], store=store, fetcher=lambda _url: FetchResult(pdf, None, False),
+                           settings=SETTINGS, clock=lambda: WHEN)
+    assert stats.ok == 0 and stats.failed == {"no_figures": 1}
+    assert "【公告 PDF 读数】" in message.text and "未能读出" in message.text
+    again = _message(1, "震裕科技：2026年三季度报告")
+    stats2 = enrich_filings([again], store=store, fetcher=lambda _url: FetchResult(None, "timeout", False),
+                            settings=SETTINGS, clock=lambda: WHEN)
+    assert again.text == message.text and stats2.failed == {"no_figures": 1} and stats2.from_store == 1

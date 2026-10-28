@@ -301,45 +301,74 @@ def test_cross_page_order_violation_is_order_unexpected():
     assert len(outcome.documents) == 30
 
 
+def _switch_after_page_one(server: "Server", shifted: list[dict]) -> None:
+    """第 1 页按旧内容给出，之后接口里已经多了新公告：第 2 页起（含核对那一遍）都按新内容分页。"""
+    def page_two():
+        server.rows = shifted
+        return httpx.Response(200, json=server.page(2))
+    server.script = {2: [page_two]}
+
+
 def test_duplicate_across_pages_after_insertion_still_complete():
     start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
     base = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(35)]
-    page1 = base[:30]
-    # 翻第 2 页前有新公告插入，偏移后本页开头重复上一页末尾那条（时间相同或更旧）
-    page2 = [*base[29:35]]
-    server = Server(page1 + base[30:35], sort=False)
-    server.script = {2: [lambda: httpx.Response(200, json={"totalAnnouncement": 36, "hasMore": False,
-                                                            "announcements": page2})]}
-    outcome = fetch(server, start=start, end=end, max_pages=5)
+    newest = ann(200, at("2026-10-19", "20:10"))
+    server = Server(base, sort=False)
+    _switch_after_page_one(server, [newest, *base])  # 翻第 2 页前最前面插入 1 条，第 2 页开头重复上一页末尾
+    outcome = fetch(server, start=start, end=end, max_pages=10)
     assert outcome.complete and outcome.error is None
-    assert [f["pageNum"] for f in server.forms] == ["1", "2"]
-    assert len(outcome.documents) == 35
-    assert len({d.external_id for d in outcome.documents}) == 35
+    assert [f["pageNum"] for f in server.forms] == ["1", "2", "1", "2"]  # 发现插入后从头核对一遍
+    ids = [d.external_id for d in outcome.documents]
+    assert len(ids) == len(set(ids)) == 36 and "1225610200" in ids
 
 
 def test_front_insertions_repeat_the_previous_tail_without_false_disorder():
-    """第 1 页取完后最前面插入 2 条，第 2 页开头是上一页末尾的 2 条，时间比上一页最后一条新。"""
+    """第 1 页取完后最前面插入 2 条，第 2 页开头是上一页末尾的 2 条，时间比上一页最后一条新：不报乱序，核对后补上新条目。"""
     start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
     base = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(40)]
-    page1 = base[:30]
     inserted = [ann(100, at("2026-10-19", "20:30")), ann(101, at("2026-10-19", "20:20"))]
-    shifted = inserted + base
-    page2 = shifted[30:60]
-    assert [row["announcementId"] for row in page2[:2]] == [page1[-2]["announcementId"], page1[-1]["announcementId"]]
-    assert page2[0]["announcementTime"] > page1[-1]["announcementTime"]
-    server = Server(page1 + inserted, sort=False)
-    server.script = {2: [lambda: httpx.Response(200, json={"totalAnnouncement": len(shifted), "hasMore": False,
-                                                            "announcements": page2})]}
-    outcome = fetch(server, start=start, end=end, max_pages=5)
+    server = Server(base, sort=False)
+    _switch_after_page_one(server, inserted + base)
+    outcome = fetch(server, start=start, end=end, max_pages=10)
     assert outcome.complete and outcome.error is None
-    expected: list[str] = []
-    for row in page1 + page2:
-        ident = str(row["announcementId"])
-        if ident not in expected:
-            expected.append(ident)
     ids = [document.external_id for document in outcome.documents]
-    assert ids == expected
-    assert len(ids) == len(set(ids)) == 40
+    assert len(ids) == len(set(ids)) == 42 and {"1225610100", "1225610101"} <= set(ids)
+
+
+def test_insertion_into_pages_already_read_is_caught_by_the_second_pass():
+    """08:00 翻页时，已经翻过的位置插进了当天 00:00 的公告：第一遍取不到，核对那一遍补上，才判取全。"""
+    start, end = at("2026-10-19", "19:00"), at("2026-10-20", "08:00")
+    day = [ann(i, at("2026-10-20", "07:30") - timedelta(minutes=i)) for i in range(25)]
+    midnight = [ann(50 + i, at("2026-10-20", "00:00")) for i in range(30)]
+    evening = [ann(100 + i, at("2026-10-19", "23:00") - timedelta(minutes=i)) for i in range(30)]
+    older = [ann(200 + i, at("2026-10-19", "18:00") - timedelta(minutes=i)) for i in range(5)]
+    late = [ann(300, at("2026-10-20", "00:00")), ann(301, at("2026-10-20", "00:00"))]
+    server = Server(day + midnight + evening + older, sort=False)
+    # 第 1 页之后插入 2 条 00:00 公告，位置在第 1 页范围内（已经翻过）
+    _switch_after_page_one(server, day + late + midnight + evening + older)
+    outcome = fetch(server, start=start, end=end, max_pages=20)
+    assert outcome.complete and outcome.error is None
+    ids = {d.external_id for d in outcome.documents}
+    assert {"1225610300", "1225610301"} <= ids and len(ids) == 25 + 30 + 30 + 2
+
+
+def test_listing_still_changing_on_the_second_pass_is_incomplete():
+    start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
+    rows = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(40)]
+    rows += [ann(100 + i, at("2026-10-19", "14:00") - timedelta(seconds=i)) for i in range(5)]  # 早于起点
+    server = Server(rows, sort=False)
+    grow = {"n": 0}
+
+    def growing(number: int) -> dict:
+        grow["n"] += 1  # 每翻一页总数都变：接口还在不停增加公告
+        chunk = rows[(number - 1) * cninfo.PAGE_SIZE:number * cninfo.PAGE_SIZE]
+        return {"totalAnnouncement": len(rows) + grow["n"], "hasMore": number * cninfo.PAGE_SIZE < len(rows),
+                "announcements": chunk or None}
+
+    server.page = growing
+    outcome = fetch(server, start=start, end=end, max_pages=10)
+    assert outcome.error == "pagination_shifted" and not outcome.complete
+    assert len(outcome.documents) == 40  # 已取到的照常保留
 
 
 def test_page_limit_when_many_pages_before_floor():

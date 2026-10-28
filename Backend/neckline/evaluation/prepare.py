@@ -422,6 +422,16 @@ def _forecast_quarter(figures: Mapping, note: str) -> dict[str, dict]:
     return result
 
 
+# 各报告期最后一个季度的第一天：预告期间从这一天开始，就是单季预告
+_QUARTER_START = {"q1": (1, 1), "h1": (4, 1), "q3": (7, 1), "annual": (10, 1)}
+
+
+def _forecast_start(figures: Mapping) -> tuple[int, int] | None:
+    """预告期间的起始月、日；读不出返回 None。"""
+    matched = _FORECAST_SPAN.search(str(_g(figures, "period") or ""))
+    return (int(matched.group(2)), int(matched.group(3))) if matched else None
+
+
 def _current_quarter(kind: str, key: str | None, figures: Mapping, income: list[dict], fina: list[dict],
                      year: int | None) -> dict[str, dict]:
     if key is None:
@@ -430,6 +440,12 @@ def _current_quarter(kind: str, key: str | None, figures: Mapping, income: list[
         return _direct_points(figures, "本报告期" if key == "q3" else "一季度无需相减")
     if kind == "forecast" and key == "q1":
         return _forecast_quarter(figures, "一季度无需相减")
+    if kind == "forecast":
+        start = _forecast_start(figures)
+        if start is not None and start == _QUARTER_START.get(key):
+            return _forecast_quarter(figures, "预告期间本身就是单季，无需相减")
+        if start is not None and start != (1, 1):
+            return _blank_metrics("预告期间既不是年初起的累计也不是单季")
     if kind == "express" and key == "q1":
         return _direct_points(figures, "一季度无需相减")
     if year is None:
@@ -531,6 +547,9 @@ def _base(kind: str, key: str | None, year: int | None, figures: Mapping, income
         return {"netProfit": _metric(prior, source="pdf", note="上年同期")}
     if year is None or key is None:
         return {"netProfit": _metric(missing="报告年份不明", note="上年同期")}
+    if kind == "forecast" and _forecast_start(figures) not in (None, (1, 1)):
+        # 单季或其他非年初起的预告：TuShare 只有累计数，对不上口径，宁可缺失
+        return {"netProfit": _metric(missing="预告不是年初起的累计，TuShare 累计数不可比", note="上年同期")}
     row = select_end(income, _end_date(year - 1, key))
     if row is None or num(row.get("n_income_attr_p")) is None:
         return {"netProfit": _metric(missing="缺上年同期", note="上年同期累计")}

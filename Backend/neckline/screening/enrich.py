@@ -199,6 +199,21 @@ def _store_put(store: FilingReads, record: FilingRecord) -> None:
         raise _StoreBroken(exc) from exc
 
 
+def _has_key_figures(figures: object) -> bool:
+    """净利润这一行读出了本期金额或同比才算读到了主要数字（只读出上年同期的不算）。"""
+    line = getattr(figures, "net_profit", None)
+    if line is None:
+        return False
+    values = [getattr(line, name, None) for name in ("current", "yoy", "ytd", "ytd_yoy")]
+    for value in values:
+        if hasattr(value, "low"):  # 预告的区间
+            if value.low is not None or value.high is not None:
+                return True
+        elif value is not None:
+            return True
+    return False
+
+
 def _read_one(message: Message, kind: str, *, store: FilingReads, fetcher: Callable[[str], FetchResult],
               settings: Mapping, clock: Callable[[], datetime]) -> tuple[str, str | None]:
     """返回 (来源 store|fresh, 失败原因或 None)。消息文本就地追加。"""
@@ -223,7 +238,11 @@ def _read_one(message: Message, kind: str, *, store: FilingReads, fetcher: Calla
             figures = _PARSERS[kind]("\n".join(document.pages))
             summary = summary_text(figures)
             figures_json = json.dumps(asdict(figures), ensure_ascii=False, sort_keys=True)
-            state = "ok"
+            if _has_key_figures(figures):
+                state = "ok"
+            else:
+                # 有文字但净利润一个数都没读出（表格是图片、版式不认识）：照样把读数说明附上，但如实记为失败，进缺口摘要
+                reason = "no_figures"
     _store_put(store, FilingRecord(
         document_id=message.document_id, revision=message.revision, url=message.url or "", kind=kind,
         state=state, error=reason, figures_json=figures_json, summary=summary, read_at=db.utc(clock())))

@@ -456,3 +456,42 @@ def test_concurrent_downloads_of_the_same_pdf_do_not_collide(tmp_path: Path) -> 
     assert {result.path for result in results} == {tmp_path / "2026-10-22_1225613658.pdf"}
     assert (tmp_path / "2026-10-22_1225613658.pdf").read_bytes() == body
     assert not list(tmp_path.glob(".*.part"))
+
+
+FIXED_FORECAST = """证券代码：300001 证券简称：某某科技 公告编号：2026-050
+某某科技股份有限公司 2026年前三季度业绩预告
+一、本期业绩预计情况
+1．业绩预告期间：2026年1月1日至2026年9月30日
+2．预计的业绩：□亏损 □扭亏为盈 √同向上升 □同向下降
+项目 本报告期 上年同期
+归属于上市公司股东的净利润 盈利：3,000万元 盈利：1,500万元
+比上年同期增长：100%
+扣除非经常性损益后的净利润 盈利：2,500万元–3,500万元 盈利：1,000万元
+"""
+
+
+def test_fixed_value_forecast_reads_current_and_prior_in_column_order() -> None:
+    """定值预告：本期是确定金额。不能把本期金额当成上年同期。"""
+    figures = parse_forecast(FIXED_FORECAST)
+    assert figures.net_profit.current.low == figures.net_profit.current.high == 30_000_000
+    assert figures.net_profit.prior == 15_000_000 and figures.net_profit.yoy.low == 100
+    assert figures.deducted.current.low == 25_000_000 and figures.deducted.prior == 10_000_000
+    text = summary_text(figures)
+    assert "盈利 3000.00 万元（上年同期 1500.00 万元，同比 +100.00%）" in text
+
+
+def test_single_amount_without_a_range_is_left_missing() -> None:
+    """只有一个金额又没有区间时，分不清是本期还是上年同期，留缺失，不猜。"""
+    text = FIXED_FORECAST.replace("盈利：3,000万元 盈利：1,500万元", "盈利：1,500万元")
+    figures = parse_forecast(text)
+    assert figures.net_profit.current.low is None and figures.net_profit.prior is None
+
+
+def test_q3_rows_with_not_applicable_yoy_still_read_the_amounts() -> None:
+    """扭亏的三季报同比写「不适用」（首华燃气）：金额照读，同比留空，不能整行读不出。"""
+    figures = parse_periodic(text("q3-shouhua-na.txt"))
+    assert figures.period == "q3"
+    assert figures.net_profit.current == 152_195_457.48 and figures.net_profit.yoy is None
+    assert figures.net_profit.ytd == 338_935_489.71 and figures.net_profit.ytd_yoy is None
+    assert figures.deducted.current == 151_556_875.03
+    assert figures.revenue.yoy == 35.85

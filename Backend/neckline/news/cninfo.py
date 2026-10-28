@@ -3,13 +3,14 @@
 按 [start, end] 覆盖的北京时间日期取 seDate，用接口默认排序（按 announcementTime 倒序、并列稳定）从第 1 页往后翻（每页最多 30 条），
 只留发布时间落在 [start, end] 内的公告；某一页一旦出现早于起点 floor 的公告即视为已翻过窗口起点，判完整并停止。
 已经见过的 announcementId 计入重复并跳过顺序检查。只对第一次见到的条目检查页内与跨页时间不增（相等允许），无法解析时间的条目不参与比较，乱序如实记 order_unexpected（不完整，已收保留）。
-跨页重复超过一页的量记 pagination_unstable。翻页上限仅防异常循环，超限记 page_limit。每页最多重试一次，页间留间隔。网络、状态码、非 JSON、结构不对只记本来源错误。
+跨页重复超过一页的量记 pagination_unstable；翻页途中有新公告插入（总数变化或跨页重复）时从头再核对一遍，仍在变就记 pagination_shifted。翻页上限仅防异常循环，超限记 page_limit。每页最多重试一次，页间留间隔。网络、状态码、非 JSON、结构不对只记本来源错误。
 """
 from __future__ import annotations
 
 import json
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
@@ -139,6 +140,86 @@ def _parse_page(body: object) -> tuple[list[Any], int, bool]:
     return rows, total, more
 
 
+@dataclass
+class _Pass:
+    error: str | None = None
+    shifted: bool = False  # 这一遍里总数变了或出现跨页重复：翻页途中有新公告插进来
+
+
+def _one_pass(client: httpx.Client, outcome: SourceOutcome, *, se_date: str, floor: datetime, end: datetime,
+              max_pages: int, budget: dict, seen_ids: set[str], clock: Callable[[], datetime],
+              sleep: Callable[[float], None], verifying: bool = False) -> _Pass:
+    """从第 1 页翻到越过起点（或取完）。文档去重靠跨遍共享的 seen_ids；顺序与重复检查每遍单独做。"""
+    raw_seen = repeats = 0
+    totals: set[int] = set()
+    row_ids: set[str] = set()  # 这一遍翻到过的全部条目（不论是否在窗口内），用来发现分页不稳
+    prev_page_last_time: datetime | None = None
+    page = 0
+    while True:
+        if budget["pages"] >= max_pages:
+            return _Pass(error="page_limit")
+        if budget["pages"]:
+            sleep(PAGE_DELAY_SECONDS)
+        form = _form(page + 1, se_date)
+        for attempt in (1, 2):  # 每页最多重试一次；结构不对不重试
+            outcome.requests += 1
+            try:
+                body = _post_page(client, form)
+                break
+            except CninfoError:
+                if attempt == 2:
+                    raise
+                sleep(PAGE_DELAY_SECONDS)
+        page += 1
+        budget["pages"] += 1
+        rows, total, has_more = _parse_page(body)
+        totals.add(total)
+        raw_seen += len(rows)
+        fetched_at = clock()
+        page_times: list[datetime] = []
+        for row in rows:
+            raw_id = row.get("announcementId") if isinstance(row, Mapping) else None
+            if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
+                key = str(raw_id)
+                if key in row_ids:
+                    repeats += 1
+                    if repeats > REPEAT_LIMIT:
+                        return _Pass(error="pagination_unstable")
+                    continue  # 翻页途中插到前面的新公告会让下一页开头重复上一页末尾，不参与顺序比较
+                row_ids.add(key)
+            when = _row_published_at(row)
+            if when is not None:
+                if page_times and when > page_times[-1]:
+                    return _Pass(error="order_unexpected")
+                if prev_page_last_time is not None and not page_times and when > prev_page_last_time:
+                    return _Pass(error="order_unexpected")
+                page_times.append(when)
+            try:
+                document = normalize_item(row, fetched_at)
+            except CninfoError:
+                if not verifying:  # 核对那一遍会再遇到同样的坏条目，不重复计数
+                    outcome.rejected += 1
+                continue
+            if document.external_id in seen_ids or not (floor <= document.published_at <= end):
+                continue
+            seen_ids.add(document.external_id)
+            outcome.documents.append(document)
+            if outcome.oldest_seen is None or document.published_at < outcome.oldest_seen:
+                outcome.oldest_seen = document.published_at
+        if page_times:
+            prev_page_last_time = page_times[-1]
+        # 第一遍：出现跨页重复或总数变化就要再核对；核对那一遍只看总数是否还在变（静态的重复条目不算在变）
+        shifted = len(totals) > 1 or (repeats > 0 and not verifying)
+        if any(when < floor for when in page_times):
+            return _Pass(shifted=shifted)
+        if raw_seen >= total:
+            return _Pass(shifted=shifted)
+        if not has_more:
+            return _Pass(error="count_mismatch")  # 接口说没有下一页，却没给够它自己报的总数
+        if not rows:
+            return _Pass(error="pagination_stalled")
+
+
 def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeout_seconds: float,
                         clock: Callable[[], datetime], transport: httpx.BaseTransport | None = None,
                         sleep: Callable[[float], None] = time.sleep) -> SourceOutcome:
@@ -148,80 +229,28 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
         outcome.error = "window_invalid"
         return outcome
     se_date = f"{start.astimezone(CST):%Y-%m-%d}~{end.astimezone(CST):%Y-%m-%d}"
-    pages = raw_seen = 0
     seen_ids: set[str] = set()
-    row_ids: set[str] = set()  # 翻到过的全部条目（不论是否在窗口内），用来发现分页不稳
-    repeats = 0
-    prev_page_last_time: datetime | None = None
+    budget = {"pages": 0}  # 翻页上限对两遍合计
+    args = dict(se_date=se_date, floor=floor, end=end, max_pages=max_pages, budget=budget, seen_ids=seen_ids,
+                clock=clock, sleep=sleep)
     with httpx.Client(transport=transport, timeout=httpx.Timeout(timeout_seconds, connect=5.0),
                       follow_redirects=False, headers=HEADERS) as client:
         try:
-            while True:
-                if pages >= max_pages:
-                    outcome.error = "page_limit"
+            first = _one_pass(client, outcome, **args)
+            if first.error is not None:
+                outcome.error = first.error
+                return outcome
+            if first.shifted:
+                # 翻页途中有新公告进来：插进已翻过位置的公告这一遍取不到，从头再核对一遍（已取到的不重复收）
+                second = _one_pass(client, outcome, verifying=True, **args)
+                if second.error is not None:
+                    outcome.error = second.error
                     return outcome
-                if pages:
-                    sleep(PAGE_DELAY_SECONDS)
-                form = _form(pages + 1, se_date)
-                for attempt in (1, 2):  # 每页最多重试一次；结构不对不重试
-                    outcome.requests += 1
-                    try:
-                        body = _post_page(client, form)
-                        break
-                    except CninfoError:
-                        if attempt == 2:
-                            raise
-                        sleep(PAGE_DELAY_SECONDS)
-                pages += 1
-                rows, total, has_more = _parse_page(body)
-                raw_seen += len(rows)
-                fetched_at = clock()
-                page_times: list[datetime] = []
-                for row in rows:
-                    raw_id = row.get("announcementId") if isinstance(row, Mapping) else None
-                    if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
-                        key = str(raw_id)
-                        if key in row_ids:
-                            repeats += 1
-                            if repeats > REPEAT_LIMIT:
-                                outcome.error = "pagination_unstable"
-                                return outcome
-                            continue  # 翻页途中插到前面的新公告会让下一页开头重复上一页末尾，不参与顺序比较
-                        row_ids.add(key)
-                    when = _row_published_at(row)
-                    if when is not None:
-                        if page_times and when > page_times[-1]:
-                            outcome.error = "order_unexpected"
-                            return outcome
-                        if prev_page_last_time is not None and not page_times and when > prev_page_last_time:
-                            outcome.error = "order_unexpected"
-                            return outcome
-                        page_times.append(when)
-                    try:
-                        document = normalize_item(row, fetched_at)
-                    except CninfoError:
-                        outcome.rejected += 1
-                        continue
-                    if document.external_id in seen_ids or not (floor <= document.published_at <= end):
-                        continue
-                    seen_ids.add(document.external_id)
-                    outcome.documents.append(document)
-                    if outcome.oldest_seen is None or document.published_at < outcome.oldest_seen:
-                        outcome.oldest_seen = document.published_at
-                if page_times:
-                    prev_page_last_time = page_times[-1]
-                if any(when < floor for when in page_times):
-                    outcome.complete = True
+                if second.shifted:
+                    outcome.error = "pagination_shifted"  # 核对这一遍还在变，没法证明取全
                     return outcome
-                if raw_seen >= total:
-                    outcome.complete = True
-                    return outcome
-                if not has_more:
-                    outcome.error = "count_mismatch"  # 接口说没有下一页，却没给够它自己报的总数
-                    return outcome
-                if not rows:
-                    outcome.error = "pagination_stalled"
-                    return outcome
+            outcome.complete = True
+            return outcome
         except CninfoError as exc:
             outcome.error = exc.code
             return outcome

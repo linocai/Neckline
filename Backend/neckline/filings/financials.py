@@ -77,7 +77,8 @@ _YOY_ONE_RE = re.compile(
 _DATE_RE = re.compile(
     r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*[至到]\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
 )
-_TOKEN_RE = re.compile(rf"--+|—|－|(?<![\d.])-(?![\d.,])|(?P<num>{_NUM})(?P<pct>[%％])?")
+# 扭亏或基数为负时同比写「不适用」，和「--」一样按空格位读，不然整行对不上列
+_TOKEN_RE = re.compile(rf"--+|—|－|不适用|(?<![\d.])-(?![\d.,])|(?P<num>{_NUM})(?P<pct>[%％])?")
 _UNIT_RE = re.compile(r"单位\s*[:：]\s*(?:人民币)?\s*(万元|元)")
 _CENT = Decimal("0.01")
 
@@ -396,16 +397,27 @@ def _fill_periodic_row(row: PeriodicRow, section: str, labels: tuple[str, ...], 
     scale = inline_unit if inline_unit is not None else _label_unit(label_text or labels[0], section)
     tokens = _tokenize(_window(section, located))
     kinds = _LAYOUT[layout]
-    if scale is None or len(tokens) != len(kinds) or tuple(kind for kind, _ in tokens) != kinds:
+    # 列数必须对上；「--」「不适用」这类空格位只能出现在同比列，金额列必须是数字
+    if scale is None or len(tokens) != len(kinds):
         return
-    values = [raw for _, raw in tokens]
+    for (kind, _raw), expected in zip(tokens, kinds):
+        if kind != expected and not (kind == "missing" and expected == "pct"):
+            return
+    values = [raw if kind != "missing" else None for kind, raw in tokens]
+
+    def money(raw: str | None) -> float | None:
+        return None if raw is None else _yuan(raw, scale)
+
+    def pct(raw: str | None) -> float | None:
+        return None if raw is None else _pct(raw)
+
     if layout == "q3":
-        row.current, row.yoy = _yuan(values[0], scale), _pct(values[1])
-        row.ytd, row.ytd_yoy = _yuan(values[2], scale), _pct(values[3])
+        row.current, row.yoy = money(values[0]), pct(values[1])
+        row.ytd, row.ytd_yoy = money(values[2]), pct(values[3])
     elif layout == "restated":
-        row.current, row.prior, row.yoy = _yuan(values[0], scale), _yuan(values[2], scale), _pct(values[3])
+        row.current, row.prior, row.yoy = money(values[0]), money(values[2]), pct(values[3])
     else:
-        row.current, row.prior, row.yoy = _yuan(values[0], scale), _yuan(values[1], scale), _pct(values[2])
+        row.current, row.prior, row.yoy = money(values[0]), money(values[1]), pct(values[2])
 
 
 def _non_recurring(text: str, period: str) -> tuple[float | None, float | None]:
@@ -509,14 +521,27 @@ def _forecast_line(span: str, section_unit: int | None, section_state: str | Non
             low, high = _signed_pair(current_word, _as_decimal(ranged.group(2)), _as_decimal(ranged.group(4)))
             line.current = AmountRange(_money(low, scale), _money(high, scale))
         prior_src = amounts[:ranged.start()] + " " + amounts[ranged.end():]
-    single = _ONE_RE.search(prior_src)
-    if single:
-        scale = _token_scale(single.group(3), section_unit)
+    if ranged is None:
+        # 定值预告：本期是一个确定金额，表里依次是本期、上年同期。只有一个金额时分不清是哪一列，留缺失。
+        singles = list(_ONE_RE.finditer(amounts))
+        if len(singles) < 2:
+            return line
+        first, second = singles[0], singles[1]
+        scale = _token_scale(first.group(3), section_unit)
         if scale is not None:
-            value = _signed_one(single.group(1), _as_decimal(single.group(2)))
-            line.prior = _money(value, scale)
-    elif ranged is None:
-        return line
+            value = _money(_signed_one(first.group(1), _as_decimal(first.group(2))), scale)
+            line.current = AmountRange(value, value)
+            current_word = first.group(1)
+        prior_scale = _token_scale(second.group(3), section_unit)
+        if prior_scale is not None:
+            line.prior = _money(_signed_one(second.group(1), _as_decimal(second.group(2))), prior_scale)
+    else:
+        single = _ONE_RE.search(prior_src)
+        if single:
+            scale = _token_scale(single.group(3), section_unit)
+            if scale is not None:
+                value = _signed_one(single.group(1), _as_decimal(single.group(2)))
+                line.prior = _money(value, scale)
     if line.current.low is not None:
         line.state = _line_state(current_word, line.current.low, line.current.high, section_state)
     return line

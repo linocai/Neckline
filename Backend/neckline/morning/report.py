@@ -50,7 +50,7 @@ ERROR_LABELS = {
     "credential_missing": "凭据缺失", "unauthorized": "凭据被拒", "rate_limited": "被限流",
     "quota_exceeded": "达到每日调用上限",
     "transport_error": "网络错误", "bootstrap_start_missing": "没有采集起点",
-    "order_unexpected": "返回顺序异常", "pagination_unstable": "翻页不稳",
+    "order_unexpected": "返回顺序异常", "pagination_unstable": "翻页不稳", "pagination_shifted": "翻页途中公告还在增加",
 }
 
 
