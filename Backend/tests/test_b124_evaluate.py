@@ -648,6 +648,9 @@ def test_worker_error_becomes_a_gap_and_others_still_finish(path: Path) -> None:
     assert by_company["300001"].state == "gap" and by_company["300001"].error == "评估出错：ValueError"
     assert by_company["300002"].state == "succeeded" and by_company["300002"].verdict == "不推"
     assert result.stats["gap"] == 1 and result.fatal is None
+    with db.read(path) as conn:
+        stored = conn.execute("SELECT state, error FROM evaluations WHERE company='300001'").fetchone()
+    assert stored["state"] == "gap" and stored["error"] == "评估出错：ValueError"
 
 
 def test_result_returning_after_cutoff_is_a_gap(path: Path) -> None:

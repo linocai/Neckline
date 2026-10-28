@@ -288,8 +288,8 @@ def _load(db_path: Path, report_id: str, company: str) -> dict | None:
         return db.get_evaluation(conn, report_id, company)
 
 
-def _mark_gap(db_path: Path, report_id: str, company: str, now: datetime) -> EvaluationItem:
-    """收成 gap。状态已不是 prepared 时更新不生效，也不抛异常。"""
+def _mark_gap(db_path: Path, report_id: str, company: str, now: datetime, error: str = _GAP) -> EvaluationItem:
+    """收成 gap（还没有行时先建一个空数据包的占位行）。状态已不是 prepared 时更新不生效，也不抛异常。"""
     with db.write(db_path) as conn:
         row = db.get_evaluation(conn, report_id, company)
         if row is None:
@@ -298,7 +298,7 @@ def _mark_gap(db_path: Path, report_id: str, company: str, now: datetime) -> Eva
             row = db.get_evaluation(conn, report_id, company)
         if row is not None and row["state"] == "prepared":
             db.settle_evaluation(conn, report_id=report_id, company=company, state="gap",
-                                 settled_at=now, error=_GAP)
+                                 settled_at=now, error=error)
             row = db.get_evaluation(conn, report_id, company)
     item = _reuse(company, row) if row else None
     if item is not None and item.state != "prepared":
@@ -458,10 +458,10 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
         except Exception as exc:  # 异常正文可能带外部内容，只记类型
             reason = f"评估出错：{type(exc).__name__}"
             try:
-                _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(), error=reason)
+                # 备料时就出错的还没有行：建占位行再结成 gap，续跑时不会重做
+                return _Hit(item=_mark_gap(db_path, report_id, company, clock(), reason))
             except Exception:
-                pass
-            return _Hit(item=EvaluationItem(company, "gap", None, None, reason))
+                return _Hit(item=EvaluationItem(company, "gap", None, None, reason))
 
     items: list[EvaluationItem | None] = [None] * len(coded)
     hits: list[_Hit] = []
