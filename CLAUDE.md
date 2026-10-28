@@ -1,6 +1,6 @@
 # Neckline 项目规则
 
-自用创业板消息筛选器 V4（4.0.0 已建成，2026-10-19 起维护；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT、Claude、Grok 用的只读 MCP 服务（与 API 同进程）。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
+自用创业板选股器 V4（4.0.0 建成；2026-10-28 起为 4.2.0 K10-v5「以消息为起点的选股器」：初筛 → 数据准备 → 四问评估 → 最多推 10 条；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT、Claude、Grok 用的只读 MCP 服务（与 API 同进程）。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
 
 ## 边界
 
@@ -64,3 +64,9 @@
 - `release.py switch` 只装 Neckline 自己的 wheel，不装依赖：`requirements.txt` 变了，要在切换前（避开 V4 任务时段）先 `cp -a` 备份 `/opt/neckline/.venv`，以 deploy 用户装依赖并 `pip check`。NB 走阿里云镜像，可先 `pip download` 到暂存目录再离线装。
 - TuShare `major_news` 每个账号每天最多调用 40 次（滚动计数）：彩排、冒烟、手工采集都占额度，动手前先算好次数。
 - 改 NPM 的 nk 自定义配置时，保留 `/read/` 那段不写访问日志的 location（只读网页访问码在路径里）；改前备份，`nginx -t` 通过再 reload。
+- 巨潮公告查询用接口默认排序，**不要传 `sortName=time`**：并列时刻（几百上千条 00:00 公告）按时间排序翻页会重复、漏项，默认排序并列稳定（10/28 实测）。
+- `neckline-v4-morning.service` 在 NB 上是 `/etc/systemd/system/` 下的手工拷贝，不归 release.py 管（现 `TimeoutStartSec=80min`）；改它先备份、替换后 `daemon-reload`。
+- DeepSeek 密钥在 NB 的 `/etc/neckline/v4.env`（不在 `/opt/neckline/.env`）；本机回放要读进进程须用户放行，不落盘。
+- 本机离线回放：`python -m neckline.morning.replay`（快照库副本 + `market-snapshot.json` + 回执目录，走真实 `run_morning`）。TuShare 行情快照只能在 NB 上用 `neckline.evaluation.snapshot` 生成。
+- Codex 只读沙箱跑不了全量 pytest（建不了临时目录）；审查时附上宿主全量结果。Codex 额度会用尽（报使用上限并给恢复时间），可用 `--resume <会话>` 在原会话续跑。
+
