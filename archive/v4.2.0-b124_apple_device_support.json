@@ -1,0 +1,37 @@
+{
+  "checked_at": "2026-10-28T04:07:30.068805+00:00",
+  "devices": [
+    {
+      "model": "iPhone17,3",
+      "os": "",
+      "build": "",
+      "validated": false,
+      "reason": "No local support cache; this connection record needs no cleanup"
+    },
+    {
+      "model": "iPhone18,4",
+      "os": "27.2",
+      "build": "24B119",
+      "validated": false,
+      "current_support": "/Users/linotsai/Library/Developer/Xcode/iOS DeviceSupport/iPhone18,4 27.2 (24B119)",
+      "reason": "Device unavailable; cached OS information cannot authorize deletion"
+    },
+    {
+      "model": "iPhone19,2",
+      "os": "27.2",
+      "build": "24B119",
+      "validated": false,
+      "current_support": "/Users/linotsai/Library/Developer/Xcode/iOS DeviceSupport/iPhone19,2 27.2 (24B119)",
+      "reason": "Device unavailable; cached OS information cannot authorize deletion"
+    }
+  ],
+  "candidates": [],
+  "deleted": [],
+  "user_confirmed_unused_models": [],
+  "unused_reason": "",
+  "pending_devices": [
+    "iPhone18,4",
+    "iPhone19,2"
+  ],
+  "status": "partial"
+}
