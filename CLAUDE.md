@@ -67,6 +67,7 @@
 - 巨潮公告查询用接口默认排序，**不要传 `sortName=time`**：并列时刻（几百上千条 00:00 公告）按时间排序翻页会重复、漏项，默认排序并列稳定（10/28 实测）。
 - `neckline-v4-morning.service` 在 NB 上是 `/etc/systemd/system/` 下的手工拷贝，不归 release.py 管（现 `TimeoutStartSec=80min`）；改它先备份、替换后 `daemon-reload`。
 - DeepSeek 密钥在 NB 的 `/etc/neckline/v4.env`（不在 `/opt/neckline/.env`）；本机回放要读进进程须用户放行，不落盘。
+- DeepSeek Search 的结果日期只到天（都是北京时间 00:00）。线上 08:00 跑没问题；回放时标着交易日当天的结果可能是 08:00 以后才发的，回放里的券商观点因此偏多。评估判定本身有随机性：同样输入重跑一遍，约 8% 的条目翻转，比较参数要带一组重跑对照（B126 回放）。
 - 本机离线回放：`python -m neckline.morning.replay`（快照库副本 + `market-snapshot.json` + 回执目录，走真实 `run_morning`）。TuShare 行情快照只能在 NB 上用 `neckline.evaluation.snapshot` 生成。
 - Codex 只读沙箱跑不了全量 pytest（建不了临时目录）；审查时附上宿主全量结果。Codex 额度会用尽（报使用上限并给恢复时间），可用 `--resume <会话>` 在原会话续跑。
 
