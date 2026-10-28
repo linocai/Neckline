@@ -15,25 +15,32 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(report.windowStart, "2026-10-16T07:00:00+00:00")
         XCTAssertEqual(report.windowEnd, "2026-10-19T00:00:00+00:00")
 
+        XCTAssertEqual(content.candidates, 3)
+        XCTAssertEqual(content.evaluated, 3)
         let entries = content.entries
-        XCTAssertEqual(entries.map(\.companyName), ["震裕科技", "海特生物", "奥克股份"])
-        XCTAssertEqual(entries.map(\.companyCode), ["300953", "300683", "300082"])
+        XCTAssertEqual(entries.map(\.companyName), ["震裕科技", "奥克股份", "海特生物"])
+        XCTAssertEqual(entries.map(\.companyCode), ["300953", "300082", "300683"])
         XCTAssertEqual(entries[0].type, "业绩向好")
-        XCTAssertEqual(entries[0].importance, .high)
+        XCTAssertEqual(entries[0].displayTitle, "前三季度净利预增")
+        XCTAssertEqual(entries[0].displayConclusion, "公告预计净利增长 58%")
+        XCTAssertNil(entries[0].headline)
+        XCTAssertNil(entries[0].reason)
         XCTAssertNil(entries[0].firstDisclosed)
+        XCTAssertEqual(entries[0].disclosedRaw, "2026-10-16T17:05+08:00")
+        XCTAssertEqual(MorningCopy.listStamp(try XCTUnwrap(entries[0].disclosedRaw)), "10-16 17:05")
+        XCTAssertEqual(entries[0].questions?.value, "利好能落到利润上")
+        XCTAssertEqual(entries[0].questions?.priced, "还没有充分反映")
+        XCTAssertEqual(entries[0].questions?.money, "有新增量")
+        XCTAssertEqual(entries[0].questions?.price, "明显高开不追")
+        XCTAssertEqual(entries[0].risk, "公告口径可能调整")
+        XCTAssertEqual(entries[0].views?.first?.by, .media)
+        XCTAssertEqual(entries[0].views?.first?.name, "金十快讯")
         XCTAssertEqual(entries[0].sources[0].url, "https://example.invalid/flash/z1")
-        XCTAssertEqual(entries[0].others.map(\.headline), ["签订设备采购合同"])
-        XCTAssertEqual(entries[0].others[0].importance, .medium)
-        XCTAssertEqual(entries[1].firstDisclosed, "2026-10-16")
-        XCTAssertNil(entries[1].sources[0].url)
-        XCTAssertNil(entries[1].sources[0].title)
-        XCTAssertEqual(entries[2].importance, .medium)
-        XCTAssertEqual(content.review.types.map(\.companyName), ["汇川技术"])
-        XCTAssertEqual(content.review.types[0].importance, .low)
-        XCTAssertEqual(content.review.relation.map(\.companyName), ["亿纬锂能"])
-        XCTAssertEqual(content.review.relation[0].relation, "受益方")
-        XCTAssertTrue(content.review.fresh.isEmpty)
-        XCTAssertTrue(content.review.old.isEmpty)
+        XCTAssertEqual(entries[2].firstDisclosed, "2026-10-16")
+        XCTAssertEqual(MorningCopy.listStamp(try XCTUnwrap(entries[2].disclosedRaw)), "10-16")
+        XCTAssertNil(entries[2].sources[0].url)
+        XCTAssertNil(entries[2].sources[0].title)
+        XCTAssertEqual(entries[2].views, [])
 
         let document = try decode("document", as: MorningDocument.self)
         XCTAssertEqual(entries[0].sources[0].documentId, document.documentId + "@1")
@@ -48,10 +55,8 @@ final class MorningContractTests: XCTestCase {
         let emptyContent = try XCTUnwrap(empty.content)
         XCTAssertEqual(empty.status, .available)
         XCTAssertTrue(emptyContent.entries.isEmpty)
-        XCTAssertTrue(emptyContent.review.types.isEmpty)
-        XCTAssertTrue(emptyContent.review.relation.isEmpty)
-        XCTAssertTrue(emptyContent.review.fresh.isEmpty)
-        XCTAssertTrue(emptyContent.review.old.isEmpty)
+        XCTAssertEqual(emptyContent.candidates, 0)
+        XCTAssertEqual(emptyContent.evaluated, 0)
         XCTAssertNil(empty.gapSummary)
 
         let failed = try decode("report-failed", as: MorningReport.self)
@@ -104,12 +109,44 @@ final class MorningContractTests: XCTestCase {
         var content = object["content"] as! [String: Any]
         var entries = content["entries"] as! [[String: Any]]
         entries[0]["importance"] = "极高"
+        entries[0]["views"] = [["by": "股吧", "name": "甲", "text": "看多"]]
         content["entries"] = entries
         object["content"] = content
         let report = try JSONDecoder().decode(MorningReport.self, from: JSONSerialization.data(withJSONObject: object))
         XCTAssertEqual(report.status, .unknown("paused"))
-        XCTAssertEqual(report.content?.entries[0].importance, .unknown("极高"))
+        XCTAssertEqual(report.content?.entries[0].views?.first?.by, .unknown("股吧"))
+        XCTAssertEqual(report.content?.entries[0].views?.first?.by.label, "股吧")
         XCTAssertEqual(report.content?.entries[0].companyName, "震裕科技")
+    }
+
+    func testLegacyReportFallsBackAndPartialQuestionsDoNotCrash() throws {
+        let report = try JSONDecoder().decode(MorningReport.self, from: Data(legacyReportJSON.utf8))
+        let entries = try XCTUnwrap(report.content?.entries)
+        XCTAssertNil(report.content?.evaluated)
+        XCTAssertNil(report.content?.candidates)
+        XCTAssertNil(entries[0].title)
+        XCTAssertNil(entries[0].questions)
+        XCTAssertNil(entries[0].risk)
+        XCTAssertNil(entries[0].views)
+        XCTAssertEqual(entries[0].displayTitle, "前三季度净利1.31亿元同比增259.8%")
+        XCTAssertEqual(entries[0].displayConclusion, "三季报营收增长")
+        XCTAssertEqual(MorningCopy.listStamp(try XCTUnwrap(entries[0].disclosedRaw)), "10-21 17:01")
+        XCTAssertNil(MorningCopy.emptyEvaluatedLine(report.content?.evaluated))
+
+        XCTAssertNil(entries[1].questions)
+        XCTAssertEqual(entries[1].views?.first?.by, .unknown("路人"))
+        XCTAssertEqual(entries[1].views?.first?.by.label, "路人")
+        XCTAssertEqual(entries[1].displayTitle, "只有旧标题")
+
+        XCTAssertEqual(entries[2].questions?.value, "只有利好")
+        XCTAssertNil(entries[2].questions?.priced)
+        XCTAssertNil(entries[2].questions?.money)
+        XCTAssertNil(entries[2].questions?.price)
+        XCTAssertEqual(entries[2].views?.map(\.by), [.broker, .company])
+
+        let media = try JSONDecoder().decode(MorningView.self, from: Data(#"{"by":"媒体","name":"财联社","text":"报道了"}"#.utf8))
+        XCTAssertEqual(media.by, .media)
+        XCTAssertEqual(MorningCopy.viewAttribution(by: media.by.label, name: media.name), "媒体 · 财联社")
     }
 
     func testClientMapsHTTPFailures() async throws {
@@ -198,8 +235,12 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(MorningCopy.historySubtitle(status: .failed, entryCount: 0), "出问题")
         XCTAssertEqual(MorningCopy.historySubtitle(status: .running, entryCount: 0), "正在生成")
         let entry = try XCTUnwrap(available.content?.entries.first)
-        XCTAssertEqual(MorningCopy.entryTag(type: entry.type, importance: entry.importance), "业绩向好 · 高")
-        XCTAssertEqual(MorningCopy.entryTag(type: "业绩向好", importance: .unknown("极高")), "业绩向好 · 极高")
+        XCTAssertEqual(entry.displayTitle, "前三季度净利预增")
+        let empty = try decode("report-empty", as: MorningReport.self)
+        XCTAssertEqual(MorningCopy.listMeta(report: available), "10/16 15:00 \u{2013} 10/19 08:00 · 3 家公司")
+        XCTAssertEqual(MorningCopy.listMeta(report: empty), "10/13 15:00 \u{2013} 10/14 08:00")
+        XCTAssertEqual(MorningCopy.listMeta(report: failed), "窗口 10/15 15:00 → 10/16 08:00")
+        XCTAssertEqual(MorningCopy.companyCount(9), "9 家公司")
         XCTAssertEqual(MorningCopy.failureLine(reason: failed.failureReason), "晨报出问题了\n09:15 前没能出报")
         XCTAssertEqual(MorningCopy.text(for: .missingToken), "还没有填写令牌")
         XCTAssertEqual(MorningCopy.text(for: .unauthorized), "令牌不正确")
@@ -211,15 +252,26 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(MorningCopy.text(for: .unreachable), "连不上服务")
         XCTAssertEqual(MorningCopy.text(for: .unreadable), "这份晨报暂时读不了")
         XCTAssertEqual(MorningCopy.reading, "正在读取")
-        XCTAssertEqual(MorningCopy.emptyEntries, "今天没有符合条件的利好")
+        XCTAssertEqual(MorningCopy.emptyEntries, "今天没有值得推的")
+        XCTAssertEqual(MorningCopy.emptyEvaluatedLine(18), "评估了 18 家公司的隔夜消息，没有值得推的")
+        XCTAssertEqual(MorningCopy.emptyEvaluatedLine(0), "评估了 0 家公司的隔夜消息，没有值得推的")
+        XCTAssertNil(MorningCopy.emptyEvaluatedLine(nil))
+        XCTAssertEqual(MorningCopy.questionValue, "① 利好值多少")
+        XCTAssertEqual(MorningCopy.questionPriced, "② 市场已反映多少")
+        XCTAssertEqual(MorningCopy.questionMoney, "③ 资金为什么买、为什么不买")
+        XCTAssertEqual(MorningCopy.questionPrice, "④ 价格划不划算")
+        XCTAssertEqual(MorningCopy.riskLine("订单可能放缓"), "风险：订单可能放缓")
+        XCTAssertEqual(MorningCopy.riskLine("风险：已有前缀"), "风险：已有前缀")
         XCTAssertEqual(MorningCopy.running, "正在出报")
         XCTAssertEqual(MorningCopy.runningDetail, "完成后下拉刷新")
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 17, hour: 12)))
-        XCTAssertEqual(MorningCopy.firstDisclosedLine("2026-10-13 16:45", now: now), "首次公开 10/13 16:45")
-        XCTAssertEqual(MorningCopy.firstDisclosedLine("2026-10-13", now: now), "首次公开 10/13")
-        XCTAssertEqual(MorningCopy.firstDisclosedLine("2025-03-02 09:05", now: now), "首次公开 2025/3/2 9:05")
+        XCTAssertEqual(MorningCopy.listStamp("2026-10-13 16:45"), "10-13 16:45")
+        XCTAssertEqual(MorningCopy.listStamp("2026-10-13"), "10-13")
+        // 巨潮只标到日期的公告记为 00:00，只显示日期
+        XCTAssertEqual(MorningCopy.listStamp("2026-10-24T00:00+08:00"), "10-24")
+        XCTAssertEqual(MorningCopy.listStamp("2026-10-23T19:22+08:00"), "10-23 19:22")
+        XCTAssertEqual(MorningCopy.listStamp("2026-10-16T17:05+08:00"), "10-16 17:05")
+        XCTAssertEqual(MorningCopy.listStamp("2026-10-17T00:03:00Z"), "10-17 08:03")
+        XCTAssertEqual(MorningCopy.firstDisclosedLine("2026-10-21 17:01"), "首次公开 10-21 17:01")
         XCTAssertEqual(MorningCopy.documentHeading(title: nil, text: "【海特生物：授权】后续", sourceLabel: "金十快讯"), "海特生物：授权")
         XCTAssertEqual(MorningCopy.documentHeading(title: "已有标题", text: "【不用】", sourceLabel: "金十快讯"), "已有标题")
         XCTAssertEqual(MorningCopy.documentHeading(title: nil, text: "没有括号", sourceLabel: "金十快讯"), "金十快讯")
@@ -275,6 +327,71 @@ private final class ScriptTransport: MorningTransport, @unchecked Sendable {
         return (data, response)
     }
 }
+
+private let legacyReportJSON = """
+{
+  "reportId": "morning-2026-10-22",
+  "tradeDate": "2026-10-22",
+  "status": "available",
+  "windowStart": "2026-10-21T07:00:00+00:00",
+  "windowEnd": "2026-10-22T00:00:00+00:00",
+  "configVersion": "screening-v2",
+  "content": {
+    "reportId": "morning-2026-10-22",
+    "tradeDate": "2026-10-22",
+    "kind": "morning",
+    "window": {"start": "2026-10-21T15:00+08:00", "end": "2026-10-22T08:00+08:00"},
+    "generatedAt": "2026-10-22T08:05+08:00",
+    "configVersion": "screening-v2",
+    "entries": [
+      {
+        "rank": 1,
+        "companyCode": "300480",
+        "companyName": "光力科技",
+        "type": "业绩预增",
+        "importance": "高",
+        "relation": "主体",
+        "fresh": "本窗口首次",
+        "headline": "前三季度净利1.31亿元同比增259.8%",
+        "reason": "三季报营收增长",
+        "firstDisclosed": "2026-10-21 17:01",
+        "sources": [
+          {"documentId": "doc_old", "sourceLabel": "巨潮公告", "publishedAt": "2026-10-22T00:00+08:00", "title": "三季度报告", "url": "https://example.invalid/old"}
+        ],
+        "others": [{"headline": "旧事一条", "type": "其他", "importance": "低"}]
+      },
+      {
+        "rank": 2,
+        "companyCode": "300001",
+        "companyName": "缺问题",
+        "type": "订单合同",
+        "headline": "只有旧标题",
+        "reason": "只有旧结论",
+        "sources": [
+          {"documentId": "doc_old_2", "sourceLabel": "金十快讯", "publishedAt": "2026-10-21T18:00+08:00"}
+        ],
+        "views": [{"by": "路人", "name": "甲", "text": "随便说说"}]
+      },
+      {
+        "companyCode": "300002",
+        "companyName": "部分问题",
+        "type": "业绩向好",
+        "title": "新标题",
+        "conclusion": "新结论",
+        "questions": {"value": "只有利好"},
+        "sources": [
+          {"documentId": "doc_partial", "sourceLabel": "金十快讯", "publishedAt": "2026-10-21T19:00+08:00"}
+        ],
+        "views": [
+          {"by": "券商", "name": "中信", "text": "看好", "sourceUrl": "https://example.invalid/broker"},
+          {"by": "公司", "name": "三季度报告", "text": "营收增长"}
+        ]
+      }
+    ],
+    "review": {"types": [], "relation": [], "fresh": [], "old": []}
+  }
+}
+"""
 
 private func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> T, _ expected: MorningClientError, file: StaticString = #filePath, line: UInt = #line) async {
     do {

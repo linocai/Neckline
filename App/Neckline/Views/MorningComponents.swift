@@ -14,7 +14,7 @@ struct MorningPageHeader: View {
                     Text(MorningCopy.header(tradeDate: report.tradeDate))
                         .nkScaledFont(.pageTitle)
                         .foregroundStyle(NKMorning.textPrimary)
-                    Text(MorningCopy.windowLine(report: report))
+                    Text(MorningCopy.listMeta(report: report))
                         .nkScaledFont(.caption)
                         .foregroundStyle(NKMorning.textSecondary)
                         .monospacedDigit()
@@ -40,7 +40,6 @@ struct MorningPageHeader: View {
 
 struct MorningEntryRow: View {
     let entry: MorningEntry
-    var quiet = false
     var selected = false
     #if os(iOS)
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -49,13 +48,22 @@ struct MorningEntryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             nameCodeAndTag
-            Text(entry.headline)
-                .font(NKMorningFont.titleLine)
-                .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if !entry.displayTitle.isEmpty {
+                Text(entry.displayTitle)
+                    .font(NKMorningFont.titleLine)
+                    .foregroundStyle(NKMorning.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if !entry.displayConclusion.isEmpty {
+                Text(entry.displayConclusion)
+                    .font(NKMorningFont.caption)
+                    .foregroundStyle(NKMorning.textSecondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
         }
-        .padding(.horizontal, horizontalInset)
+        .padding(.horizontal, NKMorningSpace.rowH)
         .padding(.vertical, NKMorningSpace.rowV)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(selected ? NKMorning.selection : Color.clear)
@@ -70,17 +78,21 @@ struct MorningEntryRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(entry.companyName)
                         .font(NKMorningFont.company)
-                        .foregroundStyle(quiet ? NKMorning.textSecondary : NKMorning.textPrimary)
+                        .foregroundStyle(NKMorning.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(entry.companyCode)
-                        .font(NKMorningFont.company)
+                        .font(NKMorningFont.caption)
                         .monospacedDigit()
-                        .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
+                        .foregroundStyle(NKMorning.textSecondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                         .layoutPriority(1)
                 }
-                MorningTag(type: entry.type, importance: entry.importance)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    MorningTag(type: entry.type)
+                    Spacer(minLength: 8)
+                    timeLabel
+                }
             }
         } else {
             standardNameCodeAndTag
@@ -94,49 +106,46 @@ struct MorningEntryRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(entry.companyName)
                 .font(NKMorningFont.company)
-                .foregroundStyle(quiet ? NKMorning.textSecondary : NKMorning.textPrimary)
+                .foregroundStyle(NKMorning.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Text(entry.companyCode)
-                .font(NKMorningFont.company)
+                .font(NKMorningFont.caption)
                 .monospacedDigit()
-                .foregroundStyle(quiet ? NKMorning.textTertiary : NKMorning.textSecondary)
+                .foregroundStyle(NKMorning.textSecondary)
                 .lineLimit(1)
                 .layoutPriority(1)
-            Spacer(minLength: 8)
-            MorningTag(type: entry.type, importance: entry.importance)
+            MorningTag(type: entry.type)
                 .layoutPriority(1)
+            Spacer(minLength: 8)
+            timeLabel
+                .layoutPriority(2)
         }
     }
 
-    private var horizontalInset: CGFloat {
-        #if os(macOS)
-        NKMorningSpace.page
-        #else
-        NKMorningSpace.rowH
-        #endif
+    @ViewBuilder private var timeLabel: some View {
+        if let raw = entry.disclosedRaw {
+            Text(MorningCopy.listStamp(raw))
+                .font(NKMorningFont.caption)
+                .monospacedDigit()
+                .foregroundStyle(NKMorning.textTertiary)
+                .lineLimit(1)
+        }
     }
 }
 
 struct MorningTag: View {
     let type: String
-    let importance: MorningImportance
 
     var body: some View {
-        HStack(spacing: 0) {
-            Text(type)
-                .foregroundStyle(NKMorning.textSecondary)
-            Text(" · ")
-                .foregroundStyle(NKMorning.textTertiary)
-            Text(importance.label)
-                .foregroundStyle(importance == .high ? NKMorning.accent : NKMorning.textSecondary)
-        }
-        .font(NKMorningFont.tag)
-        .lineLimit(1)
-        .fixedSize()
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(NKMorning.tagFill, in: RoundedRectangle(cornerRadius: NKMorningRadius.tag, style: .continuous))
+        Text(type)
+            .font(NKMorningFont.tag)
+            .foregroundStyle(NKMorning.textSecondary)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(NKMorning.tagFill, in: RoundedRectangle(cornerRadius: NKMorningRadius.tag, style: .continuous))
     }
 }
 
@@ -147,12 +156,17 @@ struct MorningStatusView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label {
+            if message.showsIcon {
+                Label {
+                    Text(message.title)
+                        .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textPrimary)
+                } icon: {
+                    Image(systemName: message.icon)
+                        .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textSecondary)
+                }
+            } else {
                 Text(message.title)
                     .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textPrimary)
-            } icon: {
-                Image(systemName: message.icon)
-                    .foregroundStyle(message.problem ? NKMorning.problem : NKMorning.textSecondary)
             }
         } description: {
             if let detail = message.detail, !detail.isEmpty {
@@ -196,87 +210,18 @@ struct MorningLoadingView: View {
     }
 }
 
-struct MorningFold<Content: View>: View {
-    let title: String
-    var headerInset: CGFloat = 0
-    @ViewBuilder var content: () -> Content
-    @State private var open = false
-    #if DEBUG
-    @Environment(\.nkQAReviewOpen) private var qaReviewOpen
-    #endif
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation(.easeInOut(duration: NKMorningSpace.expand)) { open.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(NKMorningFont.caption.weight(.semibold))
-                        .foregroundStyle(NKMorning.textSecondary)
-                    Spacer(minLength: 8)
-                    Image(systemName: open ? "chevron.down" : "chevron.right")
-                        .font(NKMorningFont.disclosure)
-                        .foregroundStyle(NKMorning.textTertiary)
-                }
-                .padding(.horizontal, headerInset)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if open {
-                content()
-                    .transition(.opacity.combined(with: .offset(y: -6)).combined(with: .scale(scale: 0.98, anchor: .top)))
-            }
-        }
-        #if DEBUG
-        .onAppear {
-            guard qaReviewOpen, !open else { return }
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { open = true }
-        }
-        #endif
-    }
-}
-
 #if DEBUG
-private struct NKQAReviewOpenKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
 private struct NKQAScrollBottomKey: EnvironmentKey {
     static let defaultValue = false
 }
 
 extension EnvironmentValues {
-    var nkQAReviewOpen: Bool {
-        get { self[NKQAReviewOpenKey.self] }
-        set { self[NKQAReviewOpenKey.self] = newValue }
-    }
-
     var nkQAScrollBottom: Bool {
         get { self[NKQAScrollBottomKey.self] }
         set { self[NKQAScrollBottomKey.self] = newValue }
     }
 }
 #endif
-
-extension MorningReview {
-    var listedGroups: [MorningReviewGroup] {
-        [
-            MorningReviewGroup(title: "类型不在收录清单", entries: types),
-            MorningReviewGroup(title: "受益方", entries: relation),
-            MorningReviewGroup(title: "看不出是否这段时间首次公开", entries: fresh),
-            MorningReviewGroup(title: "判为旧事", entries: old),
-        ].filter { !$0.entries.isEmpty }
-    }
-}
-
-struct MorningReviewGroup: Identifiable {
-    let title: String
-    let entries: [MorningEntry]
-    var id: String { title }
-}
 
 extension View {
     func morningCard() -> some View {

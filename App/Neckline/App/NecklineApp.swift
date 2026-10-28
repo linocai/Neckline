@@ -102,7 +102,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
     }
 
     #if DEBUG
-    /// 截图进程在第一帧之前选定期次和标签。日期只作用于 macOS 左栏焦点；iOS 由根视图推进历史栈。
+    /// 截图进程在第一帧之前选定期次和标签。日期设 macOS 焦点；iOS 名单在根页打开该期。
     private static func applyQALaunchState(to model: MorningModel) {
         guard ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil else { return }
         if let date = ProcessInfo.processInfo.environment["NK_QA_TRADE_DATE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -130,7 +130,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
 
     private static var initialWindowSize: CGSize {
         ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil
-            ? CGSize(width: 1280, height: 800)
+            ? CGSize(width: 1480, height: 1280)
             : CGSize(width: 1180, height: 760)
     }
     #else

@@ -6,7 +6,14 @@ enum MorningCopy {
     static let reading = "正在读取"
     static let noReport = "还没有晨报"
     static let noReportDetail = "每个交易日 08:00 截止后出报"
-    static let emptyEntries = "今天没有符合条件的利好"
+    static let emptyEntries = "今天没有值得推的"
+    static let questionsHeading = "四个问题"
+    static let viewsHeading = "各方怎么看"
+    static let sourcesHeading = "原文"
+    static let questionValue = "① 利好值多少"
+    static let questionPriced = "② 市场已反映多少"
+    static let questionMoney = "③ 资金为什么买、为什么不买"
+    static let questionPrice = "④ 价格划不划算"
     static let failedTitle = "晨报出问题了"
     static let running = "正在出报"
     static let runningDetail = "完成后下拉刷新"
@@ -55,6 +62,61 @@ enum MorningCopy {
         return windowLine(start: report.windowStart, end: report.windowEnd, generatedAt: nil)
     }
 
+    /// 名单页眉的时间范围。有条目时带上「N 家公司」。没有正文的期仍用窗口行。
+    static func listMeta(report: MorningReport) -> String {
+        guard let content = report.content else { return windowLine(report: report) }
+        let left = ShanghaiClock.monthDayClock(content.window.start) ?? content.window.start
+        let right = ShanghaiClock.monthDayClock(content.window.end) ?? content.window.end
+        let range = "\(left) \u{2013} \(right)"
+        let count = content.entries.count
+        guard count > 0 else { return range }
+        return "\(range) · \(companyCount(count))"
+    }
+
+    static func companyCount(_ count: Int) -> String {
+        "\(count) 家公司"
+    }
+
+    /// 0 条时的第二行。旧晨报没有 evaluated 就不显示。
+    static func emptyEvaluatedLine(_ evaluated: Int?) -> String? {
+        guard let evaluated else { return nil }
+        return "评估了 \(evaluated) 家公司的隔夜消息，没有值得推的"
+    }
+
+    /// 名单右侧和详情里的时刻：MM-dd，有钟点再加 HH:mm。解析不了就原样返回。
+    /// 正好 00:00 的多是巨潮只标到日期的公告（前一晚发布、记为披露日），只显示日期，免得看成半夜发布。
+    static func listStamp(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("T"), let parts = ShanghaiClock.paddedClock(trimmed) {
+            if parts.hour == 0 && parts.minute == 0 {
+                return String(format: "%02d-%02d", parts.month, parts.day)
+            }
+            return String(format: "%02d-%02d %02d:%02d", parts.month, parts.day, parts.hour, parts.minute)
+        }
+        if let civil = ShanghaiClock.civil(trimmed) {
+            let day = String(format: "%02d-%02d", civil.month, civil.day)
+            if let hour = civil.hour, let minute = civil.minute {
+                return "\(day) \(String(format: "%02d:%02d", hour, minute))"
+            }
+            return day
+        }
+        return trimmed
+    }
+
+    static func riskLine(_ risk: String) -> String {
+        let trimmed = risk.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("风险") { return trimmed }
+        return "风险：\(trimmed)"
+    }
+
+    static func viewAttribution(by: String, name: String) -> String {
+        let who = by.trimmingCharacters(in: .whitespacesAndNewlines)
+        let named = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if who.isEmpty { return named }
+        if named.isEmpty { return who }
+        return "\(who) · \(named)"
+    }
+
     /// 北京时间的「10/16 17:05」。解析不了就原样返回。
     static func beijingClock(_ value: String) -> String {
         ShanghaiClock.monthDayClock(value) ?? value
@@ -78,25 +140,13 @@ enum MorningCopy {
         }
     }
 
-    static func entryTag(type: String, importance: MorningImportance) -> String {
-        "\(type) · \(importance.label)"
-    }
-
     static func failureLine(reason: String?) -> String {
         guard let reason, !reason.isEmpty else { return failedTitle }
         return "\(failedTitle)\n\(reason)"
     }
 
-    /// 当年不写年份。只有日期时不补时刻。
-    static func firstDisclosedLine(_ value: String, now: Date = Date()) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = ShanghaiClock.civil(trimmed) else { return "首次公开 \(trimmed)" }
-        let showYear = parsed.year != ShanghaiClock.year(of: now)
-        let day = showYear ? "\(parsed.year)/\(parsed.month)/\(parsed.day)" : "\(parsed.month)/\(parsed.day)"
-        if let hour = parsed.hour, let minute = parsed.minute {
-            return "首次公开 \(day) \(hour):\(String(format: "%02d", minute))"
-        }
-        return "首次公开 \(day)"
+    static func firstDisclosedLine(_ value: String) -> String {
+        "首次公开 \(listStamp(value))"
     }
 
     static func documentHeading(title: String?, text: String, sourceLabel: String) -> String {
@@ -159,10 +209,6 @@ private enum ShanghaiClock {
         let minute: Int?
     }
 
-    static func year(of date: Date) -> Int {
-        gregorian(timeZone: shanghai).component(.year, from: date)
-    }
-
     /// 「YYYY-MM-DD」或「YYYY-MM-DD HH:MM」。
     static func civil(_ value: String) -> CivilDate? {
         let pieces = value.split(separator: " ", maxSplits: 1).map(String.init)
@@ -203,6 +249,12 @@ private enum ShanghaiClock {
     static func hourMinute(_ value: String) -> String? {
         guard let parts = shanghaiParts(value), let hour = parts.hour, let minute = parts.minute else { return nil }
         return clock(hour, minute)
+    }
+
+    static func paddedClock(_ value: String) -> (month: Int, day: Int, hour: Int, minute: Int)? {
+        guard let parts = shanghaiParts(value), let month = parts.month, let day = parts.day,
+              let hour = parts.hour, let minute = parts.minute else { return nil }
+        return (month, day, hour, minute)
     }
 
     private static func clock(_ hour: Int, _ minute: Int) -> String {

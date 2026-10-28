@@ -1,4 +1,5 @@
-// V4 晨报接口模型。时间保持字符串，展示时再按北京时间格式化。
+// 晨报接口模型。时间保持字符串，展示时再按北京时间格式化。
+// 新晨报用 title / conclusion / questions / risk / views；旧晨报只留 headline / reason 作回退。
 
 import Foundation
 
@@ -29,42 +30,6 @@ enum MorningStatus: Codable, Equatable {
     }
 }
 
-enum MorningImportance: Codable, Equatable {
-    case high
-    case medium
-    case low
-    case unknown(String)
-
-    var label: String {
-        switch self {
-        case .high: return "高"
-        case .medium: return "中"
-        case .low: return "低"
-        case .unknown(let raw): return raw
-        }
-    }
-
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        switch raw {
-        case "高": self = .high
-        case "中": self = .medium
-        case "低": self = .low
-        default: self = .unknown(raw)
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .high: try container.encode("高")
-        case .medium: try container.encode("中")
-        case .low: try container.encode("低")
-        case .unknown(let raw): try container.encode(raw)
-        }
-    }
-}
-
 struct MorningReport: Codable, Equatable {
     let reportId: String
     let tradeDate: String
@@ -88,7 +53,8 @@ struct MorningContent: Codable, Equatable {
     let configVersion: String
     let gapSummary: String?
     let entries: [MorningEntry]
-    let review: MorningReview
+    let candidates: Int?
+    let evaluated: Int?
 }
 
 struct MorningWindow: Codable, Equatable {
@@ -96,26 +62,100 @@ struct MorningWindow: Codable, Equatable {
     let end: String
 }
 
-struct MorningReview: Codable, Equatable {
-    let types: [MorningEntry]
-    let relation: [MorningEntry]
-    let fresh: [MorningEntry]
-    let old: [MorningEntry]
+struct MorningQuestions: Codable, Equatable {
+    let value: String?
+    let priced: String?
+    let money: String?
+    let price: String?
+}
+
+/// 观点来源。媒体、券商、公司以外的原样显示。
+enum MorningViewBy: Codable, Equatable {
+    case media
+    case broker
+    case company
+    case unknown(String)
+
+    var label: String {
+        switch self {
+        case .media: "媒体"
+        case .broker: "券商"
+        case .company: "公司"
+        case .unknown(let raw): raw
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "媒体": self = .media
+        case "券商": self = .broker
+        case "公司": self = .company
+        default: self = .unknown(raw)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .media: try container.encode("媒体")
+        case .broker: try container.encode("券商")
+        case .company: try container.encode("公司")
+        case .unknown(let raw): try container.encode(raw)
+        }
+    }
+}
+
+struct MorningView: Codable, Equatable {
+    let by: MorningViewBy
+    let name: String
+    let text: String
+    let sourceTitle: String?
+    let sourceUrl: String?
+
+    var linkURL: URL? {
+        let raw = sourceUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
 }
 
 struct MorningEntry: Codable, Equatable {
-    let rank: Int
     let companyCode: String
     let companyName: String
     let type: String
-    let importance: MorningImportance
-    let relation: String
-    let fresh: String
-    let headline: String
-    let reason: String
+    let title: String?
+    let conclusion: String?
+    let questions: MorningQuestions?
+    let risk: String?
+    let views: [MorningView]?
     let firstDisclosed: String?
     let sources: [MorningSource]
-    let others: [MorningOtherEvent]
+    /// 旧晨报标题。新晨报没有这个字段。
+    let headline: String?
+    /// 旧晨报结论。新晨报没有这个字段。
+    let reason: String?
+
+    var displayTitle: String {
+        let primary = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !primary.isEmpty { return primary }
+        return headline?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var displayConclusion: String {
+        let primary = conclusion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !primary.isEmpty { return primary }
+        return reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// 首次公开原文。没有就用第一条来源的发布时间。
+    var disclosedRaw: String? {
+        let first = firstDisclosed?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !first.isEmpty { return first }
+        let published = sources.first?.publishedAt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return published.isEmpty ? nil : published
+    }
 }
 
 struct MorningSource: Codable, Equatable {
@@ -124,12 +164,6 @@ struct MorningSource: Codable, Equatable {
     let publishedAt: String
     let title: String?
     let url: String?
-}
-
-struct MorningOtherEvent: Codable, Equatable {
-    let headline: String
-    let type: String
-    let importance: MorningImportance
 }
 
 struct MorningDocument: Codable, Equatable {

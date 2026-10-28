@@ -29,9 +29,12 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(MorningCopy.header(tradeDate: report.tradeDate), "晨报 10/19 周一")
         XCTAssertEqual(MorningCopy.windowLine(report: report), "窗口 10/16 15:00 → 10/19 08:00 · 08:03 生成")
         XCTAssertEqual(report.gapSummary, "采集不完整：金十资讯没取全")
-        XCTAssertEqual(report.content?.entries.map(\.companyName), ["震裕科技", "海特生物", "奥克股份"])
+        XCTAssertEqual(report.content?.entries.map(\.companyName), ["震裕科技", "奥克股份", "海特生物"])
         let entry = try XCTUnwrap(report.content?.entries.first)
-        XCTAssertEqual(MorningCopy.entryTag(type: entry.type, importance: entry.importance), "业绩向好 · 高")
+        XCTAssertEqual(entry.displayTitle, "前三季度净利预增")
+        XCTAssertEqual(entry.displayConclusion, "公告预计净利增长 58%")
+        XCTAssertEqual(entry.views?.first?.by, .media)
+        XCTAssertEqual(MorningCopy.listMeta(report: report), "10/16 15:00 \u{2013} 10/19 08:00 · 3 家公司")
         XCTAssertNil(model.message(for: .ready(report)))
         XCTAssertEqual(fake.historyLimits, [60])
         XCTAssertEqual(model.history.map(\.tradeDate), ["2026-10-19", "2026-10-16", "2026-10-15", "2026-10-14"])
@@ -48,8 +51,35 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(model.state(for: .latest), .empty(empty))
         let message = model.message(for: .empty(empty))
         XCTAssertEqual(message?.title, MorningCopy.emptyEntries)
-        XCTAssertNil(message?.detail)
+        XCTAssertEqual(message?.detail, "评估了 0 家公司的隔夜消息，没有值得推的")
+        XCTAssertEqual(empty.content?.evaluated, 0)
         XCTAssertEqual(message?.problem, false)
+        XCTAssertEqual(message?.showsIcon, false)
+    }
+
+    func testEmptyWithoutEvaluatedOmitsTheSecondLine() throws {
+        var object = try JSONSerialization.jsonObject(with: fixtureData("report-empty")) as! [String: Any]
+        var content = object["content"] as! [String: Any]
+        content.removeValue(forKey: "evaluated")
+        object["content"] = content
+        let report = try JSONDecoder().decode(MorningReport.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(report.content?.evaluated)
+        let model = makeModel(client: FakeMorningClient())
+        let message = model.message(for: .empty(report))
+        XCTAssertEqual(message?.title, MorningCopy.emptyEntries)
+        XCTAssertNil(message?.detail)
+    }
+
+    func testLegacyEntryDisplayTitleFallsBack() throws {
+        let report = try JSONDecoder().decode(MorningReport.self, from: Data(legacyEntryJSON.utf8))
+        let entry = try XCTUnwrap(report.content?.entries.first)
+        XCTAssertNil(entry.title)
+        XCTAssertNil(entry.conclusion)
+        XCTAssertNil(entry.questions)
+        XCTAssertEqual(entry.displayTitle, "前三季度净利1.31亿元同比增259.8%")
+        XCTAssertEqual(entry.displayConclusion, "三季报营收增长")
+        XCTAssertEqual(entry.views?.first?.by, .unknown("路人"))
+        XCTAssertNil(report.content?.evaluated)
     }
 
     func testFailedReportShowsBackendReason() async throws {
@@ -199,30 +229,19 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(fake.latestCalls, callsAfterFirst + 1)
     }
 
-    func testDetailEntryFindsPendingWithoutFallback() async throws {
+    func testDetailEntryUsesTheSelectedEntryOnly() async throws {
         let available = try fixture("report-available", as: MorningReport.self)
         let empty = try fixture("report-empty", as: MorningReport.self)
         let main = try XCTUnwrap(available.content?.entries.first)
-        let pending = try XCTUnwrap(available.content?.review.relation.first)
         let model = makeModel(client: FakeMorningClient())
 
         XCTAssertNil(model.detailEntry(in: available))
         XCTAssertNil(model.detailEntry(in: empty))
-
-        for bucket in ReviewBucket.allCases {
-            let ready = report(from: available, main: available.content?.entries ?? [], pending: pending, bucket: bucket)
-            let blank = report(from: empty, main: [], pending: pending, bucket: bucket)
-            model.select(pending)
-            XCTAssertEqual(model.detailEntry(in: ready)?.listID, pending.listID, "有条目的期应找到 \(bucket)")
-            XCTAssertEqual(model.detailEntry(in: blank)?.listID, pending.listID, "0 条的期应找到 \(bucket)")
-        }
-
-        let unselected = makeModel(client: FakeMorningClient())
-        let blank = report(from: empty, main: [], pending: pending, bucket: .types)
-        XCTAssertNil(unselected.detailEntry(in: blank))
+        XCTAssertEqual(model.selectedEntry(in: available)?.listID, main.listID)
 
         model.select(main)
         XCTAssertEqual(model.detailEntry(in: available)?.listID, main.listID)
+        XCTAssertNil(model.detailEntry(in: empty))
     }
 
     func testConnectionEditsDoNotLeaveLatestLoading() async throws {
@@ -436,44 +455,6 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "neckline.keep"), "keep")
     }
 
-    private enum ReviewBucket: CaseIterable {
-        case types, relation, fresh, old
-    }
-
-    private func report(from base: MorningReport, main: [MorningEntry], pending: MorningEntry, bucket: ReviewBucket) -> MorningReport {
-        let content = base.content!
-        let review = MorningReview(
-            types: bucket == .types ? [pending] : [],
-            relation: bucket == .relation ? [pending] : [],
-            fresh: bucket == .fresh ? [pending] : [],
-            old: bucket == .old ? [pending] : []
-        )
-        let rewritten = MorningContent(
-            reportId: content.reportId,
-            tradeDate: content.tradeDate,
-            kind: content.kind,
-            window: content.window,
-            generatedAt: content.generatedAt,
-            configVersion: content.configVersion,
-            gapSummary: content.gapSummary,
-            entries: main,
-            review: review
-        )
-        return MorningReport(
-            reportId: base.reportId,
-            tradeDate: base.tradeDate,
-            status: base.status,
-            windowStart: base.windowStart,
-            windowEnd: base.windowEnd,
-            availableAt: base.availableAt,
-            failedAt: base.failedAt,
-            failureReason: base.failureReason,
-            gapSummary: base.gapSummary,
-            configVersion: base.configVersion,
-            content: rewritten
-        )
-    }
-
     @discardableResult
     private func waitUntil(_ description: String, timeoutMs: Int = 2000, _ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async -> Bool {
         let steps = max(timeoutMs / 20, 1)
@@ -544,6 +525,40 @@ final class MorningModelTests: XCTestCase {
         return try Data(contentsOf: try XCTUnwrap(url, "缺少夹具 \(name).json"))
     }
 }
+
+private let legacyEntryJSON = """
+{
+  "reportId": "morning-2026-10-22",
+  "tradeDate": "2026-10-22",
+  "status": "available",
+  "windowStart": "2026-10-21T07:00:00+00:00",
+  "windowEnd": "2026-10-22T00:00:00+00:00",
+  "configVersion": "screening-v2",
+  "content": {
+    "reportId": "morning-2026-10-22",
+    "tradeDate": "2026-10-22",
+    "kind": "morning",
+    "window": {"start": "2026-10-21T15:00+08:00", "end": "2026-10-22T08:00+08:00"},
+    "generatedAt": "2026-10-22T08:05+08:00",
+    "configVersion": "screening-v2",
+    "entries": [
+      {
+        "rank": 1,
+        "companyCode": "300480",
+        "companyName": "光力科技",
+        "type": "业绩预增",
+        "importance": "高",
+        "headline": "前三季度净利1.31亿元同比增259.8%",
+        "reason": "三季报营收增长",
+        "sources": [{"documentId": "doc_old", "sourceLabel": "巨潮公告", "publishedAt": "2026-10-22T00:00+08:00"}],
+        "others": [{"headline": "旧事一条", "type": "其他", "importance": "低"}],
+        "views": [{"by": "路人", "name": "甲", "text": "随便说说"}]
+      }
+    ],
+    "review": {"types": [], "relation": [], "fresh": [], "old": []}
+  }
+}
+"""
 
 private final class FakeMorningClient: MorningClient, @unchecked Sendable {
     var latestResult: Result<MorningReport, Error> = .failure(MorningClientError.unreadable)

@@ -7,7 +7,6 @@ struct ReportView: View {
     var model: MorningModel
     var showsDateMenu = false
     #if DEBUG
-    @Environment(\.nkQAReviewOpen) private var qaReviewOpen
     @Environment(\.nkQAScrollBottom) private var qaScrollBottom
     #endif
 
@@ -45,11 +44,11 @@ struct ReportView: View {
 
     @ViewBuilder private var scrollingList: some View {
         #if DEBUG
-        if qaReviewOpen || qaScrollBottom {
+        if qaScrollBottom {
             ScrollViewReader { proxy in
                 reportScroll
-                    .onAppear { scheduleReviewScroll(proxy) }
-                    .onChange(of: model.state(for: slot)) { _, _ in scheduleReviewScroll(proxy) }
+                    .onAppear { scheduleBottomScroll(proxy) }
+                    .onChange(of: model.state(for: slot)) { _, _ in scheduleBottomScroll(proxy) }
             }
         } else {
             reportScroll
@@ -64,11 +63,13 @@ struct ReportView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let report = model.report(for: slot) {
                     MorningPageHeader(report: report, showsIdentity: showsPageIdentity)
-                        .padding(.horizontal, usesCards ? 0 : NKMorningSpace.page)
                 }
                 listBody
+                #if DEBUG
+                Color.clear.frame(height: 1).id("nk-qa-list-bottom")
+                #endif
             }
-            .padding(.horizontal, usesCards ? NKMorningSpace.page : 0)
+            .padding(.horizontal, NKMorningSpace.page)
             .padding(.top, showsDateMenu ? 4 : 12)
             .padding(.bottom, 28)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,15 +78,14 @@ struct ReportView: View {
     }
 
     #if DEBUG
-    private func scheduleReviewScroll(_ proxy: ScrollViewProxy) {
-        guard qaReviewOpen || qaScrollBottom, case .ready = model.state(for: slot) else { return }
-        let anchor: UnitPoint = qaScrollBottom ? .bottom : .top
+    private func scheduleBottomScroll(_ proxy: ScrollViewProxy) {
+        guard qaScrollBottom, case .ready = model.state(for: slot) else { return }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 450_000_000)
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                proxy.scrollTo("nk-qa-review", anchor: anchor)
+                proxy.scrollTo("nk-qa-list-bottom", anchor: .bottom)
             }
         }
     }
@@ -96,13 +96,11 @@ struct ReportView: View {
         case .loading:
             MorningLoadingView()
         case .ready(let report):
-            entryList(report.content?.entries ?? [], quiet: false)
-            reviewAnchor(reviewFold(report))
+            entryList(report.content?.entries ?? [])
         case .empty(let report):
             if let message = model.message(for: .empty(report)) {
                 status(message)
             }
-            reviewFold(report)
         case .failed, .running, .error:
             if let message = model.message(for: model.state(for: slot)) {
                 status(message)
@@ -110,79 +108,41 @@ struct ReportView: View {
         }
     }
 
-    @ViewBuilder private func reviewAnchor<V: View>(_ view: V) -> some View {
-        #if DEBUG
-        view.id("nk-qa-review")
-        #else
-        view
-        #endif
-    }
-
-    @ViewBuilder private func reviewFold(_ report: MorningReport) -> some View {
-        let groups = report.content?.review.listedGroups ?? []
-        if !groups.isEmpty {
-            MorningFold(title: "待定与旧事", headerInset: foldHeaderInset) {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(groups) { group in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(group.title)
-                                .nkScaledFont(.captionMedium)
-                                .foregroundStyle(NKMorning.textTertiary)
-                                .padding(.horizontal, groupInset)
-                            entryList(group.entries, quiet: true)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private func entryList(_ entries: [MorningEntry], quiet: Bool) -> some View {
-        VStack(spacing: usesCards ? 10 : 0) {
+    @ViewBuilder private func entryList(_ entries: [MorningEntry]) -> some View {
+        VStack(spacing: 0) {
             ForEach(entries, id: \.listID) { entry in
-                entryControl(entry, quiet: quiet)
-                if !usesCards, entry.listID != entries.last?.listID {
+                entryControl(entry)
+                if entry.listID != entries.last?.listID {
                     Rectangle().fill(NKMorning.hairline).frame(height: 1)
                 }
             }
         }
+        .background(NKMorning.card)
+        .clipShape(RoundedRectangle(cornerRadius: NKMorningRadius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: NKMorningRadius.card, style: .continuous)
+                .stroke(NKMorning.hairline, lineWidth: 1)
+        )
     }
 
-    @ViewBuilder private func entryControl(_ entry: MorningEntry, quiet: Bool) -> some View {
+    @ViewBuilder private func entryControl(_ entry: MorningEntry) -> some View {
         #if os(macOS)
         if showsDateMenu {
             Button { model.select(entry) } label: {
-                MorningEntryRow(entry: entry, quiet: quiet, selected: model.selectedEntryKey == entry.listID)
+                MorningEntryRow(entry: entry, selected: model.selectedEntryKey == entry.listID)
             }
             .buttonStyle(.plain)
         } else {
             NavigationLink { EntryDetailView(entry: entry, model: model) } label: {
-                MorningEntryRow(entry: entry, quiet: quiet)
+                MorningEntryRow(entry: entry)
             }
             .buttonStyle(.plain)
         }
         #else
         NavigationLink { EntryDetailView(entry: entry, model: model) } label: {
-            MorningEntryRow(entry: entry, quiet: quiet)
-                .morningCard()
+            MorningEntryRow(entry: entry)
         }
         .buttonStyle(.plain)
-        #endif
-    }
-
-    private var usesCards: Bool {
-        #if os(macOS)
-        false
-        #else
-        true
-        #endif
-    }
-
-    private var groupInset: CGFloat {
-        #if os(macOS)
-        NKMorningSpace.page
-        #else
-        NKMorningSpace.rowH
         #endif
     }
 
@@ -201,15 +161,7 @@ struct ReportView: View {
 
     private var navigationSubheading: String {
         guard let report = model.report(for: slot) else { return "" }
-        return MorningCopy.windowLine(report: report)
-    }
-
-    private var foldHeaderInset: CGFloat {
-        #if os(macOS)
-        NKMorningSpace.page
-        #else
-        0
-        #endif
+        return MorningCopy.listMeta(report: report)
     }
 
     private func status(_ message: MorningMessage) -> some View {

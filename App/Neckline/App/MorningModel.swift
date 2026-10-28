@@ -37,6 +37,7 @@ struct MorningMessage: Equatable {
     var retry: Bool
     var settings: Bool = false
     var icon: String = "exclamationmark.circle"
+    var showsIcon: Bool = true
 }
 
 struct MorningCheckLine: Identifiable, Equatable {
@@ -134,8 +135,15 @@ final class MorningModel {
             return MorningMessage(title: MorningCopy.reading, detail: nil, problem: false, retry: false, icon: "clock")
         case .ready:
             return nil
-        case .empty:
-            return MorningMessage(title: MorningCopy.emptyEntries, detail: nil, problem: false, retry: false, icon: "tray")
+        case .empty(let report):
+            return MorningMessage(
+                title: MorningCopy.emptyEntries,
+                detail: MorningCopy.emptyEvaluatedLine(report.content?.evaluated),
+                problem: false,
+                retry: false,
+                icon: "tray",
+                showsIcon: false
+            )
         case .failed(let report):
             let reason = report.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = (reason?.isEmpty == false) ? reason : nil
@@ -155,7 +163,7 @@ final class MorningModel {
         return main.first
     }
 
-    /// 右栏详情只认当前选中，在主名单和四组待定里找；没选中时不退回主名单第一条。
+    /// 右栏详情只认当前选中的名单条目；没选中时不退回第一条。
     func detailEntry(in report: MorningReport) -> MorningEntry? {
         guard let selectedEntryKey else { return nil }
         return Self.entries(in: report).first { $0.listID == selectedEntryKey }
@@ -415,8 +423,7 @@ final class MorningModel {
     }
 
     private static func entries(in report: MorningReport) -> [MorningEntry] {
-        guard let content = report.content else { return [] }
-        return content.entries + content.review.types + content.review.relation + content.review.fresh + content.review.old
+        report.content?.entries ?? []
     }
 
     private static func signature(of config: AppConfig) -> String {
@@ -458,7 +465,10 @@ extension MorningMessage {
 }
 
 extension MorningEntry {
-    var listID: String { "\(rank)|\(companyCode)|\(headline)|\(type)" }
+    var listID: String {
+        let source = sources.first?.documentId ?? ""
+        return "\(companyCode)|\(displayTitle)|\(type)|\(source)"
+    }
 }
 
 extension MorningHistoryItem: Identifiable {

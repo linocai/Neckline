@@ -51,6 +51,38 @@ enum NKMorning {
     static let problem = Color(light: 0xD70015, dark: 0xFF453A)
     static let selection = Color(light: 0x0754E9, dark: 0x4C8DFF, alpha: 0.12)
     static let tagFill = Color(light: 0xF2F2F7, dark: 0x3A3A3C)
+    /// 风险正文。系统红，深浅色自动换。
+    static let risk = Color.red
+    /// 风险浅底。浅色约 8%，深色约 14%。
+    static let riskFill = Color.adaptiveSystemFill(red: true, lightAlpha: 0.08, darkAlpha: 0.14)
+    /// 各方观点正文。系统蓝，深浅色自动换。
+    static let view = Color.blue
+    /// 观点浅底。浅色约 7%，深色约 14%。
+    static let viewFill = Color.adaptiveSystemFill(red: false, lightAlpha: 0.07, darkAlpha: 0.14)
+}
+
+extension Color {
+    /// 系统红或系统蓝的浅底，两套外观透明度不同。
+    static func adaptiveSystemFill(red: Bool, lightAlpha: Double, darkAlpha: Double) -> Color {
+        #if os(macOS)
+        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let alpha = isDark ? darkAlpha : lightAlpha
+            let base = red ? NSColor.systemRed : NSColor.systemBlue
+            var resolved = base
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = base.usingColorSpace(.sRGB) ?? base
+            }
+            return resolved.withAlphaComponent(alpha)
+        }))
+        #else
+        Color(uiColor: UIColor { traits in
+            let alpha = traits.userInterfaceStyle == .dark ? darkAlpha : lightAlpha
+            let base: UIColor = red ? .systemRed : .systemBlue
+            return base.resolvedColor(with: traits).withAlphaComponent(alpha)
+        })
+        #endif
+    }
 }
 
 /// KX 看板。涨红跌绿平灰是 A 股惯例；今日、昨日推荐的底色和竖条用晨报的强调色加透明度。取值与样图一致。
@@ -108,7 +140,8 @@ struct NKScaledFontSpec {
     static let captionMedium = NKScaledFontSpec(size: 13, relativeTo: .footnote, weight: .medium)
     static let company = NKScaledFontSpec(size: 16, relativeTo: .callout, weight: .semibold)
     static let titleLine = NKScaledFontSpec(size: 15, relativeTo: .subheadline, weight: .regular)
-    static let detailTitle = NKScaledFontSpec(size: 17, relativeTo: .headline, weight: .semibold)
+    static let detailName = NKScaledFontSpec(size: 20, relativeTo: .title2, weight: .semibold)
+    static let detailTitle = NKScaledFontSpec(size: 19, relativeTo: .headline, weight: .semibold)
 }
 
 enum NKMorningFont {
@@ -118,7 +151,9 @@ enum NKMorningFont {
     static let caption = Font.footnote
     static let company = Font.callout.weight(.semibold)
     static let titleLine = Font.subheadline
-    /// 条目详情里的事件标题，比名单标题行大一号。
+    /// 详情页公司名。
+    static let detailName = Font.title2.weight(.semibold)
+    /// 详情页事件标题。
     static let detailTitle = Font.headline.weight(.semibold)
     static let tag = Font.caption2.weight(.medium)
     static let reason = Font.subheadline
@@ -129,7 +164,9 @@ enum NKMorningFont {
     static let caption = Font.system(size: NKScaledFontSpec.caption.size, weight: NKScaledFontSpec.caption.weight)
     static let company = Font.system(size: NKScaledFontSpec.company.size, weight: NKScaledFontSpec.company.weight)
     static let titleLine = Font.system(size: NKScaledFontSpec.titleLine.size, weight: NKScaledFontSpec.titleLine.weight)
-    /// 条目详情里的事件标题，比名单标题行大一号。
+    /// 详情页公司名。
+    static let detailName = Font.system(size: NKScaledFontSpec.detailName.size, weight: NKScaledFontSpec.detailName.weight)
+    /// 详情页事件标题。
     static let detailTitle = Font.system(size: NKScaledFontSpec.detailTitle.size, weight: NKScaledFontSpec.detailTitle.weight)
     static let tag = Font.system(size: 11, weight: .medium)
     static let reason = Font.system(size: 15)
@@ -178,5 +215,5 @@ enum NKMorningSpace {
 
 enum NKMorningRadius {
     static let card: CGFloat = 12
-    static let tag: CGFloat = 4
+    static let tag: CGFloat = 5
 }

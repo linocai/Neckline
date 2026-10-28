@@ -47,7 +47,6 @@ struct MorningRootView: View {
                 kx.setVisible(model.tab == .kx)
             }
             #if DEBUG
-            .environment(\.nkQAReviewOpen, qaRoute == "review" || qaRoute == "review-detail")
             .environment(\.nkQAScrollBottom, qaRoute == "bottom")
             .task { await applyQARoute() }
             #if os(iOS)
@@ -151,7 +150,7 @@ struct MorningRootView: View {
         Group {
             switch model.k10Section {
             case .latest:
-                ReportView(slot: .latest, model: model)
+                ReportView(slot: latestSlot, model: model)
             case .history:
                 HistoryView(model: model)
             }
@@ -164,6 +163,16 @@ struct MorningRootView: View {
             .padding(.horizontal, NKMorningSpace.page)
             .padding(.bottom, 8)
         }
+    }
+
+    /// 截图时名单根页直接打开指定日期，不再从历史栈推进去。
+    private var latestSlot: MorningSlot {
+        #if DEBUG
+        if qaRoute == "list", let qaTradeDate {
+            return .date(qaTradeDate)
+        }
+        #endif
+        return .latest
     }
     #endif
 
@@ -288,10 +297,6 @@ struct MorningRootView: View {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             await model.handleNotificationTap()
             #endif
-        case "review-detail":
-            #if os(macOS)
-            selectFirstReviewEntry(slot)
-            #endif
         case "history":
             model.tab = .k10
             model.k10Section = .history
@@ -303,16 +308,17 @@ struct MorningRootView: View {
             model.tab = .settings
             await runConnectionCheck()
         case "list":
-            #if os(iOS)
-            if let qaTradeDate {
-                await openHistoryDate(qaTradeDate)
-            }
-            #endif
+            break
         default:
             break
         }
-        let pause: UInt64 = (qaRoute == "document" || qaRoute == "review" || qaRoute == "review-detail" || qaRoute == "settings" || qaRoute == "bottom" || qaRoute == "notify") ? 1_200_000_000 : 600_000_000
+        let slow = qaRoute == "document" || qaRoute == "settings" || qaRoute == "bottom" || qaRoute == "notify" || qaRoute == "detail"
+        let pause: UInt64 = slow ? 1_200_000_000 : 600_000_000
         try? await Task.sleep(nanoseconds: pause)
+        #if os(macOS)
+        // 窗口位置会在首帧之后才从偏好恢复，恢复完再定一次尺寸，截图才够高。
+        await resizeQAMainWindow()
+        #endif
         markQAReady()
     }
 
@@ -363,11 +369,6 @@ struct MorningRootView: View {
         }
     }
 
-    private func selectFirstReviewEntry(_ slot: MorningSlot) {
-        guard let entry = model.report(for: slot)?.content?.review.listedGroups.first?.entries.first else { return }
-        model.select(entry)
-    }
-
     private func pushFirst(document: Bool, slot: MorningSlot) {
         guard case .ready(let report) = model.state(for: slot),
               let entry = report.content?.entries.first else { return }
@@ -389,21 +390,6 @@ struct MorningRootView: View {
     private func reportEntries(for slot: MorningSlot) -> [MorningEntry] {
         model.report(for: slot)?.content?.entries ?? []
     }
-
-    #if os(iOS)
-    private func openHistoryDate(_ tradeDate: String) async {
-        await model.reload(.date(tradeDate))
-        model.tab = .k10
-        model.k10Section = .history
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        if qaPath.isEmpty {
-            qaPath.append(QADate(tradeDate: tradeDate))
-        }
-        for _ in 0..<30 where !isSettled(.date(tradeDate)) {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-    }
-    #endif
 
     private func runConnectionCheck() async {
         #if os(macOS)
@@ -469,10 +455,15 @@ struct MorningRootView: View {
         for _ in 0..<25 where NSApp.mainWindow == nil && NSApp.windows.isEmpty {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        let size = NSSize(width: 1280, height: 800)
+        let size = NSSize(width: 1480, height: 1280)
         let window = NSApp.mainWindow ?? NSApp.windows.first
-        window?.setContentSize(size)
-        window?.center()
+        guard let window else { return }
+        window.isRestorable = false
+        window.setContentSize(size)
+        var frame = window.frame
+        frame.size = NSSize(width: size.width, height: size.height + window.frame.height - window.contentLayoutRect.height)
+        window.setFrame(frame, display: true)
+        window.center()
     }
 
     private func pressCheckConnection() async -> Bool {
