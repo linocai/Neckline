@@ -512,3 +512,15 @@ def test_percentage_ranges_sharing_one_percent_sign_are_not_amounts(yoy: str) ->
     figures = parse_forecast(text)
     assert (figures.net_profit.current.low, figures.net_profit.current.high) == (30_000_000, 45_000_000)
     assert figures.net_profit.prior == 15_000_000
+
+
+def test_negative_yoy_after_a_bare_prior_amount_keeps_the_amount() -> None:
+    """「本期 上年同期 同比」三个裸数且同比为负时，上年同期金额不能被当成百分数区间删掉。"""
+    from neckline.filings.financials import _PCT_TOKEN_RE
+
+    assert " ".join(_PCT_TOKEN_RE.sub(" ", "盈利：1,000 2,000 -50%").split()) == "盈利：1,000 2,000"
+    for yoy in ("100～200%", "100至200%", "100%~200%", "100-200%", "-30%"):
+        assert _PCT_TOKEN_RE.sub(" ", f"盈利：3,000万元 {yoy} 盈利：1,500万元").split() == ["盈利：3,000万元", "盈利：1,500万元"]
+    text = ("某某科技 2026年前三季度业绩预告\n1．业绩预告期间：2026年1月1日至2026年9月30日\n项目 本报告期 上年同期\n"
+            "归属于上市公司股东的净利润 盈利：3,000万元–4,500万元 同比：100-200% 盈利：1,500万元\n")
+    assert parse_forecast(text).net_profit.prior == 15_000_000
