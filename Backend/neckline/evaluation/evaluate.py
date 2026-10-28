@@ -24,7 +24,7 @@ from neckline.morning.schedule import CST
 from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 
 _HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
-_REF = re.compile(r"^[ma]\d+$")
+_REF = re.compile(r"^[mas]\d+$")
 _GAP = "收口时刻前没评完"
 _WAIT_SECONDS = 5.0
 _USAGE = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "reasoning_tokens")
@@ -105,6 +105,10 @@ def _refs(package: Mapping) -> set[str]:
     for doc in original.get("documents") or []:
         if isinstance(doc, Mapping):
             add(doc.get("id"))
+    search = package.get("search") if isinstance(package.get("search"), Mapping) else {}
+    for item in search.get("results") or []:
+        if isinstance(item, Mapping):
+            add(item.get("id"))
     return found
 
 
@@ -368,7 +372,8 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
     if not candidates:
         stats, fatal = _tally([], [], 0.0)
         return EvaluationRun(items=[], stats=stats, prepare_seconds=0.0, fatal=fatal)
-    system = system_prompt()
+    # 同一期共用一份系统提示词：配置开了搜索才提联网，不按单条数据包分叉。
+    system = system_prompt(isinstance(settings.get("search"), Mapping))
     coded = [(index, _company_code(candidate), candidate) for index, candidate in enumerate(candidates)]
     prepare_total = [0.0]
     prepare_lock = threading.Lock()

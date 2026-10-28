@@ -2,6 +2,8 @@
 
 回执以请求体的 sha256 为键。已成功的直接读回执；上次发出后结果不明（started / unknown）的
 绝不自动重发、也不改判，交给上层记为缺口；明确没发出去或对方明确拒绝的（failed）才可以再发。
+
+`post_json` 也给定时搜索用。聊天回执仍然只哈希请求体本身，不把地址算进去。
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import httpx
 
@@ -61,6 +63,61 @@ class Receipts(Protocol):
 
 def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _status_retryable(status: int) -> bool:
+    return status in _RETRYABLE_STATUS
+
+
+def post_json(*, endpoint: str, body: Mapping[str, Any], digest: str, api_key: str | None,
+              receipts: Receipts, timeout: httpx.Timeout, max_attempts: int,
+              transport: httpx.BaseTransport | None = None,
+              retryable: Callable[[int], bool] = _status_retryable) -> tuple[Any, bool, float]:
+    """带回执的 POST。聊天用默认的可重试状态；调用方要换一组状态时自己传入。
+
+    成功时返回 (响应 JSON, 是否来自回执, 秒)。连接没建立记 failed 并可再试；
+    其余传输错误和无法解析的 200 记 unknown，立刻停止，不改请求重发。
+    """
+    saved = receipts.lookup(digest)
+    if saved and saved["state"] == "succeeded":
+        return saved["response"], True, float(saved.get("seconds") or 0)
+    if saved and saved["state"] in ("started", "unknown"):
+        raise ChatUnknown("上次调用结果不明，不重发")
+    if not api_key:
+        raise ChatRejected("DeepSeek 凭据缺失")
+    last = "unknown"
+    for attempt in range(1, max_attempts + 1):
+        receipts.begin(digest)
+        started = time.monotonic()
+        try:
+            with httpx.Client(transport=transport, timeout=timeout) as client:
+                response = client.post(endpoint, json=body,
+                                       headers={"Authorization": f"Bearer {api_key}"})
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            last = f"connect:{type(exc).__name__}"  # 连接没建立，请求没发出去，可以再试
+            receipts.fail(digest, last)
+        except httpx.TransportError as exc:
+            receipts.unknown(digest, f"transport:{type(exc).__name__}")
+            raise ChatUnknown("请求可能已送达但没收到结果，不重发") from exc
+        else:
+            if response.status_code == 200:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    receipts.unknown(digest, "body_invalid")
+                    raise ChatUnknown("响应不是 JSON")
+                seconds = round(time.monotonic() - started, 2)
+                receipts.succeed(digest, payload, seconds)
+                return payload, False, seconds
+            last = f"http:{response.status_code}"
+            receipts.fail(digest, last)
+            if response.status_code in (401, 402, 403):
+                raise _rejected(response.status_code)
+            if not retryable(response.status_code):
+                break
+        if attempt < max_attempts:
+            time.sleep(5 * attempt)
+    raise ChatError(last)
 
 
 class FileReceipts:
@@ -125,46 +182,12 @@ class DeepSeekClient:
     def complete(self, messages: Sequence[Mapping[str, str]], options: Mapping[str, Any]) -> ChatResult:
         body = self.request_body(messages, options)
         digest = hashlib.sha256(canonical(body).encode()).hexdigest()
-        saved = self.receipts.lookup(digest)
-        if saved and saved["state"] == "succeeded":
-            return self._result(saved["response"], digest, from_receipt=True, seconds=float(saved.get("seconds") or 0))
-        if saved and saved["state"] in ("started", "unknown"):
-            raise ChatUnknown("上次调用结果不明，不重发")
-        if not self._api_key:
-            raise ChatRejected("DeepSeek 凭据缺失")
-        last = "unknown"
-        for attempt in range(1, self.max_attempts + 1):
-            self.receipts.begin(digest)
-            started = time.monotonic()
-            try:
-                with httpx.Client(transport=self._transport, timeout=self.timeout) as client:
-                    response = client.post(self.endpoint, json=body,
-                                           headers={"Authorization": f"Bearer {self._api_key}"})
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                last = f"connect:{type(exc).__name__}"  # 连接没建立，请求没发出去，可以再试
-                self.receipts.fail(digest, last)
-            except httpx.TransportError as exc:
-                self.receipts.unknown(digest, f"transport:{type(exc).__name__}")
-                raise ChatUnknown("请求可能已送达但没收到结果，不重发") from exc
-            else:
-                if response.status_code == 200:
-                    try:
-                        payload = response.json()
-                    except ValueError:
-                        self.receipts.unknown(digest, "body_invalid")
-                        raise ChatUnknown("响应不是 JSON")
-                    seconds = round(time.monotonic() - started, 2)
-                    self.receipts.succeed(digest, payload, seconds)
-                    return self._result(payload, digest, from_receipt=False, seconds=seconds)
-                last = f"http:{response.status_code}"
-                self.receipts.fail(digest, last)
-                if response.status_code in (401, 402, 403):
-                    raise _rejected(response.status_code)
-                if response.status_code not in _RETRYABLE_STATUS:
-                    break
-            if attempt < self.max_attempts:
-                time.sleep(5 * attempt)
-        raise ChatError(last)
+        payload, from_receipt, seconds = post_json(
+            endpoint=self.endpoint, body=body, digest=digest, api_key=self._api_key,
+            receipts=self.receipts, timeout=self.timeout, max_attempts=self.max_attempts,
+            transport=self._transport,
+        )
+        return self._result(payload, digest, from_receipt=from_receipt, seconds=seconds)
 
     @staticmethod
     def _result(payload: Mapping, digest: str, *, from_receipt: bool, seconds: float) -> ChatResult:

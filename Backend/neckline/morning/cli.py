@@ -9,6 +9,7 @@
 
 库路径取 --db 或环境变量 NECKLINE_V4_DB_PATH，没有默认值。凭据只从环境变量读（DEEPSEEK_API_KEY、
 TUSHARE_TOKEN、JIN10_MCP_TOKEN、APNS_*），不写日志。业务时钟可用 --now 显式给出。
+评估联网搜索与聊天共用 DEEPSEEK_API_KEY；evaluation.search 为 null 时不建搜索客户端。
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 
+from neckline.evaluation.search import SearchClient
 from neckline.screening.deepseek import DeepSeekClient
 
 from . import db
@@ -68,14 +70,31 @@ def _sender():
     return send_push
 
 
+def _api_key() -> str | None:
+    return (os.environ.get("DEEPSEEK_API_KEY") or "").strip() or None
+
+
 def _client_factory(path: Path, config):
     model = config.rules["model"]
 
     def make(report_id: str) -> DeepSeekClient:
         return DeepSeekClient(endpoint=model["endpoint"], model=model["name"],
-                              api_key=(os.environ.get("DEEPSEEK_API_KEY") or "").strip() or None,
+                              api_key=_api_key(),
                               receipts=db.DbReceipts(path, report_id), timeout_seconds=float(model["timeoutSeconds"]),
                               max_attempts=int(model["maxAttempts"]))
+    return make
+
+
+def _search_factory(path: Path, config):
+    search = config.rules["evaluation"].get("search")
+    if not isinstance(search, dict):
+        return None
+
+    def make(report_id: str) -> SearchClient:
+        return SearchClient(endpoint=search["endpoint"], api_key=_api_key(),
+                            receipts=db.DbReceipts(path, report_id),
+                            timeout_seconds=float(search["timeoutSeconds"]),
+                            max_attempts=int(search["maxAttempts"]))
     return make
 
 
@@ -219,7 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_morning(path, now=now, config=config, pusher=pusher, clock=clock,
                              collector=lambda at: run_collection(path, now=at, config=collection_config,
                                                                  tokens=tokens, clock=clock),
-                             client_factory=_client_factory(path, config))
+                             client_factory=_client_factory(path, config),
+                             search_factory=_search_factory(path, config))
     except Exception as exc:  # 记下原因，交给 systemd 重启续跑；截止兜底会引用这条原因
         logging.exception("晨报出报中途出错")
         note_error(path, day=now.astimezone(CST).date(), message=f"出报中途出错：{type(exc).__name__}")

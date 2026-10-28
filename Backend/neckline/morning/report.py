@@ -27,6 +27,7 @@ from neckline.evaluation.evaluate import EvaluationRun, evaluate_candidates
 from neckline.evaluation.market import MarketSource, TuShareSource
 from neckline.evaluation.prepare import build_package
 from neckline.evaluation.prompt import CONTRACT as EVALUATION_CONTRACT
+from neckline.evaluation.search import SearchClient, run_search, summarize_search
 from neckline.filings.fetch import FetchResult
 from neckline.screening.classify import CONTRACT, Classification, classify
 from neckline.screening.deepseek import DeepSeekClient
@@ -125,6 +126,26 @@ def _minutes(value: str) -> int:
     return int(hour) * 60 + int(minute)
 
 
+def _validate_search(evaluation: dict) -> None:
+    """不联网必须显式写 null。要联网就五个字段都给，缺一个或类型不对就拒绝，没有默认值。"""
+    if "search" not in evaluation:
+        raise ValueError("配置缺少 evaluation.search（不联网须显式写 null）")
+    search = evaluation["search"]
+    if search is None:
+        return
+    if not isinstance(search, dict):
+        raise ValueError("evaluation.search 类型不对")
+    endpoint = _require_str(search, "endpoint", "evaluation.search.endpoint")
+    if not endpoint.startswith("https://"):
+        raise ValueError("evaluation.search.endpoint 须以 https 开头")
+    count = _require_int(search, "count", "evaluation.search.count")
+    if not 1 <= count <= 50:
+        raise ValueError("evaluation.search.count 须为 1–50 的整数")
+    _require_min_int(search, "summaryChars", "evaluation.search.summaryChars", 1)
+    _require_positive_number(search, "timeoutSeconds", "evaluation.search.timeoutSeconds")
+    _require_min_int(search, "maxAttempts", "evaluation.search.maxAttempts", 1)
+
+
 def _validate_screening_rules(rules: object) -> dict:
     """加载时核对晨报实际会读到的每个字段；缺了或类型不对就拒绝整份配置。"""
     if not isinstance(rules, dict):
@@ -172,11 +193,7 @@ def _validate_screening_rules(rules: object) -> dict:
         _require_min_int(filings, key, f"filings.{key}", 1)
     _require_positive_number(filings, "timeoutSeconds", "filings.timeoutSeconds")
     evaluation = _require_dict(rules, "evaluation", "evaluation")
-    # 不联网必须写明，不能靠缺省。联网接上之前只允许 null。
-    if "search" not in evaluation:
-        raise ValueError("配置缺少 evaluation.search（不联网须显式写 null）")
-    if evaluation["search"] is not None:
-        raise ValueError("evaluation.search 须为 null")
+    _validate_search(evaluation)
     contract = _require_str(evaluation, "contract", "evaluation.contract")
     if contract != EVALUATION_CONTRACT:
         raise ValueError("evaluation.contract 须为 evaluation-v1")
@@ -336,7 +353,7 @@ def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyP
     return "；".join(parts) if parts else None
 
 
-_VIEW_REF = re.compile(r"^[ma]\d+$")
+_VIEW_REF = re.compile(r"^[mas]\d+$")
 _CODE = re.compile(r"\d{6}(?:\.[A-Za-z]{2})?")
 # 汇总稿的分节：「【简称：…】」，或行首「简称(六位代码)：…」。
 _SECTION = re.compile(r"【[^】\n]{1,30}[：:][^】\n]{1,120}】|(?:^|\n)[^\S\n]*[^\s：:（(]{2,12}[（(]\d{6}(?:\.[A-Za-z]{2})?[）)][：:]")
@@ -401,7 +418,7 @@ def _source_rows(entry: Entry, pool: CompanyPool) -> list[dict]:
 
 
 def _ref_index(package: object) -> dict[str, dict]:
-    """材料编号 → 标题、链接、原文 documentId。m 是消息，a 是公告。"""
+    """材料编号 → 标题、链接、原文 documentId。m 是消息，a 是公告，s 是联网搜索。"""
     if not isinstance(package, dict):
         return {}
     found: dict[str, dict] = {}
@@ -425,6 +442,15 @@ def _ref_index(package: object) -> dict[str, dict]:
         url = _present_text(doc.get("url")) or (linked or {}).get("url")
         document_id = (linked or {}).get("documentId")
         found[doc["id"]] = {"title": title, "url": url, "documentId": document_id}
+    search = package.get("search") if isinstance(package.get("search"), dict) else {}
+    for item in search.get("results") or []:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        found[item["id"]] = {
+            "title": _present_text(item.get("title")),
+            "url": _present_text(item.get("url")),
+            "documentId": None,
+        }
     return found
 
 
@@ -623,6 +649,18 @@ def _stored_ready(pusher: Pusher, report_id: str, stored: Mapping[str, Any]) -> 
             "push": _push_ready(pusher, report_id, len(entries), stored.get("gap_summary"))}
 
 
+def _bounded_search(client: SearchClient, *, day: date, schedule: Mapping[str, Any],
+                    clock: Callable[[], datetime]) -> SearchClient:
+    """搜索的读超时同样不超过截止时刻，至少留 30 秒。重试次数仍用配置，不改成 1。"""
+    if not isinstance(client, SearchClient):
+        return client
+    remaining = (deadline(day, schedule) - clock()).total_seconds()
+    seconds = max(30.0, min(float(client.timeout.read or 600.0), remaining))
+    bounded = copy.copy(client)
+    bounded.timeout = httpx.Timeout(seconds, connect=15.0)
+    return bounded
+
+
 def _bounded_client(client: DeepSeekClient, *, day: date, schedule: Mapping[str, Any],
                     clock: Callable[[], datetime]) -> DeepSeekClient:
     """评估用的客户端：单次调用最多等到截止时刻、不重试。
@@ -642,7 +680,8 @@ def _bounded_client(client: DeepSeekClient, *, day: date, schedule: Mapping[str,
 
 def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window, candidates: list,
                     config: LoadedConfig, client: DeepSeekClient, clock: Callable[[], datetime],
-                    pdf: Callable[[str], FetchResult], market: MarketSource | None = None) -> EvaluationRun:
+                    pdf: Callable[[str], FetchResult], market: MarketSource | None = None,
+                    search_client: SearchClient | None = None) -> EvaluationRun:
     """select 之后准备并评估。没有候选时也返回一份空统计。market 不传时按环境变量建 TuShareSource。"""
     settings = config.rules["evaluation"]
     if not candidates:
@@ -653,11 +692,23 @@ def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window,
         market = TuShareSource((os.environ.get("TUSHARE_TOKEN") or "").strip() or None,
                                timeout=float(settings["market"]["timeoutSeconds"]), now=clock)
     pool_view = SimpleNamespace(pool=config.pool, profiles=config.profiles)
+    search_cfg = settings.get("search")
+    bounded_search = None
+    if isinstance(search_cfg, dict) and search_client is not None:
+        bounded_search = _bounded_search(search_client, day=day, schedule=config.rules["schedule"], clock=clock)
 
     def prepare(candidate: object) -> dict:
+        search_runner = None
+        if isinstance(search_cfg, dict):
+            def search_runner(*, company, events, messages, trade_date, collected_by,
+                              _cfg=search_cfg, _client=bounded_search):
+                return run_search(client=_client, count=int(_cfg["count"]), summary_chars=int(_cfg["summaryChars"]),
+                                  company=company, events=events, messages=messages, trade_date=trade_date,
+                                  collected_by=collected_by)
+
         package = build_package(candidate, trade_date=day, window=window, pool=pool_view, market=market,
                                 filings_store=DbFilingReads(db_path), fetcher=pdf,
-                                settings=settings["package"], clock=clock)
+                                settings=settings["package"], clock=clock, search=search_runner)
         package["report"] = {
             "tradeDate": day.isoformat(),
             "windowStart": window.start.astimezone(CST).isoformat(timespec="seconds"),
@@ -694,7 +745,8 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
                 client_factory: Callable[[str], DeepSeekClient], pusher: Pusher,
                 clock: Callable[[], datetime],
                 fetcher: Callable[[str], FetchResult] | None = None,
-                market: MarketSource | None = None) -> dict:
+                market: MarketSource | None = None,
+                search_factory: Callable[[str], SearchClient] | None = None) -> dict:
     """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。
 
     先看当天报告：已有 running 就是续跑，不再采集，消息边界用首次写入的 started_at。
@@ -772,9 +824,12 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=reason, now=clock(), pusher=pusher)
     selection = select(result.by_id, result.results, rules["selection"])
+    search_client = None
+    if isinstance(rules["evaluation"].get("search"), dict) and search_factory is not None:
+        search_client = search_factory(report_id)
     evaluation = _run_evaluation(db_path, report_id=report_id, day=day, window=window,
                                  candidates=selection.candidates, config=config, client=client, clock=clock, pdf=pdf,
-                                 market=market)
+                                 market=market, search_client=search_client)
     if evaluation.fatal:
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=evaluation.fatal, now=clock(), pusher=pusher)
@@ -799,6 +854,7 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
              "filings": filing_stats.as_dict(),
              "prepare": {"seconds": evaluation.prepare_seconds},
              "evaluation": evaluation.stats,
+             "search": summarize_search(evaluations, enabled=isinstance(rules["evaluation"].get("search"), dict)),
              "candidates": len(selection.candidates), "pushed": len(delivered.entries), "overflow": delivered.overflow,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
              "collectionGaps": gaps, "collection": collection["status"]}

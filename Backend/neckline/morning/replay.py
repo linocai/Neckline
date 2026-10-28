@@ -6,6 +6,7 @@
 
 业务时钟从快照里该日晨报的 started_at 起步，按真实流逝时间前进。
 采集不采，推送不发。行情读快照，模型回执落在 --receipts，同样请求不重复计费。
+联网搜索与聊天共用这把密钥和这份回执目录；evaluation.search 为 null 时不搜。
 密钥和模型名只从 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 读取，不打印。
 """
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pathlib import Path
 import httpx
 
 from neckline.evaluation.market import SnapshotSource
+from neckline.evaluation.search import SearchClient
 from neckline.morning import db
 from neckline.morning.report import Pusher, load_config, run_morning
 from neckline.screening.deepseek import DeepSeekClient, FileReceipts
@@ -226,6 +228,7 @@ def _summary(result: dict, content: dict | None) -> dict:
             "prepare": prepare.get("seconds"),
             "evaluation": evaluation.get("seconds"),
         },
+        "search": stats.get("search") if isinstance(stats.get("search"), dict) else {"enabled": False},
     }
 
 
@@ -255,17 +258,27 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
     config = load_config(path=config_path) if config_path is not None else load_config()
     clock = ReplayClock(started)
     model = config.rules["model"]
+    receipt_store = FileReceipts(receipts)
 
     def client_factory(report_id: str) -> DeepSeekClient:
         del report_id
         return DeepSeekClient(endpoint=model["endpoint"], model=model_name, api_key=api_key,
-                              receipts=FileReceipts(receipts), timeout_seconds=float(model["timeoutSeconds"]),
+                              receipts=receipt_store, timeout_seconds=float(model["timeoutSeconds"]),
                               max_attempts=int(model["maxAttempts"]), transport=transport)
+
+    search_cfg = config.rules["evaluation"].get("search")
+    search_factory = None
+    if isinstance(search_cfg, dict):
+        def search_factory(report_id: str, _cfg=search_cfg) -> SearchClient:  # type: ignore[misc]
+            del report_id
+            return SearchClient(endpoint=_cfg["endpoint"], api_key=api_key, receipts=receipt_store,
+                                timeout_seconds=float(_cfg["timeoutSeconds"]),
+                                max_attempts=int(_cfg["maxAttempts"]), transport=transport)
 
     result = run_morning(dest, now=clock(), config=config, collector=lambda _at: {"status": "replay"},
                          client_factory=client_factory, pusher=Pusher(dest, None, clock), clock=clock,
                          fetcher=pdf_fetcher(filings_cache, config.rules["filings"]),
-                         market=SnapshotSource(market_snapshot))
+                         market=SnapshotSource(market_snapshot), search_factory=search_factory)
     with db.read(dest) as conn:
         report = db.get_report(conn, trade_date)
         rows = db.list_evaluations(conn, f"morning-{trade_date}")

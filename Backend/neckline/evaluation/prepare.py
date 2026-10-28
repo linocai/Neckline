@@ -1,7 +1,7 @@
 """把一条候选收成评估数据包。纯代码：不调模型，不剔除条目，不按消息类型改口径。
 
 同样的输入得到同样的 dict（键顺序固定）。下载或读取失败写进 gaps，数据包照常返回。
-联网搜索本次不做，search 只留位置。
+search 不传时只留占位；传入时在写库前搜一次，失败记进 gaps，不让这一条备料中断。
 """
 from __future__ import annotations
 
@@ -667,9 +667,31 @@ def _sizes(package: dict) -> dict[str, int]:
     return sizes
 
 
+def _call_search(search: Callable[..., dict] | None, *, company: Mapping, events: Mapping, messages: list,
+                 trade_date: date, collected_by: object, gaps: list[str]) -> dict:
+    if search is None:
+        return {"enabled": False, "results": []}
+    try:
+        block = search(company=company, events=events, messages=messages,
+                       trade_date=trade_date, collected_by=collected_by)
+    except Exception:
+        block = None
+    if not isinstance(block, dict) or block.get("enabled") is not True:
+        block = {
+            "enabled": True, "query": "", "results": [], "returned": 0,
+            "dropped": {"afterCutoff": 0, "noDate": 0, "badUrl": 0, "empty": 0},
+            "error": "unknown", "fromReceipt": False, "seconds": 0.0,
+        }
+    error = block.get("error")
+    if isinstance(error, str) and error:
+        gaps.append(f"联网搜索失败：{error}")
+    return block
+
+
 def build_package(candidate: object, *, trade_date: date | datetime | str, window: object, pool: object,
                   market: object, filings_store: object, fetcher: Callable[[str], FetchResult],
-                  settings: Mapping, clock: Callable[[], datetime]) -> dict:
+                  settings: Mapping, clock: Callable[[], datetime],
+                  search: Callable[..., dict] | None = None) -> dict:
     """一条候选的评估数据包。market.raw 只取原始行，日期截取在快照和价格里做。"""
     checked = _settings(settings)
     _check_window(window)
@@ -781,7 +803,9 @@ def build_package(candidate: object, *, trade_date: date | datetime | str, windo
     }
     if earnings is not None:
         package["earnings"] = earnings
-    package["search"] = {"enabled": False, "results": []}
+    package["search"] = _call_search(
+        search, company=company, events=events, messages=messages, trade_date=day,
+        collected_by=getattr(window, "collected_by", None), gaps=gaps)
     package["limits"] = {key: checked[key] for key in _PACKAGE_KEYS}
     package["gaps"] = gaps
     package["sizes"] = _sizes(package)
