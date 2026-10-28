@@ -117,7 +117,7 @@ def test_empty_list_with_a_gap_marks_the_push(path):
     apns = FakeApns()
     gapped, _calls = _morning(path, now=at("2026-10-13", "08:02"), handler=FakeModel(), api_key="k", send=apns)
     assert gapped["state"] == "available" and gapped["entries"] == 0 and gapped["gapSummary"]
-    assert apns.sent == [(TOKEN, "晨报已出", "今天没有符合条件的利好（有缺口）")]
+    assert apns.sent == [(TOKEN, "晨报已出", "今天没有值得推的（有缺口）")]
 
     start, end = at("2026-10-13", "15:00"), at("2026-10-14", "08:00")
     with db.write(path) as conn:
@@ -128,7 +128,7 @@ def test_empty_list_with_a_gap_marks_the_push(path):
             for key in ("tushare-major-news", "jin10-flash", "jin10-news")])
     quiet, _calls = _morning(path, now=at("2026-10-14", "08:02"), handler=FakeModel(), api_key="k", send=apns)
     assert quiet["entries"] == 0 and quiet["gapSummary"] is None
-    assert apns.sent[-1] == (TOKEN, "晨报已出", "今天没有符合条件的利好")
+    assert apns.sent[-1] == (TOKEN, "晨报已出", "今天没有值得推的")
 
 
 # ------------------------------------------------------------------ 2. 单家解析

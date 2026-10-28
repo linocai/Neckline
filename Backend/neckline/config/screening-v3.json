@@ -173,5 +173,8 @@
       "concurrency": 4,
       "timeoutSeconds": 20
     }
+  },
+  "delivery": {
+    "maxItems": 10
   }
 }

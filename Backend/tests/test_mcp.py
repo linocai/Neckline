@@ -291,12 +291,16 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
     titles = {item["name"]: item.get("title") for item in tools}
     assert titles == {"read_brief": "读取简要提示词", "get_morning_report": "读取晨报", "get_document": "读取原文",
                       "check_pool": "查询股票池", "get_stock_overview": "读取单票技术面概览"}
+    morning_tool = next(item for item in tools if item["name"] == "get_morning_report")
+    description = morning_tool.get("description") or ""
+    assert "四个问题" in description and "不推" in description and "evaluations" not in description
 
     assert _payload(_rpc(test_client, headers, "tools/call", {"name": "read_brief", "arguments": {}}, 3))["brief"] == BRIEF
     report = _payload(_rpc(test_client, headers, "tools/call", {"name": "get_morning_report", "arguments": {}}, 4))
     assert report["tradeDate"] == "2026-10-16"
     assert report["content"]["entries"][0]["headline"] == "订单落地"
     assert "importance" not in report["content"]["entries"][0] and "review" not in report["content"]
+    assert "evaluations" not in report
     document = _payload(_rpc(test_client, headers, "tools/call",
                              {"name": "get_document", "arguments": {"document_id": doc_id}}, 5))
     assert document["text"] == "公告原文写了金额" and document["url"] == "https://example.test/news"
@@ -304,7 +308,7 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
         "inPool": False, "message": "不在 K10 股票池"}
     overview = _payload(_rpc(test_client, headers, "tools/call",
                              {"name": "get_stock_overview", "arguments": {"stock": "神州泰岳"}}, 7))
-    assert overview["code"] == "300002.SZ" and overview["morningReport"]["reason"] == "公告写了金额"
+    assert overview["code"] == "300002.SZ" and overview["morningReport"]["conclusion"] == "公告写了金额"
     assert overview["daily"]["close"] == 11 and overview["daily"]["moneyflow"]["basis"] == "TuShare moneyflow 净流入额"
     assert overview["intraday"]["quote"]["turnoverYi"] == 1.5
     assert overview["intraday"]["series"]["note"] == "由一分钟数据聚合"

@@ -2,23 +2,21 @@
   "availableAt": "2026-10-19T00:03:00+00:00",
   "configVersion": "screening-v1",
   "content": {
+    "candidates": 3,
     "configVersion": "screening-v1",
     "entries": [
       {
         "companyCode": "300953",
         "companyName": "震裕科技",
+        "conclusion": "公告预计净利增长 58%",
         "firstDisclosed": null,
-        "fresh": "新",
-        "headline": "前三季度净利预增",
-        "others": [
-          {
-            "headline": "签订设备采购合同",
-            "type": "订单合同"
-          }
-        ],
-        "rank": 1,
-        "reason": "公告预计净利增长 58%",
-        "relation": "主体",
+        "questions": {
+          "money": "有新增量",
+          "price": "明显高开不追",
+          "priced": "还没有充分反映",
+          "value": "利好能落到利润上"
+        },
+        "risk": "公告口径可能调整",
         "sources": [
           {
             "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4@1",
@@ -28,39 +26,30 @@
             "url": "https://example.invalid/flash/z1"
           }
         ],
-        "type": "业绩向好"
-      },
-      {
-        "companyCode": "300683",
-        "companyName": "海特生物",
-        "firstDisclosed": "2026-10-16",
-        "fresh": "新",
-        "headline": "签署海外授权协议",
-        "others": [],
-        "rank": 2,
-        "reason": "公告写明首付款",
-        "relation": "主体",
-        "sources": [
+        "title": "前三季度净利预增",
+        "type": "业绩向好",
+        "views": [
           {
-            "documentId": "doc_456d13ced901b52aa72ff231fb8b6b02@1",
-            "publishedAt": "2026-10-19T07:40+08:00",
-            "sourceLabel": "TuShare 新闻",
-            "title": null,
-            "url": null
+            "by": "媒体",
+            "name": "金十快讯",
+            "sourceTitle": "震裕科技：前三季度净利预增",
+            "sourceUrl": "https://example.invalid/flash/z1",
+            "text": "报道了这件事"
           }
-        ],
-        "type": "订单合同"
+        ]
       },
       {
         "companyCode": "300082",
         "companyName": "奥克股份",
+        "conclusion": "公告写明开始量产",
         "firstDisclosed": null,
-        "fresh": "新",
-        "headline": "新产品进入量产",
-        "others": [],
-        "rank": 3,
-        "reason": "公告写明开始量产",
-        "relation": "主体",
+        "questions": {
+          "money": "有新增量",
+          "price": "明显高开不追",
+          "priced": "还没有充分反映",
+          "value": "利好能落到利润上"
+        },
+        "risk": "公告口径可能调整",
         "sources": [
           {
             "documentId": "doc_c0c20848a1d4f6849f0894a07c9c8a41@1",
@@ -70,15 +59,54 @@
             "url": "https://example.invalid/news/o1"
           }
         ],
-        "type": "商业化进展"
+        "title": "新产品进入量产",
+        "type": "商业化进展",
+        "views": [
+          {
+            "by": "媒体",
+            "name": "金十资讯",
+            "sourceTitle": "奥克股份：新产品进入量产",
+            "sourceUrl": "https://example.invalid/news/o1",
+            "text": "报道了这件事"
+          }
+        ]
+      },
+      {
+        "companyCode": "300683",
+        "companyName": "海特生物",
+        "conclusion": "公告写明首付款",
+        "firstDisclosed": "2026-10-16",
+        "questions": {
+          "money": "有新增量",
+          "price": "明显高开不追",
+          "priced": "还没有充分反映",
+          "value": "利好能落到利润上"
+        },
+        "risk": "公告口径可能调整",
+        "sources": [
+          {
+            "documentId": "doc_456d13ced901b52aa72ff231fb8b6b02@1",
+            "publishedAt": "2026-10-19T07:40+08:00",
+            "sourceLabel": "TuShare 新闻",
+            "title": null,
+            "url": null
+          }
+        ],
+        "title": "签署海外授权协议",
+        "type": "订单合同",
+        "views": []
       }
     ],
+    "evaluated": 3,
     "gapSummary": "采集不完整：金十资讯没取全",
     "generatedAt": "2026-10-19T08:03+08:00",
     "kind": "morning",
     "reportId": "morning-2026-10-19",
     "stats": {
-      "messages": 3
+      "candidates": 3,
+      "messages": 3,
+      "overflow": 0,
+      "pushed": 3
     },
     "tradeDate": "2026-10-19",
     "window": {

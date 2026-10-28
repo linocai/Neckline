@@ -2,7 +2,9 @@
 Description=Neckline V4 morning report: 08:00 collection, then report and push on trading days
 After=network-online.target
 Wants=network-online.target
-# 出错退出 75 时按分钟重启续跑；过了 09:15 截止任务自己以 0 退出，不会无限重启。
+# 出错退出 75 时按分钟重启续跑。评估收口 09:05，截止 09:15。
+# TimeoutStartSec 放到 80min，覆盖到 09:15 截止之后，避免 systemd 在出报完成前杀掉进程。
+# 过了截止任务自己以 0 退出，不会无限重启。
 StartLimitIntervalSec=0
 
 [Service]
@@ -16,6 +18,6 @@ Environment=TZ=Asia/Shanghai
 ExecStart=/opt/neckline/.venv/bin/python -m neckline.morning.cli morning
 Restart=on-failure
 RestartSec=60
-TimeoutStartSec=30min
+TimeoutStartSec=80min
 MemoryHigh=700M
 MemoryMax=900M

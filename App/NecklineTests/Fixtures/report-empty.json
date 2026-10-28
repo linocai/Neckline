@@ -2,14 +2,19 @@
   "availableAt": "2026-10-14T00:01:00+00:00",
   "configVersion": "screening-v1",
   "content": {
+    "candidates": 0,
     "configVersion": "screening-v1",
     "entries": [],
+    "evaluated": 0,
     "gapSummary": null,
     "generatedAt": "2026-10-14T08:01+08:00",
     "kind": "morning",
     "reportId": "morning-2026-10-14",
     "stats": {
-      "messages": 0
+      "candidates": 0,
+      "messages": 0,
+      "overflow": 0,
+      "pushed": 0
     },
     "tradeDate": "2026-10-14",
     "window": {

@@ -200,7 +200,7 @@ def test_a_window_without_candidates_still_delivers_an_empty_list(path):
     result = run_morning(path, now=now, config=_config(), clock=lambda: now, collector=lambda _: {"status": "completed"},
                          client_factory=lambda rid: _client(path, model, rid), pusher=Pusher(path, apns, lambda: now))
     assert result["state"] == "available" and result["entries"] == 0
-    assert apns.sent[0][1:] == ("晨报已出", "今天没有符合条件的利好（有缺口）")
+    assert apns.sent[0][1:] == ("晨报已出", "今天没有值得推的（有缺口）")
 
 
 # ------------------------------------------------------------------ S5 回看边界那一秒

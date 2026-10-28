@@ -406,7 +406,7 @@ def test_tushare_source_requests_only_needed_fields_and_hides_token() -> None:
     assert set(by_name) == {"income", "fina_indicator", "daily", "daily_basic"}
     assert by_name["income"]["params"] == {"ts_code": "300001.SZ", "start_date": "20241027"}
     assert by_name["fina_indicator"]["params"] == {"ts_code": "300001.SZ", "start_date": "20241027"}
-    assert by_name["daily"]["params"] == {"ts_code": "300001.SZ", "start_date": "20260912", "end_date": "20261027"}
+    assert by_name["daily"]["params"] == {"ts_code": "300001.SZ", "start_date": "20260818", "end_date": "20261027"}
     assert set(by_name["daily_basic"]["params"]) == {"ts_code", "start_date", "end_date"}
     assert by_name["income"]["fields"] == INCOME_FIELDS
     assert by_name["fina_indicator"]["fields"] == FINA_FIELDS

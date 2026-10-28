@@ -433,6 +433,7 @@ def test_config_requires_cutoff_concurrency_and_model_options(tmp_path: Path) ->
     assert evaluation["modelOptions"]["thinking"] == {"type": "enabled"}
     assert evaluation["modelOptions"]["max_tokens"] == 16384
     assert evaluation["search"] is None
+    assert loaded.rules["delivery"] == {"maxItems": 10}
 
     def rejected(mutate, message: str) -> None:
         rules = json.loads(json.dumps(loaded.rules))
@@ -450,6 +451,10 @@ def test_config_requires_cutoff_concurrency_and_model_options(tmp_path: Path) ->
     rejected(lambda rules: rules["evaluation"].__setitem__("concurrency", True), "concurrency")
     rejected(lambda rules: rules["evaluation"].__setitem__("modelOptions", []), "modelOptions")
     rejected(lambda rules: rules["evaluation"].__setitem__("contract", "evaluation-v2"), "evaluation-v1")
+    rejected(lambda rules: rules.pop("delivery"), "delivery")
+    rejected(lambda rules: rules["delivery"].__setitem__("maxItems", 0), "maxItems")
+    rejected(lambda rules: rules["delivery"].__setitem__("maxItems", True), "maxItems")
+    rejected(lambda rules: rules["delivery"].__setitem__("maxItems", 1.5), "maxItems")
 
 
 def _morning(path: Path, handler, apns: FakeApns):
@@ -475,8 +480,8 @@ def test_morning_run_stores_one_push_and_one_skip(path: Path) -> None:
 
     apns = FakeApns()
     result = _morning(path, handler, apns)
-    assert result["state"] == "available" and result["entries"] == 2
-    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司")]
+    assert result["state"] == "available" and result["entries"] == 1
+    assert apns.sent == [("ab" * 32, "晨报已出", "1 家公司")]
     assert "calls" not in result["stats"] and "fromReceipt" not in result["stats"]
     assert result["stats"]["classification"]["calls"] == 1
     evaluation = result["stats"]["evaluation"]
@@ -485,14 +490,19 @@ def test_morning_run_stores_one_push_and_one_skip(path: Path) -> None:
     assert evaluation["usage"] == {
         "prompt_tokens": 24, "completion_tokens": 14, "prompt_cache_hit_tokens": 3, "reasoning_tokens": 7,
     }
-    assert result["stats"]["prepareSeconds"] >= 0
+    assert result["stats"]["prepare"]["seconds"] >= 0 and "prepareSeconds" not in result["stats"]
+    assert result["stats"]["pushed"] == 1 and result["stats"]["overflow"] == 0
     with db.read(path) as conn:
         stored = db.get_report(conn, "2026-10-13")
         rows = db.list_evaluations(conn, "morning-2026-10-13")
     entry = stored["content"]["entries"][0]
-    assert set(entry) == {"rank", "companyCode", "companyName", "type", "relation", "fresh", "headline",
-                          "reason", "firstDisclosed", "sources", "others"}
-    assert "verdict" not in entry and entry["headline"].endswith("利好")
+    assert entry["companyCode"] == "300683" and entry["title"] == "海特签协议"
+    assert set(entry) == {"companyCode", "companyName", "type", "title", "conclusion", "questions", "risk",
+                          "views", "firstDisclosed", "sources"}
+    assert set(entry["questions"]) == {"value", "priced", "money", "price"}
+    assert all(isinstance(text, str) for text in entry["questions"].values())
+    assert "rank" not in entry and "importance" not in entry and "headline" not in entry
+    assert stored["content"]["candidates"] == 2 and stored["content"]["evaluated"] == 2
     assert [(row["company"], row["state"], row["verdict"]) for row in rows] == [
         ("300683", "succeeded", "推"), ("300953", "succeeded", "不推"),
     ]

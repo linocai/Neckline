@@ -350,7 +350,7 @@ def test_overview_uses_the_morning_entry_and_isolates_failures(tmp_path, monkeyp
     services, seen = _service(mixed)
     result = _run(overview("神州泰岳", services=services))
     assert result["code"] == "300002.SZ" and result["name"] == "神州泰岳"
-    assert result["morningReport"]["headline"] == "订单落地"
+    assert result["morningReport"]["title"] == "订单落地"
     assert result["morningReport"]["tradeDate"] == "2026-10-15"
     assert result["morningReport"]["documentIds"] == ["doc_test"]
     assert result["daily"]["close"] == 11
@@ -403,3 +403,33 @@ def test_outside_the_pool_makes_no_external_call():
     assert viewed["intraday"]["sessionDate"] == "2026-10-16"
     assert recorded["st"].startswith("20261016")
     assert viewed["intraday"]["quote"]["note"] == "不是实时行情"
+
+
+def test_overview_carries_v5_title_conclusion_and_risk(tmp_path, monkeypatch):
+    """v5 晨报的条目给出标题、结论、风险；不再有名次。"""
+    silence_http_logs()
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+    content = {"entries": [{"companyCode": "300002", "companyName": "神州泰岳", "title": "三季度扣非大增",
+                            "conclusion": "主业驱动，明显高开不追", "risk": "订单持续性待验证",
+                            "sources": [{"documentId": "doc_v5@1"}]}], "candidates": 3, "evaluated": 3}
+    with db.write(path) as conn:
+        conn.execute(
+            "INSERT INTO reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("morning-2026-10-28", "2026-10-28", "2026-10-27T07:00:00+00:00", "2026-10-28T00:00:00+00:00",
+             "available", "screening-v3", "0" * 64, "2026-10-28T00:00:00+00:00", "2026-10-28T00:20:00+00:00",
+             None, None, None, "{}", json.dumps(content)))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "tushare" in request.url.host:
+            return _tushare_app(_daily_rows(_twenty()), [_basic()], [_flow()])(request)
+        if "/real/" in request.url.path:
+            return httpx.Response(200, json=_quote())
+        return httpx.Response(200, text=f"101: {LICENCE}")
+
+    services, _seen = _service(handler)
+    morning = _run(overview("300002", services=services))["morningReport"]
+    assert morning["title"] == "三季度扣非大增" and morning["conclusion"] == "主业驱动，明显高开不追"
+    assert morning["risk"] == "订单持续性待验证" and morning["documentIds"] == ["doc_v5@1"]
+    assert "rank" not in morning and "headline" not in morning

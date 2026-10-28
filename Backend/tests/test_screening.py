@@ -400,6 +400,18 @@ def test_identical_request_is_billed_once(tmp_path):
         offline.complete(prompt, {"max_tokens": 11})
 
 
+def _push(company: str) -> dict:
+    return {
+        "company": company.split(".")[0], "state": "succeeded", "verdict": "推",
+        "output": {
+            "title": "标题", "conclusion": "结论",
+            "questions": {"value": {"text": "值"}, "priced": {"text": "反映"}, "money": {"text": "资金"}, "price": {"text": "价格"}},
+            "risk": "风险", "views": [],
+        },
+        "package": {},
+    }
+
+
 def test_report_content_has_candidates_without_importance_or_review():
     config = load_config()
     assert config.rules["configVersion"] == "screening-v3"
@@ -411,13 +423,16 @@ def test_report_content_has_candidates_without_importance_or_review():
     selection = select(by_id, results, config.rules["selection"])
     content = build_content(report_id="morning-2026-10-13", day=date(2026, 10, 13), window=WINDOW,
                             selection=selection, pool=pool, config_version=config.rules["configVersion"],
-                            gap=None, generated_at=WINDOW.collected_by, stats={})
+                            gap=None, generated_at=WINDOW.collected_by, stats={},
+                            evaluations=[_push("300001.SZ"), {**_push("300002.SZ"), "verdict": "不推"}],
+                            max_items=10)
     assert content["configVersion"] == "screening-v3" and "review" not in content
+    assert content["candidates"] == 1 and content["evaluated"] == 1 and len(content["entries"]) == 1
     entry = content["entries"][0]
-    assert set(entry) == {"rank", "companyCode", "companyName", "type", "relation", "fresh",
-                          "headline", "reason", "firstDisclosed", "sources", "others"}
+    assert set(entry) == {"companyCode", "companyName", "type", "title", "conclusion", "questions", "risk",
+                          "views", "firstDisclosed", "sources"}
     assert set(entry["sources"][0]) == {"documentId", "sourceLabel", "publishedAt", "title", "url"}
-    assert entry["others"] == [{"headline": "分红", "type": "分红"}]
+    assert "others" not in entry and "rank" not in entry and "headline" not in entry
     assert "importance" not in json.dumps(content, ensure_ascii=False)
 
 
@@ -455,7 +470,8 @@ def test_digest_source_title_uses_the_company_section():
     ], reasons={}, gaps=[])
     content = build_content(report_id="morning-2026-10-14", day=date(2026, 10, 14), window=WINDOW,
                             selection=selection, pool=pool, config_version="screening-v3", gap=None,
-                            generated_at=WINDOW.collected_by, stats={})
+                            generated_at=WINDOW.collected_by, stats={},
+                            evaluations=[_push(entry.company) for entry in selection.candidates], max_items=10)
     by_name = {entry["companyName"]: entry for entry in content["entries"]}
     assert by_name["海特生物"]["sources"][0]["title"] == flash.title
     assert by_name["海特生物"]["sources"][1]["title"] == "海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议"
@@ -480,7 +496,8 @@ def test_digest_title_when_only_one_pool_company_is_named():
     ], reasons={}, gaps=[])
     content = build_content(report_id="morning-2026-10-14", day=date(2026, 10, 14), window=WINDOW,
                             selection=selection, pool=pool, config_version="screening-v3", gap=None,
-                            generated_at=WINDOW.collected_by, stats={})
+                            generated_at=WINDOW.collected_by, stats={},
+                            evaluations=[_push(entry.company) for entry in selection.candidates], max_items=10)
     titles = [source["title"] for source in content["entries"][0]["sources"]]
     assert titles == ["海特生物(300683.SZ)：与Visara签署HT006.2.2滴眼液项目授权许可协议", single.title]
 

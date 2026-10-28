@@ -116,11 +116,44 @@ def _empty_selection() -> Selection:
     return Selection(candidates=[], reasons=Counter(), gaps=[])
 
 
+def _stored_evaluation(entry: Entry) -> dict:
+    code = entry.company.split(".")[0]
+    message = entry.messages[0] if entry.messages else None
+    views: list[dict] = []
+    package: dict = {"messages": [], "original": {"documents": []}}
+    if message is not None:
+        package = {
+            "messages": [{
+                "id": "m1", "ref": f"{message.document_id}@{message.revision}",
+                "title": message.title, "url": message.url,
+            }],
+            "original": {"documents": []},
+        }
+        if message.title or message.url:
+            views = [{"by": "媒体", "name": message.source_label, "text": "报道了这件事", "ref": "m1"}]
+    return {
+        "company": code, "state": "succeeded", "verdict": "推",
+        "output": {
+            "title": entry.primary.headline, "conclusion": entry.primary.reason,
+            "questions": {
+                "value": {"pass": True, "text": "利好能落到利润上"},
+                "priced": {"pass": True, "text": "还没有充分反映"},
+                "money": {"text": "有新增量"},
+                "price": {"text": "明显高开不追"},
+            },
+            "risk": "公告口径可能调整",
+            "views": views,
+        },
+        "package": package,
+    }
+
+
 def _content(pool: CompanyPool, selection: Selection, day: str, gap: str | None, generated: datetime, messages: int) -> dict:
     start, end = morning_window(date.fromisoformat(day), SCHEDULE)
     return build_content(report_id=f"morning-{day}", day=date.fromisoformat(day),
                          window=Window(start=start, end=end, collected_by=generated), selection=selection, pool=pool,
-                         config_version=CONFIG_VERSION, gap=gap, generated_at=generated, stats={"messages": messages})
+                         config_version=CONFIG_VERSION, gap=gap, generated_at=generated, stats={"messages": messages},
+                         evaluations=[_stored_evaluation(entry) for entry in selection.candidates], max_items=10)
 
 
 def _seed(path: Path) -> str:
@@ -177,7 +210,13 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     sources = [source for entry in entries for source in entry["sources"]]
     assert available["status"] == "available" and available["tradeDate"] == "2026-10-19"
     assert "review" not in available["content"] and "importance" not in json.dumps(entries, ensure_ascii=False)
-    assert len(entries) >= 2 and any(entry["others"] for entry in entries)
+    assert available["content"]["candidates"] == 3 and available["content"]["evaluated"] == 3
+    assert len(entries) == 3
+    assert set(entries[0]) == {"companyCode", "companyName", "type", "title", "conclusion", "questions", "risk",
+                               "views", "firstDisclosed", "sources"}
+    assert set(entries[0]["questions"]) == {"value", "priced", "money", "price"}
+    assert all(isinstance(text, str) for text in entries[0]["questions"].values())
+    assert "rank" not in entries[0] and "others" not in entries[0] and "headline" not in entries[0]
     assert any(entry["firstDisclosed"] is None for entry in entries)
     assert any(entry["firstDisclosed"] for entry in entries)
     assert any(source["url"] is None for source in sources) and any(source["url"] for source in sources)
@@ -188,7 +227,8 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     assert available["windowEnd"] == "2026-10-19T00:00:00+00:00"
 
     empty = json.loads(bodies["report-empty.json"])
-    assert empty["content"]["entries"] == [] and "review" not in empty["content"]
+    assert empty["content"]["entries"] == [] and empty["content"]["evaluated"] == 0
+    assert empty["content"]["candidates"] == 0 and "review" not in empty["content"]
 
     failed = json.loads(bodies["report-failed.json"])
     assert failed["status"] == "failed" and failed["content"] is None and failed["failureReason"]
@@ -199,7 +239,8 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     history = json.loads(bodies["reports-history.json"])["reports"]
     assert [item["status"] for item in history] == ["available", "failed", "running", "available"]
     assert [item["tradeDate"] for item in history] == ["2026-10-19", "2026-10-16", "2026-10-15", "2026-10-14"]
-    assert history[0]["entryCount"] == 3 and history[1]["failureReason"] == "09:15 前没能出报"
+    assert history[0]["entryCount"] == 3 and history[3]["entryCount"] == 0
+    assert history[1]["failureReason"] == "09:15 前没能出报"
     assert json.loads(bodies["document.json"])["url"]
     assert json.loads(bodies["document-not-found.json"]) == {"detail": {"reason": "no_document"}}
     assert json.loads(bodies["report-not-found.json"]) == {"detail": {"reason": "no_report"}}

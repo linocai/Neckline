@@ -38,19 +38,30 @@ class HideReadKey(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(HideReadKey())
 _WEEKDAYS = "一二三四五六日"
 _CSS = """
-:root{--bg:#fbfaf7;--fg:#1d1d1f;--muted:#6e6e73;--line:#e3e1db;--card:#fff;--accent:#9a3412}
-@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#ecebe8;--muted:#9a9a9f;--line:#2c2c2e;--card:#1c1c1e;--accent:#fb923c}}
+:root{--bg:#fbfaf7;--fg:#1d1d1f;--muted:#6e6e73;--line:#e3e1db;--card:#fff;--accent:#9a3412;--risk:#ff3b30;--view:#007aff}
+@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#ecebe8;--muted:#9a9a9f;--line:#2c2c2e;--card:#1c1c1e;--accent:#fb923c;--risk:#ff453a;--view:#0a84ff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif}
 main{max-width:720px;margin:0 auto;padding:16px}h1{font-size:22px;margin:4px 0}h2{font-size:17px;margin:24px 0 8px}
 .meta{color:var(--muted);font-size:13px}.gap{margin:12px 0;padding:8px 12px;border-left:3px solid var(--accent);background:var(--card);font-size:14px}
 ol{padding:0;list-style:none;margin:0}li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0}
 .co{font-weight:600}.tag{color:var(--muted);font-size:13px;margin-left:6px}.hl{margin:4px 0}.why{color:var(--muted);font-size:14px}
+.lab{display:block;font-size:13px;color:var(--muted)}.q{font-size:14px;margin:6px 0}
+.risk{color:var(--risk);margin:8px 0}
+.views{color:var(--view);margin:8px 0;padding:8px 12px;border-left:3px solid var(--view)}
+.views a{color:var(--view)}
 .src{font-size:13px;margin-top:6px}a{color:var(--accent);text-decoration:none}details{margin:16px 0}summary{cursor:pointer;color:var(--muted)}
 pre{white-space:pre-wrap;word-break:break-word;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
 form{margin:12px 0}input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 button{background:var(--accent);color:white;border:0}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);font-weight:400}
 footer{margin:28px 0 8px;font-size:13px;color:var(--muted)}
 """
+
+_QUESTION_LABELS = (
+    ("value", "利好值多少"),
+    ("priced", "市场已反映多少"),
+    ("money", "资金为什么买或不买"),
+    ("price", "价格划不划算"),
+)
 
 
 def _page(title: str, body: str) -> HTMLResponse:
@@ -66,20 +77,96 @@ def _day_label(trade_date: str) -> str:
     return f"{trade_date}（周{_WEEKDAYS[day.weekday()]}）"
 
 
-def _entries(base: str, entries: list[dict]) -> str:
+def _source_line(base: str, source: dict) -> str:
+    published = source.get("publishedAt") or ""
+    shown = published[5:16].replace("T", " ") if len(published) >= 16 else published
+    title = source.get("title") or source.get("sourceLabel") or "原文"
+    document_id = source.get("documentId")
+    if document_id:
+        href = f"{base}/doc/{quote(str(document_id), safe='')}"
+        link = f"<a href=\"{href}\">{escape(str(title))}</a>"
+    elif source.get("url"):
+        link = f"<a href=\"{escape(str(source['url']))}\">{escape(str(title))}</a>"
+    else:
+        link = escape(str(title))
+    return f"<div>{escape(str(source.get('sourceLabel') or ''))} {escape(shown)} {link}</div>"
+
+
+def _view_html(view: dict) -> str:
+    by = escape(str(view.get("by") or ""))
+    name = escape(str(view.get("name") or ""))
+    text = escape(str(view.get("text") or ""))
+    title = view.get("sourceTitle")
+    url = view.get("sourceUrl")
+    if url:
+        source = f"（<a href=\"{escape(str(url))}\">{escape(str(title or '来源'))}</a>）"
+    elif title:
+        source = f"（{escape(str(title))}）"
+    else:
+        source = ""
+    return f"<p><b>{by}</b> · {name}：{text}{source}</p>"
+
+
+def _evaluated_entries(base: str, entries: list[dict]) -> str:
     items = []
-    for e in entries:
-        first = e["sources"][0]
-        more = f"，另有 {len(e['sources']) - 1} 条" if len(e["sources"]) > 1 else ""
-        link = (f"<a href=\"{base}/doc/{quote(first['documentId'], safe='')}\">"
-                f"{escape(first['sourceLabel'])} {escape(first['publishedAt'][5:16].replace('T', ' '))}</a>")
-        disclosed = f"｜首次公开 {escape(e['firstDisclosed'])}" if e.get("firstDisclosed") else ""
-        others = "".join(f"<div class=\"why\">同公司另有：{escape(o['headline'])}</div>" for o in e.get("others", []))
-        items.append(f"<li><div><span class=\"co\">{e['rank']}. {escape(e['companyName'])} {escape(e['companyCode'])}</span>"
-                     f"<span class=\"tag\">{escape(e['type'])}{disclosed}</span></div>"
-                     f"<div class=\"hl\">{escape(e['headline'])}</div><div class=\"why\">{escape(e['reason'])}</div>"
-                     f"{others}<div class=\"src\">来源：{link}{more}</div></li>")
+    for entry in entries:
+        disclosed = f"｜首次公开 {escape(str(entry['firstDisclosed']))}" if entry.get("firstDisclosed") else ""
+        questions = entry.get("questions") if isinstance(entry.get("questions"), dict) else {}
+        question_html = "".join(
+            f"<div class=\"q\"><span class=\"lab\">{escape(label)}</span>{escape(str(questions.get(key) or ''))}</div>"
+            for key, label in _QUESTION_LABELS)
+        views = entry.get("views") if isinstance(entry.get("views"), list) else []
+        view_html = ("<div class=\"views\"><div>各方观点</div>" + "".join(_view_html(view) for view in views if isinstance(view, dict))
+                     + "</div>") if views else ""
+        sources = "".join(_source_line(base, source) for source in entry.get("sources") or [] if isinstance(source, dict))
+        items.append(
+            f"<li><div><span class=\"co\">{escape(str(entry.get('companyName') or ''))} {escape(str(entry.get('companyCode') or ''))}</span>"
+            f"<span class=\"tag\">{escape(str(entry.get('type') or ''))}{disclosed}</span></div>"
+            f"<div class=\"hl\">{escape(str(entry.get('title') or ''))}</div>"
+            f"<div class=\"why\">{escape(str(entry.get('conclusion') or ''))}</div>"
+            f"{question_html}<p class=\"risk\">风险：{escape(str(entry.get('risk') or ''))}</p>"
+            f"{view_html}<div class=\"src\">原文：{sources}</div></li>")
     return "<ol>" + "".join(items) + "</ol>"
+
+
+def _legacy_entries(base: str, entries: list[dict]) -> str:
+    items = []
+    for entry in entries:
+        sources = entry.get("sources") or []
+        if sources:
+            first = sources[0]
+            more = f"，另有 {len(sources) - 1} 条" if len(sources) > 1 else ""
+            published = first.get("publishedAt") or ""
+            shown = published[5:16].replace("T", " ") if len(published) >= 16 else published
+            link = (f"<a href=\"{base}/doc/{quote(str(first.get('documentId') or ''), safe='')}\">"
+                    f"{escape(str(first.get('sourceLabel') or ''))} {escape(shown)}</a>")
+            source_html = f"<div class=\"src\">来源：{link}{more}</div>"
+        else:
+            source_html = ""
+        disclosed = f"｜首次公开 {escape(str(entry['firstDisclosed']))}" if entry.get("firstDisclosed") else ""
+        rank = f"{entry['rank']}. " if entry.get("rank") else ""
+        headline = entry.get("headline") or entry.get("title") or ""
+        reason = entry.get("reason") or ""
+        reason_html = f"<div class=\"why\">{escape(str(reason))}</div>" if reason else ""
+        items.append(f"<li><div><span class=\"co\">{rank}{escape(str(entry.get('companyName') or ''))} "
+                     f"{escape(str(entry.get('companyCode') or ''))}</span>"
+                     f"<span class=\"tag\">{escape(str(entry.get('type') or ''))}{disclosed}</span></div>"
+                     f"<div class=\"hl\">{escape(str(headline))}</div>{reason_html}{source_html}</li>")
+    return "<ol>" + "".join(items) + "</ol>"
+
+
+def _entries(base: str, entries: list[dict]) -> str:
+    if entries and ("title" in entries[0] or "questions" in entries[0]):
+        return _evaluated_entries(base, entries)
+    return _legacy_entries(base, entries)
+
+
+def _empty_copy(content: dict) -> str:
+    if "evaluated" not in content:
+        return "<p>今天没有符合条件的利好。</p>"
+    count = content.get("evaluated")
+    shown = count if isinstance(count, int) and not isinstance(count, bool) else 0
+    return f"<p>今天没有值得推的</p><p>评估了 {shown} 家公司的隔夜消息，没有值得推的</p>"
 
 
 def _intro(base: str) -> str:
@@ -126,10 +213,13 @@ def _render_stock(base: str, data: dict) -> HTMLResponse:
     if data.get("gaps"):
         parts.append("<div class=\"gap\">" + "<br>".join(escape(item) for item in data["gaps"]) + "</div>")
     if morning:
+        title = morning.get("title") or ""
+        conclusion = morning.get("conclusion") or ""
+        risk = morning.get("risk") or ""
+        risk_html = f"<p class=\"risk\">风险：{escape(str(risk))}</p>" if risk else ""
         parts.append("<h2>晨报</h2><p>"
-                     f"{escape(str(morning.get('tradeDate') or ''))} 第 {escape(str(morning.get('rank') or ''))} 条："
-                     f"{escape(morning.get('headline') or '')}</p>"
-                     f"<p class=\"why\">{escape(morning.get('reason') or '')}</p>")
+                     f"{escape(str(morning.get('tradeDate') or ''))} {escape(str(title))}</p>"
+                     f"<p class=\"why\">{escape(str(conclusion))}</p>{risk_html}")
     else:
         parts.append("<h2>晨报</h2><p>最新可用晨报的正式名单里没有它。</p>")
     parts.append("<h2>收盘后</h2>")
@@ -192,7 +282,7 @@ def render_report(base: str, report: dict) -> HTMLResponse:
                 f"规则 {escape(c['configVersion'])}</div>")
         if c.get("gapSummary"):
             body += f"<div class=\"gap\">缺口：{escape(c['gapSummary'])}</div>"
-        body += _entries(base, c["entries"]) if c["entries"] else "<p>今天没有符合条件的利好。</p>"
+        body += _entries(base, c["entries"]) if c["entries"] else _empty_copy(c)
     body += (f"<footer><a href=\"{base}/history\">历史</a>　·　<a href=\"{base}/day/{escape(report['trade_date'])}?format=json\">JSON</a>"
              f"</footer>")
     return _page(title, body)

@@ -5,6 +5,7 @@
   python -m neckline.morning.cli morning [--now ISO]      # 08:00：采集 → 交易日出报 → 推送
   python -m neckline.morning.cli finalize [--now ISO]     # 09:15：还没出报就记失败并推送
   python -m neckline.morning.cli show [--date YYYY-MM-DD]
+  python -m neckline.morning.cli evaluations --date YYYY-MM-DD [--json]
 
 库路径取 --db 或环境变量 NECKLINE_V4_DB_PATH，没有默认值。凭据只从环境变量读（DEEPSEEK_API_KEY、
 TUSHARE_TOKEN、JIN10_MCP_TOKEN、APNS_*），不写日志。业务时钟可用 --now 显式给出。
@@ -15,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from importlib import resources
@@ -81,6 +83,60 @@ def _print(value) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=1, default=str))
 
 
+def _show_entry(entry: dict, index: int) -> str:
+    title = entry.get("title") or entry.get("headline") or ""
+    prefix = f"{entry['rank']}." if "rank" in entry else f"{index}."
+    return f"{prefix} {entry.get('companyName', '')} {entry.get('companyCode', '')}｜{title}"
+
+
+def _evaluation_name(row: dict) -> str:
+    package = row.get("package") if isinstance(row.get("package"), dict) else {}
+    company = package.get("company") if isinstance(package.get("company"), dict) else {}
+    name = company.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _evaluations(path: Path, day: str, as_json: bool) -> int:
+    """只读列出某一期的全部评估。不建表、不写库。"""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) is None:
+        print("--date 须为 YYYY-MM-DD", file=sys.stderr)
+        return 1
+    try:
+        with db.read(path) as conn:
+            report = db.get_report(conn, day)
+            rows = db.list_evaluations(conn, f"morning-{day}") if report else []
+    except db.NotReady as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if report is None:
+        print(f"{day} 没有晨报", file=sys.stderr)
+        return 1
+    payload = []
+    for row in rows:
+        payload.append({
+            "company": row.get("company"),
+            "name": _evaluation_name(row),
+            "state": row.get("state"),
+            "verdict": row.get("verdict"),
+            "error": row.get("error"),
+            "output": row.get("output"),
+            "package": row.get("package"),
+            "usage": row.get("usage"),
+            "seconds": row.get("seconds"),
+        })
+    if as_json:
+        _print(payload)
+        return 0
+    if not payload:
+        print("没有评估")
+        return 0
+    for item in payload:
+        verdict = item["verdict"] or "—"
+        error = item["error"] or ""
+        print(f"{item['company']} {item['name']} {verdict} {item['state']} {error}".rstrip())
+    return 0
+
+
 def _weekday_problem(path: Path, day, body: str, clock) -> None:
     if day.weekday() >= 5:
         return
@@ -116,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_parser(name).add_argument("--now")
     show = sub.add_parser("show")
     show.add_argument("--date")
+    evaluations = sub.add_parser("evaluations")
+    evaluations.add_argument("--date", required=True)
+    evaluations.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     path = _db_path(args.db)
 
@@ -127,13 +186,15 @@ def main(argv: list[str] | None = None) -> int:
         with db.read(path) as conn:
             report = db.get_report(conn, args.date) if args.date else db.latest_report(conn)
             runs = db.collections_since(conn, datetime(2000, 1, 1, tzinfo=timezone.utc))[-4:]
+        entries = ((report or {}).get("content") or {}).get("entries", [])
         _print({"report": {k: v for k, v in (report or {}).items() if k != "content"} or None,
-                "entries": [f"{e['rank']}. {e['companyName']} {e['companyCode']}｜{e['headline']}"
-                            for e in ((report or {}).get("content") or {}).get("entries", [])],
+                "entries": [_show_entry(entry, index) for index, entry in enumerate(entries, 1)],
                 "collections": [{"runId": r["run_id"], "status": r["status"],
                                  "sources": [(s["sourceKey"], s["complete"], s["error"], s["documents"]) for s in r["sources"]]}
                                 for r in runs]})
         return 0
+    if args.command == "evaluations":
+        return _evaluations(path, args.date, args.json)
 
     db.init_schema(path)  # 写命令：库不存在就建，已存在且版本一致时不改动
     clock = lambda: datetime.now(timezone.utc)  # noqa: E731

@@ -29,9 +29,10 @@ def _morning(short_code: str) -> tuple[dict | None, str | None]:
         return {
             "reportId": report["report_id"],
             "tradeDate": report["trade_date"],
-            "rank": entry.get("rank"),
-            "headline": entry.get("headline"),
-            "reason": entry.get("reason"),
+            # v5 晨报带标题、结论、风险；v4 旧晨报只有 headline、reason，按同样的位置给出。
+            "title": entry.get("title") or entry.get("headline"),
+            "conclusion": entry.get("conclusion") or entry.get("reason"),
+            "risk": entry.get("risk"),
             "documentIds": [item.get("documentId") for item in entry.get("sources") or [] if item.get("documentId")],
         }, None
     return None, None

@@ -436,9 +436,35 @@ class FakeModel:
     crash_companies: tuple[str, ...] = ()
     timeout_companies: tuple[str, ...] = ()
 
+    def _evaluation(self, prompt: str) -> httpx.Response:
+        found = re.search(r"公司：(\d{6})", prompt)
+        code = found.group(1) if found else ""
+        if code in self.timeout_companies:
+            raise httpx.ReadTimeout("no answer")
+        self.hits += 1
+        if code in self.crash_companies:
+            raise RuntimeError("worker crashed while the request was in flight")
+        content = {
+            "title": "值得跟踪", "verdict": "推", "conclusion": "值得跟踪",
+            "questions": {
+                "value": {"pass": True, "text": "利好有量"},
+                "priced": {"pass": True, "text": "还没怎么涨"},
+                "money": {"text": "有新增量"},
+                "price": {"text": "明显高开不追"},
+            },
+            "risk": "可能落空",
+            "views": [{"by": "媒体", "name": "来源", "text": "转述", "ref": "m1"}],
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "prompt_cache_hit_tokens": 1, "reasoning_tokens": 2},
+        })
+
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         prompt = body["messages"][1]["content"]
+        if prompt.startswith("晨报交易日"):
+            return self._evaluation(prompt)
         blocks = re.split(r"^### ", prompt, flags=re.M)[1:]
         codes = [b.split()[0] for b in blocks]
         if any(c in self.timeout_companies for c in codes):
@@ -625,7 +651,7 @@ def test_finalize_marks_stuck_report_failed_with_reason(path):
     assert nothing["reason"] == "09:15 前没能出报（出报任务没有运行）"
 
 
-def test_old_report_output_drops_importance_and_review_without_rewriting_the_row(path):
+def test_old_report_output_drops_importance_and_review_without_rewriting_the_row(path, monkeypatch):
     from neckline.morning.api import report_out
     from neckline.morning.web import render_report
 
@@ -658,8 +684,18 @@ def test_old_report_output_drops_importance_and_review_without_rewriting_the_row
     assert report["content"] == stored
     page = render_report("/read/k", report).body.decode()
     assert "极高" not in page and "待定" not in page and "汇川技术" not in page
+    assert "授权" in page and '<span class="lab">利好值多少</span>' not in page
     with db.read(path) as conn:
         assert db.get_report(conn, "2026-10-13")["content"] == stored
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+    app = FastAPI()
+    app.include_router(api_router(require_token_dependency=lambda: None))
+    client = TestClient(app)
+    listed = client.get("/api/v4/reports").json()["reports"]
+    assert listed[0]["entryCount"] == 1
+    latest = client.get("/api/v4/reports/latest").json()
+    assert latest["content"]["entries"][0]["headline"] == "授权"
+    assert "importance" not in json.dumps(latest["content"]["entries"], ensure_ascii=False)
 
 
 def test_shipped_config_is_approved_and_pool_verified():

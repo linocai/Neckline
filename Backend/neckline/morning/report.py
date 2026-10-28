@@ -1,7 +1,8 @@
 """交易日晨报：08:00 采集后筛选出报，写进同一份晨报记录（推送、App、网页、MCP 共用），然后推送。
 
 规则只来自已批准的配置；没批准、日历没覆盖、过了截止时刻都如实记为失败并推「晨报出问题了」，不补跑。
-局部失败（某来源没取全、某家公司模型没判出来）只剔除相关条目，名单照常交付，并写一行缺口摘要。
+局部失败（某来源没取全、某家公司没判出来、某条没评完）只剔除相关条目，名单照常交付，并写一行缺口摘要。
+判「推」的最多 delivery.maxItems 条，按首次公开时间先后；可以 0 条。
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
 from neckline.evaluation.evaluate import EvaluationRun, evaluate_candidates
-from neckline.evaluation.market import TuShareSource
+from neckline.evaluation.market import MarketSource, TuShareSource
 from neckline.evaluation.prepare import build_package
 from neckline.evaluation.prompt import CONTRACT as EVALUATION_CONTRACT
 from neckline.filings.fetch import FetchResult
@@ -188,6 +189,8 @@ def _validate_screening_rules(rules: object) -> dict:
     market_limits = _require_dict(evaluation, "market", "evaluation.market")
     for key in ("concurrency", "timeoutSeconds"):
         _require_min_int(market_limits, key, f"evaluation.market.{key}", 1)
+    delivery = _require_dict(rules, "delivery", "delivery")
+    _require_min_int(delivery, "maxItems", "delivery.maxItems", 1)
     return rules
 
 
@@ -266,7 +269,18 @@ def coverage_gaps(runs: list[dict], start: datetime, end: datetime) -> list[str]
     return gaps
 
 
-def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyPool) -> str | None:
+def _company_name(pool: CompanyPool, code: str) -> str:
+    company = pool.companies.get(code)
+    if company is None:
+        for item in pool.companies.values():
+            if item.short_code == code or item.code == code:
+                company = item
+                break
+    return company.name if company is not None else code
+
+
+def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyPool, *,
+                unevaluated: list[str] | None = None, overflow: int = 0) -> str | None:
     parts = []
     if collection_gaps:
         parts.append("采集不完整：" + "、".join(collection_gaps))
@@ -274,6 +288,13 @@ def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyP
         names = "、".join(pool.companies[g.company].name for g in selection.gaps[:5])
         more = f"等 {len(selection.gaps)} 家" if len(selection.gaps) > 5 else ""
         parts.append(f"{names}{more}没能完成判断，未列入")
+    pending = sorted({code for code in (unevaluated or []) if code})
+    if pending:
+        shown = "、".join(_company_name(pool, code) for code in pending[:5])
+        tail = "等" if len(pending) > 5 else ""
+        parts.append(f"{len(pending)} 条没能完成评估：{shown}{tail}")
+    if overflow > 0:
+        parts.append(f"另有 {overflow} 条判推未列入")
     return "；".join(parts) if parts else None
 
 
@@ -312,28 +333,182 @@ def source_title(message: Message, company_code: str, pool: CompanyPool) -> str 
     return f"{base}（汇总稿）" if base else "（汇总稿）"
 
 
-def _entry(rank: int, e: Entry, pool: CompanyPool) -> dict:
-    company, ev = pool.companies[e.company], e.primary
+def _question_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        text = value.get("text")
+        return text.strip() if isinstance(text, str) else ""
+    return ""
+
+
+def _present_text(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _source_rows(entry: Entry, pool: CompanyPool) -> list[dict]:
+    """公告在前，其余保持原来的发布时间顺序。"""
+    announcements = [message for message in entry.messages if message.source_key == "cninfo-announcement"]
+    others = [message for message in entry.messages if message.source_key != "cninfo-announcement"]
+    return [{
+        "documentId": f"{message.document_id}@{message.revision}",
+        "sourceLabel": message.source_label,
+        "publishedAt": _cst(message.published_at),
+        "title": source_title(message, entry.company, pool),
+        "url": message.url,
+    } for message in announcements + others]
+
+
+def _ref_index(package: object) -> dict[str, dict]:
+    """材料编号 → 标题、链接、原文 documentId。m 是消息，a 是公告。"""
+    if not isinstance(package, dict):
+        return {}
+    found: dict[str, dict] = {}
+    messages: dict[str, dict] = {}
+    for message in package.get("messages") or []:
+        if not isinstance(message, dict) or not isinstance(message.get("id"), str):
+            continue
+        item = {
+            "title": _present_text(message.get("title")),
+            "url": _present_text(message.get("url")),
+            "documentId": message.get("ref") if isinstance(message.get("ref"), str) else None,
+        }
+        messages[message["id"]] = item
+        found[message["id"]] = item
+    original = package.get("original") if isinstance(package.get("original"), dict) else {}
+    for doc in original.get("documents") or []:
+        if not isinstance(doc, dict) or not isinstance(doc.get("id"), str):
+            continue
+        linked = messages.get(doc.get("message")) if isinstance(doc.get("message"), str) else None
+        title = _present_text(doc.get("title")) or (linked or {}).get("title")
+        url = _present_text(doc.get("url")) or (linked or {}).get("url")
+        document_id = (linked or {}).get("documentId")
+        found[doc["id"]] = {"title": title, "url": url, "documentId": document_id}
+    return found
+
+
+def _public_view(view: Mapping, index: dict[str, dict], sources: list[dict]) -> dict:
+    shown = {
+        "by": view.get("by") if isinstance(view.get("by"), str) else "",
+        "name": view.get("name") if isinstance(view.get("name"), str) else "",
+        "text": view.get("text") if isinstance(view.get("text"), str) else "",
+    }
+    ref = view.get("ref")
+    located = index.get(ref) if isinstance(ref, str) else None
+    if not located:
+        return shown
+    matched = None
+    document_id = located.get("documentId")
+    if isinstance(document_id, str):
+        matched = next((source for source in sources if source.get("documentId") == document_id), None)
+    title = _present_text((matched or {}).get("title")) or located.get("title")
+    url = _present_text((matched or {}).get("url")) or located.get("url")
+    if isinstance(title, str) and title:
+        shown["sourceTitle"] = title
+    if isinstance(url, str) and url:
+        shown["sourceUrl"] = url
+    return shown
+
+
+def _render_entry(entry: Entry, row: Mapping, pool: CompanyPool) -> dict:
+    company = pool.companies[entry.company]
+    output = row.get("output") if isinstance(row.get("output"), dict) else {}
+    questions = output.get("questions") if isinstance(output.get("questions"), dict) else {}
+    sources = _source_rows(entry, pool)
+    index = _ref_index(row.get("package"))
+    views = [_public_view(view, index, sources) for view in output.get("views") or [] if isinstance(view, dict)]
     return {
-        "rank": rank, "companyCode": company.short_code, "companyName": company.name, "type": ev.type,
-        "relation": ev.relation, "fresh": ev.fresh, "headline": ev.headline,
-        "reason": ev.reason, "firstDisclosed": ev.first_disclosed,
-        "sources": [{"documentId": f"{m.document_id}@{m.revision}", "sourceLabel": m.source_label,
-                     "publishedAt": _cst(m.published_at), "title": source_title(m, e.company, pool), "url": m.url}
-                    for m in e.messages],
-        "others": [{"headline": o.headline, "type": o.type} for o in e.others],
+        "companyCode": company.short_code,
+        "companyName": company.name,
+        "type": entry.primary.type,
+        "title": output.get("title") if isinstance(output.get("title"), str) else "",
+        "conclusion": output.get("conclusion") if isinstance(output.get("conclusion"), str) else "",
+        "questions": {
+            "value": _question_text(questions.get("value")),
+            "priced": _question_text(questions.get("priced")),
+            "money": _question_text(questions.get("money")),
+            "price": _question_text(questions.get("price")),
+        },
+        "risk": output.get("risk") if isinstance(output.get("risk"), str) else "",
+        "views": views,
+        "firstDisclosed": entry.primary.first_disclosed,
+        "sources": sources,
     }
 
 
-def build_content(*, report_id: str, day: date, window: Window, selection: Selection, pool: CompanyPool,
-                  config_version: str, gap: str | None, generated_at: datetime, stats: Mapping[str, Any]) -> dict:
+def _first_published(entry: Entry) -> datetime:
+    if not entry.messages:
+        return datetime.max.replace(tzinfo=CST)
+    return min(message.published_at for message in entry.messages)
+
+
+@dataclass(frozen=True)
+class Delivered:
+    entries: list[dict]
+    evaluated: int
+    overflow: int
+    unevaluated: list[str]
+
+
+def assemble(selection: Selection, evaluations: list[dict], pool: CompanyPool, *, max_items: int) -> Delivered:
+    """判「推」且评估成功的，按首次公开时间、再按代码，取前 max_items 条。"""
+    by_code: dict[str, dict] = {}
+    for row in evaluations:
+        company = str(row.get("company") or "")
+        if company:
+            by_code[company.split(".")[0]] = row
+    chosen: list[tuple[Entry, dict]] = []
+    unevaluated: list[str] = []
+    evaluated = 0
+    for entry in selection.candidates:
+        code = entry.company.split(".")[0]
+        row = by_code.get(code)
+        if row is None:
+            unevaluated.append(code)
+            continue
+        state = row.get("state")
+        verdict = row.get("verdict")
+        if state == "succeeded" and verdict == "不推":
+            evaluated += 1
+        elif state == "succeeded" and verdict == "推" and isinstance(row.get("output"), dict):
+            evaluated += 1
+            chosen.append((entry, row))
+        else:
+            unevaluated.append(code)
+    chosen.sort(key=lambda pair: (_first_published(pair[0]), pair[0].company))
+    overflow = max(0, len(chosen) - max_items)
+    kept = chosen[:max_items]
+    return Delivered(
+        entries=[_render_entry(entry, row, pool) for entry, row in kept],
+        evaluated=evaluated,
+        overflow=overflow,
+        unevaluated=unevaluated,
+    )
+
+
+def _pack(*, report_id: str, day: date, window: Window, selection: Selection, delivered: Delivered,
+          config_version: str, gap: str | None, generated_at: datetime, stats: Mapping[str, Any]) -> dict:
+    shown = dict(stats)
+    shown["candidates"] = len(selection.candidates)
+    shown["pushed"] = len(delivered.entries)
+    shown["overflow"] = delivered.overflow
     return {
         "reportId": report_id, "tradeDate": day.isoformat(), "kind": "morning",
         "window": {"start": _cst(window.start), "end": _cst(window.end)}, "generatedAt": _cst(generated_at),
         "configVersion": config_version, "gapSummary": gap,
-        "entries": [_entry(i, e, pool) for i, e in enumerate(selection.candidates, 1)],
-        "stats": dict(stats),
+        "candidates": len(selection.candidates), "evaluated": delivered.evaluated,
+        "entries": delivered.entries, "stats": shown,
     }
+
+
+def build_content(*, report_id: str, day: date, window: Window, selection: Selection, pool: CompanyPool,
+                  config_version: str, gap: str | None, generated_at: datetime, stats: Mapping[str, Any],
+                  evaluations: list[dict], max_items: int) -> dict:
+    delivered = assemble(selection, evaluations, pool, max_items=max_items)
+    return _pack(report_id=report_id, day=day, window=window, selection=selection, delivered=delivered,
+                 config_version=config_version, gap=gap, generated_at=generated_at, stats=stats)
 
 
 class Pusher:
@@ -373,8 +548,8 @@ class Pusher:
 
 
 def _ready_body(count: int, gap: str | None = None) -> str:
-    text = f"{count} 家公司" if count else "今天没有符合条件的利好"
-    if count == 0 and gap:
+    text = f"{count} 家公司" if count else "今天没有值得推的"
+    if gap:
         text += "（有缺口）"
     return text
 
@@ -403,14 +578,16 @@ def _stored_ready(pusher: Pusher, report_id: str, stored: Mapping[str, Any]) -> 
 
 def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window, candidates: list,
                     config: LoadedConfig, client: DeepSeekClient, clock: Callable[[], datetime],
-                    pdf: Callable[[str], FetchResult]) -> EvaluationRun:
-    """select 之后准备并评估。没有候选时也返回一份空统计。"""
+                    pdf: Callable[[str], FetchResult], market: MarketSource | None = None) -> EvaluationRun:
+    """select 之后准备并评估。没有候选时也返回一份空统计。market 不传时按环境变量建 TuShareSource。"""
     settings = config.rules["evaluation"]
     if not candidates:
         return evaluate_candidates([], report_id=report_id, db_path=db_path, prepare=lambda _candidate: {},
                                    client=client, settings=settings, clock=clock)
-    market = TuShareSource((os.environ.get("TUSHARE_TOKEN") or "").strip() or None,
-                           timeout=float(settings["market"]["timeoutSeconds"]), now=clock)
+    owns_market = market is None
+    if market is None:
+        market = TuShareSource((os.environ.get("TUSHARE_TOKEN") or "").strip() or None,
+                               timeout=float(settings["market"]["timeoutSeconds"]), now=clock)
     pool_view = SimpleNamespace(pool=config.pool, profiles=config.profiles)
 
     def prepare(candidate: object) -> dict:
@@ -428,7 +605,8 @@ def _run_evaluation(db_path: Path, *, report_id: str, day: date, window: Window,
         return evaluate_candidates(candidates, report_id=report_id, db_path=db_path, prepare=prepare,
                                    client=client, settings=settings, clock=clock)
     finally:
-        market.close()
+        if owns_market:
+            market.close()
 
 
 def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, datetime], config: LoadedConfig,
@@ -450,7 +628,8 @@ def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, d
 def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector: Callable[[datetime], dict],
                 client_factory: Callable[[str], DeepSeekClient], pusher: Pusher,
                 clock: Callable[[], datetime],
-                fetcher: Callable[[str], FetchResult] | None = None) -> dict:
+                fetcher: Callable[[str], FetchResult] | None = None,
+                market: MarketSource | None = None) -> dict:
     """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。
 
     先看当天报告：已有 running 就是续跑，不再采集，消息边界用首次写入的 started_at。
@@ -529,12 +708,16 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
                      reason=reason, now=clock(), pusher=pusher)
     selection = select(result.by_id, result.results, rules["selection"])
     evaluation = _run_evaluation(db_path, report_id=report_id, day=day, window=window,
-                                 candidates=selection.candidates, config=config, client=client, clock=clock, pdf=pdf)
+                                 candidates=selection.candidates, config=config, client=client, clock=clock, pdf=pdf,
+                                 market=market)
     if evaluation.fatal:
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=evaluation.fatal, now=clock(), pusher=pusher)
+    with db.read(db_path) as conn:
+        evaluations = db.list_evaluations(conn, report_id)
+    delivered = assemble(selection, evaluations, config.pool, max_items=rules["delivery"]["maxItems"])
     gaps = coverage_gaps(runs, start, end)
-    summary = gap_summary(gaps, selection, config.pool)
+    summary = gap_summary(gaps, selection, config.pool, unevaluated=delivered.unevaluated, overflow=delivered.overflow)
     usage: dict[str, int] = {}
     for batch in result.batches:
         for key in ("prompt_tokens", "completion_tokens"):
@@ -546,15 +729,17 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
                                 "fromReceipt": sum(b.from_receipt for b in result.batches),
                                 "usage": usage,
                                 "seconds": round((classified_at - model_started).total_seconds(), 1)},
-             "evaluation": evaluation.stats, "prepareSeconds": evaluation.prepare_seconds,
+             "filings": filing_stats.as_dict(),
+             "prepare": {"seconds": evaluation.prepare_seconds},
+             "evaluation": evaluation.stats,
+             "candidates": len(selection.candidates), "pushed": len(delivered.entries), "overflow": delivered.overflow,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
-             "collectionGaps": gaps, "collection": collection["status"],
-             "candidates": len(selection.candidates), "filings": filing_stats.as_dict()}
+             "collectionGaps": gaps, "collection": collection["status"]}
     if finished > deadline(day, schedule):
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=f"{schedule['deadline']} 前没能出报", now=finished, pusher=pusher)
-    content = build_content(report_id=report_id, day=day, window=window, selection=selection, pool=config.pool,
-                            config_version=rules["configVersion"], gap=summary, generated_at=finished, stats=stats)
+    content = _pack(report_id=report_id, day=day, window=window, selection=selection, delivered=delivered,
+                    config_version=rules["configVersion"], gap=summary, generated_at=finished, stats=stats)
     with db.write(db_path) as conn:
         updated = db.complete_report(conn, report_id=report_id, content=content, stats=stats, gap_summary=summary,
                                      available_at=finished)

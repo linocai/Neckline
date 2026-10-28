@@ -196,7 +196,8 @@ class TuShareSource:
             return RawMarket(code=short, fetched_at=fetched_at, errors=_errors({kind: "credential_missing" for kind in KINDS}))
         day = as_date(self.now())
         start_fin = _years_ago(day, 2).strftime("%Y%m%d")
-        start_bar = (day - timedelta(days=45)).strftime("%Y%m%d")
+        # 70 个自然日：国庆、春节长假时 45 天只剩二十来根 K 线，20 日涨跌和 20 日均线会不够。
+        start_bar = (day - timedelta(days=70)).strftime("%Y%m%d")
         end_bar = day.strftime("%Y%m%d")
         specs = (
             ("income", INCOME_FIELDS, {"ts_code": full, "start_date": start_fin}),
