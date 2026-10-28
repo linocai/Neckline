@@ -495,3 +495,11 @@ def test_q3_rows_with_not_applicable_yoy_still_read_the_amounts() -> None:
     assert figures.net_profit.ytd == 338_935_489.71 and figures.net_profit.ytd_yoy is None
     assert figures.deducted.current == 151_556_875.03
     assert figures.revenue.yoy == 35.85
+
+
+def test_unmatched_percentages_are_never_read_as_amounts() -> None:
+    """上年同期写「--」、同比写成「同比：100%」时，百分数的数字前缀不能被当成上年同期金额。"""
+    text = FIXED_FORECAST.replace("盈利：3,000万元 盈利：1,500万元\n比上年同期增长：100%",
+                                  "盈利：3,000万元 -- 同比：100%")
+    figures = parse_forecast(text)
+    assert figures.net_profit.current.low is None and figures.net_profit.prior is None

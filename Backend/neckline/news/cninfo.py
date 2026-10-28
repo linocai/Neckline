@@ -144,13 +144,16 @@ def _parse_page(body: object) -> tuple[list[Any], int, bool]:
 class _Pass:
     error: str | None = None
     shifted: bool = False  # 这一遍里总数变了或出现跨页重复：翻页途中有新公告插进来
+    repeated: frozenset[str] = frozenset()  # 这一遍跨页重复出现的条目
 
 
 def _one_pass(client: httpx.Client, outcome: SourceOutcome, *, se_date: str, floor: datetime, end: datetime,
               max_pages: int, budget: dict, seen_ids: set[str], clock: Callable[[], datetime],
-              sleep: Callable[[float], None], verifying: bool = False) -> _Pass:
+              sleep: Callable[[float], None], verifying: bool = False,
+              known_repeats: frozenset[str] = frozenset()) -> _Pass:
     """从第 1 页翻到越过起点（或取完）。文档去重靠跨遍共享的 seen_ids；顺序与重复检查每遍单独做。"""
     raw_seen = repeats = 0
+    repeated: set[str] = set()
     totals: set[int] = set()
     row_ids: set[str] = set()  # 这一遍翻到过的全部条目（不论是否在窗口内），用来发现分页不稳
     prev_page_last_time: datetime | None = None
@@ -183,6 +186,7 @@ def _one_pass(client: httpx.Client, outcome: SourceOutcome, *, se_date: str, flo
                 key = str(raw_id)
                 if key in row_ids:
                     repeats += 1
+                    repeated.add(key)
                     if repeats > REPEAT_LIMIT:
                         return _Pass(error="pagination_unstable")
                     continue  # 翻页途中插到前面的新公告会让下一页开头重复上一页末尾，不参与顺序比较
@@ -208,12 +212,16 @@ def _one_pass(client: httpx.Client, outcome: SourceOutcome, *, se_date: str, flo
                 outcome.oldest_seen = document.published_at
         if page_times:
             prev_page_last_time = page_times[-1]
-        # 第一遍：出现跨页重复或总数变化就要再核对；核对那一遍只看总数是否还在变（静态的重复条目不算在变）
-        shifted = len(totals) > 1 or (repeats > 0 and not verifying)
+        # 第一遍：出现跨页重复或总数变化就要再核对。核对那一遍：总数还在变，或出现了第一遍没有的重复条目，
+        # 都说明还在位移（新增和撤回同时发生时总数可能不变）；和第一遍一样的重复是接口本身的重复条目，不算位移。
+        if verifying:
+            shifted = len(totals) > 1 or not repeated <= known_repeats
+        else:
+            shifted = len(totals) > 1 or repeats > 0
         if any(when < floor for when in page_times):
-            return _Pass(shifted=shifted)
+            return _Pass(shifted=shifted, repeated=frozenset(repeated))
         if raw_seen >= total:
-            return _Pass(shifted=shifted)
+            return _Pass(shifted=shifted, repeated=frozenset(repeated))
         if not has_more:
             return _Pass(error="count_mismatch")  # 接口说没有下一页，却没给够它自己报的总数
         if not rows:
@@ -242,7 +250,7 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
                 return outcome
             if first.shifted:
                 # 翻页途中有新公告进来：插进已翻过位置的公告这一遍取不到，从头再核对一遍（已取到的不重复收）
-                second = _one_pass(client, outcome, verifying=True, **args)
+                second = _one_pass(client, outcome, verifying=True, known_repeats=first.repeated, **args)
                 if second.error is not None:
                     outcome.error = second.error
                     return outcome

@@ -438,10 +438,10 @@ def _current_quarter(kind: str, key: str | None, figures: Mapping, income: list[
         return _blank_metrics("报告期不明")
     if kind == "periodic" and key in {"q1", "q3"}:
         return _direct_points(figures, "本报告期" if key == "q3" else "一季度无需相减")
-    if kind == "forecast" and key == "q1":
-        return _forecast_quarter(figures, "一季度无需相减")
     if kind == "forecast":
         start = _forecast_start(figures)
+        if key == "q1" and start in (None, (1, 1)):
+            return _forecast_quarter(figures, "一季度无需相减")
         if start is not None and start == _QUARTER_START.get(key):
             return _forecast_quarter(figures, "预告期间本身就是单季，无需相减")
         if start is not None and start != (1, 1):

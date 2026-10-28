@@ -578,3 +578,14 @@ def test_single_quarter_forecast_is_used_as_the_quarter_without_subtracting() ->
 
     odd = dict(figures, period="2026年4月1日至2026年9月30日")
     assert _current_quarter("forecast", "q3", odd, income, [], 2026)["netProfit"]["missing"]
+
+
+def test_odd_first_quarter_forecast_period_is_left_missing() -> None:
+    from neckline.evaluation.prepare import _current_quarter
+
+    line = {"state": "盈利", "current": {"low": 1.0, "high": 2.0}, "prior": None, "yoy": {"low": None, "high": None}}
+    empty = {"state": None, "current": {"low": None, "high": None}, "prior": None, "yoy": {"low": None, "high": None}}
+    odd = {"period": "2026年2月1日至2026年3月31日", "net_profit": line, "deducted": empty}
+    assert _current_quarter("forecast", "q1", odd, [], [], 2026)["netProfit"]["missing"]
+    normal = dict(odd, period="2026年1月1日至2026年3月31日")
+    assert _current_quarter("forecast", "q1", normal, [], [], 2026)["netProfit"]["low"] == 1.0

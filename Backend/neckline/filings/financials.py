@@ -65,6 +65,7 @@ _RANGE_RE = re.compile(
     rf"(?:(盈利|亏损|扭亏为盈)\s*[:：]\s*)?({_NUM})\s*(万元|元)?\s*"
     rf"(?:~|～|–|—|－|至|-)\s*({_NUM})\s*(万元|元)?(?!\s*[%％年])"
 )
+_PCT_TOKEN_RE = re.compile(r"[-+－]?\d[\d,，.]*\s*[%％]")
 _ONE_RE = re.compile(rf"(?:(盈利|亏损|扭亏为盈)\s*[:：]\s*)?({_NUM})\s*(万元|元)?(?!\s*[%％年])")
 _YOY_RANGE_RE = re.compile(
     r"(?:比上年同期|较上年同期|同比)\s*(增长|下降|上升|减少|增加|减亏|增亏)\s*[:：]?\s*"
@@ -511,6 +512,8 @@ def _forecast_line(span: str, section_unit: int | None, section_state: str | Non
     if yoy_match is not None and yoy_low is not None and yoy_high is not None:
         amounts = collapsed[:yoy_match.start()] + " " + collapsed[yoy_match.end():]
         line.yoy = AmountRange(_pct(format(yoy_low, "f")), _pct(format(yoy_high, "f")))
+    # 没被认成同比的百分数（如「同比：100%」）先整段去掉，免得它的数字前缀被当成金额
+    amounts = _PCT_TOKEN_RE.sub(" ", amounts)
     ranged = _RANGE_RE.search(amounts)
     prior_src = amounts
     current_word = None
