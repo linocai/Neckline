@@ -549,8 +549,9 @@ def test_morning_report_end_to_end_api_web_and_single_push(path, monkeypatch):
     _with_device(path)
     model, apns = FakeModel(), FakeApns()
     result = _run(path, model, apns, at("2026-10-13", "08:02"))
-    assert result["state"] == "available" and result["entries"] == 2 and result["gapSummary"] is None
-    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司")]
+    assert result["state"] == "available" and result["entries"] == 2
+    assert result["gapSummary"] == "2 家材料不全：海特生物、震裕科技"
+    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司（有缺口）")]
     calls = model.hits
     again = _run(path, model, apns, at("2026-10-13", "08:10"))
     assert again["state"] == "available" and model.hits == calls and len(apns.sent) == 1

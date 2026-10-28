@@ -177,10 +177,32 @@ def _download(fetcher: Callable[[str], FetchResult], url: str) -> FetchResult:
     return _call(fetcher, url)
 
 
+class _StoreBroken(Exception):
+    """缓存读写失败。原异常要原样抛出，不能改成失败文本后继续分类。"""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(str(original))
+        self.original = original
+
+
+def _store_get(store: FilingReads, document_id: str, revision: int) -> FilingRecord | None:
+    try:
+        return store.get(document_id, revision)
+    except Exception as exc:
+        raise _StoreBroken(exc) from exc
+
+
+def _store_put(store: FilingReads, record: FilingRecord) -> None:
+    try:
+        store.put(record)
+    except Exception as exc:
+        raise _StoreBroken(exc) from exc
+
+
 def _read_one(message: Message, kind: str, *, store: FilingReads, fetcher: Callable[[str], FetchResult],
               settings: Mapping, clock: Callable[[], datetime]) -> tuple[str, str | None]:
     """返回 (来源 store|fresh, 失败原因或 None)。消息文本就地追加。"""
-    cached = store.get(message.document_id, message.revision)
+    cached = _store_get(store, message.document_id, message.revision)
     if cached is not None:
         _append(message, cached.summary or _failure(cached.error or "未知"))
         return "store", None if cached.state == "ok" else (cached.error or "未知")
@@ -202,7 +224,7 @@ def _read_one(message: Message, kind: str, *, store: FilingReads, fetcher: Calla
             summary = summary_text(figures)
             figures_json = json.dumps(asdict(figures), ensure_ascii=False, sort_keys=True)
             state = "ok"
-    store.put(FilingRecord(
+    _store_put(store, FilingRecord(
         document_id=message.document_id, revision=message.revision, url=message.url or "", kind=kind,
         state=state, error=reason, figures_json=figures_json, summary=summary, read_at=db.utc(clock())))
     _append(message, summary)
@@ -211,7 +233,10 @@ def _read_one(message: Message, kind: str, *, store: FilingReads, fetcher: Calla
 
 def enrich_filings(messages: list[Message], *, store: FilingReads, fetcher: Callable[[str], FetchResult],
                    settings: Mapping, clock: Callable[[], datetime]) -> EnrichStats:
-    """给巨潮定期报告、业绩预告、业绩快报追加 PDF 读数。返回统计，不抛出下载或解析错误。"""
+    """给巨潮定期报告、业绩预告、业绩快报追加 PDF 读数。返回统计，不抛出下载或解析错误。
+
+    读数缓存的读写失败直接抛出，不改消息文本，避免续跑时分类请求变掉。
+    """
     started = time.monotonic()
     jobs = [(message, kind) for message in messages if (kind := _eligible(message))]
     stats = EnrichStats(attempted=len(jobs))
@@ -225,6 +250,8 @@ def enrich_filings(messages: list[Message], *, store: FilingReads, fetcher: Call
         message, kind = job
         try:
             return _read_one(message, kind, store=store, fetcher=fetcher, settings=settings, clock=clock)
+        except _StoreBroken as broken:
+            raise broken.original from None
         except Exception:
             if "【公告 PDF 读数】" not in message.text:
                 _append(message, _failure("transport_error"))

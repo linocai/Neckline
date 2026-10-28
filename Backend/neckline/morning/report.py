@@ -280,8 +280,35 @@ def _company_name(pool: CompanyPool, code: str) -> str:
     return company.name if company is not None else code
 
 
+def _material_names(selection: Selection, evaluations: list[dict] | None, pool: CompanyPool) -> list[str]:
+    """评估过、数据包里写了缺口的公司，按候选顺序。"""
+    by_code: dict[str, dict] = {}
+    for row in evaluations or []:
+        company = str(row.get("company") or "")
+        short = company.split(".")[0]
+        if short:
+            by_code[short] = row
+    names: list[str] = []
+    seen: set[str] = set()
+    for entry in selection.candidates:
+        code = entry.company.split(".")[0]
+        if not code or code in seen:
+            continue
+        row = by_code.get(code)
+        if row is None:
+            continue
+        package = row.get("package") if isinstance(row.get("package"), dict) else {}
+        gaps = package.get("gaps")
+        if not isinstance(gaps, list) or not gaps:
+            continue
+        seen.add(code)
+        names.append(_company_name(pool, code))
+    return names
+
+
 def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyPool, *,
-                unevaluated: list[str] | None = None, overflow: int = 0) -> str | None:
+                unevaluated: list[str] | None = None, overflow: int = 0, filing_failures: int = 0,
+                evaluations: list[dict] | None = None) -> str | None:
     parts = []
     if collection_gaps:
         parts.append("采集不完整：" + "、".join(collection_gaps))
@@ -296,9 +323,17 @@ def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyP
         parts.append(f"{len(pending)} 条没能完成评估：{shown}{tail}")
     if overflow > 0:
         parts.append(f"另有 {overflow} 条判推未列入")
+    if filing_failures > 0:
+        parts.append(f"{int(filing_failures)} 份公告没读出数字")
+    thin = _material_names(selection, evaluations, pool)
+    if thin:
+        shown = "、".join(thin[:5])
+        tail = "等" if len(thin) > 5 else ""
+        parts.append(f"{len(thin)} 家材料不全：{shown}{tail}")
     return "；".join(parts) if parts else None
 
 
+_VIEW_REF = re.compile(r"^[ma]\d+$")
 _CODE = re.compile(r"\d{6}(?:\.[A-Za-z]{2})?")
 # 汇总稿的分节：「【简称：…】」，或行首「简称(六位代码)：…」。
 _SECTION = re.compile(r"【[^】\n]{1,30}[：:][^】\n]{1,120}】|(?:^|\n)[^\S\n]*[^\s：:（(]{2,12}[（(]\d{6}(?:\.[A-Za-z]{2})?[）)][：:]")
@@ -419,7 +454,15 @@ def _render_entry(entry: Entry, row: Mapping, pool: CompanyPool) -> dict:
     questions = output.get("questions") if isinstance(output.get("questions"), dict) else {}
     sources = _source_rows(entry, pool)
     index = _ref_index(row.get("package"))
-    views = [_public_view(view, index, sources) for view in output.get("views") or [] if isinstance(view, dict)]
+    views = []
+    for view in output.get("views") or []:
+        if not isinstance(view, dict):
+            continue
+        ref = view.get("ref")
+        ref_text = ref.strip() if isinstance(ref, str) else ""
+        if _VIEW_REF.fullmatch(ref_text) is None or ref_text not in index:
+            continue
+        views.append(_public_view(view, index, sources))
     return {
         "companyCode": company.short_code,
         "companyName": company.name,
@@ -718,7 +761,9 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
         evaluations = db.list_evaluations(conn, report_id)
     delivered = assemble(selection, evaluations, config.pool, max_items=rules["delivery"]["maxItems"])
     gaps = coverage_gaps(runs, start, end)
-    summary = gap_summary(gaps, selection, config.pool, unevaluated=delivered.unevaluated, overflow=delivered.overflow)
+    filing_failures = sum(int(count) for count in filing_stats.failed.values())
+    summary = gap_summary(gaps, selection, config.pool, unevaluated=delivered.unevaluated,
+                          overflow=delivered.overflow, filing_failures=filing_failures, evaluations=evaluations)
     usage: dict[str, int] = {}
     for batch in result.batches:
         for key in ("prompt_tokens", "completion_tokens"):

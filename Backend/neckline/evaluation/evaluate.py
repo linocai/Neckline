@@ -3,13 +3,15 @@
 续跑用库里的数据包，请求体不变，回执命中就不重复计费。
 结果不明（gap / unknown）不重发。①或②不过关却判推，整条无效。
 观点引用对不上的逐条删掉并计数，不让整条失效。
+到收口时刻还没评完的（含已经发出、还没回来的）记为缺口。
 """
 from __future__ import annotations
 
 import json
 import re
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +25,8 @@ from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 
 _HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _REF = re.compile(r"^[ma]\d+$")
+_GAP = "收口时刻前没评完"
+_WAIT_SECONDS = 5.0
 _USAGE = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "reasoning_tokens")
 _VIEWS = ("媒体", "券商", "公司")
 _VERDICTS = ("推", "不推")
@@ -279,90 +283,41 @@ def _from_output(company: str, parsed: Evaluation) -> EvaluationItem:
     return EvaluationItem(company, "succeeded", parsed.verdict, parsed, None)
 
 
-def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prepare: Callable[[object], Mapping],
-                        client: Any, settings: Mapping, clock: Callable[[], datetime]) -> EvaluationRun:
-    """准备（已有则沿用库里的包）然后评估。succeeded / invalid / gap 不重做。"""
-    cutoff, workers, options = _check_settings(settings)
-    system = system_prompt()
-    jobs: list[tuple[str, Mapping]] = []
-    prepared_at = time.monotonic()
-    for candidate in candidates:
-        company = _company_code(candidate)
-        with db.read(db_path) as conn:
-            existing = db.get_evaluation(conn, report_id, company)
-        if existing is None:
-            package = prepare(candidate)
-            if not isinstance(package, Mapping):
-                raise TypeError("数据包不是对象")
-            with db.write(db_path) as conn:
-                db.insert_prepared(conn, report_id=report_id, company=company, contract=CONTRACT,
-                                   package=package, prepared_at=clock())
-                existing = db.get_evaluation(conn, report_id, company)
-        if existing is None:
-            raise RuntimeError(f"评估没有写入：{company}")
-        jobs.append((company, existing))
-    prepare_seconds = round(time.monotonic() - prepared_at, 3)
+def _load(db_path: Path, report_id: str, company: str) -> dict | None:
+    with db.read(db_path) as conn:
+        return db.get_evaluation(conn, report_id, company)
 
-    items: list[EvaluationItem | None] = [None] * len(jobs)
-    pending: list[tuple[int, str, Mapping]] = []
-    for index, (company, row) in enumerate(jobs):
-        reused = _reuse(company, row)
-        if reused is not None:
-            items[index] = reused
-        else:
-            pending.append((index, company, row["package"]))
 
-    hits: list[_Hit] = []
+def _mark_gap(db_path: Path, report_id: str, company: str, now: datetime) -> EvaluationItem:
+    """收成 gap。状态已不是 prepared 时更新不生效，也不抛异常。"""
+    with db.write(db_path) as conn:
+        row = db.get_evaluation(conn, report_id, company)
+        if row is None:
+            db.insert_prepared(conn, report_id=report_id, company=company, contract=CONTRACT,
+                               package={}, prepared_at=now)
+            row = db.get_evaluation(conn, report_id, company)
+        if row is not None and row["state"] == "prepared":
+            db.settle_evaluation(conn, report_id=report_id, company=company, state="gap",
+                                 settled_at=now, error=_GAP)
+            row = db.get_evaluation(conn, report_id, company)
+    item = _reuse(company, row) if row else None
+    if item is not None and item.state != "prepared":
+        return item
+    return EvaluationItem(company, "gap", None, None, _GAP)
 
-    def run(job: tuple[int, str, Mapping]) -> tuple[int, _Hit]:
-        index, company, package = job
-        now = clock()
-        if _cutoff_reached(now, cutoff):
-            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=now,
-                    error="收口时刻前没评完")
-            item = EvaluationItem(company, "gap", None, None, "收口时刻前没评完")
-            return index, _Hit(item=item)
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt(package)}]
-        try:
-            result = client.complete(messages, options)
-        except ChatRejected as exc:
-            return index, _Hit(item=EvaluationItem(company, "prepared", None, None, str(exc)),
-                               fatal=str(exc), counted_call=True)
-        except ChatUnknown as exc:
-            sent = "上次调用结果不明" not in str(exc)
-            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(), error=str(exc))
-            return index, _Hit(item=EvaluationItem(company, "gap", None, None, str(exc)), counted_call=sent)
-        except ChatError as exc:
-            text = f"调用失败：{exc}"
-            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(), error=text)
-            return index, _Hit(item=EvaluationItem(company, "gap", None, None, text), counted_call=True)
-        usage = _usage(result.usage)
-        receipt = bool(result.from_receipt)
-        common = {"counted_call": not receipt, "from_receipt": receipt, "usage": usage}
-        if result.finish_reason != "stop":
-            reason = f"finish:{result.finish_reason}"
-            _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
-                    error=reason, output=result.content, usage=usage, seconds=result.seconds)
-            return index, _Hit(item=EvaluationItem(company, "invalid", None, None, reason), **common)
-        parsed = parse_output(result.content, package)
-        if isinstance(parsed, str):
-            _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
-                    error=parsed, output=result.content, usage=usage, seconds=result.seconds)
-            return index, _Hit(item=EvaluationItem(company, "invalid", None, None, parsed), **common)
-        _settle(db_path, report_id=report_id, company=company, state="succeeded", settled_at=clock(),
-                verdict=parsed.verdict, output=parsed.as_dict(), usage=usage, seconds=result.seconds)
-        return index, _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views,
-                           vetoed=parsed.vetoed, **common)
 
-    call_started = time.monotonic()
-    if pending:
-        with ThreadPoolExecutor(max_workers=min(workers, len(pending))) as executor:
-            for index, hit in executor.map(run, pending):
-                items[index] = hit.item
-                hits.append(hit)
-    call_seconds = round(time.monotonic() - call_started, 3)
+def _align(db_path: Path, report_id: str, company: str, hit: _Hit) -> _Hit:
+    """结算没写上时跟库里的终态走，不把过期结论抛出去。"""
+    row = _load(db_path, report_id, company)
+    if row is None or row["state"] == "prepared":
+        return hit
+    stored = _reuse(company, row)
+    if stored is None or stored.state == hit.item.state:
+        return hit
+    return _Hit(item=stored, counted_call=hit.counted_call, from_receipt=hit.from_receipt, usage=hit.usage)
 
-    done = [item for item in items if item is not None]
+
+def _tally(items: list[EvaluationItem], hits: list[_Hit], seconds: float) -> tuple[dict[str, Any], str | None]:
     usage = _empty_usage()
     calls = from_receipt = dropped = vetoed = 0
     fatal = None
@@ -380,7 +335,7 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
         vetoed += hit.vetoed
         if hit.fatal and fatal is None:
             fatal = hit.fatal
-    for item in done:
+    for item in items:
         if item.state == "succeeded" and item.verdict in verdicts:
             verdicts[item.verdict] += 1
         elif item.state == "invalid":
@@ -388,15 +343,148 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
         elif item.state == "gap":
             gap += 1
     stats = {
-        "candidates": len(done),
+        "candidates": len(items),
         "calls": calls,
         "fromReceipt": from_receipt,
         "usage": usage,
-        "seconds": call_seconds,
+        "seconds": seconds,
         "verdicts": verdicts,
         "invalid": invalid,
         "gap": gap,
         "droppedViews": dropped,
         "vetoed": vetoed,
     }
-    return EvaluationRun(items=done, stats=stats, prepare_seconds=prepare_seconds, fatal=fatal)
+    return stats, fatal
+
+
+def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prepare: Callable[[object], Mapping],
+                        client: Any, settings: Mapping, clock: Callable[[], datetime]) -> EvaluationRun:
+    """每条在工作线程里查库、按需备料、再评估。已有数据包的续跑不改请求体。
+
+    备料前和调用前都看收口时刻。到点还没评完的（含已经发出、还没回来的）记为缺口，
+    主线程不再等迟到的调用；迟到的成功写不回 prepared 以外的状态。
+    """
+    cutoff, workers, options = _check_settings(settings)
+    if not candidates:
+        stats, fatal = _tally([], [], 0.0)
+        return EvaluationRun(items=[], stats=stats, prepare_seconds=0.0, fatal=fatal)
+    system = system_prompt()
+    coded = [(index, _company_code(candidate), candidate) for index, candidate in enumerate(candidates)]
+    prepare_total = [0.0]
+    prepare_lock = threading.Lock()
+
+    def work(job: tuple[int, str, object]) -> _Hit:
+        _index, company, candidate = job
+        row = _load(db_path, report_id, company)
+        if row is None:
+            now = clock()
+            if _cutoff_reached(now, cutoff):
+                return _Hit(item=_mark_gap(db_path, report_id, company, now))
+            started = time.monotonic()
+            package = prepare(candidate)
+            elapsed = time.monotonic() - started
+            with prepare_lock:
+                prepare_total[0] += elapsed
+            if not isinstance(package, Mapping):
+                raise TypeError("数据包不是对象")
+            now = clock()
+            with db.write(db_path) as conn:
+                db.insert_prepared(conn, report_id=report_id, company=company, contract=CONTRACT,
+                                   package=package, prepared_at=now)
+                row = db.get_evaluation(conn, report_id, company)
+            if row is None:
+                raise RuntimeError(f"评估没有写入：{company}")
+        reused = _reuse(company, row)
+        if reused is not None:
+            return _Hit(item=reused)
+        now = clock()
+        if _cutoff_reached(now, cutoff):
+            return _Hit(item=_mark_gap(db_path, report_id, company, now))
+        package = row["package"]
+        fresh = _load(db_path, report_id, company)
+        if fresh is not None and fresh["state"] != "prepared":
+            stored = _reuse(company, fresh)
+            if stored is not None:
+                return _Hit(item=stored)
+        if _cutoff_reached(clock(), cutoff):
+            return _Hit(item=_mark_gap(db_path, report_id, company, clock()))
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt(package)}]
+        try:
+            result = client.complete(messages, options)
+        except ChatRejected as exc:
+            return _Hit(item=EvaluationItem(company, "prepared", None, None, str(exc)),
+                        fatal=str(exc), counted_call=True)
+        except ChatUnknown as exc:
+            sent = "上次调用结果不明" not in str(exc)
+            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(), error=str(exc))
+            return _align(db_path, report_id, company,
+                          _Hit(item=EvaluationItem(company, "gap", None, None, str(exc)), counted_call=sent))
+        except ChatError as exc:
+            text = f"调用失败：{exc}"
+            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(), error=text)
+            return _align(db_path, report_id, company,
+                          _Hit(item=EvaluationItem(company, "gap", None, None, text), counted_call=True))
+        usage = _usage(result.usage)
+        receipt = bool(result.from_receipt)
+        common = {"counted_call": not receipt, "from_receipt": receipt, "usage": usage}
+        if result.finish_reason != "stop":
+            reason = f"finish:{result.finish_reason}"
+            _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
+                    error=reason, output=result.content, usage=usage, seconds=result.seconds)
+            return _align(db_path, report_id, company,
+                          _Hit(item=EvaluationItem(company, "invalid", None, None, reason), **common))
+        parsed = parse_output(result.content, package)
+        if isinstance(parsed, str):
+            _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
+                    error=parsed, output=result.content, usage=usage, seconds=result.seconds)
+            return _align(db_path, report_id, company,
+                          _Hit(item=EvaluationItem(company, "invalid", None, None, parsed), **common))
+        _settle(db_path, report_id=report_id, company=company, state="succeeded", settled_at=clock(),
+                verdict=parsed.verdict, output=parsed.as_dict(), usage=usage, seconds=result.seconds)
+        return _align(db_path, report_id, company,
+                      _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views,
+                           vetoed=parsed.vetoed, **common))
+
+    items: list[EvaluationItem | None] = [None] * len(coded)
+    hits: list[_Hit] = []
+    executor = ThreadPoolExecutor(max_workers=min(workers, len(coded)))
+    futures = {executor.submit(work, job): job[0] for job in coded}
+    pending_futs = set(futures)
+    abandoned = False
+    call_started = time.monotonic()
+    try:
+        while pending_futs:
+            if _cutoff_reached(clock(), cutoff):
+                abandoned = True
+                now = clock()
+                for fut in list(pending_futs):
+                    index = futures[fut]
+                    company = coded[index][1]
+                    if fut.done() and not fut.cancelled():
+                        hit = fut.result()
+                        row = _load(db_path, report_id, company)
+                        if row is not None and row["state"] not in ("prepared", hit.item.state):
+                            stored = _reuse(company, row)
+                            if stored is not None:
+                                hit = _Hit(item=stored, counted_call=hit.counted_call,
+                                           from_receipt=hit.from_receipt, usage=hit.usage, fatal=hit.fatal)
+                        items[index] = hit.item
+                        hits.append(hit)
+                        continue
+                    item = _mark_gap(db_path, report_id, company, now)
+                    items[index] = item
+                    hits.append(_Hit(item=item))
+                break
+            done, pending_futs = wait(pending_futs, timeout=_WAIT_SECONDS, return_when=FIRST_COMPLETED)
+            for fut in done:
+                hit = fut.result()
+                items[futures[fut]] = hit.item
+                hits.append(hit)
+    finally:
+        executor.shutdown(wait=not abandoned, cancel_futures=abandoned)
+    call_seconds = round(time.monotonic() - call_started, 3)
+    done_items = [item for item in items if item is not None]
+    with prepare_lock:
+        prepare_seconds = round(prepare_total[0], 3)
+    stats, fatal = _tally(done_items, hits, call_seconds)
+    return EvaluationRun(items=done_items, stats=stats, prepare_seconds=prepare_seconds, fatal=fatal)

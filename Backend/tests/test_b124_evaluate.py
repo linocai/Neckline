@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -313,20 +315,100 @@ def test_contradiction_is_vetoed_non_json_and_length_are_invalid(path: Path) -> 
 
 def test_cutoff_records_a_gap_without_calling(path: Path) -> None:
     calls = []
+    prepared: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(1)
         return _http(_answer("推"))
 
-    early = _run(path, handler, [_candidate("300001")], report_id="morning-2026-10-13",
+    def prepare(candidate: SimpleNamespace) -> dict:
+        prepared.append(candidate.company)
+        return _package(candidate.company.split(".")[0])
+
+    early = _run(path, handler, [_candidate("300001")], report_id="morning-2026-10-13", prepare=prepare,
                  clock=lambda: datetime(2026, 10, 13, 1, 4, 59, tzinfo=timezone.utc))
     assert early.items[0].state == "succeeded" and calls == [1]
-    late = _run(path, handler, [_candidate("300001")], report_id="morning-2026-10-14",
+    assert prepared == ["300001.SZ"]
+    late = _run(path, handler, [_candidate("300001")], report_id="morning-2026-10-14", prepare=prepare,
                 clock=lambda: datetime(2026, 10, 13, 1, 5, tzinfo=timezone.utc))
     assert late.items[0].state == "gap" and late.items[0].error == "收口时刻前没评完"
     assert late.stats["gap"] == 1 and late.stats["calls"] == 0 and calls == [1]
+    assert prepared == ["300001.SZ"]
     assert _rows(path, "morning-2026-10-14")[0]["state"] == "gap"
-    assert _rows(path, "morning-2026-10-14")[0]["package"]["company"]["code"] == "300001"
+    assert _rows(path, "morning-2026-10-14")[0]["error"] == "收口时刻前没评完"
+
+
+def test_call_still_in_flight_at_cutoff_is_a_gap_and_the_late_result_does_not_stick(path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    now = {"t": datetime(2026, 10, 13, 9, 4, tzinfo=CST)}
+
+    def clock() -> datetime:
+        return now["t"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        now["t"] = datetime(2026, 10, 13, 9, 6, tzinfo=CST)
+        entered.set()
+        release.wait(timeout=20)
+        return _http(_answer("推"))
+
+    started = time.monotonic()
+    try:
+        result = _run(path, handler, [_candidate("300001")], clock=clock, settings=_settings(concurrency=1))
+        elapsed = time.monotonic() - started
+        assert entered.is_set()
+        assert elapsed < 10
+        assert result.items[0].state == "gap" and result.items[0].error == "收口时刻前没评完"
+        assert result.stats["gap"] == 1 and result.stats["calls"] == 0
+        assert result.stats["verdicts"] == {"推": 0, "不推": 0}
+        assert _rows(path)[0]["state"] == "gap"
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    receipt = None
+    while time.monotonic() < deadline:
+        with db.read(path) as conn:
+            receipt = conn.execute("SELECT state FROM model_receipts").fetchone()
+            state = db.get_evaluation(conn, REPORT, "300001")["state"]
+        assert state == "gap"
+        if receipt is not None and receipt["state"] == "succeeded":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("迟到的回执没有落库")
+    time.sleep(0.3)
+    assert _rows(path)[0]["state"] == "gap"
+    assert receipt is not None and receipt["state"] == "succeeded"
+
+
+def test_slow_prepare_does_not_hold_up_another_candidate(path: Path) -> None:
+    release = threading.Event()
+    fast_called = threading.Event()
+    seen = {"fast_during_slow": False}
+
+    def prepare(candidate: SimpleNamespace) -> dict:
+        code = candidate.company.split(".")[0]
+        if code == "300001":
+            release.wait(timeout=10)
+        return _package(code)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        code = _code_of(json.loads(request.content)["messages"][1]["content"])
+        if code == "300002":
+            seen["fast_during_slow"] = not release.is_set()
+            fast_called.set()
+        return _http(_answer("推"))
+
+    def unblock() -> None:
+        fast_called.wait(timeout=5)
+        release.set()
+
+    threading.Thread(target=unblock, daemon=True).start()
+    result = _run(path, handler, [_candidate("300001"), _candidate("300002")],
+                  settings=_settings(concurrency=2), prepare=prepare)
+    assert seen["fast_during_slow"]
+    assert [item.state for item in result.items] == ["succeeded", "succeeded"]
+    assert [item.verdict for item in result.items] == ["推", "推"]
 
 
 def test_unknown_becomes_gap_and_is_not_sent_again(path: Path) -> None:
@@ -486,7 +568,7 @@ def test_morning_run_stores_one_push_and_one_skip(path: Path) -> None:
     apns = FakeApns()
     result = _morning(path, handler, apns)
     assert result["state"] == "available" and result["entries"] == 1
-    assert apns.sent == [("ab" * 32, "晨报已出", "1 家公司")]
+    assert apns.sent == [("ab" * 32, "晨报已出", "1 家公司（有缺口）")]
     assert "calls" not in result["stats"] and "fromReceipt" not in result["stats"]
     assert result["stats"]["classification"]["calls"] == 1
     evaluation = result["stats"]["evaluation"]

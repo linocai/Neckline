@@ -2,7 +2,7 @@
 
 按 [start, end] 覆盖的北京时间日期取 seDate，用接口默认排序（按 announcementTime 倒序、并列稳定）从第 1 页往后翻（每页最多 30 条），
 只留发布时间落在 [start, end] 内的公告；某一页一旦出现早于起点 floor 的公告即视为已翻过窗口起点，判完整并停止。
-页内与跨页顺序须非递增（相等允许），无法解析时间的条目不参与比较，乱序如实记 order_unexpected（不完整，已收保留）。
+已经见过的 announcementId 计入重复并跳过顺序检查。只对第一次见到的条目检查页内与跨页时间不增（相等允许），无法解析时间的条目不参与比较，乱序如实记 order_unexpected（不完整，已收保留）。
 跨页重复超过一页的量记 pagination_unstable。翻页上限仅防异常循环，超限记 page_limit。每页最多重试一次，页间留间隔。网络、状态码、非 JSON、结构不对只记本来源错误。
 """
 from __future__ import annotations
@@ -180,12 +180,14 @@ def fetch_announcements(*, start: datetime, end: datetime, max_pages: int, timeo
                 for row in rows:
                     raw_id = row.get("announcementId") if isinstance(row, Mapping) else None
                     if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
-                        if str(raw_id) in row_ids:
+                        key = str(raw_id)
+                        if key in row_ids:
                             repeats += 1
                             if repeats > REPEAT_LIMIT:
                                 outcome.error = "pagination_unstable"
                                 return outcome
-                        row_ids.add(str(raw_id))
+                            continue  # 翻页途中插到前面的新公告会让下一页开头重复上一页末尾，不参与顺序比较
+                        row_ids.add(key)
                     when = _row_published_at(row)
                     if when is not None:
                         if page_times and when > page_times[-1]:

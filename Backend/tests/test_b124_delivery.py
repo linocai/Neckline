@@ -157,7 +157,8 @@ def test_delivery_keeps_ten_pushes_in_first_disclosure_order():
     by_ref = {view["by"]: view for view in first["views"]}
     assert by_ref["媒体"]["sourceTitle"] == "快讯题" and by_ref["媒体"]["sourceUrl"] == "https://example.test/m"
     assert by_ref["公司"]["sourceTitle"] == "公告题" and by_ref["公司"]["sourceUrl"] == "https://example.test/a"
-    assert "sourceTitle" not in by_ref["券商"] and "sourceUrl" not in by_ref["券商"] and "ref" not in by_ref["券商"]
+    assert set(by_ref) == {"媒体", "公司"}
+    assert "对不上来源" not in json.dumps(first["views"], ensure_ascii=False)
     blob = json.dumps(content, ensure_ascii=False)
     for banned in ("rank", "importance", "reason", "others", "review"):
         assert banned not in blob
@@ -192,6 +193,46 @@ def test_zero_pushes_and_unevaluated_gap_summary():
     summary = gap_summary(["金十快讯没取全"], Selection(candidates=[], reasons=Counter(), gaps=[]), wide,
                           unevaluated=["300006", "300001", "300002", "300003", "300004", "300005"], overflow=2)
     assert summary == "采集不完整：金十快讯没取全；6 条没能完成评估：甲、乙、丙、丁、戊等；另有 2 条判推未列入"
+
+
+def test_delivery_drops_a_view_whose_ref_is_not_in_the_package():
+    pool = _pool([("300001", "甲公司")])
+    package = {"messages": [{"id": "m1", "title": "快讯题", "url": "https://example.test/m"}],
+               "original": {"documents": [{"id": "a1", "title": "公告题"}]}}
+    output = {
+        "title": "值得看", "conclusion": "结论",
+        "questions": {"value": {"text": "值"}, "priced": {"text": "价"}, "money": {"text": "钱"}, "price": {"text": "划"}},
+        "risk": "风险",
+        "views": [
+            {"by": "媒体", "name": "金十", "text": "这条对得上", "ref": "m1"},
+            {"by": "券商", "name": "某券商", "text": "这条引用不存在", "ref": "m9"},
+        ],
+    }
+    content = _content(pool, [_entry("300001", [_message("a", 9)])],
+                       [_eval("300001", output=output, package=package)])
+    views = content["entries"][0]["views"]
+    assert [view["text"] for view in views] == ["这条对得上"]
+    assert "m9" not in json.dumps(content["entries"], ensure_ascii=False)
+    assert "这条引用不存在" not in json.dumps(content["entries"], ensure_ascii=False)
+
+
+def test_gap_summary_names_unreadable_filings_and_thin_materials():
+    codes = [(f"30000{i}", name) for i, name in enumerate(("甲", "乙", "丙", "丁", "戊", "己", "庚"), start=1)]
+    pool = _pool(codes)
+    entries = [_entry(code, [_message(code, 10)]) for code, _name in codes]
+    evaluations = [
+        _eval(code, verdict="不推", output={"title": "不推", "conclusion": "跳过"},
+              package={"gaps": [] if code == "300007" else [f"{code}缺材料"]})
+        for code, _name in codes
+    ]
+    selection = Selection(candidates=entries, reasons=Counter(), gaps=[])
+    summary = gap_summary([], selection, pool, filing_failures=2, evaluations=evaluations)
+    assert summary == "2 份公告没读出数字；6 家材料不全：甲、乙、丙、丁、戊等"
+    assert _ready_body(1, summary) == "1 家公司（有缺口）"
+    assert _ready_body(0, summary) == "今天没有值得推的（有缺口）"
+    quiet = [_eval(code, verdict="不推", output={"title": "不推", "conclusion": "跳过"}, package={"gaps": []})
+             for code, _name in codes]
+    assert gap_summary([], selection, pool, evaluations=quiet) is None
 
 
 def test_push_body_for_count_zero_and_gap():
@@ -348,8 +389,9 @@ def test_morning_report_reaches_api_mcp_and_web_with_the_same_entries(path: Path
     _with_device(path)
     model, apns = FakeModel(), FakeApns()
     result = _run(path, model, apns, at("2026-10-13", "08:02"))
-    assert result["state"] == "available" and result["entries"] == 2 and result["gapSummary"] is None
-    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司")]
+    assert result["state"] == "available" and result["entries"] == 2
+    assert result["gapSummary"] == "2 家材料不全：海特生物、震裕科技"
+    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司（有缺口）")]
     monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
     monkeypatch.setenv("NECKLINE_READ_KEY", READ_KEY)
     app = FastAPI()

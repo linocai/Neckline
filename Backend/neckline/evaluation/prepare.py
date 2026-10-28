@@ -445,6 +445,11 @@ def _empty_metric(item: Mapping) -> bool:
     return item.get("value") is None and item.get("low") is None and item.get("high") is None
 
 
+def _qoq_percent(current_value: float, prior_value: float) -> float:
+    """（本季 − 上季）÷ |上季| × 100。上季为负时方向不再被除数带反。"""
+    return (current_value - prior_value) / abs(prior_value) * 100
+
+
 def _qoq(current: Mapping, prior: Mapping) -> dict:
     note = "本季对上一季"
     if _empty_metric(prior):
@@ -454,10 +459,12 @@ def _qoq(current: Mapping, prior: Mapping) -> dict:
     prior_value = prior.get("value")
     if prior_value == 0:
         return _metric(missing="上一季为零", note=note)
+    if isinstance(prior_value, (int, float)) and not isinstance(prior_value, bool) and prior_value < 0:
+        note = "本季对上一季；上季亏损，按差额除以上季绝对值"
     if current.get("value") is not None and prior_value is not None:
-        return _metric(current["value"] / prior_value * 100 - 100, source="计算", note=note)
+        return _metric(_qoq_percent(current["value"], prior_value), source="计算", note=note)
     if current.get("low") is not None and current.get("high") is not None and prior_value is not None:
-        return _metric(low=current["low"] / prior_value * 100 - 100, high=current["high"] / prior_value * 100 - 100,
+        return _metric(low=_qoq_percent(current["low"], prior_value), high=_qoq_percent(current["high"], prior_value),
                        source="计算", note=note)
     return _metric(missing="缺上一期", note=note)
 

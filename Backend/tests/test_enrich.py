@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+import pytest
 
 from neckline.filings.fetch import FetchResult
 from neckline.filings.reader import PdfText
@@ -145,6 +146,34 @@ def test_db_store_survives_a_second_run(tmp_path, monkeypatch):
     with db.read(path) as conn:
         row = conn.execute("SELECT state, kind FROM filing_reads").fetchone()
     assert tuple(row) == ("ok", "periodic")
+
+
+def test_store_put_failure_raises_and_classify_is_not_called(tmp_path, monkeypatch):
+    monkeypatch.setattr("neckline.screening.enrich.read_pdf", lambda path, max_pages: _pdf("净利润同比增长 1%"))
+    classified: list[int] = []
+
+    class Broken:
+        def get(self, document_id: str, revision: int):
+            return None
+
+        def put(self, record) -> None:
+            raise OSError("disk full")
+
+    message = _message(1, "震裕科技：2026年第三季度报告")
+    original = message.text
+
+    def go() -> None:
+        enrich_filings([message], store=Broken(), fetcher=lambda url: FetchResult(tmp_path / "a.pdf", None, False),
+                       settings=SETTINGS, clock=lambda: WHEN)
+        classified.append(1)
+        classify([message], [], CompanyPool([Company("300953.SZ", "震裕科技", ("震裕科技",))]), {}, None,
+                 window=WINDOW, settings=CLASSIFY)
+
+    with pytest.raises(OSError, match="disk full"):
+        go()
+    assert classified == []
+    assert message.text == original
+    assert "【公告 PDF 读数】" not in message.text
 
 
 def test_purge_old_pdfs_only_removes_stale_files_in_that_directory(tmp_path):

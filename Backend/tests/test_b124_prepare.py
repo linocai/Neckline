@@ -13,7 +13,7 @@ from neckline.evaluation.market import (
     BASIC_FIELDS, FINA_FIELDS, INCOME_FIELDS, RawMarket, SnapshotSource, TuShareSource,
     clip_raw, company_snapshot, price_background,
 )
-from neckline.evaluation.prepare import build_package
+from neckline.evaluation.prepare import _metric, _qoq, build_package
 from neckline.evaluation.snapshot import capture, main, read_codes
 from neckline.filings.fetch import FetchResult
 from neckline.market.tushare_daily import API_URL, DAILY_FIELDS
@@ -266,6 +266,42 @@ def test_quarter_on_quarter_subtracts_cumulative_and_q1_does_not() -> None:
     assert q1_package["earnings"]["quarterOnQuarter"]["netProfit"]["missing"] == "缺上一期"
     assert q1_package["earnings"]["base"]["netProfit"]["value"] == 50.0
     assert q1_package["earnings"]["base"]["netProfit"]["source"] == "pdf"
+
+
+def test_quarter_on_quarter_keeps_direction_when_prior_quarter_lost() -> None:
+    loss = _metric(-100, source="计算")
+    narrower = _qoq(_metric(-50, source="计算"), loss)
+    wider = _qoq(_metric(-150, source="计算"), loss)
+    into_loss = _qoq(_metric(-50, source="pdf"), _metric(100, source="pdf"))
+    assert narrower["value"] == 50.0 and wider["value"] == -50.0 and into_loss["value"] == -150.0
+    assert narrower["note"] == "本季对上一季；上季亏损，按差额除以上季绝对值"
+    assert "上季亏损" in wider["note"]
+    assert "上季亏损" not in (into_loss["note"] or "")
+    zero = _qoq(_metric(50, source="pdf"), _metric(0, source="计算"))
+    assert zero["value"] is None and zero["missing"] == "上一季为零"
+    ranged = _qoq(_metric(low=-80, high=-40, source="计算"), loss)
+    assert ranged["low"] == 20.0 and ranged["high"] == 60.0
+    assert ranged["note"] == "本季对上一季；上季亏损，按差额除以上季绝对值"
+
+    filing = _message(1, 20, source="cninfo-announcement", title="甲公司：2026年前三季度业绩预告",
+                      url="http://static.cninfo.com.cn/finalpage/2026-10-14/3.PDF")
+    figures = {
+        "period": "2026年1月1日至2026年9月30日", "missing": [],
+        "net_profit": {"state": "盈利", "current": {"low": 0, "high": 50}, "prior": -80,
+                       "yoy": {"low": 10, "high": 20}},
+        "deducted": {"state": "盈利", "current": {"low": 0, "high": 40}, "prior": -70,
+                     "yoy": {"low": 5, "high": 8}},
+    }
+    raw = _raw(income=[
+        _income("20260331", "20260425", 10, 50),
+        _income("20260630", "20260820", 20, -50),
+    ])
+    candidate = _candidate(_event([f"{filing.document_id}@1"], type="业绩预增"), [filing])
+    package = _build(candidate, raw=raw, store=_store(filing, "forecast", figures))
+    quarter = package["earnings"]["quarterOnQuarter"]["netProfit"]
+    assert package["earnings"]["priorQuarter"]["netProfit"]["value"] == -100.0
+    assert quarter["low"] == 150.0 and quarter["high"] == 200.0 and quarter["value"] is None
+    assert quarter["note"] == "本季对上一季；上季亏损，按差额除以上季绝对值"
 
 
 def test_forecast_quarter_subtracts_half_year_cumulative_range() -> None:

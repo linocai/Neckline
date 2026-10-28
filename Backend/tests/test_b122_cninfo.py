@@ -317,6 +317,31 @@ def test_duplicate_across_pages_after_insertion_still_complete():
     assert len({d.external_id for d in outcome.documents}) == 35
 
 
+def test_front_insertions_repeat_the_previous_tail_without_false_disorder():
+    """第 1 页取完后最前面插入 2 条，第 2 页开头是上一页末尾的 2 条，时间比上一页最后一条新。"""
+    start, end = at("2026-10-19", "15:00"), at("2026-10-20", "08:00")
+    base = [ann(i, at("2026-10-19", "20:00") - timedelta(seconds=i)) for i in range(40)]
+    page1 = base[:30]
+    inserted = [ann(100, at("2026-10-19", "20:30")), ann(101, at("2026-10-19", "20:20"))]
+    shifted = inserted + base
+    page2 = shifted[30:60]
+    assert [row["announcementId"] for row in page2[:2]] == [page1[-2]["announcementId"], page1[-1]["announcementId"]]
+    assert page2[0]["announcementTime"] > page1[-1]["announcementTime"]
+    server = Server(page1 + inserted, sort=False)
+    server.script = {2: [lambda: httpx.Response(200, json={"totalAnnouncement": len(shifted), "hasMore": False,
+                                                            "announcements": page2})]}
+    outcome = fetch(server, start=start, end=end, max_pages=5)
+    assert outcome.complete and outcome.error is None
+    expected: list[str] = []
+    for row in page1 + page2:
+        ident = str(row["announcementId"])
+        if ident not in expected:
+            expected.append(ident)
+    ids = [document.external_id for document in outcome.documents]
+    assert ids == expected
+    assert len(ids) == len(set(ids)) == 40
+
+
 def test_page_limit_when_many_pages_before_floor():
     start, end = at("2026-10-19", "07:00"), at("2026-10-20", "08:00")
     rows = [ann(i, at("2026-10-19", "20:00") + timedelta(seconds=i)) for i in range(100)]
