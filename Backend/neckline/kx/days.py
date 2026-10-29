@@ -7,9 +7,24 @@ from datetime import date, datetime, time, timedelta
 from neckline.morning.schedule import CST, CalendarGap, is_trading_day, previous_trading_day
 
 CLOSE = time(15, 0)         # 推荐的归属分界：交易日 15:00 前归当天，之后归下一个交易日
-QUOTE_DAY_FROM = time(9, 30)  # 行情对应的交易日从 09:30 起算当天
+QUOTE_DAY_FROM = time(9, 15)  # 行情对应的交易日从 09:15 起算当天（集合竞价的报价算当天）
 SESSION_FROM = time(9, 15)    # 盘中刷新窗口：含午休，这样 13:00 开盘后不用重新判断
 SESSION_UNTIL = time(15, 5)   # 收盘后留几分钟，取得 15:00 的最终价
+_CALL_UNTIL = time(9, 25)     # 09:25 起是开盘价，不再是集合竞价
+_OPEN_UNTIL = time(9, 30)     # 09:30 起进入连续竞价
+
+
+def session_phase(moment: datetime) -> str | None:
+    """报价时刻（上海时间）落在竞价的哪一段。
+
+    09:15:00 ≤ t < 09:25:00 为 call_auction，09:25:00 ≤ t < 09:30:00 为 pre_open，其余为空。
+    """
+    clock = moment.astimezone(CST).time()
+    if QUOTE_DAY_FROM <= clock < _CALL_UNTIL:
+        return "call_auction"
+    if _CALL_UNTIL <= clock < _OPEN_UNTIL:
+        return "pre_open"
+    return None
 
 
 def next_trading_day(day: date) -> date:

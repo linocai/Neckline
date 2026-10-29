@@ -8,7 +8,6 @@ enum KXTableColumn: CaseIterable, Hashable, Identifiable {
     case name
     case theme
     case heat
-    case buyable
     case price
     case changePercent
     case changeAmount
@@ -40,7 +39,6 @@ enum KXTableColumn: CaseIterable, Hashable, Identifiable {
         case .name: return "名称"
         case .theme: return "题材"
         case .heat: return "热度"
-        case .buyable: return "可买"
         case .price: return "现价"
         case .changePercent: return "涨跌幅"
         case .changeAmount: return "涨跌额"
@@ -90,8 +88,6 @@ enum KXTableColumn: CaseIterable, Hashable, Identifiable {
         case .name: return .text(row.name)
         case .theme: return .text(row.themeText ?? "")
         case .heat: return .number(row.heat == nil ? nil : row.heatDay.map(Double.init))
-        // 一字板排前，能买的在后，没有这项数据的最后。
-        case .buyable: return .number(row.buyable.map { $0 ? 1 : 0 })
         case .price: return .number(row.price)
         case .changePercent: return .number(row.changePercent)
         case .changeAmount: return .number(row.changeAmount)
@@ -275,13 +271,18 @@ struct KXTableCell: View {
                     .font(.system(size: 13))
                     .foregroundStyle(NKMorning.textTertiary)
             }
-        case .buyable:
-            // 能买（或没有这项数据）留空，只有一字板才出标签。
-            if row.isOneWordBoard {
-                KXOneWordBoardBadge()
-            }
         case .price:
-            number(KXCopy.fixed(row.price, 2), trend: KXTrend(row.changePercent), bold: row.isToday)
+            if let label = row.sessionPhaseLabel {
+                VStack(alignment: .trailing, spacing: 1) {
+                    number(KXCopy.fixed(row.price, 2), trend: KXTrend(row.changePercent), bold: row.isToday)
+                    Text(label)
+                        .font(.system(size: 10))
+                        .foregroundStyle(NKMorning.textTertiary)
+                        .lineLimit(1)
+                }
+            } else {
+                number(KXCopy.fixed(row.price, 2), trend: KXTrend(row.changePercent), bold: row.isToday)
+            }
         case .changePercent:
             KXPill(text: KXCopy.signedPercent(row.changePercent), trend: KXTrend(row.changePercent), muted: row.isMuted)
         case .changeAmount:

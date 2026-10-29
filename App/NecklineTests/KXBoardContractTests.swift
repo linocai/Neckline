@@ -98,84 +98,143 @@ final class KXBoardContractTests: XCTestCase {
         XCTAssertFalse(daily.isMuted)
     }
 
-    // MARK: 题材、热度、能否买入（schema 2 名单）
+    // MARK: 题材、热度、竞价阶段（schema 2 / 3 名单）
 
-    func testSchema2FixtureDecodesThemeHeatAndBuyable() throws {
+    func testSchema2FixtureDecodesThemeAndHeat() throws {
         let board = try decodeBoard("kx_board_schema2")
         XCTAssertEqual(board.pool.version, "kx-20261020-001")
-        XCTAssertEqual(board.pool.schemaVersion, 2)
         XCTAssertEqual(board.pool.count, 12)
         XCTAssertEqual(board.rows.count, 12)
         XCTAssertEqual(board.rows.map(\.code), [
             "600010", "600007", "600006", "600005", "600011", "000004",
             "000003", "600009", "000002", "000001", "600008", "000000",
         ])
-        // schema 2 名单没有行业。
-        XCTAssertTrue(board.rows.allSatisfy { $0.industry == nil })
+        // schema 2 名单没有行业。10:30 的报价没有竞价阶段。
+        XCTAssertTrue(board.rows.allSatisfy { $0.industry == nil && $0.sessionPhase == nil })
 
         let first = board.rows[0]
         XCTAssertEqual(first.theme, "题材2")
         XCTAssertEqual(first.firstSeen, "2026-10-19")
         XCTAssertEqual(first.heatDay, 2)
-        XCTAssertEqual(first.buyable, true)
         XCTAssertEqual(first.highlight, .today)
 
         let faded = try row(board, code: "600007")
         XCTAssertEqual(faded.highlight, .faded)
-        XCTAssertEqual(faded.buyable, false)
         XCTAssertEqual(faded.heatDay, 2)
 
         XCTAssertEqual(try row(board, code: "600005").heatDay, 9)
         XCTAssertEqual(try row(board, code: "600005").firstSeen, "2026-10-01")
         XCTAssertEqual(try row(board, code: "000000").heatDay, 1)
         XCTAssertNil(try row(board, code: "000004").heatDay, "热度空就是空，不当成 0 或 1")
-        XCTAssertEqual(try row(board, code: "000001").buyable, false)
-        XCTAssertEqual(board.rows.filter { $0.buyable == false }.map(\.code), ["600007", "000001"])
         // 夹具里每一行都有题材，所以每一行都有第二行。
         XCTAssertTrue(board.rows.allSatisfy(\.hasSecondLine))
     }
 
-    func testSchema1FixturesHaveNoThemeHeatOrBuyableAndStayOneLine() throws {
+    func testSchema3IntradayCallAuctionAndPreOpenFixturesMatchTheBackendRules() throws {
+        let intraday = try decodeBoard("kx_board_schema3")
+        XCTAssertEqual(intraday.pool.version, "kx-20261029-001")
+        XCTAssertEqual(intraday.rows.count, 12)
+        XCTAssertTrue(intraday.rows.allSatisfy { $0.theme != nil && $0.industry == nil && $0.sessionPhase == nil && $0.quoteStatus == .ok })
+        XCTAssertEqual(intraday.rows[0].highlight, .today)
+
+        let call = try decodeBoard("kx_board_call_auction")
+        let today = try row(call, code: "000001")
+        XCTAssertEqual(today.highlight, .today)
+        XCTAssertEqual(today.sessionPhase, .callAuction)
+        XCTAssertEqual(today.sessionPhaseLabel, "竞价中")
+        let stale = try row(call, code: "000002")
+        XCTAssertEqual(stale.quoteStatus, .stale)
+        XCTAssertNil(stale.sessionPhase)
+        XCTAssertNil(stale.sessionPhaseLabel)
+        let live = call.rows.filter { $0.code != "000002" }
+        XCTAssertEqual(live.count, 5)
+        for row in live {
+            XCTAssertEqual(row.sessionPhase, .callAuction, row.code)
+            XCTAssertEqual(row.quoteStatus, .ok, row.code)
+            XCTAssertNil(row.note, row.code)
+            XCTAssertNotNil(row.price, row.code)
+            XCTAssertNotNil(row.changePercent, row.code)
+            XCTAssertNotNil(row.changeAmount, row.code)
+            XCTAssertNotNil(row.previousClose, row.code)
+            XCTAssertNotNil(row.change5dPercent, row.code)
+            XCTAssertNotNil(row.averages.ma5, row.code)
+            XCTAssertNil(row.open, row.code)
+            XCTAssertNil(row.high, row.code)
+            XCTAssertNil(row.low, row.code)
+            XCTAssertNil(row.amplitudePercent, row.code)
+            XCTAssertNil(row.turnoverRatePercent, row.code)
+            XCTAssertNil(row.turnoverYi, row.code)
+            XCTAssertNil(row.volumeLots, row.code)
+            XCTAssertNil(row.openChangePercent, row.code)
+            XCTAssertNil(row.rangePosition, row.code)
+            XCTAssertNil(row.pullbackFromHighPercent, row.code)
+            XCTAssertNil(row.volumeRatio, row.code)
+            XCTAssertTrue(row.hasSecondLine, row.code)
+        }
+
+        let pre = try decodeBoard("kx_board_pre_open")
+        XCTAssertFalse(pre.rows.isEmpty)
+        for row in pre.rows {
+            XCTAssertEqual(row.sessionPhase, .preOpen, row.code)
+            XCTAssertEqual(row.sessionPhaseLabel, "开盘价")
+            XCTAssertEqual(row.quoteStatus, .ok, row.code)
+            XCTAssertNil(row.note, row.code)
+            XCTAssertEqual(row.open, row.price, row.code)
+            XCTAssertEqual(row.high, row.price, row.code)
+            XCTAssertEqual(row.low, row.price, row.code)
+            XCTAssertNil(row.rangePosition, row.code)
+            XCTAssertNotNil(row.volumeRatio, row.code)
+            XCTAssertNotNil(row.change5dPercent, row.code)
+        }
+    }
+
+    func testSessionPhaseDecodesKnownAndUnknownValues() throws {
+        XCTAssertEqual(try themedRow(theme: nil, heatDay: nil, phase: "call_auction").sessionPhase, .callAuction)
+        XCTAssertEqual(try themedRow(theme: nil, heatDay: nil, phase: "pre_open").sessionPhase, .preOpen)
+        XCTAssertEqual(try themedRow(theme: nil, heatDay: nil, phase: "halted").sessionPhase, .unknown)
+        XCTAssertNil(try themedRow(theme: nil, heatDay: nil, phase: nil).sessionPhase)
+        XCTAssertEqual(KXCopy.sessionPhaseLabel(.callAuction), "竞价中")
+        XCTAssertEqual(KXCopy.sessionPhaseLabel(.preOpen), "开盘价")
+        XCTAssertNil(KXCopy.sessionPhaseLabel(.unknown))
+        XCTAssertNil(KXCopy.sessionPhaseLabel(nil))
+    }
+
+    func testSchema1FixturesHaveNoThemeHeatOrPhaseAndStayOneLine() throws {
         for name in ["kx_board_sample", "kx_board_degraded"] {
             let board = try decodeBoard(name)
-            XCTAssertEqual(board.pool.schemaVersion, 1, name)
             for row in board.rows {
                 XCTAssertNil(row.theme, "\(name) \(row.code)")
                 XCTAssertNil(row.firstSeen, "\(name) \(row.code)")
                 XCTAssertNil(row.heatDay, "\(name) \(row.code)")
-                XCTAssertNil(row.buyable, "\(name) \(row.code)")
+                XCTAssertNil(row.sessionPhase, "\(name) \(row.code)")
+                XCTAssertNil(row.sessionPhaseLabel, "\(name) \(row.code)")
                 XCTAssertNotNil(row.industry, "\(name) \(row.code)")
                 XCTAssertNil(row.heat)
-                XCTAssertFalse(row.isOneWordBoard)
                 XCTAssertFalse(row.hasSecondLine, "\(name) \(row.code)：schema 1 名单不加第二行")
             }
         }
-        // 旧后端的响应没有 schemaVersion 与新字段：照常解码。
+        // 旧后端的响应没有 sessionPhase：照常解码，阶段为空。
         let legacy = try edited("kx_board_sample") { object in
-            var pool = object["pool"] as! [String: Any]
-            pool.removeValue(forKey: "schemaVersion")
-            object["pool"] = pool
+            var rows = object["rows"] as! [[String: Any]]
+            for index in rows.indices { rows[index].removeValue(forKey: "sessionPhase") }
+            object["rows"] = rows
         }
-        XCTAssertNil(legacy.pool.schemaVersion)
+        XCTAssertNil(legacy.rows[0].sessionPhase)
     }
 
-    func testSecondLineAppearsWhenThereIsAThemeAHeatOrAnOneWordBoard() throws {
-        // 三样各自单独出现。
-        XCTAssertTrue(try themedRow(theme: "人形机器人", heatDay: nil, buyable: nil).hasSecondLine)
-        XCTAssertTrue(try themedRow(theme: nil, heatDay: 3, buyable: nil).hasSecondLine)
-        XCTAssertTrue(try themedRow(theme: nil, heatDay: nil, buyable: false).hasSecondLine)
-        // 三样都有。
-        XCTAssertTrue(try themedRow(theme: "人形机器人", heatDay: 1, buyable: false).hasSecondLine)
-        // 全无：能买（true）或没有这项数据（null）、没有热度、没有题材，都不加第二行。
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: nil, buyable: nil).hasSecondLine)
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: nil, buyable: true).hasSecondLine, "只有能买不算第二行")
-        // 空串与空白当没有题材。
-        XCTAssertNil(try themedRow(theme: "", heatDay: nil, buyable: nil).themeText)
-        XCTAssertFalse(try themedRow(theme: "  \n", heatDay: nil, buyable: nil).hasSecondLine)
-        XCTAssertEqual(try themedRow(theme: " 固态电池 ", heatDay: nil, buyable: nil).themeText, "固态电池")
-        // 热度不是正整数当没有热度。
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: 0, buyable: nil).hasSecondLine)
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: -1, buyable: nil).hasSecondLine)
+    func testSecondLineAppearsForThemeHeatOrSessionPhase() throws {
+        XCTAssertTrue(try themedRow(theme: "人形机器人", heatDay: nil, phase: nil).hasSecondLine)
+        XCTAssertTrue(try themedRow(theme: nil, heatDay: 3, phase: nil).hasSecondLine)
+        XCTAssertTrue(try themedRow(theme: nil, heatDay: nil, phase: "call_auction").hasSecondLine)
+        XCTAssertTrue(try themedRow(theme: nil, heatDay: nil, phase: "pre_open").hasSecondLine)
+        XCTAssertTrue(try themedRow(theme: "人形机器人", heatDay: 1, phase: "call_auction").hasSecondLine)
+        XCTAssertFalse(try themedRow(theme: nil, heatDay: nil, phase: nil).hasSecondLine)
+        XCTAssertFalse(try themedRow(theme: nil, heatDay: nil, phase: "later").hasSecondLine, "不认识的阶段不出标签")
+        XCTAssertNil(try themedRow(theme: "", heatDay: nil, phase: nil).themeText)
+        XCTAssertFalse(try themedRow(theme: "  \n", heatDay: nil, phase: nil).hasSecondLine)
+        XCTAssertEqual(try themedRow(theme: " 固态电池 ", heatDay: nil, phase: nil).themeText, "固态电池")
+        XCTAssertFalse(try themedRow(theme: nil, heatDay: 0, phase: nil).hasSecondLine)
+        XCTAssertFalse(try themedRow(theme: nil, heatDay: -1, phase: nil).hasSecondLine)
     }
 
     func testHeatBadgeTiers() {
@@ -194,12 +253,6 @@ final class KXBoardContractTests: XCTestCase {
         XCTAssertEqual(KXHeat(day: 4)?.text, "第4天")
         XCTAssertEqual(KXHeat(day: 5)?.text, "第5天")
         XCTAssertEqual(KXHeat(day: 12)?.text, "第12天")
-    }
-
-    func testOneWordBoardOnlyShowsWhenBuyableIsFalse() throws {
-        XCTAssertTrue(try themedRow(theme: "题材", heatDay: 2, buyable: false).isOneWordBoard)
-        XCTAssertFalse(try themedRow(theme: "题材", heatDay: 2, buyable: true).isOneWordBoard)
-        XCTAssertFalse(try themedRow(theme: "题材", heatDay: 2, buyable: nil).isOneWordBoard, "没有数据不当成一字板")
     }
 
     // MARK: 手机第二行的尺寸
@@ -232,6 +285,18 @@ final class KXBoardContractTests: XCTestCase {
         XCTAssertEqual(KXMetrics.badgePaddingV, 1)
         XCTAssertEqual(KXMetrics.badgePaddingH, 6)
         XCTAssertEqual(KXMetrics.badgeRadius, 5)
+
+        let scalePhase: CGFloat = 2
+        let onlyPhase = try themedRow(theme: nil, heatDay: nil, phase: "call_auction")
+        XCTAssertTrue(onlyPhase.hasSecondLine)
+        XCTAssertEqual(onlyPhase.sessionPhaseLabel, "竞价中")
+        let phaseImage = try render(KXRowView(row: onlyPhase, group: .overview), width: 375, scale: scalePhase)
+        XCTAssertEqual(CGFloat(phaseImage.height) / scalePhase, 68, accuracy: 0.5, "只有阶段标签时行高仍是 68")
+        let auction = try decodeBoard("kx_board_call_auction")
+        for row in auction.rows where row.sessionPhaseLabel != nil {
+            let image = try render(KXRowView(row: row, group: .today), width: 375, scale: scalePhase)
+            XCTAssertEqual(CGFloat(image.height) / scalePhase, 68, accuracy: 0.5, "\(row.code)")
+        }
     }
 
     /// 80 字的长题材：375 点宽下第二行始终单行，用省略号收尾，不换行，也不挤压第一行。
@@ -247,7 +312,7 @@ final class KXBoardContractTests: XCTestCase {
         XCTAssertEqual(long.rows.compactMap(\.theme).map(\.count), [80, 80, 80])
         XCTAssertEqual(long.rows.map(\.hasSecondLine), [true, true, true, true])
         XCTAssertEqual(long.rows.map(\.heat), [.hot(day: 12), .warm(day: 4), .firstDay, nil])
-        XCTAssertEqual(long.rows.map(\.isOneWordBoard), [true, false, true, false])
+        XCTAssertEqual(long.rows.map(\.sessionPhase), [nil, nil, nil, nil])
 
         let scale: CGFloat = 2
         // 第一行占 7 到 41，第二行从 45 起；截到 41 就只含第一行。
@@ -271,9 +336,9 @@ final class KXBoardContractTests: XCTestCase {
             }
         }
 
-        // 第二行自己：徽标全部露出（热度加一字板加至少 40 点的题材），题材占满剩下的宽度。
+        // 第二行自己：热度徽标全部露出，题材至少还剩 40 点。
         let widest = long.rows[0]
-        let badges = idealSize(KXHeatBadge(heat: try XCTUnwrap(widest.heat))).width + idealSize(KXOneWordBoardBadge()).width + 2 * KXMetrics.badgeGap
+        let badges = idealSize(KXHeatBadge(heat: try XCTUnwrap(widest.heat))).width + KXMetrics.badgeGap
         XCTAssertLessThan(badges, (375 - KXMetrics.inset * 2) - 40, "375 点宽放不下徽标加题材")
         let secondLine = try render(KXSecondLine(row: widest), width: 375 - KXMetrics.inset * 2, scale: scale)
         XCTAssertEqual(CGFloat(secondLine.height) / scale, KXMetrics.secondLineHeight, accuracy: 0.5, "第二行换行了")
@@ -281,32 +346,28 @@ final class KXBoardContractTests: XCTestCase {
 
     #if os(macOS)
     @MainActor
-    func testMacTableShowsThemeHeatAndBuyableInsteadOfIndustry() throws {
+    func testMacTableShowsThemeAndHeatAndHasNoBuyableColumn() throws {
         let columns = KXTableColumn.allCases
-        XCTAssertEqual(Array(columns.prefix(4)), [.name, .theme, .heat, .buyable])
-        XCTAssertEqual(columns.prefix(4).map(\.title), ["名称", "题材", "热度", "可买"])
+        XCTAssertEqual(Array(columns.prefix(4)), [.name, .theme, .heat, .price])
+        XCTAssertEqual(columns.prefix(4).map(\.title), ["名称", "题材", "热度", "现价"])
         XCTAssertFalse(columns.map(\.title).contains("行业"))
-        XCTAssertEqual(columns.count, 27)
+        XCTAssertFalse(columns.map(\.title).contains("可买"))
+        XCTAssertEqual(columns.count, 26)
         XCTAssertEqual(KXTableColumn.theme.alignment, .leading)
         XCTAssertEqual(KXTableColumn.heat.alignment, .trailing)
-        XCTAssertEqual(KXTableColumn.buyable.alignment, .trailing)
         XCTAssertGreaterThan(KXTableColumn.theme.width.upperBound, KXTableColumn.price.width.upperBound * 2, "题材是宽列")
 
         let board = try decodeBoard("kx_board_schema2")
-        let locked = try row(board, code: "600007")
         let normal = try row(board, code: "600010")
         XCTAssertEqual(KXTableColumn.theme.sortKey(normal), .text("题材2"))
         XCTAssertEqual(KXTableColumn.heat.sortKey(try row(board, code: "600005")), .number(9))
         XCTAssertEqual(KXTableColumn.heat.sortKey(try row(board, code: "000004")), .number(nil))
-        XCTAssertEqual(KXTableColumn.buyable.sortKey(locked), .number(0))
-        XCTAssertEqual(KXTableColumn.buyable.sortKey(normal), .number(1))
 
-        // schema 1 名单：题材列写「—」，热度列写「—」，可买列留空。
+        // schema 1 名单：题材列写「—」，热度列写「—」。
         let old = try decodeBoard("kx_board_sample").rows[0]
         XCTAssertNil(old.themeText)
         XCTAssertEqual(KXTableColumn.theme.sortKey(old), .text(""))
         XCTAssertEqual(KXTableColumn.heat.sortKey(old), .number(nil))
-        XCTAssertEqual(KXTableColumn.buyable.sortKey(old), .number(nil))
 
         // 长题材最多两行：窄列里不超过两行的高度，也比一行高（确实折行了）。
         let extreme = try decodeBoard("kx_board_extreme").rows[0]
@@ -746,13 +807,13 @@ final class KXBoardContractTests: XCTestCase {
         return try JSONDecoder().decode(KXBoard.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    /// 以 schema 2 夹具的第一行为底，换上指定的题材、热度、能否买入（nil 写成 null）。
-    private func themedRow(theme: String?, heatDay: Int?, buyable: Bool?) throws -> KXRow {
+    /// 以 schema 2 夹具的第一行为底，换上指定的题材、热度、阶段（nil 写成 null）。
+    private func themedRow(theme: String?, heatDay: Int?, phase: String?) throws -> KXRow {
         let board = try edited("kx_board_schema2") { object in
             var rows = object["rows"] as! [[String: Any]]
             rows[0]["theme"] = theme ?? NSNull()
             rows[0]["heatDay"] = heatDay ?? NSNull()
-            rows[0]["buyable"] = buyable ?? NSNull()
+            rows[0]["sessionPhase"] = phase ?? NSNull()
             object["rows"] = rows
         }
         return board.rows[0]

@@ -162,6 +162,17 @@ enum KXCopy {
         return KXClock.string(date, "HH:mm:ss")
     }
 
+    // MARK: 竞价阶段
+
+    /// 手机第二行与 macOS 现价格里的小字。不认识的阶段和空都不出标签。
+    static func sessionPhaseLabel(_ phase: KXSessionPhase?) -> String? {
+        switch phase {
+        case .callAuction: return "竞价中"
+        case .preOpen: return "开盘价"
+        case .unknown, .none: return nil
+        }
+    }
+
     // MARK: 状态文案
 
     static let emptyPoolTitle = "名单里还没有股票"

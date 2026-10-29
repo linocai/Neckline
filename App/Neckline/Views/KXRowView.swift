@@ -11,15 +11,15 @@ extension KXRow {
 
     /// 热度档位。没有这项数据（或不是正整数）时为空。
     var heat: KXHeat? { KXHeat(day: heatDay) }
-    /// 一字板：只有明确写着不能买入才算；没有这项数据不当成一字板。
-    var isOneWordBoard: Bool { buyable == false }
+    /// 阶段标签。不认识的阶段和空都没有字。
+    var sessionPhaseLabel: String? { KXCopy.sessionPhaseLabel(sessionPhase) }
     /// 题材文字。空串、全是空白都当没有。
     var themeText: String? {
         guard let text = theme?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         return text
     }
-    /// 手机看板的第二行：热度、一字板、题材有任何一样就加；三样都没有（schema 1 名单）行高保持 52。
-    var hasSecondLine: Bool { heat != nil || isOneWordBoard || themeText != nil }
+    /// 手机看板的第二行：热度、阶段、题材有任何一样就加；都没有（schema 1 且非竞价）行高保持 52。
+    var hasSecondLine: Bool { heat != nil || sessionPhaseLabel != nil || themeText != nil }
 }
 
 /// 热度徽标的三档：入选首日；第 2 到 4 天；第 5 天起（热了很久）。
@@ -139,7 +139,7 @@ struct KXRowView: View {
     }
 }
 
-/// 手机看板的第二行：热度徽标、一字板标签、题材。题材单行，放不下用省略号收尾，徽标不压缩、不换行。
+/// 手机看板的第二行：热度徽标、阶段标签、题材。题材单行，放不下用省略号收尾，徽标不压缩、不换行。
 struct KXSecondLine: View {
     let row: KXRow
 
@@ -148,8 +148,8 @@ struct KXSecondLine: View {
             if let heat = row.heat {
                 KXHeatBadge(heat: heat)
             }
-            if row.isOneWordBoard {
-                KXOneWordBoardBadge()
+            if let label = row.sessionPhaseLabel {
+                KXSessionPhaseBadge(text: label)
             }
             if let theme = row.themeText {
                 Text(theme)
@@ -206,17 +206,22 @@ struct KXHeatBadge: View {
     }
 }
 
-/// 一字板标签：只在不能买入时出现，琥珀色。
-struct KXOneWordBoardBadge: View {
+/// 竞价阶段标签：和热度徽标一样的字号、内边距、圆角、高度。透明底、灰描边，和蓝描边、灰底、浅红底的热度徽标分开。
+struct KXSessionPhaseBadge: View {
+    let text: String
+
     var body: some View {
-        Text("一字板")
+        Text(text)
             .font(NKKXFont.badge)
-            .foregroundStyle(NKKX.lockText)
+            .foregroundStyle(NKMorning.textSecondary)
             .lineLimit(1)
             .frame(height: KXMetrics.badgeTextHeight)
             .padding(.vertical, KXMetrics.badgePaddingV)
             .padding(.horizontal, KXMetrics.badgePaddingH)
-            .background(NKKX.lockFill, in: RoundedRectangle(cornerRadius: KXMetrics.badgeRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: KXMetrics.badgeRadius, style: .continuous)
+                    .strokeBorder(NKMorning.textTertiary, lineWidth: 1)
+            }
             .fixedSize()
     }
 }

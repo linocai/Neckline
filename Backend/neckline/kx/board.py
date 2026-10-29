@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from neckline.kx import store
-from neckline.kx.days import BoardClock, board_clock, heat_days, highlight
+from neckline.kx.days import BoardClock, board_clock, heat_days, highlight, session_phase
 from neckline.kx.quotes import Quote, QuoteBook, fetch_quotes
 from neckline.kx.daily import StatsBundle
 from neckline.kx.services import KxServices
@@ -51,6 +51,12 @@ def _average(price: float, value: float | None) -> dict | None:
         return None
     return {"value": round(value, 4), "position": _position(price, value)}
 
+
+# 集合竞价只留现价和涨跌；这些字段麦蕊给的是 0 或不能当依据的数，一律留空，不当成取数故障。
+_CALL_AUCTION_BLANK = (
+    "open", "high", "low", "amplitudePercent", "turnoverRatePercent", "turnoverYi", "volumeLots",
+    "openChangePercent", "rangePosition", "pullbackFromHighPercent", "volumeRatio",
+)
 
 _EMPTY_QUOTE: dict[str, Any] = {
     "price": None, "changePercent": None, "changeAmount": None, "open": None, "high": None, "low": None,
@@ -149,7 +155,7 @@ def _row(member: store.Member, book: QuoteBook, bundle: StatsBundle, clock: Boar
     row: dict[str, Any] = {
         "code": code, "name": member.name, "industry": member.industry,
         "theme": member.theme, "firstSeen": first_seen.isoformat() if first_seen else None,
-        "heatDay": heat_days(first_seen, clock.quote_day) if first_seen else None, "buyable": member.buyable,
+        "heatDay": heat_days(first_seen, clock.quote_day) if first_seen else None,
         "highlight": highlight(pick.trade_date, clock) if pick else "normal",
         "lastPickedAt": _iso(pick.picked_at) if pick else None,
         "quoteStatus": status,
@@ -163,6 +169,12 @@ def _row(member: store.Member, book: QuoteBook, bundle: StatsBundle, clock: Boar
             row.update(_stats_fields(code, quote, bundle, notes))
         else:
             row.update(_empty_stats())  # 报价不是当日，日线统计的基准日对不上，不硬算
+    phase = session_phase(quote.at) if status == "ok" and quote is not None and quote.at is not None else None
+    if phase == "call_auction":
+        notes[:] = [item for item in notes if item != "价格区间不一致，没有计算区间位置"]
+        for key in _CALL_AUCTION_BLANK:
+            row[key] = None
+    row["sessionPhase"] = phase
     row["note"] = "；".join(notes) or None
     return row
 
@@ -210,8 +222,8 @@ async def build_board(kx: KxServices, path: Path) -> dict[str, Any]:
     times = [quote.at for quote in book.quotes.values() if quote.at is not None]
     return {
         "generatedAt": _iso(now),
-        "pool": {"version": snapshot.version, "schemaVersion": snapshot.schema_version,
-                 "count": len(snapshot.members), "checkedAt": _iso(snapshot.verified_at),
+        "pool": {"version": snapshot.version, "count": len(snapshot.members),
+                 "checkedAt": _iso(snapshot.verified_at),
                  "stale": result.stale, "reason": result.reason if result.stale else None},
         "session": {"tradeDate": clock.quote_day.isoformat(), "inSession": clock.in_session,
                     "refreshSeconds": REFRESH_SECONDS if clock.in_session else None,

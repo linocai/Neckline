@@ -4,7 +4,10 @@
 设置环境变量 NK_WRITE_FIXTURES=1 时改写这两份文件。
   kx_board_sample.json    盘中、名单已核对、行情与日线统计齐全，有当天推荐、前一交易日推荐和普通行。
   kx_board_degraded.json  名单未能核对、一只行情没取到、一只报价不是当日、TuShare 失败：各种 null 的形状。
-  kx_board_schema2.json   KX 名单 schema 2：industry 为 null，题材、首次入选日、热了第几天、能否买入齐全（只在后端夹具里）。
+  kx_board_schema2.json   KX 名单 schema 2：industry 为 null，题材、首次入选日、热了第几天齐全。
+  kx_board_schema3.json   KX 名单 schema 3，10:30 盘中。
+  kx_board_call_auction.json  schema 3，交易日 09:18：多数行竞价中，一行停牌，一行今日推荐。
+  kx_board_pre_open.json  schema 3，交易日 09:27：开盘价。
 """
 from __future__ import annotations
 
@@ -118,10 +121,11 @@ def test_board_response_has_the_documented_shape(tmp_path, monkeypatch):
     with _client(harness, monkeypatch) as client:
         body = client.get("/api/v4/kx/board", headers=AUTH).json()
     assert set(body) == {"generatedAt", "pool", "session", "stats", "picks", "gaps", "rows"}
-    assert set(body["pool"]) == {"version", "schemaVersion", "count", "checkedAt", "stale", "reason"}
+    assert set(body["pool"]) == {"version", "count", "checkedAt", "stale", "reason"}
     assert set(body["session"]) == {"tradeDate", "inSession", "refreshSeconds", "quoteTime"}
     assert set(body["rows"][0]) == {
-        "code", "name", "industry", "theme", "firstSeen", "heatDay", "buyable", "highlight", "lastPickedAt", "quoteStatus", "note", "quoteTime", "price",
+        "code", "name", "industry", "theme", "firstSeen", "heatDay", "highlight", "lastPickedAt",
+        "quoteStatus", "sessionPhase", "note", "quoteTime", "price",
         "changePercent", "changeAmount", "open", "high", "low", "previousClose", "amplitudePercent",
         "turnoverRatePercent", "turnoverYi", "volumeLots", "openChangePercent", "rangePosition",
         "pullbackFromHighPercent", "change5dPercent", "change20dPercent", "avgTurnover20Yi", "volumeRatio",
@@ -162,14 +166,48 @@ def _schema2(tmp_path, monkeypatch):
         "000004": "2026-10-21",   # 晚于行情日：null
         "600005": "2026-10-01",   # 国庆假期里进的：从节后 10-08 起算，第 9 天
     }
-    harness.kx.buyable = {"000001": False, "600007": False}
     _put(harness, ["600010"], "2026-10-20T10:20:00")  # 当天推荐
     _put(harness, ["600007"], "2026-10-19T14:20:00")  # 前一交易日：变淡
     return harness
 
 
-@pytest.mark.parametrize("name,make", [("kx_board_sample.json", _sample), ("kx_board_degraded.json", _degraded),
-                                       ("kx_board_schema2.json", _schema2)])
+def _schema3(tmp_path, monkeypatch):
+    harness = build(tmp_path, monkeypatch, count=12, now=at("2026-10-20", "10:30"))
+    harness.kx.schema, harness.kx.version = 3, "kx-20261029-001"
+    harness.mairui.quote_clock = "10:30:00"
+    harness.kx.first_seen = {
+        "000000": "2026-10-20", "000001": "2026-10-19", "000002": "2026-10-16",
+        "000003": "2026-10-17", "000004": "2026-10-21", "600005": "2026-10-01",
+    }
+    _put(harness, ["600010"], "2026-10-20T10:20:00")
+    return harness
+
+
+def _call_auction(tmp_path, monkeypatch):
+    harness = build(tmp_path, monkeypatch, count=6, now=at("2026-10-20", "09:18"))
+    harness.kx.schema, harness.kx.version = 3, "kx-20261020-auc"
+    harness.mairui.quote_clock = "09:18:00"
+    harness.mairui.quote_shape = "call_auction"
+    harness.mairui.stale_codes = {"000002": "2026-10-19"}
+    harness.kx.first_seen = {"000000": "2026-10-20", "000001": "2026-10-19"}
+    _put(harness, ["000001"], "2026-10-20T09:16:00")  # 当天推荐
+    return harness
+
+
+def _pre_open(tmp_path, monkeypatch):
+    harness = build(tmp_path, monkeypatch, count=6, now=at("2026-10-20", "09:27"))
+    harness.kx.schema, harness.kx.version = 3, "kx-20261020-pre"
+    harness.mairui.quote_clock = "09:27:00"
+    harness.mairui.quote_shape = "pre_open"
+    harness.kx.first_seen = {"000000": "2026-10-20"}
+    return harness
+
+
+@pytest.mark.parametrize("name,make", [
+    ("kx_board_sample.json", _sample), ("kx_board_degraded.json", _degraded),
+    ("kx_board_schema2.json", _schema2), ("kx_board_schema3.json", _schema3),
+    ("kx_board_call_auction.json", _call_auction), ("kx_board_pre_open.json", _pre_open),
+])
 def test_board_sample_responses_match_the_fixtures(tmp_path, monkeypatch, name, make):
     harness = make(tmp_path, monkeypatch)
     with _client(harness, monkeypatch) as client:
@@ -200,21 +238,51 @@ def test_sample_fixture_shapes():
     statuses = {row["code"]: row["quoteStatus"] for row in degraded["rows"]}
     assert statuses["000001"] == "missing" and statuses["000002"] == "stale" and statuses["000003"] == "ok"
     assert degraded["rows"][0]["code"] == "000003" and degraded["rows"][0]["highlight"] == "today"
-    for board in (sample, degraded):  # schema 1 的名单：行业在，题材三项与热了第几天都是 null
-        assert board["pool"]["schemaVersion"] == 1
-        assert all(row["industry"] and (row["theme"], row["firstSeen"], row["heatDay"], row["buyable"]) ==
-                   (None, None, None, None) for row in board["rows"])
+    for board in (sample, degraded):  # schema 1 的名单：行业在，题材与热了第几天都是 null；10:30 没有竞价阶段
+        assert "schemaVersion" not in board["pool"] and "buyable" not in board["rows"][0]
+        assert all(row["industry"] and row["sessionPhase"] is None and
+                   (row["theme"], row["firstSeen"], row["heatDay"]) == (None, None, None) for row in board["rows"])
 
 
 def test_schema_2_fixture_shapes():
     board = json.loads((FIXTURES / "kx_board_schema2.json").read_text(encoding="utf-8"))
-    assert board["pool"]["schemaVersion"] == 2 and board["pool"]["count"] == 12 and board["session"]["tradeDate"] == "2026-10-20"
+    assert "schemaVersion" not in board["pool"] and board["pool"]["count"] == 12
+    assert board["session"]["tradeDate"] == "2026-10-20"
     assert [row["highlight"] for row in board["rows"]] == ["today", "faded"] + ["normal"] * 10
-    assert all(row["industry"] is None and row["theme"].startswith("题材") for row in board["rows"])
+    assert all(row["industry"] is None and row["theme"].startswith("题材") and "buyable" not in row
+               and row["sessionPhase"] is None for row in board["rows"])
     rows = {row["code"]: row for row in board["rows"]}
-    assert {code: (row["firstSeen"], row["heatDay"], row["buyable"]) for code, row in rows.items()
+    assert {code: (row["firstSeen"], row["heatDay"]) for code, row in rows.items()
             if code in ("000000", "000001", "000002", "000003", "000004", "600005", "600007")} == {
-        "000000": ("2026-10-20", 1, True), "000001": ("2026-10-19", 2, False), "000002": ("2026-10-16", 3, True),
-        "000003": ("2026-10-17", 2, True), "000004": ("2026-10-21", None, True), "600005": ("2026-10-01", 9, True),
-        "600007": ("2026-10-19", 2, False)}
+        "000000": ("2026-10-20", 1), "000001": ("2026-10-19", 2), "000002": ("2026-10-16", 3),
+        "000003": ("2026-10-17", 2), "000004": ("2026-10-21", None), "600005": ("2026-10-01", 9),
+        "600007": ("2026-10-19", 2)}
     assert all(row["quoteStatus"] == "ok" for row in board["rows"])
+
+
+_AUCTION_BLANK = ("open", "high", "low", "amplitudePercent", "turnoverRatePercent", "turnoverYi", "volumeLots",
+                  "openChangePercent", "rangePosition", "pullbackFromHighPercent", "volumeRatio")
+
+
+def test_schema_3_and_auction_fixture_shapes():
+    intraday = json.loads((FIXTURES / "kx_board_schema3.json").read_text(encoding="utf-8"))
+    assert intraday["pool"]["version"] == "kx-20261029-001" and intraday["session"]["quoteTime"].endswith("10:30:00+08:00")
+    assert all(row["sessionPhase"] is None and row["quoteStatus"] == "ok" and row["theme"] for row in intraday["rows"])
+    assert intraday["rows"][0]["highlight"] == "today"
+
+    call = json.loads((FIXTURES / "kx_board_call_auction.json").read_text(encoding="utf-8"))
+    assert call["session"]["tradeDate"] == "2026-10-20" and call["gaps"] == []
+    rows = {row["code"]: row for row in call["rows"]}
+    assert rows["000001"]["highlight"] == "today" and rows["000001"]["sessionPhase"] == "call_auction"
+    assert rows["000002"]["quoteStatus"] == "stale" and rows["000002"]["sessionPhase"] is None
+    live = [row for row in call["rows"] if row["code"] != "000002"]
+    assert live and all(row["sessionPhase"] == "call_auction" and row["quoteStatus"] == "ok" and row["note"] is None
+                        for row in live)
+    assert all(row["price"] is not None and row["changePercent"] is not None and row["previousClose"] is not None
+               and row["change5dPercent"] is not None and all(row[key] is None for key in _AUCTION_BLANK)
+               for row in live)
+
+    pre = json.loads((FIXTURES / "kx_board_pre_open.json").read_text(encoding="utf-8"))
+    assert all(row["sessionPhase"] == "pre_open" and row["open"] == row["high"] == row["low"] == row["price"]
+               and row["rangePosition"] is None and row["volumeRatio"] is not None and row["note"] is None
+               for row in pre["rows"])

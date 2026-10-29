@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from neckline.kx import store
-from neckline.kx.days import board_clock, trading_days_ending
+from neckline.kx.days import board_clock, session_phase, trading_days_ending
 from neckline.kx.board import build_board
 from neckline.kx.quotes import BATCH_SIZE, Quote
 from neckline.morning import db
@@ -106,7 +106,7 @@ def test_a_flat_day_has_no_range_position_and_a_bad_range_is_called_out(tmp_path
 
     def tampered(request):
         rows = original(request).json()
-        rows[0].update(h=rows[0]["p"], l=rows[0]["p"], o=rows[0]["p"])  # 一字板：最高 = 最低
+        rows[0].update(h=rows[0]["p"], l=rows[0]["p"], o=rows[0]["p"])  # 开高低相等：没有区间
         rows[1].update(h=rows[1]["l"] - 1)                              # 最高价低于最低价
         return httpx.Response(200, json=rows)
 
@@ -232,12 +232,13 @@ def test_session_and_statistics_base_follow_the_trading_calendar(tmp_path, monke
     assert board["stats"]["asOf"] == "2026-10-15"
     assert board["picks"]["referenceDate"] == "2026-10-19"  # 非交易日：高亮参考日是下一个交易日
     assert all(row["quoteStatus"] == "ok" for row in board["rows"])
-    # 周一 09:20：行情日还是上周五（09:30 才算当天）；盘中刷新窗口已经开始
+    # 周一 09:20：行情日已是当天（09:15 起算），统计基准日是上个交易日；盘中刷新窗口已经开始
     (tmp_path / "early").mkdir()
-    early = build(tmp_path / "early", monkeypatch, count=5, now=at("2026-10-19", "09:20"), day="2026-10-16")
+    early = build(tmp_path / "early", monkeypatch, count=5, now=at("2026-10-19", "09:20"))
     board = _board(early)
-    assert board["session"]["tradeDate"] == "2026-10-16" and board["session"]["inSession"] is True
-    assert board["session"]["refreshSeconds"] == 60 and board["stats"]["asOf"] == "2026-10-15"
+    assert board["session"]["tradeDate"] == "2026-10-19" and board["session"]["inSession"] is True
+    assert board["session"]["refreshSeconds"] == 60 and board["stats"]["asOf"] == "2026-10-16"
+    assert all(row["quoteStatus"] == "ok" for row in board["rows"])
 
 
 @pytest.mark.parametrize("moment,in_session", [
@@ -245,6 +246,68 @@ def test_session_and_statistics_base_follow_the_trading_calendar(tmp_path, monke
 def test_in_session_window(moment, in_session):
     assert board_clock(at("2026-10-20", moment)).in_session is in_session
     assert board_clock(at("2026-10-24", moment)).in_session is False  # 周六
+
+
+@pytest.mark.parametrize("hm,seconds,expected", [
+    ("09:14", 59, None), ("09:15", 0, "call_auction"), ("09:24", 59, "call_auction"),
+    ("09:25", 0, "pre_open"), ("09:29", 59, "pre_open"), ("09:30", 0, None),
+])
+def test_session_phase_boundaries(hm, seconds, expected):
+    assert session_phase(at("2026-10-20", hm, seconds)) == expected
+
+
+_CALL_BLANK = ("open", "high", "low", "amplitudePercent", "turnoverRatePercent", "turnoverYi", "volumeLots",
+               "openChangePercent", "rangePosition", "pullbackFromHighPercent", "volumeRatio")
+_KEPT_STATS = ("change5dPercent", "change20dPercent", "avgTurnover20Yi", "totalMvYi", "circMvYi")
+
+
+def test_call_auction_pre_open_and_regular_sessions_follow_the_quote_clock(tmp_path, monkeypatch):
+    """09:18 竞价中留空开高低和量能；09:27 开盘价照常算；10:30 没有阶段。停牌行不标阶段。排序不因阶段改变。"""
+    def harness_at(moment, shape, *, stale=None, directory="board"):
+        root = tmp_path / directory
+        root.mkdir()
+        harness = build(root, monkeypatch, count=6, now=at("2026-10-20", moment))
+        harness.kx.schema = 3
+        harness.mairui.quote_clock = f"{moment}:00"
+        harness.mairui.quote_shape = shape
+        if stale:
+            harness.mairui.stale_codes = stale
+        return harness
+
+    regular = _rows(_board(harness_at("10:30", None, directory="regular")))
+    auction_board = _board(harness_at("09:18", "call_auction", stale={"000002": "2026-10-19"}, directory="auction"))
+    auction = _rows(auction_board)
+    preopen = _rows(_board(harness_at("09:27", "pre_open", directory="preopen")))
+    assert auction_board["gaps"] == []
+
+    sample = auction["000000"]
+    raw = quote_values(0)
+    assert raw["zf"] > 0 and raw["tr"] > 0
+    assert sample["quoteStatus"] == "ok" and sample["sessionPhase"] == "call_auction" and sample["note"] is None
+    assert sample["price"] == raw["p"] and sample["changePercent"] == raw["pc"]
+    assert sample["changeAmount"] == raw["ud"] and sample["previousClose"] == raw["yc"]
+    assert all(sample[key] is None for key in _CALL_BLANK)
+    for key in _KEPT_STATS:
+        assert sample[key] == regular["000000"][key] and sample[key] is not None
+    assert sample["averages"] == regular["000000"]["averages"]
+    assert all(row["sessionPhase"] == "call_auction" and row["note"] is None
+               for code, row in auction.items() if code != "000002")
+    stale = auction["000002"]
+    assert stale["quoteStatus"] == "stale" and stale["sessionPhase"] is None
+    assert stale["note"] == "报价日期是 2026-10-19，不是 2026-10-20"
+    assert "竞价" not in str(stale["note"])
+
+    opened = preopen["000001"]
+    assert opened["sessionPhase"] == "pre_open" and opened["quoteStatus"] == "ok" and opened["note"] is None
+    assert opened["open"] == opened["high"] == opened["low"] == opened["price"]
+    assert opened["rangePosition"] is None and opened["pullbackFromHighPercent"] == 0.0
+    assert opened["amplitudePercent"] == quote_values(1)["zf"] and opened["volumeRatio"] is not None
+    assert opened["turnoverYi"] is not None and opened["change5dPercent"] == regular["000001"]["change5dPercent"]
+
+    assert regular["000003"]["sessionPhase"] is None and regular["000003"]["open"] is not None
+    early = _board(harness_at("09:18", "call_auction", directory="order"))
+    late = _board(harness_at("10:30", None, directory="order-regular"))
+    assert [row["code"] for row in early["rows"]] == [row["code"] for row in late["rows"]]
 
 
 def test_the_board_works_on_a_database_with_no_picks_and_no_credentials_for_tushare(tmp_path, monkeypatch):

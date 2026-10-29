@@ -81,7 +81,7 @@ def test_v2_database_upgrades_to_v3_keeping_every_row(tmp_path):
     assert _version(path) == 4
     with db.read(path) as conn:
         snapshot = store.load_pool(conn)
-        assert snapshot.version == "kx-20261017-001" and snapshot.schema_version == 1
+        assert snapshot.version == "kx-20261017-001" and snapshot.members[0].theme is None
         assert snapshot.members == (store.Member("600000", "浦发银行", "银行", 0),
                                     store.Member("000001", "平安银行", "银行、保险", 1))
         raw = conn.execute("SELECT code, theme, first_seen, buyable FROM kx_pool ORDER BY position").fetchall()
@@ -93,14 +93,14 @@ def test_v2_database_upgrades_to_v3_keeping_every_row(tmp_path):
         assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
         assert db.latest_report(conn)["report_id"] == "r1"
     # 升级后能写 schema 2 的名单，也能再写回 schema 1 的名单
-    members2 = [store.Member("600001", "邯郸钢铁", None, 0, "钢铁复苏", date(2026, 10, 19), False)]
+    members2 = [store.Member("600001", "邯郸钢铁", None, 0, "钢铁复苏", date(2026, 10, 19))]
     with db.write(path) as conn:
         store.replace_pool(conn, version="kx-20261026-001", members=members2,
                            verified_at=datetime(2026, 10, 26, tzinfo=timezone.utc))
     with db.read(path) as conn:
         snapshot = store.load_pool(conn)
-        assert snapshot.schema_version == 2 and snapshot.members == tuple(members2)
-        assert tuple(conn.execute("SELECT industry, buyable FROM kx_pool").fetchone()) == ("", 0)  # 列非空：没有行业存空串
+        assert snapshot.members == tuple(members2)
+        assert tuple(conn.execute("SELECT industry, buyable FROM kx_pool").fetchone()) == ("", None)  # 列留着，一律为空
 
 
 def test_every_upgrade_path_ends_in_the_same_layout_as_a_fresh_database(tmp_path):
@@ -156,7 +156,8 @@ def test_a_database_that_was_only_version_downgraded_upgrades_again(tmp_path, ol
     db.init_schema(path)
     with db.write(path) as conn:
         store.replace_pool(conn, version="kx-20261026-001", verified_at=datetime(2026, 10, 26, tzinfo=timezone.utc),
-                           members=[store.Member("600001", "邯郸钢铁", None, 0, "钢铁复苏", date(2026, 10, 19), True)])
+                           members=[store.Member("600001", "邯郸钢铁", None, 0, "钢铁复苏", date(2026, 10, 19))])
+        conn.execute("UPDATE kx_pool SET buyable=1")  # 模拟 4.2.1 之前写入的值；升级不能把这一列清掉
     with closing(sqlite3.connect(path)) as conn:
         conn.execute(f"PRAGMA user_version={old_version}")
         conn.commit()
@@ -165,7 +166,9 @@ def test_a_database_that_was_only_version_downgraded_upgrades_again(tmp_path, ol
     assert _version(path) == 4
     with db.read(path) as conn:
         member = store.load_pool(conn).members[0]
-    assert (member.theme, member.first_seen, member.buyable) == ("钢铁复苏", date(2026, 10, 19), True)
+        assert conn.execute("SELECT buyable FROM kx_pool").fetchone()[0] == 1
+    assert (member.theme, member.first_seen) == ("钢铁复苏", date(2026, 10, 19))
+    assert not hasattr(member, "buyable")
 
 
 @pytest.mark.parametrize("version", [0, 5])
@@ -223,7 +226,7 @@ def test_the_previous_build_still_reads_and_writes_kx_pool_by_column_name(tmp_pa
     db.init_schema(path)
     with db.write(path) as conn:
         store.replace_pool(conn, version="kx-20261026-001", verified_at=datetime(2026, 10, 26, tzinfo=timezone.utc),
-                           members=[store.Member("600001", "邯郸钢铁", None, 0, "钢铁复苏", date(2026, 10, 19), True)])
+                           members=[store.Member("600001", "邯郸钢铁", None, 0, "钢铁复苏", date(2026, 10, 19))])
     with closing(sqlite3.connect(path)) as conn:  # B122 的 load_pool / replace_pool 语句原样
         rows = conn.execute("SELECT code, name, industry, position, version, verified_at FROM kx_pool "
                             "ORDER BY position").fetchall()
@@ -247,7 +250,7 @@ def _board(harness):
 def test_first_sync_validates_stores_and_serves_the_pool(tmp_path, monkeypatch):
     harness = build(tmp_path, monkeypatch)
     board = _board(harness)
-    assert board["pool"] == {"version": VERSION, "schemaVersion": 1, "count": 45,
+    assert board["pool"] == {"version": VERSION, "count": 45,
                              "checkedAt": "2026-10-20T10:30:00+08:00", "stale": False, "reason": None}
     assert len({row["code"] for row in board["rows"]}) == 45
     assert harness.kx.count("/kx/health") == 1 and harness.kx.count(f"/kx/read/{READ_KEY}") == 1

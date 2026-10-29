@@ -2,7 +2,6 @@
   "generatedAt": "2026-10-20T10:33:07+08:00",
   "pool": {
     "version": "kx-20261017",
-    "schemaVersion": 1,
     "count": 6,
     "checkedAt": "2026-10-20T10:31:07+08:00",
     "stale": true,
@@ -32,7 +31,6 @@
       "theme": null,
       "firstSeen": null,
       "heatDay": null,
-      "buyable": null,
       "highlight": "today",
       "lastPickedAt": "2026-10-20T10:20:00+08:00",
       "quoteStatus": "ok",
@@ -62,6 +60,7 @@
         "ma10": null,
         "ma20": null
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -71,7 +70,6 @@
       "theme": null,
       "firstSeen": null,
       "heatDay": null,
-      "buyable": null,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -101,6 +99,7 @@
         "ma10": null,
         "ma20": null
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -110,7 +109,6 @@
       "theme": null,
       "firstSeen": null,
       "heatDay": null,
-      "buyable": null,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -140,6 +138,7 @@
         "ma10": null,
         "ma20": null
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -149,7 +148,6 @@
       "theme": null,
       "firstSeen": null,
       "heatDay": null,
-      "buyable": null,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -179,6 +177,7 @@
         "ma10": null,
         "ma20": null
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -188,7 +187,6 @@
       "theme": null,
       "firstSeen": null,
       "heatDay": null,
-      "buyable": null,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "missing",
@@ -218,6 +216,7 @@
         "ma10": null,
         "ma20": null
       },
+      "sessionPhase": null,
       "note": "没有取得这只的行情"
     },
     {
@@ -227,7 +226,6 @@
       "theme": null,
       "firstSeen": null,
       "heatDay": null,
-      "buyable": null,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "stale",
@@ -257,6 +255,7 @@
         "ma10": null,
         "ma20": null
       },
+      "sessionPhase": null,
       "note": "报价日期是 2026-10-16，不是 2026-10-20"
     }
   ]

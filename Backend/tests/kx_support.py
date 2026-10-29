@@ -123,9 +123,8 @@ FIRST_SEEN = "2026-10-19"  # schema 2 名单里成员默认的 first_seen
 class FakeKx:
     members: list[tuple[str, str, str]]
     version: str = VERSION
-    schema: int = 1                   # 名单格式：1 带 sw_l2；2 带 theme、first_seen、buyable（题材由行业名换字得到）
-    first_seen: dict = field(default_factory=dict)  # schema 2：代码 -> first_seen，缺省 FIRST_SEEN
-    buyable: dict = field(default_factory=dict)     # schema 2：代码 -> buyable，缺省 True
+    schema: int = 1                   # 名单格式：1 带 sw_l2；2 与 3 带 theme、first_seen（不读 buyable）
+    first_seen: dict = field(default_factory=dict)  # schema 2/3：代码 -> first_seen，缺省 FIRST_SEEN
     down: bool = False
     pending: int = 0                  # 前几次读名单先返回「正在取数」
     page_patch: object = None         # 可调用：改写名单页面 JSON，用来造坏数据
@@ -136,10 +135,30 @@ class FakeKx:
         if self.schema == 1:
             return {"stock_code": code, "name": name, "sw_l2": [{"code": "801010.SI", "name": industry}],
                     "price": 1.0, "history": {"note": "x" * 50}}
-        # schema 2 的行：KX 还会带读取时现算的 heat_day 与行情字段，Neckline 一概不读 heat_day
+        # schema 2 与 3 的行：页面上还有 KX 自己的行情与 session_phase，Neckline 只读代码、名称、题材、首次入选日
         return {"stock_code": code, "name": name, "theme": industry.replace("行业", "题材"),
                 "first_seen": self.first_seen.get(code, FIRST_SEEN), "heat_day": 99,
-                "buyable": self.buyable.get(code, True), "price": 1.0}
+                "price": 1.0, "previous_close": 0.99, "change_percent": 1.01,
+                "open": 1.0, "high": 1.02, "low": 0.98, "turnover_amount": 1.0,
+                "amplitude_percent": 2.0, "turnover_percent": 1.5,
+                "source_time": "2026-10-29 10:30:00", "quote_status": "ok",
+                "missing_fields": [], "warnings": [], "session_phase": None, "under_200": True,
+                "history": {"note": "x" * 20}}
+
+    def _page(self) -> dict:
+        """schema 3 对齐 KX 0.3.0 的只读页；schema 1、2 多出来的键解析时忽略。"""
+        return {
+            "checked_at": "2026-10-29T01:30:00+08:00", "errors": [],
+            "fetched_at": "2026-10-29T01:30:00+08:00", "history_last_error": None,
+            "history_pending_count": 0, "history_target_date": "2026-10-28", "note": None,
+            "pool": {"status": "ok", "schema_version": self.schema, "version": self.version, "name": "KX热门池",
+                     "count": len(self.members), "updated_at": "2026-10-29T01:00:00+08:00",
+                     "checked_at": "2026-10-29T01:00:00+08:00", "read_only": True, "membership_locked": False,
+                     "calendar_warning": None, "generated_by": "kx", "generated_at": "2026-10-29T01:00:00+08:00"},
+            "refresh": {"date": "2026-10-29", "result": "updated"},
+            "rows": [self._row(code, name, industry) for code, name, industry in self.members],
+            "rules": "...", "source": "kx", "status": "partial",
+        }
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request.url.path)
@@ -157,13 +176,7 @@ class FakeKx:
                 self.pending -= 1
                 return httpx.Response(200, json={"status": "pending", "code": "refresh_pending",
                                                  "retry_after_seconds": 3})
-            body = {"status": "partial", "checked_at": "x",
-                    "pool": {"status": "ok", "version": self.version, "name": "KX热门池", "count": len(self.members),
-                             "schema_version": self.schema, "membership_locked": False},
-                    "rows": [self._row(code, name, industry) for code, name, industry in self.members],
-                    "rules": "..."}
-            if self.schema == 2:
-                body["refresh"] = {"date": "2026-10-20", "result": "updated"}
+            body = self._page()
             if self.page_patch:
                 body = self.page_patch(body)
             return httpx.Response(200, json=body)
@@ -191,6 +204,8 @@ class FakeMairui:
     members: list[tuple[str, str, str]]
     clock: Clock
     day: str = "2026-10-20"
+    quote_clock: str = "10:29:58"                        # 报价时刻，上海时间 HH:MM:SS
+    quote_shape: str | None = None                       # call_auction：o/h/l/cje/v 为 0；pre_open：o=h=l=p
     fail_groups: set = field(default_factory=set)       # 含有这些代码的批次返回错误
     stale_codes: dict = field(default_factory=dict)     # 代码 -> 报价日期（旧日期）
     drop_codes: set = field(default_factory=set)
@@ -210,7 +225,12 @@ class FakeMairui:
                 continue
             row = quote_values(index[code])
             day = self.stale_codes.get(code, self.day)
-            rows.append({"dm": code, **row, "pv": 1, "tv": 2, "pe": 3, "pb_ratio": 4, "t": f"{day} 10:29:58"})
+            if code not in self.stale_codes and self.quote_shape == "call_auction":
+                row.update(o=0, h=0, l=0, cje=0, v=0)  # zf、tr 保持非零，看板不能拿它们当依据
+            elif code not in self.stale_codes and self.quote_shape == "pre_open":
+                row.update(o=row["p"], h=row["p"], l=row["p"])
+            rows.append({"dm": code, **row, "pv": 1, "tv": 2, "pe": 3, "pb_ratio": 4,
+                         "t": f"{day} {self.quote_clock}"})
         return httpx.Response(200, json=rows)
 
 

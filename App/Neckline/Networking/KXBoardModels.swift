@@ -66,12 +66,26 @@ struct KXAverages: Decodable, Equatable {
 
 struct KXPool: Decodable, Equatable {
     let version: String
-    /// KX 名单的结构版本：1 有行业，2 有题材、首次入选与能否买入。旧后端没有这个字段。
-    let schemaVersion: Int?
     let count: Int
     let checkedAt: String
     let stale: Bool
     let reason: String?
+}
+
+/// 报价时刻所处的竞价阶段。不认识的字符串按 unknown，不让整份看板解码失败；界面上 unknown 与空都不出标签。
+enum KXSessionPhase: Decodable, Equatable {
+    case callAuction
+    case preOpen
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "call_auction": self = .callAuction
+        case "pre_open": self = .preOpen
+        default: self = .unknown
+        }
+    }
 }
 
 struct KXSession: Decodable, Equatable {
@@ -94,7 +108,7 @@ struct KXRow: Decodable, Equatable, Identifiable {
     let code: String
     var id: String { code }
     let name: String
-    /// schema 1 名单才有；schema 2 名单为空。
+    /// schema 1 名单才有；schema 2、3 名单为空。
     let industry: String?
     /// 题材（KX 按市场说法写的，不超过 80 字）。schema 1 名单为空。
     let theme: String?
@@ -102,8 +116,8 @@ struct KXRow: Decodable, Equatable, Identifiable {
     let firstSeen: String?
     /// 入选第几个交易日：1 是首日。空表示没有这项数据。
     let heatDay: Int?
-    /// 能不能买入：false 是一字板买不进；空表示未知，不当成能买。
-    let buyable: Bool?
+    /// 只有报价取到且是当天时才可能有。空、或不认识的值，都不出阶段标签。
+    let sessionPhase: KXSessionPhase?
     let highlight: KXHighlight
     let lastPickedAt: String?
     let quoteStatus: KXQuoteStatus

@@ -1,0 +1,314 @@
+{
+  "generatedAt": "2026-10-20T09:27:00+08:00",
+  "pool": {
+    "version": "kx-20261020-pre",
+    "count": 6,
+    "checkedAt": "2026-10-20T09:27:00+08:00",
+    "stale": false,
+    "reason": null
+  },
+  "session": {
+    "tradeDate": "2026-10-20",
+    "inSession": true,
+    "refreshSeconds": 60,
+    "quoteTime": "2026-10-20T09:27:00+08:00"
+  },
+  "stats": {
+    "asOf": "2026-10-19"
+  },
+  "picks": {
+    "referenceDate": "2026-10-20",
+    "lastPickAt": null
+  },
+  "gaps": [],
+  "rows": [
+    {
+      "code": "600005",
+      "name": "股票05",
+      "industry": null,
+      "theme": "题材1",
+      "firstSeen": "2026-10-19",
+      "heatDay": 2,
+      "highlight": "normal",
+      "lastPickedAt": null,
+      "quoteStatus": "ok",
+      "price": 11.98,
+      "changePercent": 1.96,
+      "changeAmount": 0.23,
+      "open": 11.98,
+      "high": 11.98,
+      "low": 11.98,
+      "previousClose": 11.75,
+      "amplitudePercent": 4.0,
+      "turnoverRatePercent": 1.5,
+      "turnoverYi": 0.6,
+      "volumeLots": 50083.0,
+      "openChangePercent": 1.96,
+      "rangePosition": null,
+      "pullbackFromHighPercent": 0.0,
+      "quoteTime": "2026-10-20T09:27:00+08:00",
+      "change5dPercent": 3.72,
+      "change20dPercent": 10.93,
+      "avgTurnover20Yi": 0.6,
+      "volumeRatio": 1.0,
+      "totalMvYi": 10.71,
+      "circMvYi": 6.37,
+      "averages": {
+        "ma5": {
+          "value": 11.65,
+          "position": "above"
+        },
+        "ma10": {
+          "value": 11.525,
+          "position": "above"
+        },
+        "ma20": {
+          "value": 11.275,
+          "position": "above"
+        }
+      },
+      "sessionPhase": "pre_open",
+      "note": null
+    },
+    {
+      "code": "000004",
+      "name": "股票04",
+      "industry": null,
+      "theme": "题材0",
+      "firstSeen": "2026-10-19",
+      "heatDay": 2,
+      "highlight": "normal",
+      "lastPickedAt": null,
+      "quoteStatus": "ok",
+      "price": 11.51,
+      "changePercent": 0.96,
+      "changeAmount": 0.11,
+      "open": 11.51,
+      "high": 11.51,
+      "low": 11.51,
+      "previousClose": 11.4,
+      "amplitudePercent": 3.07,
+      "turnoverRatePercent": 1.4,
+      "turnoverYi": 1.5,
+      "volumeLots": 130321.0,
+      "openChangePercent": 0.96,
+      "rangePosition": null,
+      "pullbackFromHighPercent": 0.0,
+      "quoteTime": "2026-10-20T09:27:00+08:00",
+      "change5dPercent": 2.77,
+      "change20dPercent": 10.14,
+      "avgTurnover20Yi": 0.5,
+      "volumeRatio": 3.0,
+      "totalMvYi": 10.5,
+      "circMvYi": 6.26,
+      "averages": {
+        "ma5": {
+          "value": 11.3,
+          "position": "above"
+        },
+        "ma10": {
+          "value": 11.175,
+          "position": "above"
+        },
+        "ma20": {
+          "value": 10.925,
+          "position": "above"
+        }
+      },
+      "sessionPhase": "pre_open",
+      "note": null
+    },
+    {
+      "code": "000003",
+      "name": "股票03",
+      "industry": null,
+      "theme": "题材3",
+      "firstSeen": "2026-10-19",
+      "heatDay": 2,
+      "highlight": "normal",
+      "lastPickedAt": null,
+      "quoteStatus": "ok",
+      "price": 11.05,
+      "changePercent": 0.0,
+      "changeAmount": 0.0,
+      "open": 11.05,
+      "high": 11.05,
+      "low": 11.05,
+      "previousClose": 11.05,
+      "amplitudePercent": 3.98,
+      "turnoverRatePercent": 1.3,
+      "turnoverYi": 1.0,
+      "volumeLots": 90498.0,
+      "openChangePercent": 0.0,
+      "rangePosition": null,
+      "pullbackFromHighPercent": 0.0,
+      "quoteTime": "2026-10-20T09:27:00+08:00",
+      "change5dPercent": 1.84,
+      "change20dPercent": 9.41,
+      "avgTurnover20Yi": 0.4,
+      "volumeRatio": 2.5,
+      "totalMvYi": 10.3,
+      "circMvYi": 6.15,
+      "averages": {
+        "ma5": {
+          "value": 10.95,
+          "position": "above"
+        },
+        "ma10": {
+          "value": 10.825,
+          "position": "above"
+        },
+        "ma20": {
+          "value": 10.575,
+          "position": "above"
+        }
+      },
+      "sessionPhase": "pre_open",
+      "note": null
+    },
+    {
+      "code": "000002",
+      "name": "股票02",
+      "industry": null,
+      "theme": "题材2",
+      "firstSeen": "2026-10-19",
+      "heatDay": 2,
+      "highlight": "normal",
+      "lastPickedAt": null,
+      "quoteStatus": "ok",
+      "price": 10.59,
+      "changePercent": -1.03,
+      "changeAmount": -0.11,
+      "open": 10.59,
+      "high": 10.59,
+      "low": 10.59,
+      "previousClose": 10.7,
+      "amplitudePercent": 5.14,
+      "turnoverRatePercent": 1.2,
+      "turnoverYi": 0.6,
+      "volumeLots": 56657.0,
+      "openChangePercent": -1.03,
+      "rangePosition": null,
+      "pullbackFromHighPercent": 0.0,
+      "quoteTime": "2026-10-20T09:27:00+08:00",
+      "change5dPercent": 0.86,
+      "change20dPercent": 8.62,
+      "avgTurnover20Yi": 0.3,
+      "volumeRatio": 2.0,
+      "totalMvYi": 10.1,
+      "circMvYi": 6.04,
+      "averages": {
+        "ma5": {
+          "value": 10.6,
+          "position": "below"
+        },
+        "ma10": {
+          "value": 10.475,
+          "position": "above"
+        },
+        "ma20": {
+          "value": 10.225,
+          "position": "above"
+        }
+      },
+      "sessionPhase": "pre_open",
+      "note": null
+    },
+    {
+      "code": "000001",
+      "name": "股票01",
+      "industry": null,
+      "theme": "题材1",
+      "firstSeen": "2026-10-19",
+      "heatDay": 2,
+      "highlight": "normal",
+      "lastPickedAt": null,
+      "quoteStatus": "ok",
+      "price": 10.14,
+      "changePercent": -2.03,
+      "changeAmount": -0.21,
+      "open": 10.14,
+      "high": 10.14,
+      "low": 10.14,
+      "previousClose": 10.35,
+      "amplitudePercent": 5.99,
+      "turnoverRatePercent": 1.1,
+      "turnoverYi": 0.3,
+      "volumeLots": 29586.0,
+      "openChangePercent": -2.03,
+      "rangePosition": null,
+      "pullbackFromHighPercent": 0.0,
+      "quoteTime": "2026-10-20T09:27:00+08:00",
+      "change5dPercent": -0.1,
+      "change20dPercent": 7.87,
+      "avgTurnover20Yi": 0.2,
+      "volumeRatio": 1.5,
+      "totalMvYi": 9.9,
+      "circMvYi": 5.93,
+      "averages": {
+        "ma5": {
+          "value": 10.25,
+          "position": "below"
+        },
+        "ma10": {
+          "value": 10.125,
+          "position": "above"
+        },
+        "ma20": {
+          "value": 9.875,
+          "position": "above"
+        }
+      },
+      "sessionPhase": "pre_open",
+      "note": null
+    },
+    {
+      "code": "000000",
+      "name": "股票00",
+      "industry": null,
+      "theme": "题材0",
+      "firstSeen": "2026-10-20",
+      "heatDay": 1,
+      "highlight": "normal",
+      "lastPickedAt": null,
+      "quoteStatus": "ok",
+      "price": 9.7,
+      "changePercent": -3.0,
+      "changeAmount": -0.3,
+      "open": 9.7,
+      "high": 9.7,
+      "low": 9.7,
+      "previousClose": 10.0,
+      "amplitudePercent": 7.0,
+      "turnoverRatePercent": 1.0,
+      "turnoverYi": 0.1,
+      "volumeLots": 10309.0,
+      "openChangePercent": -3.0,
+      "rangePosition": null,
+      "pullbackFromHighPercent": 0.0,
+      "quoteTime": "2026-10-20T09:27:00+08:00",
+      "change5dPercent": -1.02,
+      "change20dPercent": 7.18,
+      "avgTurnover20Yi": 0.1,
+      "volumeRatio": 1.0,
+      "totalMvYi": 9.7,
+      "circMvYi": 5.82,
+      "averages": {
+        "ma5": {
+          "value": 9.9,
+          "position": "below"
+        },
+        "ma10": {
+          "value": 9.775,
+          "position": "below"
+        },
+        "ma20": {
+          "value": 9.525,
+          "position": "above"
+        }
+      },
+      "sessionPhase": "pre_open",
+      "note": null
+    }
+  ]
+}

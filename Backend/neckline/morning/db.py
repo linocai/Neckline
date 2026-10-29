@@ -100,8 +100,9 @@ CREATE TABLE IF NOT EXISTS push_log (
 );
 """
 
-# 版本 2 新增三张 KX 表（只加表，不改版本 1 的任何表）；版本 3 在 kx_pool 末尾加 theme / first_seen / buyable
-# （KX 名单 schema 2 的字段；schema 1 的名单这三列为 NULL，industry 为空串表示没有行业）。
+# 版本 2 新增三张 KX 表（只加表，不改版本 1 的任何表）；版本 3 在 kx_pool 末尾加 theme / first_seen / buyable。
+# theme、first_seen 是 schema 2/3 的字段（schema 1 为 NULL，industry 为空串表示没有行业）。
+# buyable 这一列 4.2.1 起不再使用、一律为空，保留是为了不升库结构。
 KX_DDL = """
 CREATE TABLE IF NOT EXISTS kx_pool (
   code TEXT PRIMARY KEY CHECK(length(code) = 6),

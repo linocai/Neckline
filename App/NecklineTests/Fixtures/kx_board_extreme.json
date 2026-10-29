@@ -2,7 +2,6 @@
  "generatedAt": "2026-10-20T10:31:07+08:00",
  "pool": {
   "version": "kx-20261017",
-  "schemaVersion": 2,
   "count": 4,
   "checkedAt": "2026-10-20T10:31:07+08:00",
   "stale": false,
@@ -30,7 +29,6 @@
    "theme": "人形机器人灵巧手与减速器供应链，绑定头部整机厂订单预期，同时布局低空经济、固态电池材料与算力液冷服务器，题材覆盖面非常广，另有商业航天与卫星互联网新增订单传闻等",
    "firstSeen": "2026-10-09",
    "heatDay": 12,
-   "buyable": false,
    "highlight": "today",
    "lastPickedAt": "2026-10-20T10:20:00+08:00",
    "quoteStatus": "ok",
@@ -69,7 +67,8 @@
      "position": "flat"
     }
    },
-   "note": null
+   "note": null,
+   "sessionPhase": null
   },
   {
    "code": "300002",
@@ -78,7 +77,6 @@
    "theme": "人形机器人灵巧手与减速器供应链，绑定头部整机厂订单预期，同时布局低空经济、固态电池材料与算力液冷服务器，题材覆盖面非常广，另有商业航天与卫星互联网新增订单传闻等",
    "firstSeen": "2026-10-17",
    "heatDay": 4,
-   "buyable": true,
    "highlight": "faded",
    "lastPickedAt": "2026-10-19T14:20:00+08:00",
    "quoteStatus": "ok",
@@ -117,7 +115,8 @@
      "position": "flat"
     }
    },
-   "note": null
+   "note": null,
+   "sessionPhase": null
   },
   {
    "code": "300003",
@@ -126,7 +125,6 @@
    "theme": null,
    "firstSeen": "2026-10-20",
    "heatDay": 1,
-   "buyable": false,
    "highlight": "normal",
    "lastPickedAt": null,
    "quoteStatus": "ok",
@@ -165,7 +163,8 @@
      "position": "flat"
     }
    },
-   "note": null
+   "note": null,
+   "sessionPhase": null
   },
   {
    "code": "300004",
@@ -174,7 +173,6 @@
    "theme": "人形机器人灵巧手与减速器供应链，绑定头部整机厂订单预期，同时布局低空经济、固态电池材料与算力液冷服务器，题材覆盖面非常广，另有商业航天与卫星互联网新增订单传闻等",
    "firstSeen": null,
    "heatDay": null,
-   "buyable": null,
    "highlight": "normal",
    "lastPickedAt": null,
    "quoteStatus": "ok",
@@ -213,7 +211,8 @@
      "position": "flat"
     }
    },
-   "note": null
+   "note": null,
+   "sessionPhase": null
   }
  ]
 }

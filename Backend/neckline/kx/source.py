@@ -85,11 +85,11 @@ def _first_seen(value: object) -> date | None:
 
 
 def _schema_version(meta: dict) -> int | None:
-    """pool.schema_version：缺失视为 1；只认整数 1 与 2（布尔、浮点、字符串和其他数都不认）。"""
+    """pool.schema_version：缺失视为 1；只认整数 1、2、3（布尔、浮点、字符串和其他整数都不认）。"""
     if "schema_version" not in meta:
         return 1
     value = meta["schema_version"]
-    return value if type(value) is int and value in (1, 2) else None
+    return value if type(value) is int and value in (1, 2, 3) else None
 
 
 def _member_v1(row: dict, index: int) -> Member | None:
@@ -99,17 +99,18 @@ def _member_v1(row: dict, index: int) -> Member | None:
     return Member(row["stock_code"], name, industry, index)
 
 
-def _member_v2(row: dict, index: int) -> Member | None:
+def _member_themed(row: dict, index: int) -> Member | None:
+    """schema 2 与 3 同一种格式：要名称、题材、首次入选日。不读 buyable，有没有、是什么值都不影响。"""
     name, theme = _text(row.get("name")), _text(row.get("theme"))
-    first_seen, buyable = _first_seen(row.get("first_seen")), row.get("buyable")
-    if name is None or theme is None or first_seen is None or not isinstance(buyable, bool):
+    first_seen = _first_seen(row.get("first_seen"))
+    if name is None or theme is None or first_seen is None:
         return None
     # heat_day 不读：KX 在读取时按交易日历现算，名单不变时我们不会重读，由 Neckline 自己算。
-    return Member(row["stock_code"], name, None, index, theme, first_seen, buyable)
+    return Member(row["stock_code"], name, None, index, theme, first_seen)
 
 
 def parse_pool(body: object, health: Health) -> PoolDocument:
-    """严格校验：按 pool.schema_version 分支（1 要行业，2 要题材、首次入选日与能否买入），
+    """严格校验：schema 1 要行业；schema 2 与 3 用同一个解析（要题材、首次入选日，不读 buyable）。
     代码格式、不重复，数量和版本号与健康检查一致。"""
     bad = KxError("kx_bad_pool", "KX 名单格式不合格，没有采用。")
     if not isinstance(body, dict) or body.get("status") not in ("ok", "partial"):
@@ -123,7 +124,7 @@ def parse_pool(body: object, health: Health) -> PoolDocument:
     schema = _schema_version(meta)
     if schema is None or len(rows) != count:
         raise bad
-    build = _member_v1 if schema == 1 else _member_v2
+    build = _member_v1 if schema == 1 else _member_themed
     members: list[Member] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):

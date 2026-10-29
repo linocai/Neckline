@@ -104,7 +104,7 @@ enum KXMetrics {
     /// 名称与第一列数字之间至少留的空白，也是数字列之间的最小空白。
     static let columnGap: CGFloat = 6
     static let rowHeight: CGFloat = 52
-    /// 有第二行（热度、一字板、题材）的行，样图 A1 的 .r2：上内边距 7、第一行 34、与第二行间距 4、第二行 17、下内边距 6，共 68。
+    /// 有第二行（热度、阶段、题材）的行，样图 A1 的 .r2：上内边距 7、第一行 34、与第二行间距 4、第二行 17、下内边距 6，共 68。
     /// 34 与 17 是样图在浏览器里量出的行高（15 与 12 的字号加行距），没有第二行的行仍是 52。
     static let twoLineTop: CGFloat = 7
     static let twoLineBottom: CGFloat = 6

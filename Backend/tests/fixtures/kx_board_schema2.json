@@ -2,7 +2,6 @@
   "generatedAt": "2026-10-20T10:31:07+08:00",
   "pool": {
     "version": "kx-20261020-001",
-    "schemaVersion": 2,
     "count": 12,
     "checkedAt": "2026-10-20T10:31:07+08:00",
     "stale": false,
@@ -30,7 +29,6 @@
       "theme": "题材2",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": true,
       "highlight": "today",
       "lastPickedAt": "2026-10-20T10:20:00+08:00",
       "quoteStatus": "ok",
@@ -69,6 +67,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -78,7 +77,6 @@
       "theme": "题材3",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": false,
       "highlight": "faded",
       "lastPickedAt": "2026-10-19T14:20:00+08:00",
       "quoteStatus": "ok",
@@ -117,6 +115,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -126,7 +125,6 @@
       "theme": "题材2",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -165,6 +163,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -174,7 +173,6 @@
       "theme": "题材1",
       "firstSeen": "2026-10-01",
       "heatDay": 9,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -213,6 +211,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -222,7 +221,6 @@
       "theme": "题材3",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -261,6 +259,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -270,7 +269,6 @@
       "theme": "题材0",
       "firstSeen": "2026-10-21",
       "heatDay": null,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -309,6 +307,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -318,7 +317,6 @@
       "theme": "题材3",
       "firstSeen": "2026-10-17",
       "heatDay": 2,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -357,6 +355,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -366,7 +365,6 @@
       "theme": "题材1",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -405,6 +403,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -414,7 +413,6 @@
       "theme": "题材2",
       "firstSeen": "2026-10-16",
       "heatDay": 3,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -453,6 +451,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -462,7 +461,6 @@
       "theme": "题材1",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": false,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -501,6 +499,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -510,7 +509,6 @@
       "theme": "题材0",
       "firstSeen": "2026-10-19",
       "heatDay": 2,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -549,6 +547,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     },
     {
@@ -558,7 +557,6 @@
       "theme": "题材0",
       "firstSeen": "2026-10-20",
       "heatDay": 1,
-      "buyable": true,
       "highlight": "normal",
       "lastPickedAt": null,
       "quoteStatus": "ok",
@@ -597,6 +595,7 @@
           "position": "above"
         }
       },
+      "sessionPhase": null,
       "note": null
     }
   ]
