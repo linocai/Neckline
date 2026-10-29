@@ -1,6 +1,6 @@
 # Neckline
 
-自用创业板选股器（K10-v5：以消息为起点）。**现状（2026-10-28）：现役 4.2.0 B126（App 4.2.0 (124)）。** App 分为 K10（晨报）和 KX（KX 热门池实时看板，带题材、热度、能否买入；Agent 推荐的票置顶）两块。
+自用创业板选股器（K10-v5：以消息为起点）。**现状（2026-10-29）：现役 4.2.0 B127（App 4.2.0 (124)）。** App 分为 K10（晨报）和 KX（KX 热门池实时看板，带题材、热度、能否买入；Agent 推荐的票置顶）两块。
 
 - **晨报**：每个交易日早上出一份，窗口为上个交易日 15:00 → 当天 08:00。
 - **流程**：一级初筛（DeepSeek 分类）→ 二级数据准备（公告 PDF、公司快照、价格背景、业绩另算，纯代码）→ 三级评估（每条一次，回答四个问题，①②一票否决）→ 只推判「推」的，最多 10 条，可以 0 条。判「不推」的评估连同数据包存在后台（`evaluations` 表），不显示。
@@ -18,7 +18,7 @@
 - 配置：`/opt/neckline/.env`（TuShare、金十、麦蕊、APNs、API 令牌、MCP 公开地址与连接口令哈希、OAuth 状态库路径）、`/etc/neckline/v4.env`（V4 库路径、DeepSeek 密钥、网页访问码，root:neckline 0640）。V4 库 `/opt/neckline/data/v4.db`，MCP 的 OAuth 状态库 `/opt/neckline/data/mcp-auth.db`。DeepSeek 密钥已不归 App 设置页管。
 - V4 命令（以 neckline 用户、先加载两个环境文件）：`/opt/neckline/.venv/bin/python -m neckline.morning.cli {collect|morning|finalize|show|evaluations}`。晨报服务的 `TimeoutStartSec` 为 80 分钟（`/etc/systemd/system/neckline-v4-morning.service`，不由 release.py 管，改动要手工备份后替换）。
 - 依赖另装：release.py 只装 Neckline 自己的 wheel；4.2.0 新增依赖 pypdf（读巨潮公告 PDF）。
-- 筛选、评估与交付规则在 `Backend/neckline/config/screening-v3.json`（K10-v5，用户 2026-10-27 确认；收录口径沿用 2026-10-18 的点评，见 `archive/2026-10-18_消息偏好点评.md`）。公司池随代码发布并按哈希核对；改规则须升版本并经用户确认。评估收口 09:05（到点没评完的记为缺口），截止 09:15；评估前代码给每条候选调一次 DeepSeek Search（取 10 条，B126 起），结果只补背景和各方观点，不能推翻公告数字。
+- 筛选、评估与交付规则在 `Backend/neckline/config/screening-v3.json`（K10-v5，用户 2026-10-27 确认；收录口径沿用 2026-10-18 的点评，见 `archive/2026-10-18_消息偏好点评.md`）。公司池随代码发布并按哈希核对；改规则须升版本并经用户确认。评估收口 09:05（到点没评完的记为缺口），截止 09:15；评估前代码给每条候选调一次 DeepSeek Search（取 10 条，B126 起），结果只补背景和各方观点，不能推翻公告数字。评估输出没通过格式检查时，带着原输出再问模型一次修正格式（每条最多一次，B127 起）。
 - 复盘时查看当期全部评估（推与不推）：`/opt/neckline/.venv/bin/python -m neckline.morning.cli evaluations --date <日期> [--json]`（只读）。
 - TuShare `major_news` 每个账号每天最多调用 40 次：彩排、手工采集都占这个额度。
 - B92（2026-09-27）之前的数据永远不读取、不导入、不恢复。
