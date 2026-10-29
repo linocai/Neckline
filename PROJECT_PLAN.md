@@ -1,8 +1,8 @@
-# Neckline · 4.2.0
+# Neckline · 4.2.1
 
 唯一工程控制面。项目规则见 [CLAUDE.md](CLAUDE.md)。
 
-- **4.2.1（KX 看板跟进 KX 0.3.0，施工中）**：计划、决定与证据见 [archive/v4.2.1_execution.md](archive/v4.2.1_execution.md)。
+- **4.2.1（KX 看板跟进 KX 0.3.0，已上线）**：计划、决定与证据见 [archive/v4.2.1_execution.md](archive/v4.2.1_execution.md)。
 - **4.2.0（K10-v5，已上线）**：计划、契约与执行证据见 [archive/v4.2.0_execution.md](archive/v4.2.0_execution.md)；需求来源是 `whynotme/K10.md`（K10-v5，2026-10-27 用户确认）。
 - **V4**：详细计划与阶段证据见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)。
 - v3 的历史只在 `archive/` 与 Git 中。
@@ -35,31 +35,23 @@ V4 覆盖固定的 1,089 家创业板公司，另有 KX 看板（4.1.0）。4.2.
 
 ## 当前状态（2026-10-29）
 
-- **现役后端 4.2.0 B127**（`384abc1`，tag `v4.2.0-b127`，10/29 11:19 切换，库结构 v4，配置 `screening-v3`）。B127 是快修：评估输出不合格时再问模型一次修正格式，见 [B127 记录](archive/v4.2.0-b127_execution.md)。B126 接上了 D4 联网搜索，见 [B126 记录](archive/v4.2.0-b126_execution.md)。B125 是上线后审查的快修，见 [B125 记录](archive/v4.2.0-b125_execution.md)。B124 的发布、核对与回退见 [v4.2.0 记录](archive/v4.2.0_execution.md) §6。旧 build 记录：[B123](archive/v4.1.0-b123_execution.md)、[B122](archive/v4.1.0-b122_execution.md)、[4.1.0/B121](archive/v4.1.0_execution.md)、[B120](archive/v4.0.1-b120_execution.md)。
-- **App 4.2.0 (124)**：K10 晨报按 v5 结构显示（结论、四个问题、红色风险、蓝色观点），KX 看板不变。macOS 已覆盖安装；iOS 待用户用 Xcode 安装（旧版 122 读不了新晨报）。
+- **现役后端 4.2.1 B128**（`e831f1c`，tag `v4.2.1-b128`，10/29 12:19 切换，库结构 v4，配置 `screening-v3`）。B128 让 KX 看板跟上 KX 0.3.0，见 [4.2.1 记录](archive/v4.2.1_execution.md)。B127 是快修：评估输出不合格时再问模型一次修正格式，见 [B127 记录](archive/v4.2.0-b127_execution.md)。B126 接上了 D4 联网搜索，见 [B126 记录](archive/v4.2.0-b126_execution.md)。B125 是上线后审查的快修，见 [B125 记录](archive/v4.2.0-b125_execution.md)。B124 的发布、核对与回退见 [v4.2.0 记录](archive/v4.2.0_execution.md) §6。旧 build 记录：[B123](archive/v4.1.0-b123_execution.md)、[B122](archive/v4.1.0-b122_execution.md)、[4.1.0/B121](archive/v4.1.0_execution.md)、[B120](archive/v4.0.1-b120_execution.md)。
+- **App 4.2.1 (128)**：KX 看板去掉一字板与「可买」列，9:15–9:30 标「竞价中」「开盘价」；K10 晨报同 4.2.0。macOS 已覆盖安装；iOS 待用户用 Xcode 安装（旧版 124 也能读新看板，只是没有阶段标签）。
 - **晨报（K10-v5）**：一级初筛 → 数据准备 → 评估 → 最多推 10 条。评估收口 09:05，截止 09:15。首期 10/29 08:10 出报，推 10 条，核对见 [B126 记录 §6](archive/v4.2.0-b126_execution.md)。
 - **联网（D4）**：B126 起已接上。评估前代码给每条候选调一次 DeepSeek Search，取 10 条结果，只用来补背景和各方观点，不能推翻公告数字。首期 76 次搜索 0 失败，68% 的观点引用了搜索结果。
 - **MCP**：5 个只读工具，简要提示词已更新为 v5。三家 Agent 的实测由用户做。
-- **KX**：KX 0.3.0 换了访问码（旧码 404）、名单升到 schema 3、不再给 `buyable`，线上看板停在旧名单上（标「未能核对」）；4.2.1 修，见 [4.2.1 记录](archive/v4.2.1_execution.md)。推荐接收接口 `/api/v4/kx/picks` 只放行 HZ，KX 那边的转发未做。
+- **KX**：B128 起读 KX 0.3.0 的新访问码与 schema 3 名单（10/29 名单 `kx-20261029-001`，20 只）；不显示一字板与能否买入；竞价时段按 Neckline 自己的报价时间判定。推荐接收接口 `/api/v4/kx/picks` 只放行 HZ，KX 那边的转发未做。
 - **额度**：麦蕊体验版总量 20 万次（约到 12-28），与 KX 共用。TuShare major_news 每天 40 次。
 - **遗留**：
-  - 发布目录：本机和服务器各有 B113–B127 共 15 个，只留最近两个；
-  - 4.2.0 和 D4 回放的临时产物待删，清单在 `Backend/.work/cleanup-4.2.0.sh`、`Backend/.work/cleanup-d4.sh`，由用户执行；
-  - NB 上的 venv 备份和服务单元备份，稳定一周后再删。
+  - 发布目录：本机和服务器各有 B113–B128 共 16 个，只留最近两个；
+  - 4.2.0、D4 回放与 4.2.1 的临时产物待删，清单在 `Backend/.work/cleanup-4.2.0.sh`、`cleanup-d4.sh`、`cleanup-4.2.1.sh`，由用户执行；
+  - NB 上的 venv 备份、服务单元备份和 `.env.bak-20261029-b128`，稳定一周后再删。
 
 ## 当前 Plan
 
-**4.2.1 B128（App 与后端一起，版本由用户定）**，决定 D1–D6 见 [4.2.1 记录 §2](archive/v4.2.1_execution.md#2-关键决定)，D4 上线前请用户确认：
-
-- B1 后端：接受 schema 3、删 `buyable` 与 `schemaVersion`、按报价时间标竞价时段、当天行情从 09:15 起算。验收：全量 pytest 全绿，竞价、开盘价、9:30 后三种时刻的注入测试。
-- B2 App：删一字板与「可买」列，加「竞价中」「开盘价」标签，4.2.1 (128)。验收：三条构建、XCTest 通过数、真实响应解码。
-- B3 截图：有数据（新链接的线上看板）、无数据、竞价中。
-- B4 上线（用户放行）：换 `KX_READ_KEY`，切到 v4.2.1-b128，tag，macOS 本机安装。验收：看板读到当天名单、不标「未能核对」。
-
-**其他**：
-
-1. **核对 B127 修正**：10/30 晨报看 `stats.evaluation` 的 `repairs`、`repaired`；有修正时抽查修正前后的原文。真实 DeepSeek 对修正请求的响应还没验证过。
-2. **清理**：用户执行 `Backend/.work/cleanup-4.2.0.sh` 和 `cleanup-d4.sh`；发布目录只留最近两个。
+1. **核对 B128 竞价显示**：10/30 9:15–9:30 看 KX 看板，竞价中、开盘价两段标签与留空项是否如预期；开盘前几秒麦蕊可能还给旧报价，那几行会短暂灰显。
+2. **核对 B127 修正**：10/30 晨报看 `stats.evaluation` 的 `repairs`、`repaired`；有修正时抽查修正前后的原文。真实 DeepSeek 对修正请求的响应还没验证过。
+3. **清理**：用户执行 `Backend/.work/cleanup-4.2.0.sh`、`cleanup-d4.sh`、`cleanup-4.2.1.sh`；发布目录只留最近两个。
 
 ## 待决定（用户）
 
@@ -104,4 +96,4 @@ V4 覆盖固定的 1,089 家创业板公司，另有 KX 看板（4.1.0）。4.2.
 - 2026-10-28：4.2.0 B126：D4 联网搜索上线（方案 A，count 10，用户定）。四期回放显示判定变化在模型随机波动以内，作用在观点与背景；见 [B126 记录](archive/v4.2.0-b126_execution.md)。
 - 2026-10-29：首期线上 v5 联网晨报 08:10 出报，候选 76、判推 13、推 10；搜索 0 失败；2 条因坏 JSON 作废；见 [B126 记录 §6](archive/v4.2.0-b126_execution.md)。
 - 2026-10-29：4.2.0 B127（快修）：评估输出没通过格式检查时，带着原输出再问模型一次修正格式，每条最多一次；11:19 上线；见 [B127 记录](archive/v4.2.0-b127_execution.md)。
-- 2026-10-29：用户要求 KX 看板跟进 KX 0.3.0，进入正式工作流 4.2.1（B128）；见 [4.2.1 记录](archive/v4.2.1_execution.md)。
+- 2026-10-29：4.2.1 B128（正式工作流，版本由用户定）：KX 看板跟上 KX 0.3.0：换访问码、接受 schema 3、删一字板与能否买入、竞价时段按报价时间标注；12:19 上线，App 4.2.1 (128)；见 [4.2.1 记录](archive/v4.2.1_execution.md)。
