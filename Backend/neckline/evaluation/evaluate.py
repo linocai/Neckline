@@ -1,5 +1,6 @@
-"""三级评估：每条候选一次 DeepSeek，判「推」或「不推」，连同数据包写入 evaluations。
+"""三级评估：每条候选问 DeepSeek，判「推」或「不推」，连同数据包写入 evaluations。
 
+模型正常结束但格式不合格时，带着原输出再问一次，只修正格式。
 续跑用库里的数据包，请求体不变，回执命中就不重复计费。
 结果不明（gap / unknown）不重发。①或②不过关却判推，整条无效。
 观点引用对不上的逐条删掉并计数，不让整条失效。
@@ -26,6 +27,11 @@ from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 _HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _REF = re.compile(r"^[mas]\d+$")
 _GAP = "收口时刻前没评完"
+_REPAIR_PROMPT = (
+    "你上一条输出没有通过格式检查：{reason}。"
+    "请对照系统提示里的输出格式，把同一份评估重新完整输出为一个 JSON 对象。"
+    "判断和结论不要改，只修正格式；缺的字段按你原来的分析写全。"
+)
 _WAIT_SECONDS = 5.0
 _USAGE = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "reasoning_tokens")
 _VIEWS = ("媒体", "券商", "公司")
@@ -70,8 +76,10 @@ class EvaluationItem:
 class _Hit:
     item: EvaluationItem
     fatal: str | None = None
-    counted_call: bool = False
-    from_receipt: bool = False
+    counted_call: int = 0  # 这次新发出的调用，一条最多两次
+    from_receipt: int = 0
+    repairs: int = 0  # 发出或从回执读回的修正
+    repaired: int = 0  # 修正后格式合格
     usage: dict[str, int] | None = None
     dropped: int = 0
     vetoed: bool = False
@@ -222,6 +230,10 @@ def _empty_usage() -> dict[str, int]:
     return {key: 0 for key in _USAGE}
 
 
+def _add_usage(left: Mapping[str, int], right: Mapping[str, int]) -> dict[str, int]:
+    return {key: left.get(key, 0) + right.get(key, 0) for key in _USAGE}
+
+
 def _company_code(candidate: object) -> str:
     raw = getattr(candidate, "company", None)
     if raw is None:
@@ -318,20 +330,21 @@ def _align(db_path: Path, report_id: str, company: str, hit: _Hit) -> _Hit:
     stored = _reuse(company, row)
     if stored is None or stored.state == hit.item.state:
         return hit
-    return _Hit(item=stored, counted_call=hit.counted_call, from_receipt=hit.from_receipt, usage=hit.usage)
+    return _Hit(item=stored, counted_call=hit.counted_call, from_receipt=hit.from_receipt,
+                repairs=hit.repairs, repaired=hit.repaired, usage=hit.usage)
 
 
 def _tally(items: list[EvaluationItem], hits: list[_Hit], seconds: float) -> tuple[dict[str, Any], str | None]:
     usage = _empty_usage()
-    calls = from_receipt = dropped = vetoed = 0
+    calls = from_receipt = repairs = repaired = dropped = vetoed = 0
     fatal = None
     verdicts = {"推": 0, "不推": 0}
     invalid = gap = 0
     for hit in hits:
-        if hit.counted_call:
-            calls += 1
-        if hit.from_receipt:
-            from_receipt += 1
+        calls += hit.counted_call
+        from_receipt += hit.from_receipt
+        repairs += hit.repairs
+        repaired += hit.repaired
         if hit.usage:
             for key in _USAGE:
                 usage[key] += hit.usage.get(key, 0)
@@ -350,6 +363,8 @@ def _tally(items: list[EvaluationItem], hits: list[_Hit], seconds: float) -> tup
         "candidates": len(items),
         "calls": calls,
         "fromReceipt": from_receipt,
+        "repairs": repairs,
+        "repaired": repaired,
         "usage": usage,
         "seconds": seconds,
         "verdicts": verdicts,
@@ -365,7 +380,7 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
                         client: Any, settings: Mapping, clock: Callable[[], datetime]) -> EvaluationRun:
     """每条在工作线程里查库、按需备料、再评估。已有数据包的续跑不改请求体。
 
-    备料前和调用前都看收口时刻。到点还没评完的（含已经发出、还没回来的）记为缺口，
+    备料前、调用前和格式修正前都看收口时刻。到点还没评完的（含已经发出、还没回来的）记为缺口，
     主线程不再等迟到的调用；迟到的成功写不回 prepared 以外的状态。
     """
     cutoff, workers, options = _check_settings(settings)
@@ -431,7 +446,8 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
                           _Hit(item=EvaluationItem(company, "gap", None, None, text), counted_call=True))
         usage = _usage(result.usage)
         receipt = bool(result.from_receipt)
-        common = {"counted_call": not receipt, "from_receipt": receipt, "usage": usage}
+        calls, from_receipt = (0, 1) if receipt else (1, 0)
+        common = {"counted_call": calls, "from_receipt": from_receipt, "usage": usage}
         if _cutoff_reached(clock(), cutoff):
             # 回来时已过收口时刻：按「到点没评完」记缺口；原文留在库里供复盘，回执已由客户端落库
             _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(),
@@ -445,16 +461,73 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
             return _align(db_path, report_id, company,
                           _Hit(item=EvaluationItem(company, "invalid", None, None, reason), **common))
         parsed = parse_output(result.content, package)
-        if isinstance(parsed, str):
+        if not isinstance(parsed, str):
+            _settle(db_path, report_id=report_id, company=company, state="succeeded", settled_at=clock(),
+                    verdict=parsed.verdict, output=parsed.as_dict(), usage=usage, seconds=result.seconds)
+            return _align(db_path, report_id, company,
+                          _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views,
+                               vetoed=parsed.vetoed, **common))
+        # 正常结束但格式不合格：没到收口就带着原输出再问一次，只修正格式
+        if _cutoff_reached(clock(), cutoff):
             _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
                     error=parsed, output=result.content, usage=usage, seconds=result.seconds)
             return _align(db_path, report_id, company,
                           _Hit(item=EvaluationItem(company, "invalid", None, None, parsed), **common))
-        _settle(db_path, report_id=report_id, company=company, state="succeeded", settled_at=clock(),
-                verdict=parsed.verdict, output=parsed.as_dict(), usage=usage, seconds=result.seconds)
+        repair_messages = [
+            messages[0], messages[1],
+            {"role": "assistant", "content": result.content},
+            {"role": "user", "content": _REPAIR_PROMPT.format(reason=parsed)},
+        ]
+        try:
+            repaired = client.complete(repair_messages, options)
+        except ChatUnknown as exc:
+            sent = "上次调用结果不明" not in str(exc)  # 根本没发的这次不计调用
+            error = f"{parsed}；修正调用结果不明"
+            _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
+                    error=error, output=result.content, usage=usage, seconds=result.seconds)
+            return _align(db_path, report_id, company, _Hit(
+                item=EvaluationItem(company, "invalid", None, None, error),
+                counted_call=calls + (1 if sent else 0), from_receipt=from_receipt,
+                repairs=1 if sent else 0, usage=usage))
+        except ChatError as exc:
+            error = f"{parsed}；修正调用失败：{exc}"
+            _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
+                    error=error, output=result.content, usage=usage, seconds=result.seconds)
+            return _align(db_path, report_id, company, _Hit(
+                item=EvaluationItem(company, "invalid", None, None, error),
+                counted_call=calls + 1, from_receipt=from_receipt, repairs=1, usage=usage))
+        repair_receipt = bool(repaired.from_receipt)
+        total_usage = _add_usage(usage, _usage(repaired.usage))
+        total_seconds = result.seconds + repaired.seconds
+        paired = {
+            "counted_call": calls + (0 if repair_receipt else 1),
+            "from_receipt": from_receipt + (1 if repair_receipt else 0),
+            "repairs": 1,
+            "usage": total_usage,
+        }
+        if _cutoff_reached(clock(), cutoff):
+            # 修正回来时已过收口：同样记缺口，原文留库；用量和耗时把两次加在一起
+            _settle(db_path, report_id=report_id, company=company, state="gap", settled_at=clock(),
+                    error=_GAP, output=repaired.content, usage=total_usage, seconds=total_seconds)
+            return _align(db_path, report_id, company,
+                          _Hit(item=EvaluationItem(company, "gap", None, None, _GAP), **paired))
+        if repaired.finish_reason != "stop":
+            reason2 = f"finish:{repaired.finish_reason}"
+        else:
+            again = parse_output(repaired.content, package)
+            if not isinstance(again, str):
+                _settle(db_path, report_id=report_id, company=company, state="succeeded", settled_at=clock(),
+                        verdict=again.verdict, output=again.as_dict(), usage=total_usage, seconds=total_seconds)
+                return _align(db_path, report_id, company, _Hit(
+                    item=_from_output(company, again), dropped=again.dropped_views, vetoed=again.vetoed,
+                    repaired=1, **paired))
+            reason2 = again
+        error = f"{parsed}；修正后仍不合格：{reason2}"
+        output = {"first": result.content, "repair": repaired.content}
+        _settle(db_path, report_id=report_id, company=company, state="invalid", settled_at=clock(),
+                error=error, output=output, usage=total_usage, seconds=total_seconds)
         return _align(db_path, report_id, company,
-                      _Hit(item=_from_output(company, parsed), dropped=parsed.dropped_views,
-                           vetoed=parsed.vetoed, **common))
+                      _Hit(item=EvaluationItem(company, "invalid", None, None, error), **paired))
 
     def _outcome(fut, company: str) -> _Hit:
         """取一条的结果；工作线程抛了普通异常就把这一条记为缺口，不让它拖住其他条目和收口。"""
@@ -488,7 +561,8 @@ def evaluate_candidates(candidates: list, *, report_id: str, db_path: Path, prep
                             stored = _reuse(company, row)
                             if stored is not None:
                                 hit = _Hit(item=stored, counted_call=hit.counted_call,
-                                           from_receipt=hit.from_receipt, usage=hit.usage, fatal=hit.fatal)
+                                           from_receipt=hit.from_receipt, repairs=hit.repairs,
+                                           repaired=hit.repaired, usage=hit.usage, fatal=hit.fatal)
                         items[index] = hit.item
                         hits.append(hit)
                         continue

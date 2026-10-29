@@ -298,10 +298,11 @@ def test_contradiction_is_vetoed_non_json_and_length_are_invalid(path: Path) -> 
     result = _run(path, handler, [_candidate(code) for code in raw])
     assert [item.state for item in result.items] == ["succeeded", "invalid", "invalid"]
     assert result.items[0].verdict == "不推" and result.items[0].evaluation.vetoed
-    assert result.items[1].error == "输出不是 JSON 对象"
+    assert result.items[1].error == "输出不是 JSON 对象；修正后仍不合格：输出不是 JSON 对象"
     assert result.items[2].error == "finish:length"
     assert result.stats["invalid"] == 2 and result.stats["verdicts"] == {"推": 0, "不推": 1}
     assert result.stats["vetoed"] == 1
+    assert result.stats["calls"] == 4 and result.stats["repairs"] == 1 and result.stats["repaired"] == 0
     with db.read(path) as conn:
         stored = {
             row["company"]: row
@@ -309,7 +310,7 @@ def test_contradiction_is_vetoed_non_json_and_length_are_invalid(path: Path) -> 
         }
     vetoed = json.loads(stored["300001"]["output_json"])
     assert stored["300001"]["verdict"] == "不推" and vetoed["verdict"] == "不推" and vetoed["vetoed"] is True
-    assert stored["300002"]["output_json"] == "这不是 JSON"
+    assert json.loads(stored["300002"]["output_json"]) == {"first": "这不是 JSON", "repair": "这不是 JSON"}
     assert stored["300003"]["output_json"] == raw["300003"] and stored["300003"]["error"] == "finish:length"
 
 
@@ -672,3 +673,316 @@ def test_result_returning_after_cutoff_is_a_gap(path: Path) -> None:
         receipts = conn.execute("SELECT state FROM model_receipts").fetchall()
     assert row["state"] == "gap" and row["error"] == "收口时刻前没评完"
     assert [r["state"] for r in receipts] == ["succeeded"]
+
+
+_USE_A = {"prompt_tokens": 10, "completion_tokens": 4, "prompt_cache_hit_tokens": 1, "reasoning_tokens": 2}
+_USE_B = {"prompt_tokens": 6, "completion_tokens": 3, "prompt_cache_hit_tokens": 2, "reasoning_tokens": 1}
+_USE_SUM = {key: _USE_A[key] + _USE_B[key] for key in _USE_A}
+
+
+def _repair_text(reason: str) -> str:
+    return (
+        f"你上一条输出没有通过格式检查：{reason}。"
+        "请对照系统提示里的输出格式，把同一份评估重新完整输出为一个 JSON 对象。"
+        "判断和结论不要改，只修正格式；缺的字段按你原来的分析写全。"
+    )
+
+
+def _wire(content: object) -> str:
+    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+
+def _assert_repair_request(first: dict, repair: dict, reason: str, original: str) -> None:
+    messages = repair["messages"]
+    assert messages[0] == first["messages"][0]
+    assert messages[1] == first["messages"][1]
+    assert messages[2] == {"role": "assistant", "content": original}
+    assert messages[3] == {"role": "user", "content": _repair_text(reason)}
+    assert len(messages) == 4
+    assert {key: value for key, value in first.items() if key != "messages"} == {
+        key: value for key, value in repair.items() if key != "messages"}
+
+
+def _stored_usage(path: Path, company: str = "300001") -> tuple[dict, float, list[float]]:
+    with db.read(path) as conn:
+        row = db.get_evaluation(conn, REPORT, company)
+        seconds = [float(item["seconds"] or 0) for item in conn.execute("SELECT seconds FROM model_receipts")]
+    return row["usage"], float(row["seconds"] or 0), seconds
+
+
+def test_bad_json_is_repaired_once_and_settled(path: Path) -> None:
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if len(body["messages"]) == 2:
+            seen["first"] = body
+            return _http("{", usage=_USE_A)
+        seen["repair"] = body
+        return _http(_answer("推"), usage=_USE_B)
+
+    result = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    item = result.items[0]
+    assert item.state == "succeeded" and item.verdict == "推" and result.fatal is None
+    assert result.stats["calls"] == 2 and result.stats["fromReceipt"] == 0
+    assert result.stats["repairs"] == 1 and result.stats["repaired"] == 1
+    assert result.stats["usage"] == _USE_SUM
+    _assert_repair_request(seen["first"], seen["repair"], "输出不是 JSON 对象", "{")
+    usage, seconds, receipt_seconds = _stored_usage(path)
+    assert usage == _USE_SUM and seconds == pytest.approx(sum(receipt_seconds))
+
+
+def test_missing_question_is_repaired_once(path: Path) -> None:
+    bad = _answer()
+    del bad["questions"]["price"]
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if len(body["messages"]) == 2:
+            seen["first"] = body
+            return _http(bad, usage=_USE_A)
+        seen["repair"] = body
+        return _http(_answer("推"), usage=_USE_B)
+
+    result = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    item = result.items[0]
+    assert item.state == "succeeded" and item.verdict == "推"
+    assert result.stats["calls"] == 2 and result.stats["repairs"] == 1 and result.stats["repaired"] == 1
+    assert result.stats["usage"] == _USE_SUM
+    _assert_repair_request(seen["first"], seen["repair"], "questions 缺少 price", _wire(bad))
+    usage, seconds, receipt_seconds = _stored_usage(path)
+    assert usage == _USE_SUM and seconds == pytest.approx(sum(receipt_seconds))
+
+
+def test_repair_that_still_fails_stays_invalid(path: Path) -> None:
+    length_text = _wire(_answer("推"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        messages = body["messages"]
+        code = _code_of(messages[1]["content"])
+        if len(messages) == 2:
+            return _http("{" if code == "300001" else "坏的")
+        if code == "300002":
+            return _http(_answer("推"), finish="length")
+        return _http("还是不行")
+
+    result = _run(path, handler, [_candidate("300001"), _candidate("300002")], settings=_settings(concurrency=1))
+    by_company = {item.company: item for item in result.items}
+    assert by_company["300001"].state == "invalid"
+    assert by_company["300001"].error == "输出不是 JSON 对象；修正后仍不合格：输出不是 JSON 对象"
+    assert by_company["300002"].state == "invalid" and by_company["300002"].verdict is None
+    assert by_company["300002"].error == "输出不是 JSON 对象；修正后仍不合格：finish:length"
+    assert result.fatal is None and result.stats["invalid"] == 2
+    assert result.stats["repairs"] == 2 and result.stats["repaired"] == 0 and result.stats["calls"] == 4
+    with db.read(path) as conn:
+        stored = {
+            row["company"]: row
+            for row in conn.execute("SELECT company, output_json, error FROM evaluations")
+        }
+    assert json.loads(stored["300001"]["output_json"]) == {"first": "{", "repair": "还是不行"}
+    assert json.loads(stored["300002"]["output_json"]) == {"first": "坏的", "repair": length_text}
+
+
+def test_truncated_output_is_not_repaired(path: Path) -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        calls.append(len(messages))
+        return _http(_answer("推"), finish="length")
+
+    result = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    assert calls == [2]
+    assert result.items[0].state == "invalid" and result.items[0].error == "finish:length"
+    assert result.stats["calls"] == 1 and result.stats["repairs"] == 0 and result.stats["repaired"] == 0
+
+
+def test_cutoff_before_repair_keeps_the_first_invalid(path: Path) -> None:
+    """首轮回来时还没到点，发修正前到点：不发修正，按首轮原因作废。"""
+    http = {"n": 0}
+    after = {"n": 0}
+    worker = {"id": None}
+    early = datetime(2026, 10, 13, 9, 4, tzinfo=CST)
+    late = datetime(2026, 10, 13, 9, 6, tzinfo=CST)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        http["n"] += 1
+        worker["id"] = threading.get_ident()
+        return _http("{")
+
+    def clock() -> datetime:
+        # 主线程继续走早于收口的时间，避免抢先把这条收成缺口。
+        if threading.get_ident() != worker["id"]:
+            return early
+        after["n"] += 1
+        # 回来后第一次是「回来时已过收口」；下一次才是发修正前。
+        return early if after["n"] == 1 else late
+
+    result = _run(path, handler, [_candidate("300001")], clock=clock, settings=_settings(concurrency=1))
+    assert http["n"] == 1
+    assert result.items[0].state == "invalid" and result.items[0].error == "输出不是 JSON 对象"
+    assert result.stats["calls"] == 1 and result.stats["repairs"] == 0 and result.stats["invalid"] == 1
+    with db.read(path) as conn:
+        row = conn.execute("SELECT error, output_json FROM evaluations").fetchone()
+        receipts = conn.execute("SELECT count(*) FROM model_receipts").fetchone()[0]
+    assert row["error"] == "输出不是 JSON 对象" and row["output_json"] == "{"
+    assert receipts == 1
+
+
+def test_repair_returning_after_cutoff_is_a_gap(path: Path) -> None:
+    early = datetime(2026, 10, 13, 9, 4, tzinfo=CST)
+    late = datetime(2026, 10, 13, 9, 6, tzinfo=CST)
+    worker = {"id": None}
+    http: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        http.append(len(messages))
+        if len(messages) == 4:
+            worker["id"] = threading.get_ident()
+            return _http(_answer("推"), usage=_USE_B)
+        return _http("{", usage=_USE_A)
+
+    def clock() -> datetime:
+        return late if threading.get_ident() == worker["id"] else early
+
+    result = _run(path, handler, [_candidate("300001")], clock=clock, settings=_settings(concurrency=1))
+    assert http == [2, 4]
+    item = result.items[0]
+    assert item.state == "gap" and item.error == "收口时刻前没评完" and item.verdict is None
+    assert result.stats["gap"] == 1 and result.stats["calls"] == 2 and result.stats["repairs"] == 1
+    assert result.stats["repaired"] == 0 and result.stats["verdicts"] == {"推": 0, "不推": 0}
+    assert result.stats["usage"] == _USE_SUM
+    with db.read(path) as conn:
+        row = conn.execute("SELECT state, error, output_json, usage_json, seconds FROM evaluations").fetchone()
+        seconds = [float(item["seconds"] or 0) for item in conn.execute("SELECT seconds FROM model_receipts")]
+    assert row["state"] == "gap" and row["error"] == "收口时刻前没评完"
+    assert row["output_json"] == _wire(_answer("推"))
+    assert json.loads(row["usage_json"]) == _USE_SUM
+    assert row["seconds"] == pytest.approx(sum(seconds))
+
+
+def test_unknown_repair_is_invalid_and_not_sent_again(path: Path) -> None:
+    http: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        http.append(len(messages))
+        if len(messages) == 4:
+            raise httpx.ReadTimeout("slow")
+        return _http("{")
+
+    first = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    assert first.fatal is None and first.items[0].state == "invalid"
+    assert first.items[0].error == "输出不是 JSON 对象；修正调用结果不明"
+    assert first.stats["calls"] == 2 and first.stats["repairs"] == 1 and first.stats["invalid"] == 1
+    assert http == [2, 4]
+    second = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    assert second.fatal is None and second.items[0].state == "invalid" and http == [2, 4]
+
+
+def test_completed_repair_rerun_sends_nothing(path: Path) -> None:
+    http: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        http.append(len(json.loads(request.content)["messages"]))
+        if http[-1] == 4:
+            return _http(_answer("推"), usage=_USE_B)
+        return _http("{", usage=_USE_A)
+
+    first = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    assert first.items[0].state == "succeeded" and http == [2, 4]
+    again = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    assert again.items[0].verdict == "推" and http == [2, 4] and again.stats["calls"] == 0
+
+
+def test_crash_before_repair_resumes_without_rebilling_the_first_call(path: Path) -> None:
+    http: list[list] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        http.append(messages)
+        if len(messages) == 4:
+            return _http(_answer("推"), usage=_USE_B)
+        return _http("{", usage=_USE_A)
+
+    client = _eval_client(path, handler)
+
+    class Killed(BaseException):
+        """模拟进程被杀：_outcome 只接 Exception，所以会冒出来。"""
+
+    class Boom:
+        def __init__(self, inner: DeepSeekClient) -> None:
+            self.inner = inner
+            self.n = 0
+
+        def complete(self, messages, options):
+            self.n += 1
+            if self.n >= 2:
+                raise Killed("crash before repair")
+            return self.inner.complete(messages, options)
+
+    settings = _settings(concurrency=1)
+    with pytest.raises(Killed, match="crash before repair"):
+        _run(path, handler, [_candidate("300001")], settings=settings, client=Boom(client))
+    with db.read(path) as conn:
+        assert db.get_evaluation(conn, REPORT, "300001")["state"] == "prepared"
+        assert [row["state"] for row in conn.execute("SELECT state FROM model_receipts")] == ["succeeded"]
+    assert len(http) == 1 and len(http[0]) == 2
+    again = _run(path, handler, [_candidate("300001")], settings=settings, client=client)
+    assert len(http) == 2 and len(http[1]) == 4 and http[1][:2] == http[0]
+    assert http[1][2] == {"role": "assistant", "content": "{"}
+    assert again.items[0].state == "succeeded" and again.items[0].verdict == "推"
+    assert again.stats["calls"] == 1 and again.stats["fromReceipt"] == 1
+    assert again.stats["repairs"] == 1 and again.stats["repaired"] == 1
+    assert again.stats["usage"] == _USE_SUM
+
+
+def _classify_one(prompt: str) -> httpx.Response:
+    blocks = re.split(r"^### ", prompt, flags=re.M)[1:]
+    codes = [block.split()[0] for block in blocks]
+    companies = []
+    for block, code in zip(blocks, codes):
+        body = block.split("窗口开始前的相关消息")[0]
+        ids = re.findall(r"^\[(m\d+)\]", body, flags=re.M)
+        if code == "300683":
+            companies.append({"company": code, "events": [{
+                "ids": ids, "relation": "主体", "type": "业绩预增", "direction": "利好", "channel": "公司公告",
+                "amountYuan": None, "firstDisclosed": None, "fresh": "新", "importance": "高",
+                "headline": "海特签协议", "reason": "公告",
+            }], "mentions": []})
+        else:
+            companies.append({"company": code, "events": [], "mentions": ids})
+    content = json.dumps({"companies": companies}, ensure_ascii=False)
+    return httpx.Response(200, json={
+        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    })
+
+
+def test_morning_run_keeps_a_push_repaired_from_bad_json(path: Path) -> None:
+    _seed_window(path)
+    _with_device(path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        messages = body["messages"]
+        user = messages[1]["content"]
+        if not user.startswith("晨报交易日"):
+            return _classify_one(user)
+        if len(messages) == 2:
+            return _http("{", usage=_USE_A)
+        return _http(_answer("推", title="海特签协议"), usage=_USE_B)
+
+    result = _morning(path, handler, FakeApns())
+    assert result["state"] == "available"
+    evaluation = result["stats"]["evaluation"]
+    assert evaluation["candidates"] == 1 and evaluation["calls"] == 2
+    assert evaluation["repairs"] == 1 and evaluation["repaired"] == 1
+    assert evaluation["usage"] == _USE_SUM
+    with db.read(path) as conn:
+        stored = db.get_report(conn, "2026-10-13")
+    assert [entry["companyCode"] for entry in stored["content"]["entries"]] == ["300683"]
+    assert stored["content"]["entries"][0]["title"] == "海特签协议"

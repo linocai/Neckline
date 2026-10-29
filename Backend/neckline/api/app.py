@@ -16,7 +16,7 @@ from neckline.morning.api import create_router as create_morning_router
 from neckline.morning.web import create_router as create_read_router
 
 VERSION = "v4.2.0"
-RELEASE_SET = "v4.2.0-b126"
+RELEASE_SET = "v4.2.0-b127"
 
 
 @asynccontextmanager
