@@ -36,6 +36,7 @@ _WAIT_SECONDS = 5.0
 _USAGE = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "reasoning_tokens")
 _VIEWS = ("媒体", "券商", "公司")
 _VERDICTS = ("推", "不推")
+_MONEY = ("强", "一般")
 _QUESTIONS = ("value", "priced", "money", "price")
 
 
@@ -47,6 +48,7 @@ class Evaluation:
     questions: dict[str, Any]
     risk: str
     views: list[dict[str, str]]
+    money_logic: str
     dropped_views: int = 0
     vetoed: bool = False  # 模型判了推，但它自己的①或②不过关：按一票否决记为不推
 
@@ -55,6 +57,7 @@ class Evaluation:
         return {
             "title": self.title,
             "verdict": self.verdict,
+            "moneyLogic": self.money_logic,
             "conclusion": self.conclusion,
             "questions": self.questions,
             "risk": self.risk,
@@ -173,6 +176,9 @@ def parse_output(content: str, package: Mapping) -> Evaluation | str:
     verdict = _text(data.get("verdict"))
     if verdict not in _VERDICTS:
         return "verdict 无效"
+    money_logic = _text(data.get("moneyLogic"))
+    if money_logic not in _MONEY:
+        return "moneyLogic 无效"
     title = _text(data.get("title"))
     if not title or len(title) > 40:
         return "title 无效"
@@ -197,7 +203,7 @@ def parse_output(content: str, package: Mapping) -> Evaluation | str:
         return views
     kept, dropped = views
     return Evaluation(title=title, verdict=verdict, conclusion=conclusion, questions=questions, risk=risk,
-                      views=kept, dropped_views=dropped, vetoed=vetoed)
+                      views=kept, money_logic=money_logic, dropped_views=dropped, vetoed=vetoed)
 
 
 def json_loads(content: str) -> Any:
@@ -255,7 +261,7 @@ def _cutoff_reached(now: datetime, cutoff: str) -> bool:
 
 def _check_settings(settings: Mapping) -> tuple[str, int, Mapping]:
     if settings.get("contract") != CONTRACT:
-        raise ValueError("evaluation.contract 须为 evaluation-v1")
+        raise ValueError("evaluation.contract 须为 evaluation-v2")
     cutoff = settings.get("cutoff")
     if not isinstance(cutoff, str) or _HHMM.fullmatch(cutoff) is None:
         raise ValueError("evaluation.cutoff 须为 HH:MM")
@@ -276,10 +282,12 @@ def _reuse(company: str, row: Mapping) -> EvaluationItem | None:
         output = row["output"]
         questions = output.get("questions") if isinstance(output.get("questions"), Mapping) else {}
         views = output.get("views") if isinstance(output.get("views"), list) else []
+        raw_logic = output.get("moneyLogic")
         evaluation = Evaluation(
             title=str(output.get("title") or ""), verdict=str(row.get("verdict") or ""),
             conclusion=str(output.get("conclusion") or ""), questions=dict(questions),
             risk=str(output.get("risk") or ""), views=list(views),
+            money_logic=raw_logic if isinstance(raw_logic, str) else "",
         )
         return EvaluationItem(company, "succeeded", row.get("verdict"), evaluation, None)
     if state in ("succeeded", "invalid", "gap"):

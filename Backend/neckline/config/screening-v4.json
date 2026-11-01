@@ -1,8 +1,8 @@
 {
-  "configVersion": "screening-v3",
+  "configVersion": "screening-v4",
   "approval": "approved",
-  "approvedAt": "2026-10-28",
-  "note": "K10-v5，用户 10/27 确认，依据 whynotme/K10.md 第四节与 archive/v4.2.0_execution.md §3；与 v2 相比删除重要程度、新增不收种类「交易进展」「业绩不明」、只有标题的定期报告先读 PDF 数字。",
+  "approvedAt": "2026-11-01",
+  "note": "K10-v5，用户 10/27 确认，依据 whynotme/K10.md 第四节与 archive/v4.2.0_execution.md §3；与 v2 相比删除重要程度、新增不收种类「交易进展」「业绩不明」、只有标题的定期报告先读 PDF 数字。v4（用户 11/01）：收录与交付规则不变，评估口径按 K10.md 第五节修订，评估合同升为 evaluation-v2。",
   "schedule": {
     "previousClose": "15:00",
     "windowEnd": "08:00",
@@ -146,7 +146,7 @@
   },
   "evaluation": {
     "note": "长度参数待 B7 用真实公告实测后定稿",
-    "contract": "evaluation-v1",
+    "contract": "evaluation-v2",
     "cutoff": "09:05",
     "concurrency": 6,
     "modelOptions": {

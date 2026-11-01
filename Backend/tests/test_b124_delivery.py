@@ -415,3 +415,57 @@ def test_morning_report_reaches_api_mcp_and_web_with_the_same_entries(path: Path
     with db.read(path) as conn:
         stored = db.get_report(conn, "2026-10-13")
     assert report_out(stored)["content"] == latest["content"]
+
+
+def _logic_output(code: str, logic: str | None) -> dict:
+    output = {
+        "title": f"{code}标题", "conclusion": "结论",
+        "questions": {
+            "value": {"pass": True, "text": "利好有量"},
+            "priced": {"text": "还没反映"},
+            "money": {"text": "有新增量"},
+            "price": {"text": "不追高"},
+        },
+        "risk": "可能落空",
+        "views": [],
+    }
+    if logic is not None:
+        output["moneyLogic"] = logic
+    return output
+
+
+def _timed(specs: list[tuple[str, int, str | None]], *, max_items: int) -> dict:
+    pool = _pool([(code, f"公司{code}") for code, _hour, _logic in specs])
+    entries = [_entry(code, [_message(f"doc-{code}", hour, title=code, url=None)]) for code, hour, _logic in specs]
+    evaluations = [_eval(code, output=_logic_output(code, logic)) for code, _hour, logic in specs]
+    return _content(pool, entries, evaluations, max_items=max_items)
+
+
+def test_overflow_prefers_strong_money_logic_and_renders_by_time():
+    specs = []
+    for index in range(1, 13):
+        code = f"300{index:03d}"
+        logic = "强" if index >= 10 else "一般"
+        specs.append((code, 7 + index, logic))
+    content = _timed(specs, max_items=10)
+    shown = [entry["companyCode"] for entry in content["entries"]]
+    assert shown == ["300001", "300002", "300003", "300004", "300005", "300006", "300007", "300010", "300011", "300012"]
+    assert content["stats"]["overflow"] == 2 and content["evaluated"] == 12
+    assert all("moneyLogic" not in entry for entry in content["entries"])
+    assert "moneyLogic" not in json.dumps(content["entries"], ensure_ascii=False)
+
+
+def test_under_the_cap_money_logic_does_not_change_the_list():
+    mixed = [("300002", 10, "强"), ("300001", 9, "一般"), ("300003", 11, "一般")]
+    plain = [(code, hour, None) for code, hour, _logic in mixed]
+    assert _timed(mixed, max_items=10)["entries"] == _timed(plain, max_items=10)["entries"]
+    assert [entry["companyCode"] for entry in _timed(mixed, max_items=10)["entries"]] == ["300001", "300002", "300003"]
+
+
+def test_old_output_without_money_logic_counts_as_ordinary():
+    late_strong = _timed([("300001", 9, None), ("300002", 10, "强")], max_items=1)
+    assert [entry["companyCode"] for entry in late_strong["entries"]] == ["300002"]
+    assert late_strong["stats"]["overflow"] == 1
+    both_old = _timed([("300002", 10, None), ("300001", 9, "很强")], max_items=1)
+    assert [entry["companyCode"] for entry in both_old["entries"]] == ["300001"]
+    assert "moneyLogic" not in json.dumps(both_old["entries"], ensure_ascii=False)

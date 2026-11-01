@@ -12,14 +12,18 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from neckline.evaluation.evaluate import Evaluation, evaluate_candidates, parse_output
 from neckline.evaluation.prompt import CONTRACT, system_prompt, user_prompt
 from neckline.morning import db
-from neckline.morning.report import Pusher, load_config, run_morning
+from neckline.morning.api import create_router as api_router
+from neckline.morning.report import LoadedConfig, Pusher, load_config, run_morning
 from neckline.morning.schedule import CST
 from neckline.screening.deepseek import DeepSeekClient, canonical
-from tests.test_morning import FakeApns, FakeModel, _client, _config, _seed_window, _with_device, at
+from neckline.screening.pool import Company, CompanyPool
+from tests.test_morning import FakeApns, FakeModel, _client, _config, _seed_window, _with_device, at, doc
 
 REPORT = "morning-2026-10-13"
 WHEN = datetime(2026, 10, 13, 8, 2, tzinfo=CST)
@@ -103,9 +107,9 @@ def _candidate(code: str) -> SimpleNamespace:
 
 
 def _answer(verdict: str = "推", *, value_pass: bool = True, priced_pass: bool = True,
-            views: list | None = None, title: str = "签下订单") -> dict:
+            views: list | None = None, title: str = "签下订单", money_logic: str = "一般") -> dict:
     return {
-        "title": title, "verdict": verdict,
+        "title": title, "verdict": verdict, "moneyLogic": money_logic,
         "conclusion": "值得跟踪" if verdict == "推" else "先不推",
         "questions": {
             "value": {"pass": value_pass, "text": "订单占营收不低"},
@@ -189,7 +193,17 @@ def test_prompt_renders_the_package_deterministically() -> None:
     assert system_prompt().startswith("你是 A 股创业板的消息评估员")
     assert "①不过关或②透支，一票否决" in system_prompt()
     assert "联网" not in system_prompt()
-    assert CONTRACT == "evaluation-v1"
+    assert CONTRACT == "evaluation-v2"
+    # 11/01 口径：资金逻辑为出发点，③为核心；第 4 条原则改写，透支只看股价
+    assert "这条消息给了资金什么新理由" in system_prompt() and "这是核心，综合判断以它为主" in system_prompt()
+    assert "利好要能被验证，不能只是想象空间" in system_prompt() and "优先有真实业绩支撑" not in system_prompt()
+    assert "不能单独作为判透支的理由" in system_prompt()
+    assert "还是股价已经反映过的事" in system_prompt()
+    assert "研报早有预期不等于市场已经交易过" in system_prompt()
+    assert "资金今天会不会因为这条消息入场" in system_prompt()
+    assert "不要在这里再当作不推的理由" in system_prompt()
+    assert '"moneyLogic":"强 或 一般"' in system_prompt()
+    assert "还是只确认了大家已经知道的事" not in system_prompt()
 
 
 def test_parse_accepts_push_and_skip_and_rejects_contradictions() -> None:
@@ -217,6 +231,19 @@ def test_parse_accepts_push_and_skip_and_rejects_contradictions() -> None:
     missing = _answer()
     missing["questions"]["value"]["pass"] = 1
     assert parse_output(json.dumps(missing), package) == "value.pass 不是布尔"
+    for logic in ("强", "一般"):
+        parsed = parse_output(json.dumps(_answer(money_logic=logic)), package)
+        assert isinstance(parsed, Evaluation) and parsed.money_logic == logic
+        assert parsed.as_dict()["moneyLogic"] == logic
+    padded = parse_output(json.dumps(_answer(money_logic=" 强 ")), package)
+    assert isinstance(padded, Evaluation) and padded.money_logic == "强"
+    missing = _answer()
+    del missing["moneyLogic"]
+    assert parse_output(json.dumps(missing), package) == "moneyLogic 无效"
+    for bad in ("", "中", "很强"):
+        answer = _answer()
+        answer["moneyLogic"] = bad
+        assert parse_output(json.dumps(answer), package) == "moneyLogic 无效"
 
 
 def test_bad_views_are_dropped_and_counted() -> None:
@@ -544,7 +571,7 @@ def test_config_requires_cutoff_concurrency_and_model_options(tmp_path: Path) ->
     rejected(lambda rules: rules["evaluation"].__setitem__("concurrency", 0), "concurrency")
     rejected(lambda rules: rules["evaluation"].__setitem__("concurrency", True), "concurrency")
     rejected(lambda rules: rules["evaluation"].__setitem__("modelOptions", []), "modelOptions")
-    rejected(lambda rules: rules["evaluation"].__setitem__("contract", "evaluation-v2"), "evaluation-v1")
+    rejected(lambda rules: rules["evaluation"].__setitem__("contract", "evaluation-v1"), "evaluation-v2")
     rejected(lambda rules: rules.pop("delivery"), "delivery")
     rejected(lambda rules: rules["delivery"].__setitem__("maxItems", 0), "maxItems")
     rejected(lambda rules: rules["delivery"].__setitem__("maxItems", True), "maxItems")
@@ -730,6 +757,49 @@ def test_bad_json_is_repaired_once_and_settled(path: Path) -> None:
     _assert_repair_request(seen["first"], seen["repair"], "输出不是 JSON 对象", "{")
     usage, seconds, receipt_seconds = _stored_usage(path)
     assert usage == _USE_SUM and seconds == pytest.approx(sum(receipt_seconds))
+
+
+def test_missing_money_logic_is_repaired_once(path: Path) -> None:
+    bad = _answer()
+    del bad["moneyLogic"]
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if len(body["messages"]) == 2:
+            seen["first"] = body
+            return _http(bad, usage=_USE_A)
+        seen["repair"] = body
+        return _http(_answer("推", money_logic="强"), usage=_USE_B)
+
+    result = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
+    item = result.items[0]
+    assert item.state == "succeeded" and item.verdict == "推" and item.evaluation.money_logic == "强"
+    assert result.stats["calls"] == 2 and result.stats["repairs"] == 1 and result.stats["repaired"] == 1
+    _assert_repair_request(seen["first"], seen["repair"], "moneyLogic 无效", _wire(bad))
+
+
+def test_reuse_reads_money_logic_and_tolerates_old_rows(path: Path) -> None:
+    strong = _answer(money_logic="强")
+    old = _answer()
+    del old["moneyLogic"]
+    with db.write(path) as conn:
+        for code, output in (("300001", strong), ("300002", old)):
+            db.insert_prepared(conn, report_id=REPORT, company=code, contract=CONTRACT,
+                               package=_package(code), prepared_at=WHEN)
+            db.settle_evaluation(conn, report_id=REPORT, company=code, state="succeeded", settled_at=WHEN,
+                                 verdict="推", output=output, usage={"prompt_tokens": 1}, seconds=0.1)
+    calls = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return _http(_answer())
+
+    result = _run(path, handler, [_candidate("300001"), _candidate("300002")])
+    by_company = {item.company: item for item in result.items}
+    assert calls == [] and result.stats["calls"] == 0
+    assert by_company["300001"].evaluation.money_logic == "强"
+    assert by_company["300002"].evaluation.money_logic == ""
 
 
 def test_missing_question_is_repaired_once(path: Path) -> None:
@@ -986,3 +1056,71 @@ def test_morning_run_keeps_a_push_repaired_from_bad_json(path: Path) -> None:
         stored = db.get_report(conn, "2026-10-13")
     assert [entry["companyCode"] for entry in stored["content"]["entries"]] == ["300683"]
     assert stored["content"]["entries"][0]["title"] == "海特签协议"
+
+
+def test_morning_run_keeps_strong_logic_when_pushes_exceed_the_cap(path: Path, monkeypatch) -> None:
+    """判推多于 delivery.maxItems：最晚的「强」挤掉较晚的「一般」，展示仍按首次公开时间。"""
+    prev = "2026-10-12"
+    day = "2026-10-13"
+    names = (("300001", "甲公司", "16:10", "一般"), ("300002", "乙公司", "17:20", "一般"), ("300003", "丙公司", "18:30", "强"))
+    docs = [
+        doc("jin10-flash", code, f"【{name}：签了订单】{name}公告", at(prev, hm), at(prev, "20:00"))
+        for code, name, hm, _logic in names
+    ]
+    with db.write(path) as conn:
+        db.store_documents(conn, docs)
+        for run_id, slot, start in (("collect-a", at(prev, "20:00"), at(prev, "08:00")),
+                                    ("collect-b", at(day, "08:00"), at(prev, "19:00"))):
+            db.begin_collection(conn, run_id=run_id, slot_at=slot, started_at=slot)
+            db.finish_collection(conn, run_id=run_id, status="completed", finished_at=slot, sources=[
+                {"sourceKey": key, "requestedStart": start.isoformat(), "requestedEnd": slot.isoformat(),
+                 "complete": True, "error": None, "documents": 1}
+                for key in ("tushare-major-news", "jin10-flash", "jin10-news")])
+    _with_device(path)
+    base = _config()
+    rules = json.loads(json.dumps(base.rules))
+    rules["delivery"]["maxItems"] = 2
+    config = LoadedConfig(
+        rules=rules, sha256=base.sha256, profiles={},
+        pool=CompanyPool([Company(f"{code}.SZ", name, (name,)) for code, name, _hm, _logic in names]),
+    )
+    logic_of = {code: logic for code, _name, _hm, logic in names}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        user = body["messages"][1]["content"]
+        if user.startswith("晨报交易日"):
+            code = re.search(r"公司：(\d{6})", user).group(1)
+            return _http(_answer("推", title=f"{code}标题", money_logic=logic_of[code]))
+        blocks = re.split(r"^### ", user, flags=re.M)[1:]
+        companies = []
+        for block in blocks:
+            code = block.split()[0]
+            ids = re.findall(r"^\[(m\d+)\]", block.split("窗口开始前的相关消息")[0], flags=re.M)
+            companies.append({"company": code, "events": [{
+                "ids": ids, "relation": "主体", "type": "业绩预增", "direction": "利好", "channel": "公司公告",
+                "amountYuan": None, "firstDisclosed": None, "fresh": "新", "importance": "高",
+                "headline": f"{code} 利好", "reason": "公告",
+            }], "mentions": []})
+        content = json.dumps({"companies": companies}, ensure_ascii=False)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+
+    now = at(day, "08:02")
+    result = run_morning(path, now=now, config=config, clock=lambda: now, collector=lambda _: {"status": "completed"},
+                         client_factory=lambda rid: _client(path, handler, rid), pusher=Pusher(path, FakeApns(), lambda: now))
+    assert result["state"] == "available" and result["entries"] == 2 and result["stats"]["overflow"] == 1
+    with db.read(path) as conn:
+        stored = db.get_report(conn, day)
+    entries = stored["content"]["entries"]
+    assert [entry["companyCode"] for entry in entries] == ["300001", "300003"]
+    assert all("moneyLogic" not in entry for entry in entries)
+    assert "moneyLogic" not in json.dumps(entries, ensure_ascii=False)
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+    app = FastAPI()
+    app.include_router(api_router(require_token_dependency=lambda: None))
+    latest = TestClient(app).get("/api/v4/reports/latest").json()
+    assert latest["content"]["entries"] == entries
+    assert "moneyLogic" not in json.dumps(latest["content"], ensure_ascii=False)

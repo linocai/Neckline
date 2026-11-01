@@ -2,7 +2,7 @@
 
 规则只来自已批准的配置；没批准、日历没覆盖、过了截止时刻都如实记为失败并推「晨报出问题了」，不补跑。
 局部失败（某来源没取全、某家公司没判出来、某条没评完）只剔除相关条目，名单照常交付，并写一行缺口摘要。
-判「推」的最多 delivery.maxItems 条，按首次公开时间先后；可以 0 条。
+判「推」的超过 delivery.maxItems 时，「强」优先入选，同档再按首次公开时间；展示仍按首次公开时间先后。可以 0 条。
 """
 from __future__ import annotations
 
@@ -196,7 +196,7 @@ def _validate_screening_rules(rules: object) -> dict:
     _validate_search(evaluation)
     contract = _require_str(evaluation, "contract", "evaluation.contract")
     if contract != EVALUATION_CONTRACT:
-        raise ValueError("evaluation.contract 须为 evaluation-v1")
+        raise ValueError("evaluation.contract 须为 evaluation-v2")
     cutoff = _require_hhmm(evaluation, "cutoff", "evaluation.cutoff")
     if _minutes(cutoff) >= _minutes(schedule["deadline"]):
         raise ValueError("evaluation.cutoff 须早于 schedule.deadline")
@@ -215,7 +215,7 @@ def _validate_screening_rules(rules: object) -> dict:
     return rules
 
 
-def load_config(name: str = "screening-v3.json", *, path: Path | None = None) -> LoadedConfig:
+def load_config(name: str = "screening-v4.json", *, path: Path | None = None) -> LoadedConfig:
     package = resources.files("neckline.config")
     raw = path.read_bytes() if path is not None else (package / name).read_bytes()
     rules = _validate_screening_rules(json.loads(raw))
@@ -525,8 +525,18 @@ class Delivered:
     unevaluated: list[str]
 
 
+def _logic_rank(row: Mapping) -> int:
+    """「强」优先。没有 moneyLogic，或值不是「强」，都按「一般」。"""
+    output = row.get("output")
+    logic = output.get("moneyLogic") if isinstance(output, dict) else None
+    return 0 if logic == "强" else 1
+
+
 def assemble(selection: Selection, evaluations: list[dict], pool: CompanyPool, *, max_items: int) -> Delivered:
-    """判「推」且评估成功的，按首次公开时间、再按代码，取前 max_items 条。"""
+    """判「推」且评估成功的，超过上限时「强」优先，同档再按首次公开时间、代码，取前 max_items 条。
+
+    没有 moneyLogic 或值不认识的按「一般」。入选后按首次公开时间、代码渲染。
+    """
     by_code: dict[str, dict] = {}
     for row in evaluations:
         company = str(row.get("company") or "")
@@ -550,9 +560,10 @@ def assemble(selection: Selection, evaluations: list[dict], pool: CompanyPool, *
             chosen.append((entry, row))
         else:
             unevaluated.append(code)
-    chosen.sort(key=lambda pair: (_first_published(pair[0]), pair[0].company))
+    chosen.sort(key=lambda pair: (_logic_rank(pair[1]), _first_published(pair[0]), pair[0].company))
     overflow = max(0, len(chosen) - max_items)
     kept = chosen[:max_items]
+    kept.sort(key=lambda pair: (_first_published(pair[0]), pair[0].company))
     return Delivered(
         entries=[_render_entry(entry, row, pool) for entry, row in kept],
         evaluated=evaluated,

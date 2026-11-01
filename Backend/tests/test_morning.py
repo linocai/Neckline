@@ -445,7 +445,7 @@ class FakeModel:
         if code in self.crash_companies:
             raise RuntimeError("worker crashed while the request was in flight")
         content = {
-            "title": "值得跟踪", "verdict": "推", "conclusion": "值得跟踪",
+            "title": "值得跟踪", "verdict": "推", "moneyLogic": "一般", "conclusion": "值得跟踪",
             "questions": {
                 "value": {"pass": True, "text": "利好有量"},
                 "priced": {"pass": True, "text": "还没怎么涨"},
@@ -701,5 +701,5 @@ def test_old_report_output_drops_importance_and_review_without_rewriting_the_row
 
 def test_shipped_config_is_approved_and_pool_verified():
     config = load_config()
-    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v3"
+    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v4"
     assert len(config.pool) == 1089 and config.rules["schedule"] == SCHEDULE
