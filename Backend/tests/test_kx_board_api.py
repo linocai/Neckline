@@ -273,6 +273,16 @@ def test_bad_field_values_become_null_and_null_stays_null():
     assert stock["limitUp"]["consecutiveBoards"] is None
 
 
+def test_sentiment_bad_fields_are_counted_in_gaps():
+    body = load_overview()
+    body["sentiment"]["limit_up_count"] = "很多"
+    body["sentiment"]["fetched_at"]["limit_up"] = "昨天"
+    board = _board(FakeKx(body), Clock(at("2026-11-04", "18:30")))
+    assert board["sentiment"]["limitUpCount"] is None
+    assert board["sentiment"]["fetchedAt"]["limitUp"] is None
+    assert board["gaps"] == ["1 处数字不合格，已留空", "1 处时间不合格，已留空"]
+
+
 def test_pending_is_retried_and_then_gives_up(monkeypatch):
     monkeypatch.setenv("KX_READ_KEY", READ_KEY)
     clock = Clock(at("2026-11-04", "18:30"))
@@ -461,6 +471,98 @@ def test_never_read_returns_503_from_the_route(tmp_path, monkeypatch):
     assert response.status_code == 503
     assert response.json() == {"detail": {"reason": "kx_unavailable", "message": "KX 看板还没读到过：KX 暂时连不上。"}}
     assert READ_KEY not in response.text
+
+
+def _auth() -> dict:
+    return {"Authorization": f"Bearer {TOKEN}"}
+
+
+@pytest.mark.parametrize("message", [
+    f"详见 https://kx.example.test/kx/read/{READ_KEY}?format=json",
+    f"访问码 {READ_KEY} 无效",
+    f"路径 /kx/read/{READ_KEY}/stock/600000 失败",
+])
+def test_upstream_text_cannot_carry_the_read_key(tmp_path, monkeypatch, caplog, message):
+    caplog.set_level(logging.DEBUG)
+    client, _path = _client(tmp_path, monkeypatch)
+    from neckline.kx.board import reset_board_state
+
+    reset_board_state()
+    _use(FakeKx(load_overview(), unavailable=message), Clock(at("2026-11-04", "18:30")))
+    failed = client.get("/api/v4/kx/board", headers=_auth())
+    assert failed.status_code == 503
+    assert READ_KEY not in failed.text and "/kx/read/" not in failed.text and "https://" not in failed.text
+
+    reset_board_state()
+    clock = Clock(at("2026-11-04", "18:30", 10))
+    fake = FakeKx(load_overview())
+    _use(fake, clock)
+    assert client.get("/api/v4/kx/board", headers=_auth()).status_code == 200
+    fake.unavailable = message
+    clock.advance(60)
+    stale = client.get("/api/v4/kx/board", headers=_auth())
+    assert stale.status_code == 200 and stale.json()["source"]["stale"] is True
+    assert READ_KEY not in stale.text and "/kx/read/" not in stale.text and "https://" not in stale.text
+    assert READ_KEY not in caplog.text and "/kx/read/" not in caplog.text
+
+
+def test_an_oversized_integer_becomes_null_and_the_route_returns_200(tmp_path, monkeypatch):
+    body = load_overview()
+    body["rooms"]["leader"][0]["leaders"][0]["quote"]["price"] = 10**400
+    client, _path = _client(tmp_path, monkeypatch)
+    _use(FakeKx(body), Clock(at("2026-11-04", "18:30", 10)))
+    response = client.get("/api/v4/kx/board", headers=_auth())
+    assert response.status_code == 200
+    board = response.json()
+    assert board["rooms"]["leader"][0]["leaders"][0]["quote"]["price"] is None
+    assert board["gaps"] == ["1 处数字不合格，已留空"]
+    assert board["rooms"]["leader"][0]["leaders"][0]["code"] == "600261"
+
+
+def test_a_projection_error_is_cached_as_a_failed_read(tmp_path, monkeypatch):
+    from neckline.kx import board as board_mod
+    from neckline.kx.board import reset_board_state
+
+    real = board_mod.project_board
+
+    def boom(body, *, now, last_read_at, stale, reason):
+        if isinstance(body, dict) and body.get("boom"):
+            raise RuntimeError("boom")
+        return real(body, now=now, last_read_at=last_read_at, stale=stale, reason=reason)
+
+    monkeypatch.setattr(board_mod, "project_board", boom)
+    client, _path = _client(tmp_path, monkeypatch)
+    broken = load_overview()
+    broken["boom"] = True
+    fake = FakeKx(broken)
+    clock = Clock(at("2026-11-04", "18:30"))
+    _use(fake, clock)
+    first = client.get("/api/v4/kx/board", headers=_auth())
+    assert first.status_code == 503
+    assert first.json()["detail"]["message"] == "KX 看板还没读到过：KX 看板数据无法处理，没有采用。"
+    assert len(fake.calls) == 1
+    clock.advance(14)
+    again = client.get("/api/v4/kx/board", headers=_auth())
+    assert again.status_code == 503 and len(fake.calls) == 1
+
+    reset_board_state()
+    clock = Clock(at("2026-11-04", "18:30", 10))
+    fake = FakeKx(load_overview())
+    _use(fake, clock)
+    assert client.get("/api/v4/kx/board", headers=_auth()).status_code == 200
+    fake.body["boom"] = True
+    clock.advance(60)
+    stale = client.get("/api/v4/kx/board", headers=_auth())
+    assert stale.status_code == 200
+    payload = stale.json()
+    assert payload["source"]["stale"] is True
+    assert payload["source"]["reason"] == "KX 看板数据无法处理，没有采用。"
+    assert payload["rooms"]["leader"][0]["leaders"][0]["code"] == "600261"
+    calls = len(fake.calls)
+    clock.advance(14)
+    followed = client.get("/api/v4/kx/board", headers=_auth())
+    assert followed.status_code == 200 and followed.json()["source"]["stale"] is True
+    assert len(fake.calls) == calls
 
 
 def _pretty(payload: dict) -> str:

@@ -8,7 +8,7 @@ from datetime import datetime
 
 from neckline.kx.project import project_board, require_overview
 from neckline.kx.services import KxServices
-from neckline.kx.source import KxError
+from neckline.kx.source import KxError, redact_upstream
 
 SUCCESS_SECONDS = 60
 FAILURE_SECONDS = 15
@@ -74,13 +74,20 @@ async def build_board(kx: KxServices) -> dict:
             return _failed(kx)
         try:
             body = require_overview(await kx.source.overview(sleep=kx.sleep))
+            moment = kx.now()
+            try:
+                projected = project_board(body, now=moment, last_read_at=moment, stale=False, reason=None)
+            except KxError:
+                raise
+            except Exception:
+                raise KxError("kx_bad_board", "KX 看板数据无法处理，没有采用。") from None
         except KxError as error:
             _state.fail_mono = kx.monotonic()
-            _state.fail_reason = error.message
+            _state.fail_reason = redact_upstream(error.message)
             return _failed(kx)
         _state.document = copy.deepcopy(body)
-        _state.read_at = kx.now()
+        _state.read_at = moment
         _state.read_mono = kx.monotonic()
         _state.fail_mono = None
         _state.fail_reason = None
-        return _project(kx, stale=False, reason=None)
+        return projected

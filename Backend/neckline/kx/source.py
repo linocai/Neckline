@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -11,6 +12,9 @@ from neckline.market.util import silence_http_logs
 
 MAX_BYTES = 3_000_000
 _PENDING_TRIES = 3
+_UNAVAILABLE = "KX 看板暂时不可用。"
+_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_READ_SEGMENT = re.compile(r"/kx/read/[^\s/?#]+")
 
 
 class KxError(Exception):
@@ -35,10 +39,20 @@ def retry_delay(body: object) -> float:
     return float(min(max(float(raw), 1.0), 5.0))
 
 
+def redact_upstream(text: str) -> str:
+    """去掉读取地址、`/kx/read/` 后的路径段和当前访问码。洗完没有字就用固定说明。"""
+    cleaned = _READ_SEGMENT.sub("", _URL.sub("", text))
+    key = settings.read_key()
+    if key:
+        cleaned = cleaned.replace(key, "")
+    cleaned = cleaned.strip()
+    return (cleaned[:200] or _UNAVAILABLE)
+
+
 def _unavailable_message(body: object) -> str:
     raw = body.get("message") if isinstance(body, dict) else None
     text = raw.strip() if isinstance(raw, str) else ""
-    return (text[:200] or "KX 看板暂时不可用。")
+    return redact_upstream(text) if text else _UNAVAILABLE
 
 
 class KxSource:

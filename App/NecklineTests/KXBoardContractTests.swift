@@ -268,6 +268,27 @@ final class KXBoardContractTests: XCTestCase {
         }
         XCTAssertTrue(KXCopy.amberLines(board: noted).isEmpty)
         XCTAssertEqual(KXCopy.grayLine(board: noted), "补充一句")
+
+        // 状态缺失（或类型不对）时，非空说明不能被藏掉：按未完成标出；没有说明就什么都不标。
+        for raw in [NSNull(), 3 as Any] as [Any] {
+            let unstated = try edited("kx_board_v3") { object in
+                var structure = object["structure"] as! [String: Any]
+                structure["deepseekStatus"] = raw
+                structure["deepseekNotice"] = "DeepSeek 还在整理"
+                object["structure"] = structure
+                object["status"] = "ok"
+            }
+            XCTAssertEqual(KXCopy.amberLines(board: unstated), ["DeepSeek 还在整理"])
+            XCTAssertNil(KXCopy.grayLine(board: unstated))
+        }
+        let silent = try edited("kx_board_v3") { object in
+            var structure = object["structure"] as! [String: Any]
+            structure.removeValue(forKey: "deepseekStatus")
+            structure["deepseekNotice"] = NSNull()
+            object["structure"] = structure
+            object["status"] = "ok"
+        }
+        XCTAssertTrue(KXCopy.amberLines(board: silent).isEmpty)
     }
 
     func testHeaderAndFooterUseBeijingTime() throws {

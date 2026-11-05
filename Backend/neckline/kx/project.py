@@ -90,7 +90,21 @@ def _text(value: object, gaps: _Gaps) -> str | None:
 def _number(value: object, gaps: _Gaps) -> int | float | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        gaps.bad_numbers += 1
+        return None
+    if isinstance(value, int):
+        # 先用整数比较：10**400 转 float 会 OverflowError，和 float 比也会。
+        try:
+            if abs(value) > 10**15:
+                gaps.bad_numbers += 1
+                return None
+            float(value)
+        except OverflowError:
+            gaps.bad_numbers += 1
+            return None
+        return value
+    if not math.isfinite(value):
         gaps.bad_numbers += 1
         return None
     return value
@@ -412,28 +426,35 @@ def project_board(body: dict, *, now: datetime, last_read_at: datetime, stale: b
     rooms_raw = body["rooms"]
     rooms = {name: [item for item in (_group(group, gaps, room=name) for group in rooms_raw[name]) if item]
              for name in _ROOMS}
-    _session_state = _session(now, gaps)
+    session = _session(now, gaps)
+    source = {"checkedAt": _time(body.get("checked_at"), gaps), "stale": stale,
+              "reason": reason if stale else None, "lastReadAt": _stamp(last_read_at)}
+    structure = {
+        "version": _text(body.get("version"), gaps),
+        "asOf": _time(body.get("as_of"), gaps),
+        "generatedAt": _time(body.get("generated_at"), gaps),
+        "generatedBy": _text(body.get("generated_by"), gaps),
+        "deepseekStatus": _text(body.get("deepseek_status"), gaps),
+        "deepseekNotice": _text(body.get("deepseek_notice"), gaps),
+        "marketNote": _text(body.get("market_note"), gaps),
+        "membershipLocked": _flag(body.get("membership_locked"), gaps),
+        "refresh": _refresh(body.get("refresh"), gaps),
+    }
+    status = _status(body.get("status"), gaps)
+    errors = _messages(body.get("errors"), gaps)
+    warnings = _messages(body.get("warnings"), gaps)
+    fact_warnings = _fact_warnings(body.get("fact_warnings"), gaps)
+    sentiment = _sentiment(body.get("sentiment"), gaps)
     return {
         "generatedAt": _stamp(now),
-        "source": {"checkedAt": _time(body.get("checked_at"), gaps), "stale": stale,
-                   "reason": reason if stale else None, "lastReadAt": _stamp(last_read_at)},
-        "structure": {
-            "version": _text(body.get("version"), gaps),
-            "asOf": _time(body.get("as_of"), gaps),
-            "generatedAt": _time(body.get("generated_at"), gaps),
-            "generatedBy": _text(body.get("generated_by"), gaps),
-            "deepseekStatus": _text(body.get("deepseek_status"), gaps),
-            "deepseekNotice": _text(body.get("deepseek_notice"), gaps),
-            "marketNote": _text(body.get("market_note"), gaps),
-            "membershipLocked": _flag(body.get("membership_locked"), gaps),
-            "refresh": _refresh(body.get("refresh"), gaps),
-        },
-        "status": _status(body.get("status"), gaps),
-        "errors": _messages(body.get("errors"), gaps),
-        "warnings": _messages(body.get("warnings"), gaps),
+        "source": source,
+        "structure": structure,
+        "status": status,
+        "errors": errors,
+        "warnings": warnings,
         "gaps": gaps.lines(),
-        "factWarnings": _fact_warnings(body.get("fact_warnings"), gaps),
-        "session": _session_state,
-        "sentiment": _sentiment(body.get("sentiment"), gaps),
+        "factWarnings": fact_warnings,
+        "session": session,
+        "sentiment": sentiment,
         "rooms": rooms,
     }

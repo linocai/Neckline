@@ -292,8 +292,15 @@ enum KXCopy {
             let time = clock(board.source?.lastReadAt) ?? dash
             lines.append("未能核对，最后读到 \(time)")
         }
-        if let status = board.structure?.deepseekStatus, !status.isOK {
-            lines.append(clean(board.structure?.deepseekNotice) ?? deepseekPending)
+        // 状态明确不是 ok 时一定标出；状态缺失或不认识但有说明，也按未完成标出，说明不能被藏掉。
+        let notice = clean(board.structure?.deepseekNotice)
+        switch board.structure?.deepseekStatus {
+        case let status? where !status.isOK:
+            lines.append(notice ?? deepseekPending)
+        case nil where notice != nil:
+            lines.append(notice!)
+        default:
+            break
         }
         return lines
     }
