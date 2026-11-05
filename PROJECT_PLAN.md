@@ -1,8 +1,8 @@
-# Neckline · 4.2.1
+# Neckline · 4.3.0
 
 唯一工程控制面。项目规则见 [CLAUDE.md](CLAUDE.md)。
 
-- **4.3.0（KX 看板按 KX V3 改版，规划中）**：计划、决定与证据见 [archive/v4.3.0_execution.md](archive/v4.3.0_execution.md)。
+- **4.3.0（KX 看板按 KX V3 改版，已上线）**：计划、决定与证据见 [archive/v4.3.0_execution.md](archive/v4.3.0_execution.md)。
 - **4.2.1（KX 看板跟进 KX 0.3.0，已上线）**：计划、决定与证据见 [archive/v4.2.1_execution.md](archive/v4.2.1_execution.md)。
 - **4.2.0（K10-v5，已上线）**：计划、契约与执行证据见 [archive/v4.2.0_execution.md](archive/v4.2.0_execution.md)；需求来源是 `whynotme/K10.md`（K10-v5，2026-10-27 用户确认）。
 - **V4**：详细计划与阶段证据见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)。
@@ -36,27 +36,23 @@ V4 覆盖固定的 1,089 家创业板公司，另有 KX 看板（4.1.0）。4.2.
 
 ## 当前状态（2026-11-01）
 
-- **现役后端 4.2.1 B130**（`100d153`，tag `v4.2.1-b130`，11/01 11:12 切换，库结构 v4，配置 `screening-v4`，评估合同 evaluation-v2）。B130 是评估口径的两次修订（B129 没有单独上线），见 [B130 记录](archive/v4.2.1-b130_execution.md)、[B129 记录](archive/v4.2.1-b129_execution.md)。B128 让 KX 看板跟上 KX 0.3.0，见 [4.2.1 记录](archive/v4.2.1_execution.md)。B127 是快修：评估输出不合格时再问模型一次修正格式，见 [B127 记录](archive/v4.2.0-b127_execution.md)。B126 接上了 D4 联网搜索，见 [B126 记录](archive/v4.2.0-b126_execution.md)。B125 是上线后审查的快修，见 [B125 记录](archive/v4.2.0-b125_execution.md)。B124 的发布、核对与回退见 [v4.2.0 记录](archive/v4.2.0_execution.md) §6。旧 build 记录：[B123](archive/v4.1.0-b123_execution.md)、[B122](archive/v4.1.0-b122_execution.md)、[4.1.0/B121](archive/v4.1.0_execution.md)、[B120](archive/v4.0.1-b120_execution.md)。
-- **App 4.2.1 (128)**：KX 看板去掉一字板与「可买」列，9:15–9:30 标「竞价中」「开盘价」；K10 晨报同 4.2.0。macOS 已覆盖安装；iOS 待用户用 Xcode 安装（旧版 124 也能读新看板，只是没有阶段标签）。
+- **现役后端 4.3.0 B131**（`59e0f69`，tag `v4.3.0-b131`，11/05 10:54 切换，库结构 v5，配置 `screening-v4`，评估合同 evaluation-v2）。B131 是 KX 看板按 KX V3 改版，见 [4.3.0 记录](archive/v4.3.0_execution.md)。B130 是评估口径的两次修订（B129 没有单独上线），见 [B130 记录](archive/v4.2.1-b130_execution.md)、[B129 记录](archive/v4.2.1-b129_execution.md)。B128 让 KX 看板跟上 KX 0.3.0，见 [4.2.1 记录](archive/v4.2.1_execution.md)。B127 是快修：评估输出不合格时再问模型一次修正格式，见 [B127 记录](archive/v4.2.0-b127_execution.md)。B126 接上了 D4 联网搜索，见 [B126 记录](archive/v4.2.0-b126_execution.md)。B125 是上线后审查的快修，见 [B125 记录](archive/v4.2.0-b125_execution.md)。B124 的发布、核对与回退见 [v4.2.0 记录](archive/v4.2.0_execution.md) §6。旧 build 记录：[B123](archive/v4.1.0-b123_execution.md)、[B122](archive/v4.1.0-b122_execution.md)、[4.1.0/B121](archive/v4.1.0_execution.md)、[B120](archive/v4.0.1-b120_execution.md)。
+- **App 4.3.0 (131)**：KX 看板按 V3 重做（情绪条、三个房间、组卡片，DeepSeek 区与事实分开）；K10 晨报不变。macOS 已覆盖安装；iOS 待用户用 Xcode 安装（旧版读不了新看板，显示「KX 看板暂时读不了」）。
 - **晨报（K10-v5）**：一级初筛 → 数据准备 → 评估 → 最多推 10 条。评估收口 09:05，截止 09:15。首期 10/29 08:10 出报，推 10 条，核对见 [B126 记录 §6](archive/v4.2.0-b126_execution.md)。
 - **联网（D4）**：B126 起已接上。评估前代码给每条候选调一次 DeepSeek Search，取 10 条结果，只用来补背景和各方观点，不能推翻公告数字。首期 76 次搜索 0 失败，68% 的观点引用了搜索结果。
 - **MCP**：5 个只读工具，简要提示词已更新为 v5。三家 Agent 的实测由用户做。
-- **KX**：KX 11/04 升到 V3（0.4.0 build 12），总览改为 schema 4（情绪条加龙头室、等候室、淘汰室），没有名单了；线上 B130 读不了，看板停在最后一份 V2 名单上（用户已接受改版前不可用）。4.3.0 改版，见 [4.3.0 记录](archive/v4.3.0_execution.md)。推荐接收接口 `/api/v4/kx/picks` 随 4.3.0 退役。
+- **KX**：B131 起后端只读 KX V3 总览（schema 4），缓存 60 秒，读不到时沿用上一份并标「未能核对」；推荐接收接口与 `KX_PICKS_TOKEN`、nginx 的 picks 段已删。11/05 上线时 HZ 上的 `linotsai.top` 全部不回 HTTP，看板暂显示「KX 暂时连不上」，待 HZ 恢复后核对，见 [4.3.0 记录 §5](archive/v4.3.0_execution.md#5-执行证据)。
 - **额度**：麦蕊体验版总量 20 万次（约到 12-28），与 KX 共用。TuShare major_news 每天 40 次。
 - **遗留**：
-  - 发布目录：服务器 17 个、本机 15 个（B113–B130，没有 B129），只留最近两个；
-  - 4.2.0、D4 回放、4.2.1 与 B130 回放的临时产物待删，清单在 `Backend/.work/cleanup-4.2.0.sh`、`cleanup-d4.sh`、`cleanup-4.2.1.sh`、`cleanup-4.2.1-b130.sh`，由用户执行；
-  - NB 上的 venv 备份、服务单元备份和 `.env.bak-20261029-b128`，稳定一周后再删。
+  - 发布目录：服务器 18 个、本机 16 个（B113–B131，没有 B129），只留最近两个；
+  - 4.2.0、D4 回放、4.2.1 与 B130 回放的临时产物待删，清单在 `Backend/.work/cleanup-4.2.0.sh`、`cleanup-d4.sh`、`cleanup-4.2.1.sh`、`cleanup-4.2.1-b130.sh`、`cleanup-4.3.0.sh`，由用户执行；
+  - NB 上的 venv 备份、服务单元备份、`.env.bak-20261029-b128`、`.env.bak-20261105-b131` 与 nginx 的 `http.conf.bak-20261105-105644-b131`，稳定一周后再删。
 
 ## 当前 Plan
 
-1. **4.3.0 B131 KX 看板改版**（正式工作流，用户 11/04 定 4.3.0 (131)、删除推荐接收、单票详情不做），决定 D1–D6 见 [4.3.0 记录 §2](archive/v4.3.0_execution.md#2-关键决定)：
-   - B1 样图（iPhone、Mac，浅色深色）→ 用户确认；
-   - B2 后端：只读 KX 总览并投影、退役删除、库结构 v5；验收全量 pytest 与注入测试；
-   - B3 App 按样图重做；三条构建、XCTest、真实响应解码；
-   - B4 截图对照；B5 上线（删 `KX_PICKS_TOKEN` 与 nginx 那段 location，用户放行）。
+1. **核对 B131 线上看板**：HZ 恢复后看板应读到当天的 KX 结构（不标「未能核对」）；补一张线上数据的截图；下个交易日 9:15–9:30 看「竞价中」与盘口说明。
 2. **按 B130 跑一周**（用户 11/01：「下周就按照B130去跑。如果还是有问题，到时候我们下周周末再改」）：11/02 起每期看判推数、超上限时「强」换进换出了哪些、大涨却没推的票的理由，周末和用户一起复盘。B130 回放显示欧圣电气仍判不推、资金逻辑两次之间一致的只有 18/25，见 [B130 记录 §3](archive/v4.2.1-b130_execution.md)。B127 的格式修正已在 10/30 线上验证：修了 4 次，全部修好。
-3. **清理**：用户执行 `Backend/.work/cleanup-4.2.0.sh`、`cleanup-d4.sh`、`cleanup-4.2.1.sh`；发布目录只留最近两个。
+3. **清理**：用户执行 `Backend/.work/cleanup-4.2.0.sh`、`cleanup-d4.sh`、`cleanup-4.2.1.sh`、`cleanup-4.3.0.sh`；发布目录只留最近两个。
 
 ## 待决定（用户）
 
@@ -102,4 +98,5 @@ V4 覆盖固定的 1,089 家创业板公司，另有 KX 看板（4.1.0）。4.2.
 - 2026-10-29：4.2.0 B127（快修）：评估输出没通过格式检查时，带着原输出再问模型一次修正格式，每条最多一次；11:19 上线；见 [B127 记录](archive/v4.2.0-b127_execution.md)。
 - 2026-10-29：4.2.1 B128（正式工作流，版本由用户定）：KX 看板跟上 KX 0.3.0：换访问码、接受 schema 3、删一字板与能否买入、竞价时段按报价时间标注；12:19 上线，App 4.2.1 (128)；见 [4.2.1 记录](archive/v4.2.1_execution.md)。
 - 2026-11-01：4.2.1 B130（快修，含未上线的 B129）：用户两次修订评估口径（资金逻辑为出发点、③为核心、季报只看超预期、透支只看股价），评估输出加「资金逻辑」用于超上限取舍；配置 screening-v4；11:12 上线；见 [B130 记录](archive/v4.2.1-b130_execution.md)。
-- 2026-11-04：KX 升到 V3，用户要求 KX 看板大改；进入正式工作流 4.3.0（B131）；见 [4.3.0 记录](archive/v4.3.0_execution.md)。
+- 2026-11-04：KX 升到 V3，用户要求 KX 看板大改；进入正式工作流 4.3.0（B131），样图经用户确认。
+- 2026-11-05：4.3.0 B131 上线（KX 看板按 V3 改版，推荐接收退役，库结构 v5，App 4.3.0 (131)；经 Codex 审查与两轮复查）；见 [4.3.0 记录](archive/v4.3.0_execution.md)。
