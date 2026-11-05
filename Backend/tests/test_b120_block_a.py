@@ -444,8 +444,19 @@ def test_versioned_document_ref_on_api_mcp_and_web(path, monkeypatch):
     assert client.get(f"/read/{READ_KEY}/doc/{doc_id}@01").status_code == 404
 
 
+def _seed_named_pool(path):
+    """刷新失败时要有上一份可沿用。这三家就是这条链路原来点名的公司。"""
+    from neckline.morning.stock_pool import store_rows
+    rows = [{"code": code, "name": name, "fullname": "", "listDate": "2010-01-01", "aliases": [name],
+             "summary": None, "summarySource": "none"}
+            for code, name in (("300953.SZ", "震裕科技"), ("300683.SZ", "海特生物"), ("300082.SZ", "奥克股份"))]
+    with db.write(path) as conn:
+        store_rows(conn, rows, now=datetime(2026, 10, 12, 4, 0, tzinfo=timezone.utc), source="tushare")
+
+
 def test_cli_morning_round_trip_reads_back_through_api_and_mcp(path, monkeypatch, capsys):
     _seed_window(path)
+    _seed_named_pool(path)
     _with_device(path)
     _patch_clock(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")

@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 
 import neckline
 from neckline.market.overview import overview
-from neckline.market.pool_query import lookup
+from neckline.market.pool_query import assess
 from neckline.mcp.auth import SCOPE, OwnerAuth
 from neckline.mcp.brief import BRIEF
 from neckline.mcp.settings import McpSettings, load_mcp_settings
@@ -102,7 +102,7 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
     @server.tool(name="check_pool", title="查询股票池", annotations=_READ)
     async def check_pool(query: str) -> dict[str, Any]:
         """查询一只股票是否在 K10 股票池。可以是六位代码、带 .SZ 的代码、简称或别名。不返回整份名单。"""
-        return lookup(query)
+        return assess(query)
 
     @server.tool(name="get_stock_overview", title="读取单票技术面概览", annotations=_READ)
     async def get_stock_overview(stock: str) -> dict[str, Any]:

@@ -6,6 +6,7 @@
   python -m neckline.morning.cli finalize [--now ISO]     # 09:15：还没出报就记失败并推送
   python -m neckline.morning.cli show [--date YYYY-MM-DD]
   python -m neckline.morning.cli evaluations --date YYYY-MM-DD [--json]
+  python -m neckline.morning.cli refresh-pool [--now ISO]
 
 库路径取 --db 或环境变量 NECKLINE_V4_DB_PATH，没有默认值。凭据只从环境变量读（DEEPSEEK_API_KEY、
 TUSHARE_TOKEN、JIN10_MCP_TOKEN、APNS_*），不写日志。业务时钟可用 --now 显式给出。
@@ -29,6 +30,7 @@ from neckline.screening.deepseek import DeepSeekClient
 from . import db
 from .collect import run_collection
 from .report import Pusher, finalize, load_config, note_error, run_morning
+from .stock_pool import PoolFetchError, refresh_stock_pool
 from .schedule import CST
 
 TEMPFAIL = 75  # 让 systemd 按 Restart=on-failure 重启续跑
@@ -156,6 +158,21 @@ def _evaluations(path: Path, day: str, as_json: bool) -> int:
     return 0
 
 
+def _refresh_pool(path: Path, config, now: datetime) -> int:
+    """手工刷新当前股票池。失败不写库、不打印 token。"""
+    day = now.astimezone(CST).date()
+    try:
+        with db.write(path) as conn:
+            result = refresh_stock_pool(conn, rules=config.rules["companyPool"], seed_rows=config.alias_seed,
+                                        as_of=day, today=day, now=now)
+    except PoolFetchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _print({"count": len(result.rows), "sha256": result.sha256, "refreshedAt": result.refreshed_at,
+            "source": result.source})
+    return 0
+
+
 def _weekday_problem(path: Path, day, body: str, clock) -> None:
     if day.weekday() >= 5:
         return
@@ -194,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluations = sub.add_parser("evaluations")
     evaluations.add_argument("--date", required=True)
     evaluations.add_argument("--json", action="store_true")
+    sub.add_parser("refresh-pool").add_argument("--now")
     args = ap.parse_args(argv)
     path = _db_path(args.db)
 
@@ -223,6 +241,13 @@ def main(argv: list[str] | None = None) -> int:
         _print(run_collection(path, now=now, config=_collection_config(), tokens=_tokens(),
                               bootstrap_start=bootstrap, max_pages=args.max_pages, clock=clock))
         return 0
+    if args.command == "refresh-pool":
+        try:
+            config = load_config()
+        except Exception as exc:
+            _LOG.error("筛选规则配置无效：%s", type(exc).__name__)
+            return 1
+        return _refresh_pool(path, config, now)
     try:
         config = load_config()
     except Exception as exc:

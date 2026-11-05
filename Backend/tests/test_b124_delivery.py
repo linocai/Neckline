@@ -342,7 +342,7 @@ def test_replay_copies_snapshot_and_leaves_it_unchanged(tmp_path: Path, monkeypa
     code = replay_main([
         "--snapshot", str(snapshot), "--trade-date", "2026-10-13", "--work", str(work),
         "--market-snapshot", str(market), "--receipts", str(work / "receipts"),
-        "--filings-cache", str(work / "filings"),
+        "--filings-cache", str(work / "filings"), "--pool-seed-only",
     ], transport=httpx.MockTransport(handler))
     assert code == 0
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == before
@@ -378,7 +378,7 @@ def test_replay_without_started_at_stops_before_touching_the_snapshot(tmp_path: 
     code = replay_main([
         "--snapshot", str(snapshot), "--trade-date", "2026-10-13", "--work", str(tmp_path / "work"),
         "--market-snapshot", str(market), "--receipts", str(tmp_path / "receipts"),
-        "--filings-cache", str(tmp_path / "filings"),
+        "--filings-cache", str(tmp_path / "filings"), "--pool-seed-only",
     ])
     assert code == 1
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == before

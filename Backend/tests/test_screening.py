@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -39,7 +40,7 @@ def _doc(i: int, text: str, *, published: str, seen: str = "2026-10-13T08:01:00+
 
 
 def _v3() -> dict:
-    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v4.json"
+    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v5.json"
     return json.loads(path.read_text(encoding="utf-8"))["selection"]
 
 
@@ -74,15 +75,17 @@ def test_pool_matches_names_aliases_and_pool_codes_only():
     assert set(_pool().subset(["300082.SZ"]).match("震裕科技与奥克股份")) == {"300082.SZ"}
 
 
-def test_strict_short_names_need_company_news_format():
+def test_strict_short_names_need_company_news_format(caplog):
     pool = CompanyPool([Company("300785.SZ", "值得买", ("值得买", "北京值得买科技股份有限公司")),
                         Company("300953.SZ", "震裕科技", ("震裕科技",))], strict_names=["值得买"])
     assert pool.match("哪款电视值得买（300785）") == {}
     assert set(pool.match("值得买：前三季度净利增长")) == {"300785.SZ"}
     assert set(pool.match("【值得买发布公告】")) == {"300785.SZ"}
     assert set(pool.match("北京值得买科技股份有限公司公告")) == {"300785.SZ"}
-    with pytest.raises(ValueError, match="不在公司池"):
-        CompanyPool([], strict_names=["值得买"])
+    caplog.set_level(logging.INFO)
+    ignored = CompanyPool([], strict_names=["值得买"])
+    assert ignored.strict_names == ()
+    assert "值得买" in caplog.text
 
 
 def test_as_of_takes_latest_revision_fetched_before_cutoff():
@@ -357,7 +360,7 @@ def test_v3_config_groups_match_the_prompt_and_cover_every_kind():
 
 def test_v3_config_requires_filings_and_rejects_leftover_importance(tmp_path):
     config = load_config()
-    assert config.rules["configVersion"] == "screening-v4"
+    assert config.rules["configVersion"] == "screening-v5"
     assert config.rules["classification"]["contract"] == CONTRACT
     assert config.rules["filings"] == {"maxBytes": 20000000, "maxPages": 6, "concurrency": 4,
                                        "timeoutSeconds": 20, "cacheDays": 3}
@@ -414,7 +417,7 @@ def _push(company: str) -> dict:
 
 def test_report_content_has_candidates_without_importance_or_review():
     config = load_config()
-    assert config.rules["configVersion"] == "screening-v4"
+    assert config.rules["configVersion"] == "screening-v5"
     assert config.rules["classification"]["contract"] == CONTRACT
     pool = CompanyPool([Company("300001.SZ", "甲公司", ("甲公司",))])
     by_id = {"m1": _message(1, 16)}
@@ -426,7 +429,7 @@ def test_report_content_has_candidates_without_importance_or_review():
                             gap=None, generated_at=WINDOW.collected_by, stats={},
                             evaluations=[_push("300001.SZ"), {**_push("300002.SZ"), "verdict": "不推"}],
                             max_items=10)
-    assert content["configVersion"] == "screening-v4" and "review" not in content
+    assert content["configVersion"] == "screening-v5" and "review" not in content
     assert content["candidates"] == 1 and content["evaluated"] == 1 and len(content["entries"]) == 1
     entry = content["entries"][0]
     assert set(entry) == {"companyCode", "companyName", "type", "title", "conclusion", "questions", "risk",
@@ -553,7 +556,7 @@ def test_compare_verdicts_script_on_fake_replay(tmp_path):
     verdict_path = tmp_path / "verdicts.json"
     verdict_path.write_text(json.dumps(verdicts, ensure_ascii=False), encoding="utf-8")
     script = Path(__file__).resolve().parents[1] / "scripts" / "compare_verdicts.py"
-    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v4.json"
+    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v5.json"
     completed = subprocess.run([sys.executable, str(script), "--replay", str(tmp_path), "--verdicts", str(verdict_path),
                                 "--config", str(config)], check=False, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr

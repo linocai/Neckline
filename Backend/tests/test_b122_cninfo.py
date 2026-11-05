@@ -16,6 +16,7 @@ from neckline.morning import api as morning_api
 from neckline.morning import db
 from neckline.morning.collect import SOURCES, run_collection
 from neckline.morning.report import LATE_SOURCES, SOURCE_LABELS, coverage_gaps, load_config
+from neckline.morning.stock_pool import pool_from_rows, rows_from_seed
 from neckline.morning.schedule import morning_window
 from neckline.news import cninfo
 from neckline.screening.prefilter import prefilter_window
@@ -486,9 +487,17 @@ def test_source_failure_does_not_block_other_sources(path):
 
 # ------------------------------------------------------------------ 晨报侧
 
+def _seed_pool(config):
+    """别名种子就是原来那 1,089 家。运行时的池子在库里，这两条用例核的是点名规则。"""
+    rows = rows_from_seed(config.alias_seed, summary_max_chars=int(config.rules["companyPool"]["summaryMaxChars"]))
+    pool, _profiles = pool_from_rows(rows, strict_names=config.rules["matching"]["strictShortNames"])
+    return pool
+
+
 def test_zhongchuang_announcement_reaches_the_morning_window_and_matches_300056(path):
     """10/19 18:12 的中创环保公告：采集入库 → 10/20 晨报窗口粗筛 → 点名 300056（真实公司池）。"""
     config = load_config()
+    pool = _seed_pool(config)
     collection = packaged_collection()
     collection["sources"] = {KEY: collection["sources"][KEY]}
     day = date(2026, 10, 20)
@@ -509,7 +518,7 @@ def test_zhongchuang_announcement_reaches_the_morning_window_and_matches_300056(
         docs = list(db.iter_documents(conn, published_from=start, published_to=end, fetched_by=now, include_end=True))
     assert len(docs) == 2  # 收盘前那条在窗口之外
 
-    messages, in_window, duplicates, unmatched = prefilter_window(docs, config.pool)
+    messages, in_window, duplicates, unmatched = prefilter_window(docs, pool)
     assert (in_window, duplicates, unmatched) == (2, 0, 1)
     (message,) = messages
     assert list(message.companies) == ["300056.SZ"]
@@ -526,14 +535,15 @@ def test_zhongchuang_announcement_reaches_the_morning_window_and_matches_300056(
 def test_prefilter_matches_strict_short_name_company_through_the_title_format():
     """简称是常用词的公司只认「简称：」格式；巨潮标题格式「简称：公告名」必须能命中。"""
     config = load_config()
+    pool = _seed_pool(config)
     strict = config.rules["matching"]["strictShortNames"]
     assert strict
     name = strict[0]
-    code = next(c.short_code for c in config.pool.companies.values() if c.name == name)
+    code = next(c.short_code for c in pool.companies.values() if c.name == name)
     row = ann(1, at("2026-10-19", "18:12:00"), name=name, code=code, title="关于签订重大合同的公告")
     (document,) = fetch(Server([row]), start=WINDOW[0], end=WINDOW[1]).documents
-    assert f"{code}.SZ" in config.pool.match(f"{document.title}\n{document.original_text}")
-    assert f"{code}.SZ" not in config.pool.match(f"{name}（{code}）公告")  # 对照：没有「简称：」格式就不算点名
+    assert f"{code}.SZ" in pool.match(f"{document.title}\n{document.original_text}")
+    assert f"{code}.SZ" not in pool.match(f"{name}（{code}）公告")  # 对照：没有「简称：」格式就不算点名
 
 
 # ------------------------------------------------------------------ 覆盖缺口

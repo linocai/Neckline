@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import httpx
 
@@ -39,6 +39,7 @@ from neckline.screening.text import section_heading
 
 from . import db
 from .schedule import CST, CalendarGap, deadline, is_trading_day, morning_window
+from .stock_pool import PoolFetchError, pool_from_rows, refresh_stock_pool, rows_from_pool, store_rows
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class LoadedConfig:
     sha256: str
     pool: CompanyPool
     profiles: dict[str, str | None]
+    alias_seed: tuple = ()
 
 
 _HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -161,9 +163,7 @@ def _validate_screening_rules(rules: object) -> dict:
     _require_str(model, "name", "model.name")
     _require_positive_number(model, "timeoutSeconds", "model.timeoutSeconds")
     _require_min_int(model, "maxAttempts", "model.maxAttempts", 1)
-    pool = _require_dict(rules, "companyPool", "companyPool")
-    _require_str(pool, "file", "companyPool.file")
-    _require_str(pool, "sha256", "companyPool.sha256")
+    _validate_company_pool(_require_dict(rules, "companyPool", "companyPool"))
     matching = _require_dict(rules, "matching", "matching")
     names = _require(matching, "strictShortNames", "matching.strictShortNames")
     if not isinstance(names, list) or any(not isinstance(item, str) for item in names):
@@ -215,17 +215,34 @@ def _validate_screening_rules(rules: object) -> dict:
     return rules
 
 
-def load_config(name: str = "screening-v4.json", *, path: Path | None = None) -> LoadedConfig:
+def _validate_company_pool(pool: dict) -> None:
+    prefixes = _require(pool, "prefixes", "companyPool.prefixes")
+    if (not isinstance(prefixes, list) or not prefixes
+            or any(not isinstance(item, str) or not item for item in prefixes)):
+        raise ValueError("companyPool.prefixes 类型不对")
+    marker = _require_str(pool, "excludeNameContains", "companyPool.excludeNameContains")
+    if not marker:
+        raise ValueError("companyPool.excludeNameContains 类型不对")
+    _require_min_int(pool, "summaryMaxChars", "companyPool.summaryMaxChars", 1)
+    seed = _require_dict(pool, "aliasSeed", "companyPool.aliasSeed")
+    file_name = _require_str(seed, "file", "companyPool.aliasSeed.file")
+    digest = _require_str(seed, "sha256", "companyPool.aliasSeed.sha256")
+    if not file_name or not digest:
+        raise ValueError("companyPool.aliasSeed 类型不对")
+
+
+def load_config(name: str = "screening-v5.json", *, path: Path | None = None) -> LoadedConfig:
+    """规则和别名种子。运行时的股票池在库里，这里的 pool 是空的。"""
     package = resources.files("neckline.config")
     raw = path.read_bytes() if path is not None else (package / name).read_bytes()
     rules = _validate_screening_rules(json.loads(raw))
-    pool_raw = (package / rules["companyPool"]["file"]).read_bytes()
-    if hashlib.sha256(pool_raw).hexdigest() != rules["companyPool"]["sha256"]:
-        raise ValueError("公司池文件与配置记录的哈希不符")
-    rows = [json.loads(line) for line in pool_raw.decode("utf-8").splitlines() if line.strip()]
-    pool = CompanyPool.from_rows(rows, rules["matching"]["strictShortNames"])
-    return LoadedConfig(rules=rules, sha256=hashlib.sha256(raw).hexdigest(), pool=pool,
-                        profiles={r["code"]: r["index"].get("summary") for r in rows})
+    seed = rules["companyPool"]["aliasSeed"]
+    seed_raw = (package / seed["file"]).read_bytes()
+    if hashlib.sha256(seed_raw).hexdigest() != seed["sha256"]:
+        raise ValueError("别名种子文件与配置记录的哈希不符")
+    rows = tuple(json.loads(line) for line in seed_raw.decode("utf-8").splitlines() if line.strip())
+    return LoadedConfig(rules=rules, sha256=hashlib.sha256(raw).hexdigest(), pool=CompanyPool(()),
+                        profiles={}, alias_seed=rows)
 
 
 def _cst(ts: datetime) -> str:
@@ -328,8 +345,10 @@ def _material_names(selection: Selection, evaluations: list[dict] | None, pool: 
 
 def gap_summary(collection_gaps: list[str], selection: Selection, pool: CompanyPool, *,
                 unevaluated: list[str] | None = None, overflow: int = 0, filing_failures: int = 0,
-                evaluations: list[dict] | None = None) -> str | None:
+                evaluations: list[dict] | None = None, pool_note: str | None = None) -> str | None:
     parts = []
+    if pool_note:
+        parts.append(pool_note)
     if collection_gaps:
         parts.append("采集不完整：" + "、".join(collection_gaps))
     if selection.gaps:
@@ -752,12 +771,101 @@ def _fail(db_path: Path, *, day: date, report_id: str, window: tuple[datetime, d
     return {"tradeDate": day.isoformat(), "state": stored["status"], "reason": stored["failure_reason"], "push": push}
 
 
+class _PoolBlocked(RuntimeError):
+    """本期没有可用的股票池。"""
+
+
+def _pool_stats(count: int, digest: str, refreshed_at: str, reused: bool, gap: str | None = None) -> dict:
+    stats = {"count": count, "sha256": digest, "refreshedAt": refreshed_at, "reused": reused}
+    if gap:
+        stats["gap"] = gap
+    return stats
+
+
+def _remember_pool(db_path: Path, report_id: str, stats: Mapping) -> None:
+    with db.write(db_path) as conn:
+        db.merge_running_stats(conn, report_id, {"pool": dict(stats)})
+
+
+def _stored_pool(db_path: Path) -> dict | None:
+    with db.read(db_path) as conn:
+        return db.read_stock_pool(conn)
+
+
+def _view_pool(config: LoadedConfig, rows: Sequence[Mapping]) -> LoadedConfig:
+    pool, profiles = pool_from_rows(rows, strict_names=config.rules["matching"]["strictShortNames"])
+    return LoadedConfig(rules=config.rules, sha256=config.sha256, pool=pool, profiles=profiles,
+                        alias_seed=config.alias_seed)
+
+
+def _install_given(db_path: Path, config: LoadedConfig, report_id: str, clock: Callable[[], datetime]):
+    with db.write(db_path) as conn:
+        stored = store_rows(conn, rows_from_pool(config.pool, config.profiles), now=clock(), source="given")
+    record = _pool_stats(len(stored.rows), stored.sha256, stored.refreshed_at, False)
+    _remember_pool(db_path, report_id, record)
+    return _view_pool(config, stored.rows), None, record
+
+
+def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: str, resuming: bool,
+                 existing: Mapping | None, clock: Callable[[], datetime], pool_source: str | None,
+                 post: Callable[..., dict] | None, environ: Mapping[str, str] | None):
+    """开工后定下本期池子。续跑不再刷新。注入的非空池子不打 TuShare。"""
+    if resuming:
+        saved = ((existing or {}).get("stats") or {}).get("pool") or {}
+        stored = _stored_pool(db_path)
+        saved_sha = saved.get("sha256")
+        if saved_sha:
+            current = stored["sha256"] if stored else None
+            if current != saved_sha:
+                raise _PoolBlocked("股票池与开工时不一致")
+            record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"],
+                                 bool(saved.get("reused")), saved.get("gap"))
+            _remember_pool(db_path, report_id, record)
+            return _view_pool(config, stored["rows"]), saved.get("gap"), record
+        if stored is not None:
+            record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False)
+            _remember_pool(db_path, report_id, record)
+            return _view_pool(config, stored["rows"]), None, record
+        if config.pool:
+            return _install_given(db_path, config, report_id, clock)
+        raise _PoolBlocked("还没有股票池")
+    if pool_source == "database":
+        stored = _stored_pool(db_path)
+        if stored is None:
+            raise _PoolBlocked("还没有股票池")
+        record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False)
+        _remember_pool(db_path, report_id, record)
+        return _view_pool(config, stored["rows"]), None, record
+    if config.pool:
+        return _install_given(db_path, config, report_id, clock)
+    try:
+        with db.write(db_path) as conn:
+            refreshed = refresh_stock_pool(
+                conn, rules=config.rules["companyPool"], seed_rows=config.alias_seed, as_of=day, today=day,
+                now=clock(), post=post, environ=environ)
+    except PoolFetchError as exc:
+        stored = _stored_pool(db_path)
+        if stored is None:
+            raise _PoolBlocked(f"股票池没能刷新（{exc}）") from None
+        gap = f"股票池没能刷新（{exc}），沿用上一份"
+        record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], True, gap)
+        _remember_pool(db_path, report_id, record)
+        logger.info("%s", gap)
+        return _view_pool(config, stored["rows"]), gap, record
+    record = _pool_stats(len(refreshed.rows), refreshed.sha256, refreshed.refreshed_at, False)
+    _remember_pool(db_path, report_id, record)
+    return _view_pool(config, refreshed.rows), None, record
+
+
 def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector: Callable[[datetime], dict],
                 client_factory: Callable[[str], DeepSeekClient], pusher: Pusher,
                 clock: Callable[[], datetime],
                 fetcher: Callable[[str], FetchResult] | None = None,
                 market: MarketSource | None = None,
-                search_factory: Callable[[str], SearchClient] | None = None) -> dict:
+                search_factory: Callable[[str], SearchClient] | None = None,
+                pool_source: str | None = None,
+                pool_post: Callable[..., dict] | None = None,
+                pool_environ: Mapping[str, str] | None = None) -> dict:
     """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。
 
     先看当天报告：已有 running 就是续跑，不再采集，消息边界用首次写入的 started_at。
@@ -800,6 +908,13 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
             stored = db.get_report(conn, day.isoformat())
         collected_by = datetime.fromisoformat(stored["started_at"])
     window = Window(start=start, end=end, collected_by=collected_by)
+    try:
+        config, pool_note, pool_record = _ensure_pool(
+            db_path, config=config, day=day, report_id=report_id, resuming=resuming, existing=existing, clock=clock,
+            pool_source=pool_source, post=pool_post, environ=pool_environ)
+    except _PoolBlocked as exc:
+        return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
+                     reason=str(exc), now=clock(), pusher=pusher)
     settings = rules["classification"]
     with db.read(db_path) as conn:
         docs = list(db.iter_documents(conn, published_from=start, published_to=end, fetched_by=collected_by,
@@ -850,7 +965,8 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     gaps = coverage_gaps(runs, start, end)
     filing_failures = sum(int(count) for count in filing_stats.failed.values())
     summary = gap_summary(gaps, selection, config.pool, unevaluated=delivered.unevaluated,
-                          overflow=delivered.overflow, filing_failures=filing_failures, evaluations=evaluations)
+                          overflow=delivered.overflow, filing_failures=filing_failures, evaluations=evaluations,
+                          pool_note=pool_note)
     usage: dict[str, int] = {}
     for batch in result.batches:
         for key in ("prompt_tokens", "completion_tokens"):
@@ -868,7 +984,8 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
              "search": summarize_search(evaluations, enabled=isinstance(rules["evaluation"].get("search"), dict)),
              "candidates": len(selection.candidates), "pushed": len(delivered.entries), "overflow": delivered.overflow,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
-             "collectionGaps": gaps, "collection": collection["status"]}
+             "collectionGaps": gaps, "collection": collection["status"],
+             "pool": {key: pool_record[key] for key in ("count", "sha256", "refreshedAt", "reused")}}
     if finished > deadline(day, schedule):
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=f"{schedule['deadline']} 前没能出报", now=finished, pusher=pusher)

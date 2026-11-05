@@ -1,11 +1,14 @@
-"""固定公司池（已批准的 1,089 家创业板公司）与直接点名匹配。"""
+"""创业板公司池与直接点名匹配。池子由晨报开工时写入库，这里只负责匹配。"""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-_CODE = re.compile(r"(?<!\d)(30[01]\d{3})(?!\d)")
+logger = logging.getLogger(__name__)
+
+_CODE = re.compile(r"(?<!\d)(30[012]\d{3})(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -26,10 +29,10 @@ class CompanyPool:
     def __init__(self, companies: Iterable[Company], strict_names: Iterable[str] = ()) -> None:
         self.companies = {c.code: c for c in companies}
         by_name = {c.name: c.code for c in self.companies.values()}
-        self.strict_names = tuple(strict_names)
-        unknown = [n for n in self.strict_names if n not in by_name]
+        unknown = [n for n in strict_names if n not in by_name]
         if unknown:
-            raise ValueError(f"常用词简称不在公司池里：{unknown}")
+            logger.info("常用词简称不在当前股票池，已忽略：%s", "、".join(unknown))
+        self.strict_names = tuple(n for n in strict_names if n in by_name)
         self._strict = {by_name[n]: re.compile("【" + re.escape(n) + "|" + re.escape(n) + "[：:]")
                         for n in self.strict_names}
         self._by_short = {c.short_code: c.code for c in self.companies.values()}

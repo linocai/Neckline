@@ -1,4 +1,4 @@
-"""库结构 v5：v1～v4 升上来之后三张 KX 表消失，其他表的数据还在；升级失败整体回滚。"""
+"""库结构 v6：v1～v5 升上来之后三张 KX 表消失、股票池两张表在，其他表的数据还在；升级失败整体回滚。"""
 from __future__ import annotations
 
 import sqlite3
@@ -36,31 +36,50 @@ def _expect_refused(path) -> None:
             pass
 
 
-def test_schema_version_is_five():
-    assert db.SCHEMA_VERSION == 5
+def _legacy(path, version: int) -> None:
+    if version < 5:
+        make_legacy_db(path, version)
+        return
+    make_legacy_db(path, 4)
+    with closing(sqlite3.connect(path)) as conn:
+        for name in KX_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {name}")
+        conn.execute("PRAGMA user_version=5")
+        conn.commit()
+
+
+def test_schema_version_is_six():
+    assert db.SCHEMA_VERSION == 6
 
 
 def test_a_fresh_database_has_no_kx_tables(tmp_path):
     path = tmp_path / "fresh.db"
     db.init_schema(path)
     with db.read(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
         assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM stock_pool").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM stock_pool_meta").fetchone()[0] == 0
     assert KX_TABLES.isdisjoint(_names(path))
+    assert {"stock_pool", "stock_pool_meta"} <= _names(path)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4])
-def test_each_older_database_upgrades_to_v5_and_keeps_other_rows(tmp_path, version):
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+def test_each_older_database_upgrades_to_v6_and_keeps_other_rows(tmp_path, version):
     path = tmp_path / f"v{version}.db"
-    make_legacy_db(path, version)
+    _legacy(path, version)
     _expect_refused(path)
-    if version >= 2:
+    if 2 <= version <= 4:
         assert set(KX_TABLES) <= _names(path)
+    if version == 5:
+        assert KX_TABLES.isdisjoint(_names(path))
+        assert "stock_pool" not in _names(path)
 
     db.init_schema(path)
-    assert _version(path) == 5
+    assert _version(path) == 6
     assert KX_TABLES.isdisjoint(_names(path))
+    assert {"stock_pool", "stock_pool_meta"} <= _names(path)
     with db.read(path) as conn:
         assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
         assert db.latest_report(conn)["report_id"] == "r1"
@@ -71,7 +90,7 @@ def test_each_older_database_upgrades_to_v5_and_keeps_other_rows(tmp_path, versi
             assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
     with db.write(path) as conn:
         db.upsert_device(conn, token="ef01", platform="ios", at=datetime(2026, 10, 20, tzinfo=timezone.utc))
-    db.init_schema(path)  # 已经是 v5：什么都不改
+    db.init_schema(path)  # 已经是 v6：什么都不改
     with db.read(path) as conn:
         assert db.device_tokens(conn) == ["abcd", "ef01"]
 
@@ -80,13 +99,13 @@ def test_every_upgrade_path_matches_a_fresh_database(tmp_path):
     fresh = tmp_path / "fresh.db"
     db.init_schema(fresh)
     upgraded = []
-    for version in (1, 2, 3, 4):
+    for version in (1, 2, 3, 4, 5):
         path = tmp_path / f"v{version}.db"
-        make_legacy_db(path, version)
+        _legacy(path, version)
         db.init_schema(path)
         upgraded.append(path)
     assert all(_structure(path) == _structure(fresh) for path in upgraded)
-    assert all(_version(path) == 5 for path in upgraded)
+    assert all(_version(path) == 6 for path in upgraded)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])
@@ -110,10 +129,26 @@ def test_a_failed_upgrade_rolls_back_as_a_whole(tmp_path, monkeypatch, version):
             assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='filing_reads'").fetchall()
     monkeypatch.undo()
     db.init_schema(path)
-    assert _version(path) == 5 and KX_TABLES.isdisjoint(_names(path))
+    assert _version(path) == 6 and KX_TABLES.isdisjoint(_names(path))
+    assert {"stock_pool", "stock_pool_meta"} <= _names(path)
 
 
-@pytest.mark.parametrize("version", [0, 6])
+def test_a_failed_v5_upgrade_rolls_back_without_adding_pool_tables(tmp_path, monkeypatch):
+    path = tmp_path / "v5.db"
+    _legacy(path, 5)
+    before_names = _names(path)
+    monkeypatch.setattr(db, "V6_DDL", db.V6_DDL + "\nTHIS IS NOT SQL;")
+    with pytest.raises(sqlite3.OperationalError):
+        db.init_schema(path)
+    assert _version(path) == 5
+    assert _names(path) == before_names
+    assert "stock_pool" not in _names(path)
+    with pytest.raises(db.NotReady):
+        with db.read(path):
+            pass
+
+
+@pytest.mark.parametrize("version", [0, 7])
 def test_init_schema_refuses_other_versions(tmp_path, version):
     path = tmp_path / "x.db"
     conn = sqlite3.connect(path)

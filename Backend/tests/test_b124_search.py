@@ -740,7 +740,7 @@ def test_replay_summary_includes_search(tmp_path: Path, monkeypatch) -> None:
     code = replay_main([
         "--snapshot", str(snapshot), "--trade-date", "2026-10-13", "--work", str(work),
         "--market-snapshot", str(market), "--receipts", str(work / "receipts"),
-        "--filings-cache", str(work / "filings"), "--config", str(config_path),
+        "--filings-cache", str(work / "filings"), "--config", str(config_path), "--pool-seed-only",
     ], transport=httpx.MockTransport(handler))
     assert code == 0 and len(search_calls) == 2
     out = work / "2026-10-13"

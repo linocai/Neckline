@@ -6,7 +6,8 @@
     --receipts .work/replay-4.2.0/receipts --filings-cache .work/replay-4.2.0/filings \
     --out .work/replay-4.2.0/out-1022
 不给 --collected-by 时，用快照 reports 表里该日的 started_at。
-默认配置是 neckline/config/screening-v4.json。凭据只从环境变量读取，不打印。
+默认配置是 neckline/config/screening-v5.json。凭据只从环境变量读取，不打印。
+股票池只读快照库里的 stock_pool，不联网、不建表。
 快照以只读方式打开，PDF 读数写在内存里，不写回快照。
 """
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from neckline.morning import db
 from neckline.morning.report import load_config
+from neckline.morning.stock_pool import pool_from_rows
 from neckline.morning.schedule import morning_window
 from neckline.screening.enrich import MemoryFilingReads, enrich_filings, pdf_fetcher, purge_old_pdfs
 
@@ -75,7 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--db", type=Path, required=True)
     ap.add_argument("--trade-date", required=True)
     ap.add_argument("--collected-by", default=None)
-    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v4.json")
+    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v5.json")
     ap.add_argument("--receipts", type=Path, required=True)
     ap.add_argument("--filings-cache", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
@@ -86,11 +88,18 @@ def main(argv: list[str] | None = None) -> None:
     day = date.fromisoformat(args.trade_date)
     loaded = load_config(path=args.config)
     rules = loaded.rules
+    try:
+        with db.read(args.db) as conn:
+            stored_pool = db.read_stock_pool(conn)
+    except db.NotReady as exc:
+        raise SystemExit(str(exc)) from exc
+    if stored_pool is None:
+        raise SystemExit("快照里还没有股票池")
+    pool, profiles = pool_from_rows(stored_pool["rows"], strict_names=rules["matching"]["strictShortNames"])
     collected_by = _collected_by(args.db, day.isoformat(), args.collected_by)
     start, end = morning_window(day, rules["schedule"])
     window = Window(start=start, end=end, collected_by=collected_by)
     settings = rules["classification"]
-    pool: CompanyPool = loaded.pool
     with db.read(args.db) as conn:
         docs = list(db.iter_documents(conn, published_from=start, published_to=end, fetched_by=collected_by,
                                       include_end=True))
@@ -108,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
                             api_key=os.environ.get("DEEPSEEK_API_KEY"), receipts=FileReceipts(args.receipts),
                             timeout_seconds=float(rules["model"]["timeoutSeconds"]),
                             max_attempts=int(rules["model"]["maxAttempts"]))
-    result = classify(messages, history, pool, loaded.profiles, client, window=window, settings=settings)
+    result = classify(messages, history, pool, profiles, client, window=window, settings=settings)
     selection = select(result.by_id, result.results, rules["selection"])
     usage: Counter = Counter()
     for batch in result.batches:

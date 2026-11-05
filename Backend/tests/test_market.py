@@ -14,6 +14,8 @@ from neckline.market.mairui import Mairui
 from neckline.market.overview import overview
 from neckline.market.pool_query import _load_pool, lookup
 from neckline.market.services import Services
+from neckline.morning.report import load_config
+from neckline.morning.stock_pool import pool_from_rows, rows_from_seed, store_rows
 from neckline.market.tushare_daily import BASIS, TuShareDaily, cache_phase
 from neckline.market.util import SHANGHAI, silence_http_logs
 from neckline.morning import db
@@ -40,6 +42,18 @@ def _daily_rows(days: list[tuple]) -> list[list]:
     return [["300002.SZ", day, close, pre, pct, high, low, amount] for day, close, pre, high, low, amount, pct in days]
 
 
+_SEED_POOL: CompanyPool | None = None
+
+
+def _seed_companies() -> CompanyPool:
+    global _SEED_POOL
+    if _SEED_POOL is None:
+        loaded = load_config()
+        rows = rows_from_seed(loaded.alias_seed, summary_max_chars=int(loaded.rules["companyPool"]["summaryMaxChars"]))
+        _SEED_POOL, _profiles = pool_from_rows(rows, strict_names=loaded.rules["matching"]["strictShortNames"])
+    return _SEED_POOL
+
+
 def _service(handler, now=NOW, token=TOKEN, licence=LICENCE, pool=None) -> tuple[Services, list]:
     seen: list[httpx.Request] = []
 
@@ -49,7 +63,7 @@ def _service(handler, now=NOW, token=TOKEN, licence=LICENCE, pool=None) -> tuple
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
     services = Services(
-        pool=pool or _load_pool(),
+        pool=pool or _seed_companies(),
         tushare=TuShareDaily(token, client=client, now=lambda: now),
         mairui=Mairui(licence, client=client, now=lambda: now),
         now=lambda: now,
@@ -61,7 +75,14 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_pool_lookup_accepts_code_name_and_alias_and_stops_at_five():
+def test_pool_lookup_accepts_code_name_and_alias_and_stops_at_five(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    loaded = load_config()
+    rows = rows_from_seed(loaded.alias_seed, summary_max_chars=int(loaded.rules["companyPool"]["summaryMaxChars"]))
+    with db.write(path) as conn:
+        store_rows(conn, rows, now=datetime(2026, 11, 5, tzinfo=SHANGHAI), source="seed")
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
     assert len(_load_pool()) == 1089
     for query in ("300002", "300002.SZ", "sz300002", " 神州泰岳 ", "北京神州泰岳软件股份有限公司"):
         assert lookup(query) == {"inPool": True, "code": "300002.SZ", "name": "神州泰岳"}

@@ -4,7 +4,8 @@
 库结构版本 2 在版本 1 的基础上只加三张 KX 表；版本 3 只给 kx_pool 加三列（题材、首次入选日、能否买入）。
 版本 4 只加 filing_reads 与 evaluations 两张表。
 版本 5 删掉 kx_pool、kx_picks、kx_daily_stats（KX 看板改为只读 KX，不再落库）。
-init_schema 把版本 1、2、3、4 的库在同一个事务里升到版本 5，升级失败整体回滚。
+版本 6 只加 stock_pool 与 stock_pool_meta（当前股票池和最近一次刷新）。
+init_schema 把版本 1～5 的库在同一个事务里升到版本 6，升级失败整体回滚。
 """
 from __future__ import annotations
 
@@ -23,8 +24,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 5
-_UPGRADABLE_FROM = (1, 2, 3, 4)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 6
+_UPGRADABLE_FROM = (1, 2, 3, 4, 5)  # 这些版本的库可由 init_schema 原地升级到当前版本
 # 版本 5 退役的三张表。索引随表一起删掉。
 _RETIRED_KX_TABLES = ("kx_daily_stats", "kx_picks", "kx_pool")
 
@@ -134,6 +135,27 @@ CREATE TABLE IF NOT EXISTS evaluations (
 );
 """
 
+# 版本 6 只加两张表：当前股票池，以及最近一次刷新的元信息。刷新在一个事务里整表替换。
+V6_DDL = """
+CREATE TABLE IF NOT EXISTS stock_pool (
+  code TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  fullname TEXT,
+  list_date TEXT,
+  aliases_json TEXT NOT NULL,
+  summary TEXT,
+  source TEXT NOT NULL,
+  refreshed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS stock_pool_meta (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  refreshed_at TEXT NOT NULL,
+  count INTEGER NOT NULL CHECK(count >= 0),
+  content_sha256 TEXT NOT NULL,
+  source TEXT NOT NULL
+);
+"""
+
 
 class NotReady(RuntimeError):
     """库不存在或不是 V4 晨报库。"""
@@ -157,9 +179,9 @@ def _statements(script: str) -> list[str]:
 def init_schema(path: Path) -> None:
     """显式建表（init-db 与写命令调用）。
 
-    新库一次建到当前版本，不再建 KX 的三张表。版本 1～4 的库在同一个事务里补上缺的晨报表、
+    新库一次建到当前版本，不再建 KX 的三张表。版本 1～5 的库在同一个事务里补上缺的表、
     删掉 kx_pool / kx_picks / kx_daily_stats，并把版本号升到当前版本。任何一步失败都整体回滚。
-    已经是当前版本时什么都不改。
+    已经是当前版本时什么都不改。只读连接不走这里。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -177,7 +199,7 @@ def init_schema(path: Path) -> None:
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for statement in _statements(DDL) + _statements(V4_DDL):
+            for statement in _statements(DDL) + _statements(V4_DDL) + _statements(V6_DDL):
                 conn.execute(statement)
             for name in _RETIRED_KX_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
@@ -609,3 +631,46 @@ def push_done(conn: sqlite3.Connection, *, report_id: str, kind: str, token: str
 def log_push(conn: sqlite3.Connection, *, report_id: str, kind: str, token: str, state: str, detail: str | None,
              at: datetime) -> None:
     conn.execute("INSERT OR REPLACE INTO push_log VALUES (?,?,?,?,?,?)", (report_id, kind, token, state, detail, utc(at)))
+
+
+# ------------------------------------------------------------------ 股票池
+
+def read_stock_pool(conn: sqlite3.Connection) -> dict | None:
+    """当前股票池。还没有刷新过返回 None。不建表。"""
+    meta = conn.execute("SELECT refreshed_at, count, content_sha256, source FROM stock_pool_meta WHERE id=1").fetchone()
+    if meta is None:
+        return None
+    rows = []
+    for row in conn.execute("SELECT code, name, fullname, list_date, aliases_json, summary, source, refreshed_at "
+                            "FROM stock_pool ORDER BY code"):
+        rows.append({
+            "code": row["code"], "name": row["name"], "fullname": row["fullname"] or "",
+            "listDate": row["list_date"] or "", "aliases": json.loads(row["aliases_json"]),
+            "summary": row["summary"], "summarySource": row["source"], "refreshedAt": row["refreshed_at"],
+        })
+    return {"refreshedAt": meta["refreshed_at"], "count": meta["count"], "sha256": meta["content_sha256"],
+            "source": meta["source"], "rows": rows}
+
+
+def replace_stock_pool(conn: sqlite3.Connection, rows: Sequence[Mapping], *, refreshed_at: str, sha256: str,
+                       source: str) -> None:
+    """整表替换当前池子和元信息。调用方负责把这一次放进同一个事务。"""
+    rows = list(rows)
+    conn.execute("DELETE FROM stock_pool")
+    conn.execute("DELETE FROM stock_pool_meta")
+    for row in rows:
+        conn.execute("INSERT INTO stock_pool VALUES (?,?,?,?,?,?,?,?)", (
+            row["code"], row["name"], row.get("fullname") or "", row.get("listDate") or "",
+            _dumps(list(row.get("aliases") or ())), row.get("summary"), row.get("summarySource") or source,
+            refreshed_at))
+    conn.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?)", (refreshed_at, len(rows), sha256, source))
+
+
+def merge_running_stats(conn: sqlite3.Connection, report_id: str, patch: Mapping) -> None:
+    """把开工时就定下来的统计写进仍为 running 的晨报。终态另写完整统计。"""
+    row = conn.execute("SELECT stats_json FROM reports WHERE report_id=? AND status='running'", (report_id,)).fetchone()
+    if row is None:
+        return
+    stats = json.loads(row["stats_json"] or "{}")
+    stats.update(dict(patch))
+    conn.execute("UPDATE reports SET stats_json=? WHERE report_id=? AND status='running'", (_dumps(stats), report_id))

@@ -1,1 +1,1 @@
-"""V4 晨报：采集、出报、推送、接口与只读网页。规则在 `neckline/config/screening-v4.json`，筛选在 `neckline.screening`。"""
+"""V4 晨报：采集、出报、推送、接口与只读网页。规则在 `neckline/config/screening-v5.json`，筛选在 `neckline.screening`。"""

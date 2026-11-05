@@ -2,10 +2,11 @@
 
   python -m neckline.morning.replay --snapshot <只读快照库> --trade-date YYYY-MM-DD \\
       --work <目录> --market-snapshot <json> --receipts <回执目录> --filings-cache <目录> \\
-      [--config screening-v4.json]
+      [--config screening-v5.json] (--pool-snapshot <json> | --pool-seed-only)
 
 业务时钟从快照里该日晨报的 started_at 起步，按真实流逝时间前进。
 采集不采，推送不发。行情读快照，模型回执落在 --receipts，同样请求不重复计费。
+股票池必须显式给 --pool-snapshot（按交易日构造）或 --pool-seed-only（只用别名种子）。两者都不传就停，不联网。
 联网搜索与聊天共用这把密钥和这份回执目录；evaluation.search 为 null 时不搜。
 密钥和模型名只从 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 读取，不打印。
 """
@@ -19,7 +20,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -28,6 +29,8 @@ from neckline.evaluation.market import SnapshotSource
 from neckline.evaluation.search import SearchClient
 from neckline.morning import db
 from neckline.morning.report import Pusher, load_config, run_morning
+from neckline.morning.schedule import CST
+from neckline.morning.stock_pool import build_pool_rows, rows_from_seed, store_rows
 from neckline.screening.deepseek import DeepSeekClient, FileReceipts
 from neckline.screening.enrich import pdf_fetcher
 
@@ -236,9 +239,34 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
 
 
+def _replay_rows(config, trade_date: str, *, pool_snapshot: Path | None, pool_seed_only: bool,
+                 today: date | None) -> tuple[list[dict], str]:
+    rules = config.rules["companyPool"]
+    if pool_seed_only:
+        return rows_from_seed(config.alias_seed, summary_max_chars=int(rules["summaryMaxChars"])), "seed"
+    payload = json.loads(pool_snapshot.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ReplayError("股票池快照不是对象")
+    as_of = date.fromisoformat(trade_date)
+    current = today or datetime.now(CST).date()
+    rows = build_pool_rows(
+        payload.get("stock_basic") or [], payload.get("stock_company") or [],
+        namechange_rows=payload.get("namechange") or [], seed_rows=config.alias_seed, as_of=as_of, today=current,
+        prefixes=tuple(rules["prefixes"]), exclude_name_contains=rules["excludeNameContains"],
+        summary_max_chars=int(rules["summaryMaxChars"]))
+    return rows, "snapshot"
+
+
 def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: Path, receipts: Path,
                filings_cache: Path, config_path: Path | None = None,
-               transport: httpx.BaseTransport | None = None) -> dict:
+               transport: httpx.BaseTransport | None = None, pool_snapshot: Path | None = None,
+               pool_seed_only: bool = False, today: date | None = None) -> dict:
+    if pool_snapshot is None and not pool_seed_only:
+        raise ReplayError("要给出 --pool-snapshot 或 --pool-seed-only")
+    if pool_snapshot is not None and pool_seed_only:
+        raise ReplayError("--pool-snapshot 和 --pool-seed-only 只能给一个")
+    if pool_snapshot is not None and not pool_snapshot.is_file():
+        raise ReplayError("股票池快照不存在")
     if _DATE.fullmatch(trade_date) is None:
         raise ReplayError("trade-date 须为 YYYY-MM-DD")
     if not snapshot.is_file():
@@ -250,12 +278,15 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
     _replace_copy(snapshot, dest)
     db.init_schema(dest)
     started = _started_at(dest, trade_date)
+    config = load_config(path=config_path) if config_path is not None else load_config()
+    pool_rows, pool_kind = _replay_rows(config, trade_date, pool_snapshot=pool_snapshot,
+                                       pool_seed_only=pool_seed_only, today=today)
     with db.write(dest) as conn:
         conn.execute("DELETE FROM reports WHERE trade_date=?", (trade_date,))
+        store_rows(conn, pool_rows, now=started, source=pool_kind)
     filings_cache.mkdir(parents=True, exist_ok=True)
     api_key = _required_env("DEEPSEEK_API_KEY")
     model_name = _required_env("DEEPSEEK_MODEL")
-    config = load_config(path=config_path) if config_path is not None else load_config()
     clock = ReplayClock(started)
     model = config.rules["model"]
     receipt_store = FileReceipts(receipts)
@@ -278,7 +309,8 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
     result = run_morning(dest, now=clock(), config=config, collector=lambda _at: {"status": "replay"},
                          client_factory=client_factory, pusher=Pusher(dest, None, clock), clock=clock,
                          fetcher=pdf_fetcher(filings_cache, config.rules["filings"]),
-                         market=SnapshotSource(market_snapshot), search_factory=search_factory)
+                         market=SnapshotSource(market_snapshot), search_factory=search_factory,
+                         pool_source="database")
     with db.read(dest) as conn:
         report = db.get_report(conn, trade_date)
         rows = db.list_evaluations(conn, f"morning-{trade_date}")
@@ -303,11 +335,15 @@ def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None
     ap.add_argument("--receipts", required=True, type=Path)
     ap.add_argument("--filings-cache", required=True, type=Path)
     ap.add_argument("--config", type=Path)
+    pool = ap.add_mutually_exclusive_group(required=True)
+    pool.add_argument("--pool-snapshot", type=Path)
+    pool.add_argument("--pool-seed-only", action="store_true")
     args = ap.parse_args(argv)
     try:
         result = run_replay(snapshot=args.snapshot, trade_date=args.trade_date, work=args.work,
                             market_snapshot=args.market_snapshot, receipts=args.receipts,
-                            filings_cache=args.filings_cache, config_path=args.config, transport=transport)
+                            filings_cache=args.filings_cache, config_path=args.config, transport=transport,
+                            pool_snapshot=args.pool_snapshot, pool_seed_only=args.pool_seed_only)
     except ReplayError as exc:
         print(str(exc), file=sys.stderr)
         return 1

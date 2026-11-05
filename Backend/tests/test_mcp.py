@@ -25,6 +25,8 @@ from neckline.market.util import SHANGHAI
 from neckline.mcp.auth import password_digest
 from neckline.mcp.brief import BRIEF
 from neckline.morning import db
+from neckline.morning.report import load_config
+from neckline.morning.stock_pool import rows_from_seed, store_rows
 from neckline.morning.web import HideReadKey
 from neckline.news.model import SourceDocument
 
@@ -101,6 +103,11 @@ def _seed(path):
 def browser(tmp_path, monkeypatch):
     path = tmp_path / "v4.db"
     doc_id = _seed(path)
+    loaded = load_config()
+    rows = rows_from_seed(loaded.alias_seed, summary_max_chars=int(loaded.rules["companyPool"]["summaryMaxChars"]))
+    with db.write(path) as conn:
+        store_rows(conn, rows, now=datetime(2026, 11, 5, tzinfo=timezone.utc), source="seed")
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     services = Services(
         pool=_load_pool(),
