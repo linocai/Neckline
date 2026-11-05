@@ -94,11 +94,8 @@ def _number(value: object, gaps: _Gaps) -> int | float | None:
         gaps.bad_numbers += 1
         return None
     if isinstance(value, int):
-        # 先用整数比较：10**400 转 float 会 OverflowError，和 float 比也会。
+        # 整数和浮点同一条规则：能表示成有限的 float 才算数。10**400 转 float 会 OverflowError。
         try:
-            if abs(value) > 10**15:
-                gaps.bad_numbers += 1
-                return None
             float(value)
         except OverflowError:
             gaps.bad_numbers += 1

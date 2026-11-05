@@ -13,8 +13,10 @@ from neckline.market.util import silence_http_logs
 MAX_BYTES = 3_000_000
 _PENDING_TRIES = 3
 _UNAVAILABLE = "KX 看板暂时不可用。"
-_URL = re.compile(r"https?://\S+", re.IGNORECASE)
-_READ_SEGMENT = re.compile(r"/kx/read/[^\s/?#]+")
+# 只吃 URL 里能出现的 ASCII 字符，后面紧跟的中文说明（「，请稍后重试」）留着。
+_URL = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+", re.IGNORECASE)
+_READ_SEGMENT = re.compile(r"/kx/read/[A-Za-z0-9_-]+")
+_HIDDEN = "…"  # 访问码的替换符，不在访问码的字符集里，删掉之后前后两段拼不回访问码
 
 
 class KxError(Exception):
@@ -44,7 +46,9 @@ def redact_upstream(text: str) -> str:
     cleaned = _READ_SEGMENT.sub("", _URL.sub("", text))
     key = settings.read_key()
     if key:
-        cleaned = cleaned.replace(key, "")
+        cleaned = cleaned.replace(key, _HIDDEN)
+        if key in cleaned:  # 用了不会拼出访问码的替换符，理论上到不了这里；到了就整句不用
+            return _UNAVAILABLE
     cleaned = cleaned.strip()
     return (cleaned[:200] or _UNAVAILABLE)
 

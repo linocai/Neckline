@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 
 from neckline.kx.project import project_board, require_overview
 from neckline.kx.services import KxServices
 from neckline.kx.source import KxError, redact_upstream
+
+_LOG = logging.getLogger("neckline.kx")
 
 SUCCESS_SECONDS = 60
 FAILURE_SECONDS = 15
@@ -79,7 +83,10 @@ async def build_board(kx: KxServices) -> dict:
                 projected = project_board(body, now=moment, last_read_at=moment, stale=False, reason=None)
             except KxError:
                 raise
-            except Exception:
+            except Exception as error:
+                # 编程错误也要能查到：记异常类型和调用栈，不记异常原文（原文可能带着 KX 的数据）
+                frames = "".join(traceback.format_tb(error.__traceback__))
+                _LOG.error("KX 看板投影失败：%s\n%s", type(error).__name__, frames)
                 raise KxError("kx_bad_board", "KX 看板数据无法处理，没有采用。") from None
         except KxError as error:
             _state.fail_mono = kx.monotonic()

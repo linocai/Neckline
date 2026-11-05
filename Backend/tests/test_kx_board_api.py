@@ -481,6 +481,8 @@ def _auth() -> dict:
     f"详见 https://kx.example.test/kx/read/{READ_KEY}?format=json",
     f"访问码 {READ_KEY} 无效",
     f"路径 /kx/read/{READ_KEY}/stock/600000 失败",
+    # 访问码夹在自己的两半之间：删掉中间那份，前后两段会重新拼成访问码
+    f"码 {READ_KEY[:16]}{READ_KEY}{READ_KEY[16:]} 无效",
 ])
 def test_upstream_text_cannot_carry_the_read_key(tmp_path, monkeypatch, caplog, message):
     caplog.set_level(logging.DEBUG)
@@ -506,6 +508,32 @@ def test_upstream_text_cannot_carry_the_read_key(tmp_path, monkeypatch, caplog, 
     assert READ_KEY not in caplog.text and "/kx/read/" not in caplog.text
 
 
+@pytest.mark.parametrize("message,kept", [
+    ("详情 https://kx.example.test/kx/read/{key}，请稍后重试", "，请稍后重试"),
+    ("路径 /kx/read/{key}，换票还没完成", "，换票还没完成"),
+])
+def test_cleaning_keeps_the_words_after_a_link(monkeypatch, message, kept):
+    from neckline.kx.source import redact_upstream
+
+    monkeypatch.setenv("KX_READ_KEY", READ_KEY)
+    cleaned = redact_upstream(message.format(key=READ_KEY))
+    assert READ_KEY not in cleaned and "/kx/read/" not in cleaned and kept in cleaned
+
+
+def test_a_large_but_representable_integer_is_kept_like_the_same_float(tmp_path, monkeypatch):
+    body = load_overview()
+    leader = body["rooms"]["leader"][0]["leaders"][0]
+    leader["quote"]["turnover_amount"] = 1_000_000_000_000_001
+    leader["limit_up"]["seal_amount"] = 1_000_000_000_000_001.0
+    client, _path = _client(tmp_path, monkeypatch)
+    _use(FakeKx(body), Clock(at("2026-11-04", "18:30", 10)))
+    board = client.get("/api/v4/kx/board", headers=_auth()).json()
+    projected = board["rooms"]["leader"][0]["leaders"][0]
+    assert projected["quote"]["turnoverAmount"] == 1_000_000_000_000_001
+    assert projected["limitUp"]["sealAmount"] == 1_000_000_000_000_001.0
+    assert board["gaps"] == []
+
+
 def test_an_oversized_integer_becomes_null_and_the_route_returns_200(tmp_path, monkeypatch):
     body = load_overview()
     body["rooms"]["leader"][0]["leaders"][0]["quote"]["price"] = 10**400
@@ -519,15 +547,16 @@ def test_an_oversized_integer_becomes_null_and_the_route_returns_200(tmp_path, m
     assert board["rooms"]["leader"][0]["leaders"][0]["code"] == "600261"
 
 
-def test_a_projection_error_is_cached_as_a_failed_read(tmp_path, monkeypatch):
+def test_a_projection_error_is_cached_as_a_failed_read(tmp_path, monkeypatch, caplog):
     from neckline.kx import board as board_mod
     from neckline.kx.board import reset_board_state
 
+    caplog.set_level(logging.ERROR, logger="neckline.kx")
     real = board_mod.project_board
 
     def boom(body, *, now, last_read_at, stale, reason):
         if isinstance(body, dict) and body.get("boom"):
-            raise RuntimeError("boom")
+            raise RuntimeError(f"boom {READ_KEY}")
         return real(body, now=now, last_read_at=last_read_at, stale=stale, reason=reason)
 
     monkeypatch.setattr(board_mod, "project_board", boom)
@@ -541,6 +570,9 @@ def test_a_projection_error_is_cached_as_a_failed_read(tmp_path, monkeypatch):
     assert first.status_code == 503
     assert first.json()["detail"]["message"] == "KX 看板还没读到过：KX 看板数据无法处理，没有采用。"
     assert len(fake.calls) == 1
+    # 编程错误留得下诊断：异常类型和调用栈进日志，异常原文（这里故意带了访问码）不进
+    assert "KX 看板投影失败：RuntimeError" in caplog.text and "in boom" in caplog.text
+    assert READ_KEY not in caplog.text and READ_KEY not in first.text
     clock.advance(14)
     again = client.get("/api/v4/kx/board", headers=_auth())
     assert again.status_code == 503 and len(fake.calls) == 1
