@@ -1,22 +1,17 @@
-"""看板：把名单、实时行情、日线统计和推荐高亮合成一份响应，排序在服务端排好。"""
+"""看板缓存：成功 60 秒、失败 15 秒，同一时刻只读一次 KX。不落库。"""
 from __future__ import annotations
 
 import asyncio
+import copy
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 
-from neckline.kx import store
-from neckline.kx.days import BoardClock, board_clock, heat_days, highlight, session_phase
-from neckline.kx.quotes import Quote, QuoteBook, fetch_quotes
-from neckline.kx.daily import StatsBundle
+from neckline.kx.project import project_board, require_overview
 from neckline.kx.services import KxServices
-from neckline.morning import db
-from neckline.morning.schedule import CST, CalendarGap
+from neckline.kx.source import KxError
 
-REFRESH_SECONDS = 60
-_YI = 1e8
+SUCCESS_SECONDS = 60
+FAILURE_SECONDS = 15
 
 
 class BoardUnavailable(Exception):
@@ -28,208 +23,64 @@ class BoardUnavailable(Exception):
         super().__init__(message)
 
 
-def _iso(value: datetime | None) -> str | None:
-    return value.astimezone(CST).isoformat(timespec="seconds") if value else None
-
-
-def _round(value: float | None, places: int) -> float | None:
-    return None if value is None else round(value, places) + 0.0  # + 0.0 把 -0.0 变成 0.0
-
-
-def _change(price: float, base: float | None) -> float | None:
-    return None if not base else (price / base - 1) * 100
-
-
-def _position(price: float, average: float) -> str:
-    if round(price - average, 4) == 0:
-        return "flat"
-    return "above" if price > average else "below"
-
-
-def _average(price: float, value: float | None) -> dict | None:
-    if value is None:
-        return None
-    return {"value": round(value, 4), "position": _position(price, value)}
-
-
-# 集合竞价只留现价和涨跌；这些字段麦蕊给的是 0 或不能当依据的数，一律留空，不当成取数故障。
-_CALL_AUCTION_BLANK = (
-    "open", "high", "low", "amplitudePercent", "turnoverRatePercent", "turnoverYi", "volumeLots",
-    "openChangePercent", "rangePosition", "pullbackFromHighPercent", "volumeRatio",
-)
-
-_EMPTY_QUOTE: dict[str, Any] = {
-    "price": None, "changePercent": None, "changeAmount": None, "open": None, "high": None, "low": None,
-    "previousClose": None, "amplitudePercent": None, "turnoverRatePercent": None, "turnoverYi": None,
-    "volumeLots": None, "openChangePercent": None, "rangePosition": None, "pullbackFromHighPercent": None,
-    "quoteTime": None,
-}
-
-
-def _empty_stats() -> dict[str, Any]:
-    return {"change5dPercent": None, "change20dPercent": None, "avgTurnover20Yi": None, "volumeRatio": None,
-            "totalMvYi": None, "circMvYi": None, "averages": {"ma5": None, "ma10": None, "ma20": None}}
-
-
-def _quote_fields(quote: Quote, notes: list[str]) -> dict[str, Any]:
-    price, high, low, previous = quote.price, quote.high, quote.low, quote.previous_close
-    consistent = (price is not None and high is not None and low is not None and high >= low
-                  and low <= price <= high and (quote.open is None or low <= quote.open <= high))
-    if price is not None and high is not None and low is not None and not consistent:
-        notes.append("价格区间不一致，没有计算区间位置")
-    position = None
-    if consistent and high > low:
-        position = (price - low) / (high - low)
-    return {
-        "price": _round(price, 4), "changePercent": _round(quote.change_percent, 2),
-        "changeAmount": _round(quote.change_amount, 4), "open": _round(quote.open, 4), "high": _round(high, 4),
-        "low": _round(low, 4), "previousClose": _round(previous, 4),
-        "amplitudePercent": _round(quote.amplitude_percent, 2), "turnoverRatePercent": _round(quote.turnover_rate, 2),
-        "turnoverYi": _round(None if quote.amount_yuan is None else quote.amount_yuan / _YI, 4),
-        "volumeLots": _round(quote.volume_lots, 2),
-        "openChangePercent": _round(_change(quote.open, previous) if quote.open else None, 2),
-        "rangePosition": _round(position, 4),
-        "pullbackFromHighPercent": _round(_change(price, high) if consistent else None, 2),
-        "quoteTime": _iso(quote.at),
-    }
-
-
-def _stats_fields(code: str, quote: Quote, bundle: StatsBundle, notes: list[str]) -> dict[str, Any]:
-    fields = _empty_stats()
-    price = quote.price
-    daily = None if bundle.daily is None else bundle.daily.get(code)
-    basic = None if bundle.basic is None else bundle.basic.get(code)
-    incomplete = False
-    if daily is not None:
-        fields["change5dPercent"] = _round(_change(price, daily["close5"]), 2)
-        fields["change20dPercent"] = _round(_change(price, daily["close20"]), 2)
-        average = daily["avgAmount20"]
-        if average and average > 0:
-            fields["avgTurnover20Yi"] = _round(average / _YI, 4)
-            if quote.amount_yuan is not None:
-                fields["volumeRatio"] = _round(quote.amount_yuan / average, 2)
-        fields["averages"] = {name: _average(price, daily[name]) for name in ("ma5", "ma10", "ma20")}
-        incomplete = any(daily[key] is None for key in ("close5", "close20", "ma5", "ma10", "ma20", "avgAmount20"))
-    if basic is not None and quote.previous_close:
-        ratio = price / quote.previous_close
-        for source, target in (("total", "totalMvYi"), ("circ", "circMvYi")):
-            if basic[source] is not None:
-                fields[target] = _round(basic[source] * ratio / _YI, 2)
-    if daily is not None and incomplete:
-        notes.append("日线数据不全，部分统计没有计算")
-    if basic is not None and (basic["total"] is None or basic["circ"] is None):
-        notes.append("没有取得市值")
-    return fields
-
-
 @dataclass
-class _Entry:
-    member: store.Member
-    row: dict[str, Any]
-    pick: store.LatestPick | None
+class _State:
+    lock: asyncio.Lock | None = None
+    loop: asyncio.AbstractEventLoop | None = None
+    document: dict | None = None
+    read_at: datetime | None = None
+    read_mono: float | None = None
+    fail_mono: float | None = None
+    fail_reason: str | None = None
 
 
-def _row(member: store.Member, book: QuoteBook, bundle: StatsBundle, clock: BoardClock,
-         pick: store.LatestPick | None) -> dict[str, Any]:
-    code = member.code
-    notes: list[str] = []
-    quote = book.quotes.get(code)
-    if code in book.failed:
-        status = "missing"
-        notes.append("行情未取得")
-    elif code in book.duplicated:
-        status = "missing"
-        notes.append("行情数据重复，没有采用")
-    elif quote is None or quote.price is None:
-        status = "missing"
-        notes.append("没有取得这只的行情")
-    elif quote.day is None:
-        status = "stale"
-        notes.append("报价时间缺失")
-    elif quote.day != clock.quote_day:
-        status = "stale"
-        notes.append(f"报价日期是 {quote.day.isoformat()}，不是 {clock.quote_day.isoformat()}")
-    else:
-        status = "ok"
-    first_seen = member.first_seen
-    row: dict[str, Any] = {
-        "code": code, "name": member.name, "industry": member.industry,
-        "theme": member.theme, "firstSeen": first_seen.isoformat() if first_seen else None,
-        "heatDay": heat_days(first_seen, clock.quote_day) if first_seen else None,
-        "highlight": highlight(pick.trade_date, clock) if pick else "normal",
-        "lastPickedAt": _iso(pick.picked_at) if pick else None,
-        "quoteStatus": status,
-    }
-    if status == "missing":
-        row.update(_EMPTY_QUOTE)
-        row.update(_empty_stats())
-    else:
-        row.update(_quote_fields(quote, notes))
-        if status == "ok":
-            row.update(_stats_fields(code, quote, bundle, notes))
-        else:
-            row.update(_empty_stats())  # 报价不是当日，日线统计的基准日对不上，不硬算
-    phase = session_phase(quote.at) if status == "ok" and quote is not None and quote.at is not None else None
-    if phase == "call_auction":
-        notes[:] = [item for item in notes if item != "价格区间不一致，没有计算区间位置"]
-        for key in _CALL_AUCTION_BLANK:
-            row[key] = None
-    row["sessionPhase"] = phase
-    row["note"] = "；".join(notes) or None
-    return row
+_state = _State()
 
 
-def _order(entries: list[_Entry]) -> list[dict[str, Any]]:
-    def pinned(state: str) -> list[_Entry]:
-        chosen = [item for item in entries if item.row["highlight"] == state]
-        # 推荐时间从新到旧；同一时刻（同一次推荐里的几只）按推荐里的次序，再按名单次序
-        return sorted(chosen, key=lambda item: (-item.pick.picked_at.timestamp(), item.pick.position,
-                                                 item.member.position))
-
-    def change(item: _Entry) -> float | None:
-        # 报价不是当日的行（停牌等）涨跌幅是旧的，不拿它参与排序，和没有行情的一起排在最后
-        return item.row["changePercent"] if item.row["quoteStatus"] == "ok" else None
-
-    normal = [item for item in entries if item.row["highlight"] == "normal"]
-    normal.sort(key=lambda item: (change(item) is None, -(change(item) or 0.0), item.member.position))
-    return [item.row for item in pinned("today") + pinned("faded") + normal]
+def reset_board_state() -> None:
+    """测试隔离：清掉进程内的上一份总览和失败缓存。"""
+    global _state
+    _state = _State()
 
 
-async def build_board(kx: KxServices, path: Path) -> dict[str, Any]:
-    now = kx.now()
-    try:
-        clock = board_clock(now)
-    except CalendarGap as error:
-        raise BoardUnavailable("calendar_gap", f"交易日历没有覆盖今天，暂不出看板：{error}") from None
-    try:
-        result = await kx.pool.ensure(path, now)
-    except db.NotReady:
-        raise BoardUnavailable("v4_db_not_ready", "库还没准备好。") from None
-    snapshot = result.snapshot
-    if snapshot is None:
-        raise BoardUnavailable("pool_unverified", f"KX 名单还没有成功同步过，暂不出看板：{result.reason}")
-    codes = [member.code for member in snapshot.members]
-    book_task = fetch_quotes(kx.mairui, codes)
-    stats_task = kx.stats.load(path, base_date=clock.stats_base_day, version=snapshot.version, codes=codes, now=now)
-    book, bundle = await asyncio.gather(book_task, stats_task)
-    with db.read(path) as conn:
-        picks, last_pick_at = store.latest_picks(conn)
-    entries = [_Entry(member, _row(member, book, bundle, clock, picks.get(member.code)), picks.get(member.code))
-               for member in snapshot.members]
-    gaps = list(dict.fromkeys(bundle.gaps))  # 两个接口同一个原因时只写一次
-    if book.failed:
-        gaps.insert(0, f"{len(book.failed)} 只行情未取得：{'；'.join(sorted(set(book.failed.values())))}")
-    times = [quote.at for quote in book.quotes.values() if quote.at is not None]
-    return {
-        "generatedAt": _iso(now),
-        "pool": {"version": snapshot.version, "count": len(snapshot.members),
-                 "checkedAt": _iso(snapshot.verified_at),
-                 "stale": result.stale, "reason": result.reason if result.stale else None},
-        "session": {"tradeDate": clock.quote_day.isoformat(), "inSession": clock.in_session,
-                    "refreshSeconds": REFRESH_SECONDS if clock.in_session else None,
-                    "quoteTime": _iso(max(times)) if times else None},
-        "stats": {"asOf": bundle.base_date.isoformat() if bundle.daily is not None else None},
-        "picks": {"referenceDate": clock.reference_day.isoformat(), "lastPickAt": _iso(last_pick_at)},
-        "gaps": gaps,
-        "rows": _order(entries),
-    }
+def _lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if _state.lock is None or _state.loop is not loop:
+        _state.lock = asyncio.Lock()
+        _state.loop = loop
+    return _state.lock
+
+
+def _project(kx: KxServices, *, stale: bool, reason: str | None) -> dict:
+    assert _state.document is not None and _state.read_at is not None
+    return project_board(_state.document, now=kx.now(), last_read_at=_state.read_at, stale=stale, reason=reason)
+
+
+def _failed(kx: KxServices) -> dict:
+    reason = _state.fail_reason or "KX 暂时没有读到看板。"
+    if _state.document is None:
+        raise BoardUnavailable("kx_unavailable", f"KX 看板还没读到过：{reason}")
+    return _project(kx, stale=True, reason=reason)
+
+
+async def build_board(kx: KxServices) -> dict:
+    """读 KX 总览并投影。60 秒内的成功和 15 秒内的失败都不再读 KX。"""
+    async with _lock():
+        now_mono = kx.monotonic()
+        if (_state.document is not None and _state.read_mono is not None
+                and now_mono - _state.read_mono < SUCCESS_SECONDS):
+            return _project(kx, stale=False, reason=None)
+        if _state.fail_mono is not None and now_mono - _state.fail_mono < FAILURE_SECONDS:
+            return _failed(kx)
+        try:
+            body = require_overview(await kx.source.overview(sleep=kx.sleep))
+        except KxError as error:
+            _state.fail_mono = kx.monotonic()
+            _state.fail_reason = error.message
+            return _failed(kx)
+        _state.document = copy.deepcopy(body)
+        _state.read_at = kx.now()
+        _state.read_mono = kx.monotonic()
+        _state.fail_mono = None
+        _state.fail_reason = None
+        return _project(kx, stale=False, reason=None)

@@ -1,0 +1,1596 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KX 看板 V3 样图</title>
+<style>
+:root {
+  color-scheme: light;
+  --page:#F5F6F8; --card:#FFFFFF; --t1:#1C1C1E; --t2:#6E6E73; --t3:#8E8E93;
+  --line:#E5E5EA; --accent:#0754E9; --up:#E0312B; --down:#139A5B; --flat:#8E8E93;
+  --tag:#F2F2F7; --ds:rgba(7,84,233,.08); --today:rgba(7,84,233,.12);
+  --problem:#D70015; --amber:#9C5D00; --amber-bg:rgba(255,159,10,.18); --amber-ink:#6B3E00;
+}
+.dark {
+  color-scheme: dark;
+  --page:#1C1C1E; --card:#2C2C2E; --t1:#F5F5F7; --t2:#98989D; --t3:#636366;
+  --line:#38383A; --accent:#4C8DFF; --up:#FF5A4E; --down:#30C67C; --flat:#8E8E93;
+  --tag:#3A3A3C; --ds:rgba(76,141,255,.16); --today:rgba(76,141,255,.20);
+  --problem:#FF453A; --amber:#FFC14D; --amber-bg:rgba(255,159,10,.28); --amber-ink:#FFE7A3;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #E9EBEF;
+  color: #1C1C1E;
+  font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 28px 24px 72px; }
+h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+.intro { margin: 0; max-width: 980px; color: #555; line-height: 1.6; }
+.cap { margin: 28px 0 8px; font-size: 13px; color: #6E6E73; line-height: 1.5; }
+.phonewrap { position: relative; width: 426px; }
+.phone {
+  width: 426px; padding: 12px; background: #0B0B0D; border-radius: 46px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.18);
+}
+.screen {
+  width: 402px; border-radius: 36px; overflow: hidden;
+  background: var(--page); color: var(--t1);
+  -webkit-font-smoothing: antialiased;
+}
+.phonewrap.tall .anno {
+  position: absolute; top: calc(12px + 874px); left: 414px;
+  width: 16px; border-top: 1px solid #8E8E93; pointer-events: none;
+}
+.phonewrap.tall .anno span {
+  position: absolute; left: 22px; top: -8px;
+  font-size: 11px; color: #8E8E93; white-space: nowrap;
+}
+.status { height: 54px; display: flex; align-items: flex-end; padding: 0 22px 6px; font-size: 15px; font-weight: 600; }
+.nav { padding: 4px 16px 8px; }
+.title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+h2 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: .2px; }
+.meta, .sub { font-size: 12px; color: var(--t2); }
+.sub { margin-top: 2px; }
+.pline { padding: 1px 16px; font-size: 12px; line-height: 1.45; color: var(--t2); }
+.alert {
+  display: flex; align-items: flex-start; gap: 8px; margin: 4px 12px 6px; padding: 8px 10px;
+  border-radius: 8px; background: var(--amber-bg); color: var(--amber-ink);
+  font-size: 13px; font-weight: 600; line-height: 1.4;
+}
+.alert svg { flex: none; margin-top: 1px; }
+.senti {
+  display: grid; gap: 6px 8px; margin: 6px 12px 4px; padding: 10px 12px;
+  background: var(--card); border-radius: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.senti b { display: block; font-size: 20px; font-weight: 600; letter-spacing: -.03em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.senti b small { margin-left: 4px; font-size: 11px; font-weight: 500; color: var(--t2); }
+.senti .unit { font-size: 12px; font-weight: 600; margin-left: 1px; }
+.lbl { display: block; margin-top: 1px; font-size: 11px; line-height: 1.3; color: var(--t2); }
+.senti .hb, .senti .yall, .senti .intraday { grid-column: 1 / -1; }
+.yall { font-size: 13px; line-height: 1.4; padding-top: 6px; border-top: .5px solid var(--line); }
+.intraday { font-size: 11px; color: var(--t3); }
+.hb summary, .fold > summary, .market summary, details.note summary { cursor: pointer; }
+.hb summary { font-size: 12px; color: var(--accent); }
+.names { margin-top: 4px; font-size: 12px; line-height: 1.45; color: var(--t2); }
+.market, .phone .empty { margin-left: 12px; margin-right: 12px; }
+.market { margin-top: 8px; margin-bottom: 2px; }
+.ds { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--ds); min-width: 0; }
+.mark { font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--accent); }
+.market summary, details.note summary { display: flex; gap: 8px; align-items: baseline; }
+.clamp { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; color: var(--t1); }
+details.note .clamp { font-size: 12px; color: var(--t2); }
+.market summary::after, details.note summary::after { content: "展开"; flex: none; font-size: 11px; color: var(--accent); }
+details.market[open] > summary .clamp, details.note[open] > summary .clamp { display: none; }
+details.market[open] > summary::after, details.note[open] > summary::after { content: "收起"; }
+.full { margin-top: 6px; font-size: 13px; line-height: 1.5; overflow-wrap: break-word; }
+details.note .full { font-size: 12px; color: var(--t2); }
+.sec { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 16px 6px; font-size: 12px; font-weight: 600; color: var(--t2); }
+.sec .cnt { font-weight: 400; color: var(--t3); }
+.card { margin: 0 12px 10px; padding: 12px; background: var(--card); border-radius: 12px; }
+.empty { margin-bottom: 10px; padding: 14px 16px; background: var(--card); border-radius: 12px; font-size: 14px; color: var(--t2); }
+.theme { font-size: 16px; font-weight: 600; line-height: 1.35; overflow-wrap: break-word; }
+.hmeta { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; margin-top: 4px; font-size: 12px; color: var(--t2); }
+.tag { flex: none; padding: 0 6px; border-radius: 5px; background: var(--tag); color: var(--t2); font-size: 11px; line-height: 1.55; }
+.obs { margin-top: 4px; font-size: 12px; line-height: 1.4; color: var(--t2); overflow-wrap: break-word; }
+.l1, .f { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.nm { flex: 0 1 auto; min-width: 0; max-width: 6em; overflow: hidden; font-size: 15px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.cd { flex: none; font-size: 11px; color: var(--t3); font-variant-numeric: tabular-nums; }
+.grow { flex: 1 1 8px; min-width: 8px; }
+.px, .pct { flex: none; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fst { flex: none; max-width: 11em; overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--flat); }
+.st-up { color: var(--up); font-weight: 600; }
+.st-dn { color: var(--down); font-weight: 600; }
+.st-brk { color: var(--amber); font-weight: 600; }
+.st-off { color: var(--t2); font-weight: 600; }
+.st-miss { color: var(--t3); }
+.auc { flex: none; padding: 0 4px; border: 1px solid var(--accent); border-radius: 4px; color: var(--accent); font-size: 10px; font-weight: 600; line-height: 1.5; }
+.facts { display: flex; flex-wrap: wrap; align-items: baseline; margin-top: 3px; font-size: 12px; line-height: 1.45; }
+.facts i { margin: 0 4px; color: var(--t3); font-style: normal; }
+.facts .miss { color: var(--t3); }
+.fitem .facts { margin: 1px 0 4px; }
+.leaders.two .leader + .leader { margin-top: 8px; padding-top: 8px; border-top: .5px solid var(--line); }
+.ob { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; margin-top: 3px; font-size: 12px; }
+.ob .k { color: var(--t2); }
+.ob b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.delta { color: var(--t2); font-variant-numeric: tabular-nums; }
+.why { min-width: 0; font-size: 11px; line-height: 1.35; color: var(--t3); }
+.leader .why { display: block; margin-top: 2px; }
+.dshead { display: flex; align-items: center; gap: 6px; }
+.verd { padding: 1px 7px; border-radius: 5px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; line-height: 1.5; }
+.jreason { margin-top: 4px; font-size: 13px; line-height: 1.45; overflow-wrap: break-word; }
+.fold > summary { margin-top: 6px; font-size: 12px; color: var(--accent); }
+.fold > summary::before, .hb > summary::before { content: "▸ "; color: var(--t3); }
+.fold[open] > summary::before, .hb[open] > summary::before { content: "▾ "; }
+.extra div { margin-top: 4px; font-size: 12px; line-height: 1.45; overflow-wrap: break-word; }
+.extra b { display: inline-block; min-width: 2.5em; margin-right: 6px; color: var(--t2); font-weight: 600; }
+.bad { margin-bottom: 4px; color: var(--problem); font-size: 12px; font-weight: 600; line-height: 1.4; }
+.bad div { font-weight: 400; color: var(--t2); }
+.flab { margin: 8px 0 4px; font-size: 11px; font-weight: 600; color: var(--t3); }
+.fitem { min-width: 0; overflow: hidden; }
+.freason { margin: 1px 0 7px; overflow: hidden; font-size: 12px; color: var(--t3); white-space: nowrap; text-overflow: ellipsis; }
+.foot { padding: 6px 16px 10px; font-size: 10.5px; line-height: 1.55; color: var(--t3); }
+.foot .ver { font-size: 10px; }
+.tabs {
+  height: 58px; display: flex; justify-content: space-around; align-items: center;
+  border-top: .5px solid var(--line); background: var(--card); font-size: 12px; color: var(--t3);
+}
+.tabs .on { color: var(--accent); font-weight: 600; }
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+
+.mac {
+  width: 1180px; height: auto; display: flex; flex-direction: column;
+  overflow: hidden; border-radius: 12px; background: var(--page); color: var(--t1);
+  box-shadow: 0 18px 50px rgba(0,0,0,.22); -webkit-font-smoothing: antialiased;
+}
+.mac .titlebar {
+  height: 38px; flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 0 12px; border-bottom: .5px solid var(--line); background: var(--card);
+  font-size: 13px; font-weight: 600;
+}
+.mac .titlebar i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.mac .titlebar i:nth-child(1) { background: #FF5F57; }
+.mac .titlebar i:nth-child(2) { background: #FEBC2E; }
+.mac .titlebar i:nth-child(3) { background: #28C840; }
+.mac .titlebar span { margin-left: 8px; }
+.mac .body { display: flex; align-items: stretch; }
+.mac .side { width: 148px; flex: none; padding: 12px 8px; background: var(--tag); font-size: 13px; }
+.mac .side div { margin-bottom: 2px; padding: 6px 10px; border-radius: 6px; }
+.mac .side .on { background: var(--today); color: var(--accent); font-weight: 600; }
+.mac .main { flex: 1; min-width: 0; overflow: visible; }
+.mac h2 { font-size: 22px; }
+.mac .nav { padding: 14px 18px 4px; }
+.mac .pline { padding: 1px 18px; }
+.mac .alert { margin: 6px 18px; }
+.mac .senti {
+  grid-template-columns: .72fr 1fr .62fr 1.05fr 1.45fr;
+  align-items: start; margin: 8px 18px;
+}
+.mac .yall { grid-column: auto; align-self: center; padding-top: 0; border-top: 0; font-size: 14px; }
+.mac .intraday { grid-column: 1 / -1; }
+.mac .names {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mac .sec { padding: 12px 18px 6px; }
+.mac .card {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 18px; row-gap: 4px; align-items: start;
+  margin: 0 18px 12px; padding: 12px 14px;
+}
+.mac .card > * { min-width: 0; }
+.mac .card > .hd { grid-column: 1 / -1; grid-row: 1; }
+.mac .card.hasfollow > .leaders { grid-column: 1; grid-row: 2; }
+.mac .card.hasfollow > .followers { grid-column: 2; grid-row: 2; border-left: .5px solid var(--line); padding-left: 16px; }
+.mac .card.hasfollow > .ds { grid-column: 1 / -1; grid-row: 3; }
+.mac .card.nofollow > .leaders { grid-column: 1; grid-row: 2; }
+.mac .card.nofollow > .ds { grid-column: 2; grid-row: 2; margin-top: 0; }
+.mac .card.nofollow.nods > .leaders { grid-column: 1 / -1; }
+.mac .flab { margin-top: 0; }
+.mac .empty { margin: 0 18px 12px; }
+.mac .market { margin: 8px 18px 2px; }
+.mac .foot { padding: 8px 18px 16px; }
+.legend { margin-top: 40px; }
+.legend h2 { margin: 0 0 8px; font-size: 16px; }
+.legend p { margin: 8px 0 0; color: #666; font-size: 13px; line-height: 1.55; }
+table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13px; }
+th, td { padding: 6px 8px; border: 1px solid #E5E5EA; vertical-align: top; text-align: left; }
+th { background: #F5F6F8; font-weight: 600; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+#err:empty { display: none; }
+#err { color: #D70015; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>KX 看板 V3 样图</h1>
+  <p class="intro">数据是 2026-11-04 18:30 的 KX 总览。顺序是顶栏、情绪、龙头室、等候室、淘汰室、页脚时间。事实和 DeepSeek 分开。涨红、跌绿、平灰。第 5 组画板是在这份数据的副本上改的，标题里标了「示意」。这份总览里没有 <code>sealed</code> 为 true 的龙头，所以画板上只有「买一挂单」；封单的写法写在页尾对照表。</p>
+
+  <div class="cap">1 · iPhone 浅色 · 屏幕 402×874pt · 真实数据 · 全页展开。右侧刻度是一屏的底；底栏画在全页末尾，实机上固定在屏幕底部。</div>
+  <div class="board" id="b1"></div>
+  <div class="cap">2 · iPhone 深色 · 同一份真实数据</div>
+  <div class="board" id="b2"></div>
+  <div class="cap">3 · Mac 浅色 · 宽 1180 · 左侧窄栏 K10 / KX。实机窗口 760 高，内容滚动；这里展开全页。</div>
+  <div class="board" id="b3"></div>
+  <div class="cap">4 · Mac 深色 · 同一份真实数据。实机窗口 760 高，内容滚动；这里展开全页。</div>
+  <div class="board" id="b4"></div>
+  <div class="cap">5a · iPhone 浅色 · 示意 · 琥珀色横条是 DeepSeek 未完成；灰色小字同一行是「今日未更新 · 部分行情不完整」。只画到龙头室。</div>
+  <div class="board" id="b5"></div>
+  <div class="cap">5b · iPhone 浅色 · 示意 · 交易日 09:18 竞价中，只画龙头室的两位龙头。涨停池里的跌停、未涨停仍是收盘那份，用来看价格旁的「竞价中」和买一挂单。</div>
+  <div class="board" id="b6"></div>
+  <div class="cap">5c · iPhone 浅色 · 示意 · 琥珀色横条是「未能核对，最后读到 18:30」；灰色小字是「部分行情不完整」。等候室为空。</div>
+  <div class="board" id="b7"></div>
+
+  <section class="legend">
+    <h2>字段对照</h2>
+    <table>
+      <thead><tr><th>画板上的元素</th><th>取自</th></tr></thead>
+      <tbody>
+        <tr><td>KX</td><td>固定标题</td></tr>
+        <tr><td>18:30 · 已收盘，或 09:18 · 盘中</td><td>时间是 <code>checked_at</code>。<code>sentiment.basis</code> 为「交易时段」，或 <code>sentiment.board_phrases</code> 为「盘中」，写盘中；其余写已收盘。</td></tr>
+        <tr><td>按 11/03 收盘整理</td><td><code>as_of</code></td></tr>
+        <tr><td>琥珀色横条：DeepSeek 部分未完成…</td><td><code>deepseek_status</code> 不是 ok 时出现，原文用 <code>deepseek_notice</code>。这句话为空则写「DeepSeek 未完成」。</td></tr>
+        <tr><td>琥珀色横条：未能核对，最后读到 18:30</td><td>总览里没有这句。KX 读不到、沿用上一份时由看板加上，时间用上一份的 <code>checked_at</code>。</td></tr>
+        <tr><td>灰色小字同一行：今日未更新 · 部分行情不完整</td><td><code>refresh.notice</code>，以及顶层 <code>status</code> 为 partial 时的「部分行情不完整」。有多句就用「·」连成一行。股票上的小字才写具体原因。</td></tr>
+        <tr><td>96 / 主板涨停</td><td><code>sentiment.limit_up_count</code></td></tr>
+        <tr><td>30 与 23.8% / 炸板</td><td><code>sentiment.broken_count</code>、<code>sentiment.broken_rate</code>（小数换成百分数，保留一位）</td></tr>
+        <tr><td>10 / 跌停</td><td><code>sentiment.limit_down_count</code></td></tr>
+        <tr><td>3板 · 6 只</td><td><code>sentiment.highest_board.boards</code>，只数用 <code>names</code>（没有名字就用 <code>stock_codes</code> 的个数）</td></tr>
+        <tr><td>紫竹高科、闽发铝业…</td><td><code>sentiment.highest_board.names</code>。手机收在「6 只的名字」里，Mac 在最高板下面最多两行。</td></tr>
+        <tr><td>昨日连板 15 只，今日继续 6 只</td><td><code>sentiment.yesterday_consecutive</code>、<code>sentiment.yesterday_continued</code></td></tr>
+        <tr><td>盘中统计</td><td><code>sentiment.basis</code> 为「交易时段」时才出现</td></tr>
+        <tr><td>情绪条下的 DeepSeek 单行</td><td><code>market_note</code>。为空则整块不出现。</td></tr>
+        <tr><td>龙头室 / 等候室 / 淘汰室，以及「1 组」</td><td><code>rooms.leader</code> / <code>rooms.waiting</code> / <code>rooms.eliminated</code> 的数组长度。顺序不改。</td></tr>
+        <tr><td>今天没有</td><td>该房间是空数组</td></tr>
+        <tr><td>羊字辈玄学…</td><td>组的 <code>theme</code></td></tr>
+        <tr><td>进房 11/03</td><td><code>room_since</code></td></tr>
+        <tr><td>断板、二波迹象、背离 000678</td><td><code>flags</code>。字符串按冒号拆开；「背离:000678」写成「背离 000678」。</td></tr>
+        <tr><td>断板日 10/26 · 已观察 6 个交易日…</td><td>只在淘汰室：<code>broke_on</code>、<code>observed_text</code></td></tr>
+        <tr><td>阳光照明 600261</td><td><code>name</code>、<code>stock_code</code></td></tr>
+        <tr><td>4.46 与 -9.90%</td><td><code>quote.price</code>、<code>quote.change_percent</code>。正数加号，负数绿色，正数红色，0 为灰。</td></tr>
+        <tr><td>竞价中</td><td><code>quote.session_phase</code> 为 <code>call_auction</code>，标在价格旁</td></tr>
+        <tr><td>涨停 / 炸板 / 跌停 / 未涨停</td><td><code>limit_up.in_limit_up</code>、<code>in_broken</code>、<code>in_limit_down</code>。涨停红、跌停绿、炸板琥珀、未涨停次要灰。可以同时出现，例如「炸板」琥珀、「跌停」绿。三个都是 false 写「未涨停」。都是 null 写「—」。</td></tr>
+        <tr><td>2 板，或 — 板</td><td><code>limit_up.consecutive_boards</code>。只在 <code>in_limit_up</code> 或 <code>in_broken</code> 为 true 时出现；这时 null 写「— 板」，不写 0。两个都不是 true 时，事实行不写几板。</td></tr>
+        <tr><td>换手板</td><td><code>limit_up.board_type_text</code>。同样只在涨停或炸板时出现，null 写「—」。这份数据里出现在小弟鲁阳节能。</td></tr>
+        <tr><td>首封 09:30 · 开板 1</td><td><code>limit_up.first_seal_time</code>、<code>limit_up.break_count</code>。同样只在涨停或炸板时出现，null 写「—」。龙头写在事实行；小弟写在名字那一行下面。</td></tr>
+        <tr><td>封单 1.99亿 +0.12亿</td><td>写法示例，上面的画板里没有。<code>order_book.sealed</code> 为 true 时才写「封单」，金额是 <code>order_book.seal_amount</code>，单位亿。增减是 <code>order_book.seal_change_5m.amount</code>，为 null 不写；不足 1 亿时用万。</td></tr>
+        <tr><td>买一挂单 112.7万，或买一挂单 —</td><td><code>sealed</code> 不是 true 时写这个，不写「封单」。金额是 <code>order_book.bid1_amount</code>，单位万。只给龙头室、等候室的龙头（有 <code>order_book</code> 的）。</td></tr>
+        <tr><td>买一价无效。 / 集合竞价阶段无法判断封单</td><td><code>order_book.warnings</code>，放在买一挂单旁边。报价或涨停池自己的 <code>warnings</code> 另起一行小字。</td></tr>
+        <tr><td>浅蓝底上的 DeepSeek、蓝色「晋升」和下面一句</td><td>固定标识；<code>judgment.verdict</code>、<code>judgment.reason</code>。<code>judgment</code> 为 null 时不画结论，只留 <code>note</code>。</td></tr>
+        <tr><td>高度、带动、承接、说明</td><td><code>judgment.height</code>、<code>drive</code>、<code>resilience</code>，以及组的 <code>note</code>。默认收起。null 在展开后写「—」。</td></tr>
+        <tr><td>这句与麦蕊数据不符</td><td><code>fact_warnings[]</code> 里 <code>group_id</code> 对上这组的 <code>text</code>，放在该组 DeepSeek 区。对不上组的条目并成页首一行。这份总览是空列表，所以画板上看不到。</td></tr>
+        <tr><td>小弟 4，以及下面每一行</td><td><code>followers</code>，按 JSON 顺序。一行是名称、代码、现价、涨跌幅、今日状态。涨停或炸板时，下面再写几板、板型、首封、开板。</td></tr>
+        <tr><td>行下灰色一句，超出省略</td><td>小弟的 <code>reason</code></td></tr>
+        <tr><td>小弟名字前的「背离」</td><td><code>divergent</code> 为 true</td></tr>
+        <tr><td>页脚「读取 / 报价 / 涨停池 / 结构写入」</td><td><code>checked_at</code>；各股票 <code>quote.source_time</code> 的最新值；<code>sentiment.fetched_at.limit_up</code>；<code>generated_at</code></td></tr>
+        <tr><td>页脚小字 kx-20261104-003</td><td><code>version</code>，只在页脚出现一次</td></tr>
+      </tbody>
+    </table>
+    <p>不在涨停池、炸板池时，事实行只留今日状态，不用「—」占位。在这两池里，缺的几板、板型、首封、开板才写成「—」，不当作 0。没画进样图的：<code>history</code>、<code>rules</code>、顶层 <code>note</code>、<code>excluded_non_main</code>、组 id、<code>generated_by</code>、<code>refresh</code> 里的版本号，以及开高低、成交额、换手、振幅。末次封板时间 <code>last_seal_time</code> 也没放进事实行。</p>
+  </section>
+  <pre id="err"></pre>
+</div>
+<script id="kx-data" type="application/json">
+{
+ "schema_version": 4,
+ "status": "partial",
+ "version": "kx-20261104-003",
+ "as_of": "2026-11-03",
+ "generated_at": "2026-11-04T15:39:13.328208+08:00",
+ "generated_by": "deepseek",
+ "deepseek_status": "ok",
+ "deepseek_notice": null,
+ "market_note": "上一交易日（11月3日）主板缩量走弱，沪指跌0.82%、深成指跌1.21%，涨停47家、炸板30家、跌停13家，连板高度降至4板，高位股断板与“羊字辈”玄学逆势抱团并存。",
+ "fact_warnings": [],
+ "refresh": {
+  "date": "2026-11-04",
+  "result": "updated",
+  "program_version": "kx-20261104-002",
+  "deepseek_version": "kx-20261104-003",
+  "deepseek_status": "ok",
+  "pool_version": "kx-20261104-003",
+  "as_of": "2026-11-03",
+  "mode": "initial",
+  "finished_at": "2026-11-04T15:39:13.337695+08:00",
+  "message": "已完成程序整理和 DeepSeek 判断。",
+  "notice": null
+ },
+ "checked_at": "2026-11-04T18:30:10.318216+08:00",
+ "read_only": true,
+ "membership_locked": false,
+ "sentiment": {
+  "limit_up_count": 96,
+  "broken_count": 30,
+  "broken_rate": 0.2381,
+  "limit_down_count": 10,
+  "highest_board": {
+   "boards": 3,
+   "names": [
+    "紫竹高科",
+    "闽发铝业",
+    "高争民爆",
+    "大晟文化",
+    "浙文影业",
+    "龙版传媒"
+   ],
+   "stock_codes": [
+    "002058",
+    "002578",
+    "002827",
+    "600892",
+    "601599",
+    "605577"
+   ]
+  },
+  "yesterday_consecutive": 15,
+  "yesterday_continued": 6,
+  "excluded_non_main": 26,
+  "warnings": [],
+  "trading_day": "2026-11-04",
+  "basis": "今日收盘",
+  "board_phrases": "收盘",
+  "yesterday_trading_day": "2026-11-03",
+  "fetched_at": {
+   "limit_up": "2026-11-04T18:30:10.249358+08:00",
+   "broken": "2026-11-04T18:30:10.212906+08:00",
+   "limit_down": "2026-11-04T18:30:10.209420+08:00",
+   "yesterday_limit_up": "2026-11-04T18:30:10.234688+08:00"
+  }
+ },
+ "rooms": {
+  "leader": [
+   {
+    "id": "g-600261-20261103",
+    "theme": "羊字辈玄学（简称含羊/洋/阳）",
+    "room_since": "2026-11-03",
+    "broke_on": null,
+    "observed_trading_days": null,
+    "observed_text": null,
+    "flags": [],
+    "judgment": {
+     "verdict": "晋升",
+     "height": "4连板（9天5板），与东方海洋并列为当前最高连续板",
+     "drive": "“羊字辈”当日涨停逾10只，它为同题材中最先封板的高标",
+     "resilience": "T字，盘中开板后回封，经过分歧",
+     "reason": "9:35封板，是当日“羊字辈”高标中最先封板的一只；它封板后鲁阳节能、圣阳股份、大西洋、阳光股份等一批“羊字辈”涨停，它盘中开板后回封，9天5板、连续4板为当前最高连续板（财联社11月3日连板股分析、金融界涨停复盘）。"
+    },
+    "note": "阳光照明4连板（9天5板）T字回封、封单1.99亿元，东方海洋4连板（10天6板）T字、封单2.16亿元，二者并列当前最高连续板，均在当日盘中开板后回封、经历分歧；当日羊字辈涨停逾10只，情绪仍在扩散，但两只均已发异动公告、东方海洋双主业亏损、阳光照明前三季净利降超七成（财联社11月3日连板股分析、金融界涨停复盘、中财网）。",
+    "leaders": [
+     {
+      "stock_code": "600261",
+      "name": "阳光照明",
+      "role": "龙头",
+      "reason": null,
+      "divergent": false,
+      "quote": {
+       "price": 4.46,
+       "previous_close": 4.95,
+       "change_percent": -9.899,
+       "open": 4.95,
+       "high": 4.95,
+       "low": 4.46,
+       "turnover_amount": 669120700.0,
+       "amplitude_percent": 9.899,
+       "turnover_percent": 10.89,
+       "source_time": "2026-11-04T15:00:01+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": true,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.209420+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:28.445849+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 209534499.85,
+       "average_amplitude_20d": 4.06183,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": {
+       "status": "partial",
+       "bid1_price": null,
+       "bid1_volume": 0.0,
+       "volume_unit": "手",
+       "bid1_amount": null,
+       "asks_clear": false,
+       "sealed": null,
+       "seal_amount": null,
+       "source_time": "2026-11-04T15:00:01+08:00",
+       "fetched_at": "2026-11-04T18:30:10.261080+08:00",
+       "warnings": [
+        "买一价无效。"
+       ],
+       "missing_fields": [
+        "bid1_price"
+       ],
+       "seal_change_5m": {
+        "amount": null,
+        "baseline_amount": null,
+        "baseline_age_seconds": null
+       }
+      }
+     },
+     {
+      "stock_code": "002086",
+      "name": "东方海洋",
+      "role": "龙头",
+      "reason": null,
+      "divergent": false,
+      "quote": {
+       "price": 3.28,
+       "previous_close": 3.42,
+       "change_percent": -4.0936,
+       "open": 3.58,
+       "high": 3.67,
+       "low": 3.08,
+       "turnover_amount": 2661483300.0,
+       "amplitude_percent": 17.2515,
+       "turnover_percent": 50.92,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:21.708082+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 525523589.42200005,
+       "average_amplitude_20d": 7.578435000000001,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": {
+       "status": "ok",
+       "bid1_price": 3.27,
+       "bid1_volume": 3446.0,
+       "volume_unit": "手",
+       "bid1_amount": 1126842,
+       "asks_clear": false,
+       "sealed": false,
+       "seal_amount": null,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "fetched_at": "2026-11-04T18:30:10.315996+08:00",
+       "warnings": [],
+       "missing_fields": [],
+       "seal_change_5m": {
+        "amount": null,
+        "baseline_amount": null,
+        "baseline_age_seconds": null
+       }
+      }
+     }
+    ],
+    "followers": [
+     {
+      "stock_code": "002696",
+      "name": "百洋股份",
+      "role": "小弟",
+      "reason": "18天10板，是当前名义连板最高标，受鱼粉涨价与“洋”字辈炒作共同带动，11月3日再度涨停，跟羊字辈情绪（金融界涨停复盘、财联社）。",
+      "divergent": false,
+      "quote": {
+       "price": 11.12,
+       "previous_close": 12.36,
+       "change_percent": -10.0324,
+       "open": 11.5,
+       "high": 11.68,
+       "low": 11.12,
+       "turnover_amount": 594351500.0,
+       "amplitude_percent": 4.5307,
+       "turnover_percent": 15.82,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": true,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.209420+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:27.064770+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 777267943.1635001,
+       "average_amplitude_20d": 11.37933,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     },
+     {
+      "stock_code": "002172",
+      "name": "澳洋健康",
+      "role": "小弟",
+      "reason": "4连板后11月3日冲涨停未封、收涨4.62%，属“洋”字辈叠加医院、三胎概念，当日发布异动公告（凤凰网财经、深交所公告）。",
+      "divergent": false,
+      "quote": {
+       "price": 6.12,
+       "previous_close": 6.8,
+       "change_percent": -10.0,
+       "open": 6.56,
+       "high": 6.65,
+       "low": 6.12,
+       "turnover_amount": 852181400.0,
+       "amplitude_percent": 7.7941,
+       "turnover_percent": 17.75,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": true,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.209420+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:23.034242+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 901229488.2854999,
+       "average_amplitude_20d": 8.620535,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     },
+     {
+      "stock_code": "002088",
+      "name": "鲁阳节能",
+      "role": "小弟",
+      "reason": "“阳”字辈扩散标的，3天2板、11月3日涨停并当晚发布异动公告，跟随阳字辈高标情绪（金融界涨停复盘、新浪财经）。",
+      "divergent": false,
+      "quote": {
+       "price": 9.16,
+       "previous_close": 8.33,
+       "change_percent": 9.964,
+       "open": 8.82,
+       "high": 9.16,
+       "low": 8.66,
+       "turnover_amount": 304486900.0,
+       "amplitude_percent": 6.0024,
+       "turnover_percent": 6.68,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": true,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": 2,
+       "first_seal_time": "09:30:12",
+       "last_seal_time": "10:07:39",
+       "break_count": 2,
+       "seal_amount": 16023432,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": "换手板",
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:07.079286+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 70830701.45,
+       "average_amplitude_20d": 6.434399999999999,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     },
+     {
+      "stock_code": "002029",
+      "name": "七匹狼",
+      "role": "小弟",
+      "reason": "2连板，市场由“羊”字辈衍生出“狼吃羊”说法，属羊字辈周边炒作，跟随同一玄学情绪（南方财经、金融界涨停复盘）。",
+      "divergent": false,
+      "quote": {
+       "price": 9.3,
+       "previous_close": 10.33,
+       "change_percent": -9.971,
+       "open": 11.36,
+       "high": 11.36,
+       "low": 9.3,
+       "turnover_amount": 1613886600.0,
+       "amplitude_percent": 19.9419,
+       "turnover_percent": 23.86,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": true,
+       "in_limit_down": true,
+       "consecutive_boards": null,
+       "first_seal_time": "09:25:00",
+       "last_seal_time": null,
+       "break_count": 1,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.212906+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:19.043224+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 457137434.362,
+       "average_amplitude_20d": 9.185680000000001,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     }
+    ]
+   }
+  ],
+  "waiting": [
+   {
+    "id": "g-000995-20261103",
+    "theme": "白酒大消费（董事会换届预期）",
+    "room_since": "2026-11-03",
+    "broke_on": null,
+    "observed_trading_days": null,
+    "observed_text": null,
+    "flags": [],
+    "judgment": null,
+    "note": "3板一字，封单1.38亿元、换手约1.9%，是当日大消费方向唯一的一字硬板；受白酒板块和11月10日临时股东会换届预期带动，前三季仍亏损1789.8万元，机构三日净买入8026万元，尚在等候室等确认（证券时报、中国证券报）。",
+    "leaders": [
+     {
+      "stock_code": "000995",
+      "name": "皇台酒业",
+      "role": "龙头",
+      "reason": null,
+      "divergent": false,
+      "quote": {
+       "price": 16.36,
+       "previous_close": 17.16,
+       "change_percent": -4.662,
+       "open": 18.45,
+       "high": 18.88,
+       "low": 15.62,
+       "turnover_amount": 1270419800.0,
+       "amplitude_percent": 18.9977,
+       "turnover_percent": 41.52,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": true,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": "09:30:06",
+       "last_seal_time": null,
+       "break_count": 1,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.212906+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:16.392846+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 435017769.85,
+       "average_amplitude_20d": 8.642959999999999,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": {
+       "status": "ok",
+       "bid1_price": 16.36,
+       "bid1_volume": 244.0,
+       "volume_unit": "手",
+       "bid1_amount": 399184,
+       "asks_clear": false,
+       "sealed": false,
+       "seal_amount": null,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "fetched_at": "2026-11-04T18:30:10.225526+08:00",
+       "warnings": [],
+       "missing_fields": [],
+       "seal_change_5m": {
+        "amount": null,
+        "baseline_amount": null,
+        "baseline_age_seconds": null
+       }
+      }
+     }
+    ],
+    "followers": []
+   }
+  ],
+  "eliminated": [
+   {
+    "id": "g-002724-20261026",
+    "theme": "羊字辈玄学（早期启动高标）",
+    "room_since": "2026-10-26",
+    "broke_on": "2026-10-26",
+    "observed_trading_days": 6,
+    "observed_text": "已观察 6 个交易日（满 10 个交易日踢出）",
+    "flags": [
+     "断板",
+     "二波迹象"
+    ],
+    "judgment": null,
+    "note": "6板（10月16日—10月23日）为“洋”字辈早期最高标，10月26日断板后10月27日反包涨停至8天7板；随后11月2日一字跌停、11月3日收跌3.70%，二波受阻；断板后第7个交易日仍在淘汰室观察，公司已澄清不属核电、深海科技（南方财经、每日经济新闻、公司公告）。",
+    "leaders": [
+     {
+      "stock_code": "002724",
+      "name": "海洋王",
+      "role": "龙头",
+      "reason": null,
+      "divergent": false,
+      "quote": {
+       "price": 11.66,
+       "previous_close": 12.76,
+       "change_percent": -8.6207,
+       "open": 12.09,
+       "high": 12.23,
+       "low": 11.48,
+       "turnover_amount": 1351935700.0,
+       "amplitude_percent": 5.8777,
+       "turnover_percent": 20.39,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:07.801676+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 827977997.7955,
+       "average_amplitude_20d": 7.782649999999999,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     }
+    ],
+    "followers": []
+   },
+   {
+    "id": "g-603278-20261026",
+    "theme": "人形机器人（腱绳/减速器轴承）",
+    "room_since": "2026-10-26",
+    "broke_on": "2026-10-26",
+    "observed_trading_days": 6,
+    "observed_text": "已观察 6 个交易日（满 10 个交易日踢出）",
+    "flags": [
+     "断板",
+     "背离:000678"
+    ],
+    "judgment": null,
+    "note": "6板（10月16日—10月23日）为机器人方向最高标，10月26日冲7板炸板断板，11月2日、11月3日连续跌停，腱绳仍处送样未量产、无收益，断板后第7个交易日二波基本无望；组内襄阳轴承11月2日反包涨停与龙头连续跌停明显背离（星岛、财联社、证券时报）。",
+    "leaders": [
+     {
+      "stock_code": "603278",
+      "name": "大业股份",
+      "role": "龙头",
+      "reason": null,
+      "divergent": false,
+      "quote": {
+       "price": 14.52,
+       "previous_close": 15.81,
+       "change_percent": -8.1594,
+       "open": 15.5,
+       "high": 15.81,
+       "low": 14.23,
+       "turnover_amount": 1399643000.0,
+       "amplitude_percent": 9.9937,
+       "turnover_percent": 27.59,
+       "source_time": "2026-11-04T15:00:02+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:08.815707+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 869554892.5,
+       "average_amplitude_20d": 6.29153,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     }
+    ],
+    "followers": [
+     {
+      "stock_code": "002708",
+      "name": "光洋股份",
+      "role": "小弟",
+      "reason": "机器人丝杠、轴承关节方向，4板（10月26日—10月29日）后10月30日断板，与大业股份同属一波机器人情绪（证券之星、爱股票）。",
+      "divergent": false,
+      "quote": {
+       "price": 19.54,
+       "previous_close": 18.88,
+       "change_percent": 3.4958,
+       "open": 18.69,
+       "high": 19.7,
+       "low": 16.99,
+       "turnover_amount": 2582731900.0,
+       "amplitude_percent": 14.3538,
+       "turnover_percent": 27.65,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:07.402941+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 949801498.7,
+       "average_amplitude_20d": 7.80298,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     },
+     {
+      "stock_code": "000678",
+      "name": "襄阳轴承",
+      "role": "小弟",
+      "reason": "减速器轴承方向，5板后10月29日炸板断板，与大业股份同为机器人（减速器/轴承/腱绳）一波情绪（证券时报、同花顺）。",
+      "divergent": true,
+      "quote": {
+       "price": 19.48,
+       "previous_close": 20.26,
+       "change_percent": -3.85,
+       "open": 19.6,
+       "high": 19.7,
+       "low": 18.23,
+       "turnover_amount": 2934550100.0,
+       "amplitude_percent": 7.2557,
+       "turnover_percent": 34.13,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T13:27:15.069310+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 1459609767.3285,
+       "average_amplitude_20d": 9.534445,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     },
+     {
+      "stock_code": "603028",
+      "name": "赛福天",
+      "role": "小弟",
+      "reason": "被市场归入机器人概念，4板后10月28日断板，11月2日已连续第三个跌停，随机器人情绪回落（财联社10月28日连板股分析、济安金信）。",
+      "divergent": false,
+      "quote": {
+       "price": 7.11,
+       "previous_close": 7.05,
+       "change_percent": 0.8511,
+       "open": 7.13,
+       "high": 7.34,
+       "low": 6.65,
+       "turnover_amount": 329834400.0,
+       "amplitude_percent": 9.7872,
+       "turnover_percent": 16.61,
+       "source_time": "2026-11-04T15:00:01+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:08.466145+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 174092849.95,
+       "average_amplitude_20d": 5.875204999999999,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     },
+     {
+      "stock_code": "603528",
+      "name": "多伦科技",
+      "role": "小弟",
+      "reason": "智慧车管叠加咖啡机器人方向，4板后10月28日跌停断板，属机器人情绪扩散标的（同花顺、公司公告）。",
+      "divergent": false,
+      "quote": {
+       "price": 7.12,
+       "previous_close": 6.93,
+       "change_percent": 2.7417,
+       "open": 6.82,
+       "high": 7.46,
+       "low": 6.49,
+       "turnover_amount": 705816300.0,
+       "amplitude_percent": 13.9971,
+       "turnover_percent": 14.49,
+       "source_time": "2026-11-04T15:00:00+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:09.495556+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 422683543.95,
+       "average_amplitude_20d": 6.376085,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     }
+    ]
+   },
+   {
+    "id": "g-600838-20261028",
+    "theme": "大消费/新零售（上海国资商业百货）",
+    "room_since": "2026-10-28",
+    "broke_on": "2026-10-28",
+    "observed_trading_days": 4,
+    "observed_text": "已观察 4 个交易日（满 10 个交易日踢出）",
+    "flags": [
+     "断板"
+    ],
+    "judgment": null,
+    "note": "10月21日—10月27日5连板，是当时全场空间标杆，带动茂业商业、广百股份等零售股；10月28日巨量分歧断板并收到上交所监管工作函，断板后第5个交易日仍无二波迹象，继续在淘汰室观察（上海证券报、每日经济新闻）。",
+    "leaders": [
+     {
+      "stock_code": "600838",
+      "name": "上海九百",
+      "role": "龙头",
+      "reason": null,
+      "divergent": false,
+      "quote": {
+       "price": 11.3,
+       "previous_close": 12.55,
+       "change_percent": -9.9602,
+       "open": 12.02,
+       "high": 12.27,
+       "low": 11.3,
+       "turnover_amount": 1351766700.0,
+       "amplitude_percent": 7.7291,
+       "turnover_percent": 29.06,
+       "source_time": "2026-11-04T15:00:01+08:00",
+       "quote_status": "ok",
+       "missing_fields": [],
+       "warnings": [],
+       "session_phase": null
+      },
+      "limit_up": {
+       "in_limit_up": false,
+       "in_broken": false,
+       "in_limit_down": false,
+       "consecutive_boards": null,
+       "first_seal_time": null,
+       "last_seal_time": null,
+       "break_count": null,
+       "seal_amount": null,
+       "pool_fetched_at": "2026-11-04T18:30:10.249358+08:00",
+       "board_type_text": null,
+       "warnings": []
+      },
+      "history": {
+       "status": "ok",
+       "start": "2026-09-30",
+       "as_of": "2026-11-03",
+       "fetched_at": "2026-11-04T15:40:08.141589+08:00",
+       "valid_days": 20,
+       "missing_dates": [],
+       "rejected_rows": 0,
+       "average_daily_amount_20d": 593182708.65,
+       "average_amplitude_20d": 6.368105,
+       "limit_up_down_counts": null,
+       "note": "日线不复权；振幅=(最高-最低)/该日昨收。涨跌停价及特殊涨跌幅规则未核验，不推算涨跌停次数。"
+      },
+      "order_book": null
+     }
+    ],
+    "followers": []
+   }
+  ]
+ },
+ "errors": [],
+ "warnings": [],
+ "history_target_date": "2026-11-04",
+ "history_pending_count": 14,
+ "history_last_error": {
+  "code": "upstream_http_error",
+  "message": "麦蕊接口返回 HTTP 503，本次未取得行情。",
+  "at": "2026-09-29T09:27:28.051744+08:00"
+ },
+ "note": "报价、涨跌停池和五档盘口的时间分别标明。缺失不是 0。盘中累计成交额不能直接与历史全天成交额比较。"
+}
+</script>
+<script>
+const RAW = JSON.parse(document.getElementById("kx-data").textContent);
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+function groups(data, key) {
+  const rooms = data.rooms || {};
+  const list = rooms[key];
+  return Array.isArray(list) ? list : [];
+}
+function asList(v) {
+  if (v == null || v === "") return [];
+  if (Array.isArray(v)) return v.map(function (x) { return String(x); }).filter(Boolean);
+  return [String(v)];
+}
+function num(v) { return v == null || v === "" ? "—" : String(v); }
+function trimNum(s) { return String(s).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ""); }
+function md(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || "");
+  return m ? m[2] + "/" + m[3] : "—";
+}
+function bj(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(s || "");
+  if (!m) return null;
+  return { y: m[1], md: m[2] + "/" + m[3], hm: m[4] + ":" + m[5], hms: m[4] + ":" + m[5] + ":" + m[6] };
+}
+function timeValue(s) {
+  const t = Date.parse(s || "");
+  return Number.isFinite(t) ? t : null;
+}
+function maxQuoteTime(data) {
+  let best = null, bestV = -Infinity;
+  ["leader", "waiting", "eliminated"].forEach(function (key) {
+    groups(data, key).forEach(function (g) {
+      (g.leaders || []).concat(g.followers || []).forEach(function (st) {
+        const s = st.quote && st.quote.source_time;
+        const v = timeValue(s);
+        if (v != null && v >= bestV) { bestV = v; best = s; }
+      });
+    });
+  });
+  return best;
+}
+function moneyWan(yuan) {
+  if (yuan == null || !Number.isFinite(Number(yuan))) return null;
+  return trimNum((Number(yuan) / 10000).toFixed(1)) + "万";
+}
+function moneyYi(yuan) {
+  if (yuan == null || !Number.isFinite(Number(yuan))) return null;
+  return trimNum((Number(yuan) / 1e8).toFixed(2)) + "亿";
+}
+function signedChange(yuan) {
+  if (yuan == null || !Number.isFinite(Number(yuan))) return "";
+  const n = Number(yuan);
+  if (n === 0) return "0";
+  const body = Math.abs(n) >= 1e8 ? moneyYi(Math.abs(n)) : moneyWan(Math.abs(n));
+  return (n > 0 ? "+" : "-") + body;
+}
+function shortClock(v) {
+  const m = /(\d{2}:\d{2})/.exec(String(v));
+  return m ? m[1] : String(v);
+}
+function flagLabel(f) {
+  if (typeof f === "string") {
+    const i = f.indexOf(":");
+    return i > 0 ? f.slice(0, i) + " " + f.slice(i + 1) : f;
+  }
+  if (f && typeof f === "object") {
+    const text = f.text || f.kind || "";
+    return f.code ? text + " " + f.code : text;
+  }
+  return "";
+}
+function indexFacts(data) {
+  const map = {}, orphans = [];
+  const list = Array.isArray(data.fact_warnings) ? data.fact_warnings : [];
+  list.forEach(function (w) {
+    if (w && typeof w === "object" && typeof w.group_id === "string" && w.group_id && typeof w.text === "string") {
+      (map[w.group_id] || (map[w.group_id] = [])).push(w.text);
+    } else if (w && typeof w === "object" && typeof w.text === "string") {
+      orphans.push(w.text);
+    } else if (typeof w === "string" && w) {
+      orphans.push(w);
+    } else if (w != null) {
+      orphans.push(typeof w === "object" ? JSON.stringify(w) : String(w));
+    }
+  });
+  return { map: map, orphans: orphans };
+}
+function sessionWord(data) {
+  const s = data.sentiment || {};
+  if (s.basis === "交易时段" || s.board_phrases === "盘中") return "盘中";
+  return "已收盘";
+}
+function todayStatus(lu) {
+  if (!lu) return "—";
+  const up = lu.in_limit_up, broken = lu.in_broken, down = lu.in_limit_down;
+  if (up == null && broken == null && down == null) return "—";
+  const parts = [];
+  if (up === true) parts.push("涨停");
+  if (broken === true) parts.push("炸板");
+  if (down === true) parts.push("跌停");
+  if (parts.length) return parts.join(" ");
+  if (up === false && broken === false && down === false) return "未涨停";
+  return "—";
+}
+function limitStatusHTML(lu) {
+  if (!lu) return '<span class="st-miss">—</span>';
+  const up = lu.in_limit_up, broken = lu.in_broken, down = lu.in_limit_down;
+  if (up == null && broken == null && down == null) return '<span class="st-miss">—</span>';
+  const parts = [];
+  if (up === true) parts.push('<span class="st-up">涨停</span>');
+  if (broken === true) parts.push('<span class="st-brk">炸板</span>');
+  if (down === true) parts.push('<span class="st-dn">跌停</span>');
+  if (parts.length) return parts.join(" ");
+  if (up === false && broken === false && down === false) return '<span class="st-off">未涨停</span>';
+  return '<span class="st-miss">—</span>';
+}
+function inPool(lu) {
+  return !!(lu && (lu.in_limit_up === true || lu.in_broken === true));
+}
+function poolBits(lu) {
+  if (!inPool(lu)) return "";
+  const bits = [
+    lu.consecutive_boards == null ? { t: "— 板", miss: true } : { t: lu.consecutive_boards + " 板", miss: false },
+    lu.board_type_text ? { t: lu.board_type_text, miss: false } : { t: "—", miss: true },
+    { t: "首封 " + (lu.first_seal_time ? shortClock(lu.first_seal_time) : "—"), miss: !lu.first_seal_time },
+    { t: "开板 " + (lu.break_count == null ? "—" : String(lu.break_count)), miss: lu.break_count == null }
+  ];
+  return bits.map(function (b) {
+    return '<span class="' + (b.miss ? "miss" : "") + '">' + esc(b.t) + "</span>";
+  }).join("<i>·</i>");
+}
+function trend(st) {
+  const v = st.quote && st.quote.change_percent;
+  if (v == null || !Number.isFinite(Number(v))) return "flat";
+  const n = Number(v);
+  if (n > 0) return "up";
+  if (n < 0) return "down";
+  return "flat";
+}
+function priceText(st) {
+  const p = st.quote && st.quote.price;
+  if (p == null || !Number.isFinite(Number(p))) return "—";
+  return Number(p).toFixed(2);
+}
+function pctText(st) {
+  const v = st.quote && st.quote.change_percent;
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  const n = Number(v);
+  return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+}
+function priceBits(st) {
+  const tr = trend(st);
+  const auc = st.quote && st.quote.session_phase === "call_auction" ? '<span class="auc">竞价中</span>' : "";
+  return '<span class="px ' + tr + '">' + esc(priceText(st)) + '</span><span class="pct ' + tr + '">' + esc(pctText(st)) + "</span>" + auc;
+}
+function factLine(st) {
+  const lu = st.limit_up || {};
+  const pool = poolBits(lu);
+  return '<div class="facts">' + limitStatusHTML(lu) + (pool ? "<i>·</i>" + pool : "") + "</div>";
+}
+function orderLine(st) {
+  const ob = st.order_book;
+  if (!ob) return "";
+  const warns = asList(ob.warnings);
+  const why = warns.length ? '<span class="why">' + esc(warns.join(" ")) + "</span>" : "";
+  if (ob.sealed === true) {
+    const delta = ob.seal_change_5m ? signedChange(ob.seal_change_5m.amount) : "";
+    return '<div class="ob"><span class="k">封单</span><b>' + esc(moneyYi(ob.seal_amount) || "—") + "</b>" +
+      (delta ? '<span class="delta">' + esc(delta) + "</span>" : "") + why + "</div>";
+  }
+  return '<div class="ob"><span class="k">买一挂单</span><b>' + esc(moneyWan(ob.bid1_amount) || "—") + "</b>" + why + "</div>";
+}
+function extraWarn(st) {
+  const seen = {};
+  asList(st.order_book && st.order_book.warnings).forEach(function (t) { seen[t] = true; });
+  const all = asList(st.quote && st.quote.warnings).concat(asList(st.limit_up && st.limit_up.warnings))
+    .filter(function (t) { return t && !seen[t]; });
+  return all.length ? '<div class="why">' + esc(all.join(" ")) + "</div>" : "";
+}
+function leaderHTML(st) {
+  return '<div class="leader"><div class="l1"><span class="nm">' + esc(st.name || "—") + '</span><span class="cd">' +
+    esc(st.stock_code || "") + '</span><span class="grow"></span>' + priceBits(st) + "</div>" +
+    factLine(st) + orderLine(st) + extraWarn(st) + "</div>";
+}
+function followerHTML(st) {
+  const lu = st.limit_up || {};
+  const tag = st.divergent ? '<span class="tag">背离</span>' : "";
+  const state = todayStatus(lu);
+  const pool = poolBits(lu);
+  const reason = st.reason ? '<div class="freason" title="' + esc(st.reason) + '">' + esc(st.reason) + "</div>" : "";
+  return '<div class="fitem"><div class="f">' + tag + '<span class="nm">' + esc(st.name || "—") + '</span><span class="cd">' +
+    esc(st.stock_code || "") + '</span><span class="grow"></span>' + priceBits(st) +
+    '<span class="fst" title="' + esc(state) + '">' + limitStatusHTML(lu) + "</span></div>" +
+    (pool ? '<div class="facts">' + pool + "</div>" : "") + reason + "</div>";
+}
+function dsHTML(g, texts) {
+  const j = g.judgment;
+  const note = g.note || "";
+  const mismatch = (texts || []).map(function (t) {
+    return '<div class="bad">这句与麦蕊数据不符<div>' + esc(t) + "</div></div>";
+  }).join("");
+  if (!j && !note && !mismatch) return "";
+  if (!j) {
+    return '<div class="ds">' + mismatch + '<details class="note"><summary><span class="mark">DeepSeek</span><span class="clamp">' +
+      esc(note) + '</span></summary><div class="full">' + esc(note) + "</div></details></div>";
+  }
+  const rows = [["高度", j.height], ["带动", j.drive], ["承接", j.resilience]];
+  if (note) rows.push(["说明", note]);
+  const extra = rows.map(function (row) {
+    const v = row[1] == null || row[1] === "" ? "—" : esc(row[1]);
+    return "<div><b>" + row[0] + "</b><span>" + v + "</span></div>";
+  }).join("");
+  return '<div class="ds">' + mismatch + '<div class="dshead"><span class="mark">DeepSeek</span><span class="verd">' +
+    esc(j.verdict || "—") + '</span></div><div class="jreason">' + esc(j.reason || "—") +
+    '</div><details class="fold"><summary>' + (note ? "高度、带动、承接、说明" : "高度、带动、承接") +
+    '</summary><div class="extra">' + extra + "</div></details></div>";
+}
+function cardHTML(g, room, facts, opt) {
+  const flags = (Array.isArray(g.flags) ? g.flags : []).map(function (f) {
+    const label = flagLabel(f);
+    return label ? '<span class="tag">' + esc(label) + "</span>" : "";
+  }).join("");
+  const obs = room === "eliminated"
+    ? '<div class="obs">断板日 ' + md(g.broke_on) + " · " + esc(g.observed_text || "—") + "</div>"
+    : "";
+  const leaders = (g.leaders || []).map(leaderHTML).join("");
+  const fol = opt.followers === false ? [] : (g.followers || []);
+  const followers = fol.length
+    ? '<div class="followers"><div class="flab">小弟 ' + fol.length + "</div>" + fol.map(followerHTML).join("") + "</div>"
+    : "";
+  const ds = opt.deepseek === false ? "" : dsHTML(g, facts.map[g.id] || []);
+  const cls = "card " + (fol.length ? "hasfollow" : "nofollow") + (ds ? " hasds" : " nods");
+  const two = (g.leaders || []).length > 1 ? " two" : "";
+  return '<article class="' + cls + '"><div class="hd"><div class="theme">' + esc(g.theme || "—") +
+    '</div><div class="hmeta"><span>进房 ' + md(g.room_since) + "</span>" + flags + "</div>" + obs +
+    '</div><div class="leaders' + two + '">' + leaders + "</div>" + ds + followers + "</article>";
+}
+function roomsHTML(data, opt) {
+  const facts = indexFacts(data);
+  const keys = opt.rooms || ["leader", "waiting", "eliminated"];
+  const rooms = [["leader", "龙头室"], ["waiting", "等候室"], ["eliminated", "淘汰室"]];
+  return rooms.filter(function (r) { return keys.indexOf(r[0]) >= 0; }).map(function (r) {
+    const gs = groups(data, r[0]);
+    const body = gs.length ? gs.map(function (g) { return cardHTML(g, r[0], facts, opt); }).join("") : '<div class="empty">今天没有</div>';
+    return '<section class="room"><div class="sec"><span>' + r[1] + '</span><span class="cnt">' + gs.length + " 组</span></div>" + body + "</section>";
+  }).join("");
+}
+function sentiHTML(data, shell) {
+  const s = data.sentiment || {};
+  const h = s.highest_board || {};
+  const names = Array.isArray(h.names) ? h.names : [];
+  const codes = Array.isArray(h.stock_codes) ? h.stock_codes : [];
+  const count = names.length || codes.length;
+  const boardHTML = h.boards == null || !Number.isFinite(Number(h.boards)) ? "—" : Number(h.boards) + '<span class="unit">板</span>';
+  const hbLabel = h.boards == null && count === 0 ? "最高 —" : "最高 · " + count + " 只";
+  const rate = s.broken_rate == null || !Number.isFinite(Number(s.broken_rate)) ? "—" : (Number(s.broken_rate) * 100).toFixed(1) + "%";
+  const y = "昨日连板 " + num(s.yesterday_consecutive) + " 只，今日继续 " + num(s.yesterday_continued) + " 只";
+  const intra = s.basis === "交易时段" ? '<div class="intraday">盘中统计</div>' : "";
+  const nameJoin = names.map(esc).join("、");
+  let hbCell, hbExtra = "";
+  if (shell === "mac") {
+    hbCell = '<div class="stat"><b>' + boardHTML + '</b><span class="lbl">' + esc(hbLabel) + "</span>" +
+      (nameJoin ? '<div class="names" title="' + nameJoin + '">' + nameJoin + "</div>" : "") + "</div>";
+  } else {
+    hbCell = '<div class="stat"><b>' + boardHTML + '</b><span class="lbl">' + esc(hbLabel) + "</span></div>";
+    hbExtra = nameJoin ? '<details class="hb"><summary>' + count + ' 只的名字</summary><div class="names">' + nameJoin + "</div></details>" : "";
+  }
+  return '<div class="senti"><div class="stat"><b>' + num(s.limit_up_count) + '</b><span class="lbl">主板涨停</span></div>' +
+    '<div class="stat"><b>' + num(s.broken_count) + "<small>" + esc(rate) + '</small></b><span class="lbl">炸板</span></div>' +
+    '<div class="stat"><b>' + num(s.limit_down_count) + '</b><span class="lbl">跌停</span></div>' +
+    hbCell + hbExtra + '<div class="yall">' + esc(y) + "</div>" + intra + "</div>";
+}
+function marketHTML(data) {
+  if (!data.market_note) return "";
+  const t = esc(data.market_note);
+  return '<details class="ds market"><summary><span class="mark">DeepSeek</span><span class="clamp">' + t +
+    '</span></summary><div class="full">' + t + "</div></details>";
+}
+function alertHTML(text) {
+  return '<div class="alert"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 4.1v3.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="7" cy="9.7" r=".75" fill="currentColor"/></svg><span>' +
+    esc(text) + "</span></div>";
+}
+function notesHTML(data) {
+  const hot = [];
+  const minor = [];
+  if (data._stale) hot.push(data._stale);
+  if (data.deepseek_status && data.deepseek_status !== "ok") hot.push(data.deepseek_notice || "DeepSeek 未完成");
+  else if (data.deepseek_notice) minor.push(data.deepseek_notice);
+  if (data.refresh && data.refresh.notice) minor.push(data.refresh.notice);
+  if (data.status === "partial") minor.push("部分行情不完整");
+  const orphans = indexFacts(data).orphans;
+  if (orphans.length) minor.push("这句与麦蕊数据不符：" + orphans.join("；"));
+  return hot.map(alertHTML).join("") + (minor.length ? '<div class="pline">' + minor.map(esc).join(" · ") + "</div>" : "");
+}
+function headerHTML(data) {
+  const c = bj(data.checked_at);
+  return '<div class="nav"><div class="title"><h2>KX</h2><span class="meta">' + (c ? esc(c.hm) : "—") + " · " +
+    sessionWord(data) + '</span></div><div class="sub">按 ' + md(data.as_of) + " 收盘整理</div></div>";
+}
+function footerHTML(data) {
+  const read = bj(data.checked_at);
+  const gen = bj(data.generated_at);
+  const pool = bj(data.sentiment && data.sentiment.fetched_at && data.sentiment.fetched_at.limit_up);
+  const quote = bj(maxQuoteTime(data));
+  const base = read && (read.y + read.md);
+  function one(label, t) {
+    if (!t) return label + " —";
+    const same = base && (t.y + t.md) === base;
+    return label + " " + (same ? t.hms : t.md + " " + t.hms);
+  }
+  const line = (read ? read.md + " · " : "") + [one("读取", read), one("报价", quote), one("涨停池", pool), one("结构写入", gen)].join(" · ");
+  const ver = data.version ? '<div class="ver">' + esc(data.version) + "</div>" : "";
+  return '<div class="foot">' + esc(line) + ver + "</div>";
+}
+function statusHTML(data) {
+  const c = bj(data.checked_at);
+  return '<div class="status"><span>' + (c ? esc(c.hm) : "") + "</span></div>";
+}
+function tabHTML() {
+  return '<div class="tabs"><div>K10</div><div class="on">KX</div><div>设置</div></div>';
+}
+function phoneHTML(data, opt) {
+  const tall = !!opt.tall;
+  const body = statusHTML(data) + headerHTML(data) + '<div class="content">' + notesHTML(data) +
+    (opt.senti === false ? "" : sentiHTML(data, "phone")) +
+    (opt.market === false ? "" : marketHTML(data)) +
+    roomsHTML(data, opt) +
+    (opt.foot === false ? "" : footerHTML(data)) +
+    "</div>" + tabHTML();
+  return '<div class="phonewrap' + (tall ? " tall" : "") + '"><div class="phone"><div class="screen' +
+    (opt.dark ? " dark" : "") + '">' + body + "</div></div>" +
+    (tall ? '<div class="anno"><span>一屏 874pt</span></div>' : "") + "</div>";
+}
+function macHTML(data, opt) {
+  return '<div class="mac' + (opt.dark ? " dark" : "") + '"><div class="titlebar"><i></i><i></i><i></i><span>Neckline</span></div><div class="body"><nav class="side"><div>K10</div><div class="on">KX</div></nav><div class="main">' +
+    headerHTML(data) + notesHTML(data) + sentiHTML(data, "mac") + marketHTML(data) + roomsHTML(data, opt) + footerHTML(data) +
+    "</div></div></div>";
+}
+function put(id, html) { document.getElementById(id).innerHTML = html; }
+
+function mount() {
+  const full = { followers: true, deepseek: true, senti: true, market: true, foot: true };
+  put("b1", phoneHTML(RAW, Object.assign({ tall: true }, full)));
+  put("b2", phoneHTML(RAW, Object.assign({ tall: true, dark: true }, full)));
+  put("b3", macHTML(RAW, {}));
+  put("b4", macHTML(RAW, { dark: true }));
+
+  const partial = clone(RAW);
+  partial.deepseek_status = "partial";
+  partial.deepseek_notice = "DeepSeek 部分未完成：分组和小弟未更新，沿用上一版小弟";
+  partial.refresh = Object.assign({}, partial.refresh || {}, { notice: "今日未更新" });
+  put("b5", phoneHTML(partial, { rooms: ["leader"], senti: true, market: true, foot: false }));
+
+  const auction = clone(RAW);
+  auction.checked_at = "2026-11-04T09:18:00+08:00";
+  auction.sentiment.basis = "交易时段";
+  auction.sentiment.board_phrases = "盘中";
+  ["leader", "waiting"].forEach(function (key) {
+    groups(auction, key).forEach(function (g) {
+      (g.leaders || []).forEach(function (st) {
+        if (st.quote) st.quote.session_phase = "call_auction";
+        if (st.limit_up) st.limit_up.board_type_text = null;
+        if (st.order_book) {
+          st.order_book.sealed = null;
+          st.order_book.warnings = ["集合竞价阶段无法判断封单"];
+        }
+      });
+    });
+  });
+  put("b6", phoneHTML(auction, { rooms: ["leader"], senti: true, market: false, foot: false, followers: false, deepseek: false }));
+
+  const stale = clone(RAW);
+  stale.rooms.waiting = [];
+  stale._stale = "未能核对，最后读到 18:30";
+  put("b7", phoneHTML(stale, { rooms: ["waiting"], senti: false, market: false, foot: false }));
+}
+
+try { mount(); }
+catch (err) { document.getElementById("err").textContent = (err && err.stack) || String(err); }
+</script>
+</body>
+</html>

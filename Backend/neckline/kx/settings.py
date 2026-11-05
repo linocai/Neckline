@@ -7,7 +7,6 @@ from urllib.parse import urlsplit
 
 DEFAULT_BASE_URL = "https://linotsai.top"
 _READ_KEY = re.compile(r"[A-Za-z0-9_-]{32,128}")
-PICKS_TOKEN_MIN = 16
 
 
 def base_url() -> str:
@@ -25,8 +24,3 @@ def read_key() -> str | None:
     """KX 只读页面的访问码，放在 URL 路径里，只接受 URL 安全字符，防止拼出别的路径。"""
     value = (os.environ.get("KX_READ_KEY") or "").strip()
     return value if _READ_KEY.fullmatch(value) else None
-
-
-def picks_token() -> str | None:
-    value = (os.environ.get("KX_PICKS_TOKEN") or "").strip()
-    return value if len(value) >= PICKS_TOKEN_MIN else None

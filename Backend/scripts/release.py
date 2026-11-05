@@ -28,13 +28,18 @@ Database schema version. ``build`` records the commit's ``SCHEMA_VERSION`` in th
 (a manifest without it means 1). Before anything is touched, switch reads the production ``user_version``
 (``schemaBefore``, read-only, no DDL) and plans ``none`` / ``upgrade`` / ``downgrade``; ``--check-only`` reports the plan.
 An upgrade runs ``init-db`` as the neckline user after the new files, wheel and manifest are in place and verified,
-before the units return; a downgrade (only the allow-listed add-tables-only steps, 2→1, 3→2, 3→1, 4→3, 4→2 and 4→1) just rewrites
-``user_version`` after the services are stopped and before the files are replaced; tables are kept. Once the old files,
-wheel and manifest are back, every rollback puts ``user_version`` back to ``schemaBefore`` (services still stopped) before
+before the units return. Schema 5's ``init_schema`` drops ``kx_pool``, ``kx_picks`` and ``kx_daily_stats``.
+A downgrade of an add-tables-only step (2→1, 3→2, 3→1, 4→3, 4→2, 4→1) only rewrites ``user_version``
+after the services are stopped and before the files are replaced; extra tables are kept.
+A downgrade from schema 5 (5→4, 5→3, 5→2, 5→1) recreates, in that same transaction, the empty KX tables the
+target version needs (v4 and v3: ``kx_pool`` with ``theme`` / ``first_seen`` / ``buyable``; v2: the three tables
+without those columns; v1: none) and then writes ``user_version``. Tables the target does not need are left in place.
+Rollback of a 4→5 upgrade does the same 5→4 rebuild before writing version 4 back. Once the old files,
+wheel and manifest are back, every rollback puts the schema back to ``schemaBefore`` (services still stopped) before
 the units return and before the old release's readiness check; if that fails the units stay masked. If the old files cannot
 be restored at all, the database is left at the version that matches whatever files are in place and ``schemaNow`` in
-``switch-state.json`` says what it is. Only ``user_version`` or ``init_schema`` ever touches the database: no table is
-dropped, no business data read or written.
+``switch-state.json`` says what it is. Business rows are never rewritten; the only drops are the three retired KX
+tables inside ``init_schema``.
 
 Opening the production database as root can leave root-owned ``-wal`` / ``-shm`` files next to it (a read-only
 connection to a WAL database creates them when none exist), which would lock the neckline service out. Every
@@ -47,9 +52,11 @@ fix itself via ``fchown`` / ``fchmod``) is done on that descriptor, never by pat
 files are refused. Before any unit is unmasked or started again (``_restore_units``: the normal path and every rollback
 path) the production database and its sidecars are checked, and fixed if needed, once more; if that fails the units stay masked.
 
-Health flags: ``kxPool`` / ``kxPicks`` follow the same rule as ``READY_FLAGS`` (true before, still true after) for a release
-whose manifest ``schemaVersion`` is at least 2 (the KX releases); a release that predates them (B120 shape, also the
-target of a roll-back to it) neither reports nor needs them, and a baseline without them is valid.
+Health flags: the KX configuration bit follows the same rule as ``READY_FLAGS`` (true before, still true after).
+Schema 5 and later report ``kxBoard``; schema 2–4 report ``kxPool``. A baseline is read from whichever of those
+the previous release actually sent. ``kxPicks`` is no longer compared. A release that predates KX (B120 shape,
+schemaVersion below 2, also the target of a roll-back to it) neither reports nor needs the flag, and a baseline
+without it is valid.
 """
 from __future__ import annotations
 
@@ -89,12 +96,91 @@ RUNTIME_PREFIXES = ("neckline/", "scripts/", "deploy/")
 RUNTIME_FILES = (".env.example", "pyproject.toml", "requirements.txt")
 SERVICE_USER = "neckline"
 SIDECAR_SUFFIXES = ("-wal", "-shm")
-KX_FLAGS = ("kxPool", "kxPicks")  # B121 起 health 才带这两项
+KX_FLAGS = ("kxPool", "kxBoard")  # 旧版 health 用 kxPool，schema 5 起用 kxBoard。kxPicks 不再比对。
 KX_SCHEMA = 2  # 清单 schemaVersion 达到它的发布才报告、也才要求 KX 项
-# 库结构只允许这些「只加了表或列」的降级：旧代码认得它的版本号，按列名读写，多出来的表和列保留不删。
-# v3 只给 kx_pool 加了三列，v4 只加 filing_reads 与 evaluations。旧代码的 SELECT / INSERT 都带列名，
-# 所以 3→2、3→1、4→3、4→2、4→1 也只改版本号。
-ADDITIVE_DOWNGRADES = frozenset({(2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1)})
+_KX_BASELINE_KEYS = ("kxPool", "kxPicks", "kxBoard")
+# 只改版本号的降级：旧代码按列名读写，多出来的表和列保留不删。
+# 从 5 往回：先在同一事务里补建目标版本需要的空 KX 表，再写 user_version。不需要的表保留。
+ADDITIVE_DOWNGRADES = frozenset({
+    (2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1),
+    (5, 4), (5, 3), (5, 2), (5, 1),
+})
+# 冻结自 v4.2.1（B130）的 neckline/morning/db.py。5→4 与 5→3 用这份（kx_pool 带 theme、first_seen、buyable）。
+_KX_V4_DDL = """
+CREATE TABLE IF NOT EXISTS kx_pool (
+  code TEXT PRIMARY KEY CHECK(length(code) = 6),
+  position INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  industry TEXT NOT NULL,
+  version TEXT NOT NULL,
+  verified_at TEXT NOT NULL,
+  theme TEXT,
+  first_seen TEXT,
+  buyable INTEGER
+);
+CREATE TABLE IF NOT EXISTS kx_picks (
+  request_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK(position >= 0),
+  code TEXT NOT NULL CHECK(length(code) = 6),
+  picked_at TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  PRIMARY KEY(request_id, position),
+  UNIQUE(request_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_kx_picks_code ON kx_picks(code, picked_at);
+CREATE TABLE IF NOT EXISTS kx_daily_stats (
+  base_date TEXT NOT NULL,
+  pool_version TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('daily','basic')),
+  fetched_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY(base_date, pool_version, kind)
+);
+"""
+# 冻结自 v2（B121、B122）：kx_pool 没有 theme / first_seen / buyable。5→2 用这份。
+_KX_V2_DDL = """
+CREATE TABLE IF NOT EXISTS kx_pool (
+  code TEXT PRIMARY KEY CHECK(length(code) = 6),
+  position INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  industry TEXT NOT NULL,
+  version TEXT NOT NULL,
+  verified_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kx_picks (
+  request_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK(position >= 0),
+  code TEXT NOT NULL CHECK(length(code) = 6),
+  picked_at TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  PRIMARY KEY(request_id, position),
+  UNIQUE(request_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_kx_picks_code ON kx_picks(code, picked_at);
+CREATE TABLE IF NOT EXISTS kx_daily_stats (
+  base_date TEXT NOT NULL,
+  pool_version TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('daily','basic')),
+  fetched_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY(base_date, pool_version, kind)
+);
+"""
+_KX_RESTORE_DDL = {4: _KX_V4_DDL, 3: _KX_V4_DDL, 2: _KX_V2_DDL}
+_PENDING_KX_DDL: str | None = None
+
+
+def _sql_statements(script: str) -> list[str]:
+    return [part.strip() for part in script.split(";") if part.strip()]
+
+
+def _queue_kx_restore(current: int | None, target: int) -> None:
+    """5→N 时把目标版本要的建表语句交给下一次 set_schema_version，和版本号放进同一个事务。"""
+    global _PENDING_KX_DDL
+    if current == 5:
+        _PENDING_KX_DDL = _KX_RESTORE_DDL.get(target)
 
 
 def sha256(data: bytes) -> str:
@@ -458,11 +544,26 @@ def read_schema_version() -> int | None:
 
 
 def set_schema_version(version: int) -> None:
-    """只改 user_version（降级与回滚用）：不建表、不删表、不碰业务数据。"""
+    """改 user_version。从 schema 5 降级时，同一事务里先补建目标版本需要的空 KX 表。不删表、不改业务行。"""
+    global _PENDING_KX_DDL
+    ddl = _PENDING_KX_DDL
+    _PENDING_KX_DDL = None
     with _production_db("rw", isolation_level=None) as con:
         if con.execute("PRAGMA application_id").fetchone()[0] != V4_APPLICATION_ID:
             raise RuntimeError("V4 晨报库 application_id 不符")
-        con.execute(f"PRAGMA user_version={int(version)}")
+        if not ddl:
+            con.execute(f"PRAGMA user_version={int(version)}")
+            return
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            for statement in _sql_statements(ddl):
+                con.execute(statement)
+            con.execute(f"PRAGMA user_version={int(version)}")
+            con.execute("COMMIT")
+        except BaseException:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
 
 
 def plan_schema(new: dict) -> SchemaPlan:
@@ -503,14 +604,19 @@ def upgrade_schema(plan: SchemaPlan) -> None:
 
 
 def downgrade_schema(plan: SchemaPlan) -> None:
-    """白名单内的降级：服务已停、文件未换时只改 user_version，多出来的表保留。"""
+    """白名单内的降级：服务已停、文件未换。5→N 先补建空表再写版本号；其余只改版本号。"""
     plan.touched = True
-    set_schema_version(plan.target)
+    _queue_kx_restore(plan.before, plan.target)
+    try:
+        set_schema_version(plan.target)
+    finally:
+        global _PENDING_KX_DDL
+        _PENDING_KX_DDL = None
     _verify_schema(plan.target)
 
 
 def restore_schema(plan: SchemaPlan) -> dict:
-    """回滚时把 user_version 恢复成 schemaBefore：升级过就按白名单降回去，降级过就写回原值。"""
+    """回滚时把库恢复成 schemaBefore。4→5 升级过的，先补建 v4 的三张空表再写回 4。"""
     current = read_schema_version()
     if current == plan.before:
         return {"status": "unchanged", "version": current}
@@ -519,7 +625,12 @@ def restore_schema(plan: SchemaPlan) -> dict:
             raise RuntimeError(f"库 user_version 是 {current}，不是降级目标 {plan.target}，不能写回 {plan.before}")
     elif (current, plan.before) not in ADDITIVE_DOWNGRADES:
         raise RuntimeError(f"库 user_version 是 {current}，无法安全恢复到 {plan.before}")
-    set_schema_version(plan.before)
+    _queue_kx_restore(current, plan.before)
+    try:
+        set_schema_version(plan.before)
+    finally:
+        global _PENDING_KX_DDL
+        _PENDING_KX_DDL = None
     _verify_schema(plan.before)
     return {"status": "restored", "from": current, "version": plan.before}
 
@@ -575,12 +686,38 @@ def _capture_health() -> dict | None:
     return None
 
 
+def _kx_flag_for_schema(schema: int) -> str | None:
+    """目标发布 health 里代表「KX 访问码已配置」的字段。5 起是 kxBoard，2～4 是 kxPool。"""
+    if schema >= 5:
+        return "kxBoard"
+    if schema >= KX_SCHEMA:
+        return "kxPool"
+    return None
+
+
+def _kx_source_value(prior: dict) -> bool | None:
+    """切换前的 KX 配置位：新 health 读 kxBoard，旧 health 读 kxPool。两边都有时以 kxBoard 为准。"""
+    if isinstance(prior.get("kxBoard"), bool):
+        return prior["kxBoard"]
+    if isinstance(prior.get("kxPool"), bool):
+        return prior["kxPool"]
+    return None
+
+
 def _expected_prior(prior: dict | None, manifest: dict) -> dict | None:
-    """切换后要比对的切换前 health：目标发布不认识 KX（清单 schemaVersion 低于 KX_SCHEMA，如回退到 B120）就不要求 KX 项。
-    回滚时比对的是上一版自己的基线，原样使用。"""
-    if prior is None or manifest_schema_version(manifest) >= KX_SCHEMA:
-        return prior
-    return {key: value for key, value in prior.items() if key not in KX_FLAGS}
+    """切换后要比对的切换前 health。目标不认识 KX（schemaVersion 低于 2，如回退到 B120）就去掉 KX 项。
+    目标是 schema 5 时，把切换前的 kxPool 或 kxBoard 收成 kxBoard；目标是 schema 2～4 时收成 kxPool。
+    kxPicks 不参与比对。回滚时比对的是上一版自己的基线，不走这里。"""
+    if prior is None:
+        return None
+    flag = _kx_flag_for_schema(manifest_schema_version(manifest))
+    if flag is None:
+        return {key: value for key, value in prior.items() if key not in _KX_BASELINE_KEYS}
+    value = _kx_source_value(prior)
+    cleaned = {key: value for key, value in prior.items() if key not in _KX_BASELINE_KEYS}
+    if value is not None:
+        cleaned[flag] = value
+    return cleaned
 
 
 def _baseline_problem(body: dict, previous: str) -> str | None:
@@ -594,7 +731,7 @@ def _baseline_problem(body: dict, previous: str) -> str | None:
     for flag in READY_FLAGS:
         if not isinstance(body.get(flag), bool):
             return f"{flag} 不是布尔值"
-    for flag in KX_FLAGS:  # B120 的 health 没有这两项：缺失合法，出现了就必须是布尔值
+    for flag in _KX_BASELINE_KEYS:  # B120 没有这些项：缺失合法，出现了就必须是布尔值
         if flag in body and not isinstance(body[flag], bool):
             return f"{flag} 不是布尔值"
     return None

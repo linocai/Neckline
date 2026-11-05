@@ -7,14 +7,12 @@ enum KXBoardError: Error, Equatable {
     case unauthorized
     case notConfigured
     case dbNotReady
-    /// KX 名单从来没同步成功过。附服务端写明的原因。
-    case poolUnverified(String?)
-    /// 交易日历没有覆盖今天。附服务端写明的原因。
-    case calendarGap(String?)
+    /// 503，reason 为 kx_unavailable。附后端写的原因。
+    case unavailable(String?)
     case unreachable
     case unreadable
 
-    /// 连不上、读不了是暂时的：已经有数据时保留旧数据。其余是服务端明确说「现在出不了看板」。
+    /// 连不上、读不了是暂时的：已经有数据时保留旧数据。其余是服务端明确说现在出不了看板。
     var isTransient: Bool {
         switch self {
         case .unreachable, .unreadable: return true
@@ -48,7 +46,6 @@ struct KXBoardAPI: KXBoardClient, Sendable {
         if trimmed.isEmpty { throw KXBoardError.missingToken }
         var request = URLRequest(url: try endpoint())
         request.httpMethod = "GET"
-        // 服务端冷启动时要同步名单、取行情和日线，比晨报慢。
         request.timeoutInterval = 30
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -92,8 +89,7 @@ struct KXBoardAPI: KXBoardClient, Sendable {
         switch (status, body?.reason) {
         case (503, "v4_not_configured"): return .notConfigured
         case (503, "v4_db_not_ready"): return .dbNotReady
-        case (503, "pool_unverified"): return .poolUnverified(body?.message)
-        case (503, "calendar_gap"): return .calendarGap(body?.message)
+        case (503, "kx_unavailable"): return .unavailable(body?.message)
         default: return .unreadable
         }
     }

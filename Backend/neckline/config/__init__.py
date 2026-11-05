@@ -34,7 +34,6 @@ KNOWN_ENV_KEYS = frozenset({
     "DEEPSEEK_MODEL",
     "JIN10_MCP_TOKEN",
     "KX_BASE_URL",
-    "KX_PICKS_TOKEN",
     "KX_READ_KEY",
     "MAIRUI_LICENCE",
     "NECKLINE_MCP_AUTH_DB",

@@ -9,6 +9,11 @@ from zoneinfo import ZoneInfo
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+def ts_code(code: str) -> str:
+    """六位代码换成 TuShare 的 ts_code。6 开头是上交所，其余按深交所。"""
+    return f"{code}.{'SH' if code.startswith('6') else 'SZ'}"
+
+
 def silence_http_logs() -> None:
     """httpx 会把完整 URL 打进 INFO，麦蕊证书在路径里，不能记。"""
     for name in ("httpx", "httpcore", "httpx2", "httpcore2"):

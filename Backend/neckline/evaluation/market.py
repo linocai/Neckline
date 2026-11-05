@@ -14,9 +14,8 @@ from typing import Callable, Protocol
 
 import httpx
 
-from neckline.kx.daily import ts_code
 from neckline.market.tushare_daily import API_URL, DAILY_FIELDS, _averages, _bars, _iso, _parse, _window
-from neckline.market.util import SHANGHAI, MarketError, num, silence_http_logs
+from neckline.market.util import SHANGHAI, MarketError, num, silence_http_logs, ts_code
 
 KINDS = ("income", "fina_indicator", "daily", "daily_basic")
 INCOME_FIELDS = "ts_code,ann_date,end_date,revenue,n_income_attr_p,update_flag"

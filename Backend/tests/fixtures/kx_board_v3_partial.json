@@ -1,0 +1,742 @@
+{
+  "errors": [],
+  "factWarnings": [
+    {
+      "groupId": "g-600261-20261103",
+      "text": "依据里写“连续4板”，麦蕊涨停池当天为 3 板"
+    }
+  ],
+  "gaps": [],
+  "generatedAt": "2026-11-04T18:30:10+08:00",
+  "rooms": {
+    "eliminated": [
+      {
+        "brokeOn": "2026-10-26",
+        "flags": [
+          {
+            "code": null,
+            "kind": "断板",
+            "text": "断板"
+          },
+          {
+            "code": null,
+            "kind": "二波迹象",
+            "text": "二波迹象"
+          }
+        ],
+        "followers": [],
+        "id": "g-002724-20261026",
+        "judgment": null,
+        "leaders": [
+          {
+            "code": "002724",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "海洋王",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 5.8777,
+              "changePercent": -8.6207,
+              "high": 12.23,
+              "low": 11.48,
+              "open": 12.09,
+              "previousClose": 12.76,
+              "price": 11.66,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 1351935700.0,
+              "turnoverPercent": 20.39,
+              "warnings": []
+            },
+            "reason": null,
+            "role": "龙头"
+          }
+        ],
+        "note": "6板（10月16日—10月23日）为“洋”字辈早期最高标，10月26日断板后10月27日反包涨停至8天7板；随后11月2日一字跌停、11月3日收跌3.70%，二波受阻；断板后第7个交易日仍在淘汰室观察，公司已澄清不属核电、深海科技（南方财经、每日经济新闻、公司公告）。",
+        "observedText": "已观察 6 个交易日（满 10 个交易日踢出）",
+        "observedTradingDays": 6,
+        "roomSince": "2026-10-26",
+        "theme": "羊字辈玄学（早期启动高标）"
+      },
+      {
+        "brokeOn": "2026-10-26",
+        "flags": [
+          {
+            "code": null,
+            "kind": "断板",
+            "text": "断板"
+          },
+          {
+            "code": "000678",
+            "kind": "背离",
+            "text": "背离:000678"
+          }
+        ],
+        "followers": [
+          {
+            "code": "002708",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "光洋股份",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 14.3538,
+              "changePercent": 3.4958,
+              "high": 19.7,
+              "low": 16.99,
+              "open": 18.69,
+              "previousClose": 18.88,
+              "price": 19.54,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 2582731900.0,
+              "turnoverPercent": 27.65,
+              "warnings": []
+            },
+            "reason": "机器人丝杠、轴承关节方向，4板（10月26日—10月29日）后10月30日断板，与大业股份同属一波机器人情绪（证券之星、爱股票）。",
+            "role": "小弟"
+          },
+          {
+            "code": "000678",
+            "divergent": true,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "襄阳轴承",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 7.2557,
+              "changePercent": -3.85,
+              "high": 19.7,
+              "low": 18.23,
+              "open": 19.6,
+              "previousClose": 20.26,
+              "price": 19.48,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 2934550100.0,
+              "turnoverPercent": 34.13,
+              "warnings": []
+            },
+            "reason": "减速器轴承方向，5板后10月29日炸板断板，与大业股份同为机器人（减速器/轴承/腱绳）一波情绪（证券时报、同花顺）。",
+            "role": "小弟"
+          },
+          {
+            "code": "603028",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "赛福天",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 9.7872,
+              "changePercent": 0.8511,
+              "high": 7.34,
+              "low": 6.65,
+              "open": 7.13,
+              "previousClose": 7.05,
+              "price": 7.11,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:01+08:00",
+              "turnoverAmount": 329834400.0,
+              "turnoverPercent": 16.61,
+              "warnings": []
+            },
+            "reason": "被市场归入机器人概念，4板后10月28日断板，11月2日已连续第三个跌停，随机器人情绪回落（财联社10月28日连板股分析、济安金信）。",
+            "role": "小弟"
+          },
+          {
+            "code": "603528",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "多伦科技",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 13.9971,
+              "changePercent": 2.7417,
+              "high": 7.46,
+              "low": 6.49,
+              "open": 6.82,
+              "previousClose": 6.93,
+              "price": 7.12,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 705816300.0,
+              "turnoverPercent": 14.49,
+              "warnings": []
+            },
+            "reason": "智慧车管叠加咖啡机器人方向，4板后10月28日跌停断板，属机器人情绪扩散标的（同花顺、公司公告）。",
+            "role": "小弟"
+          }
+        ],
+        "id": "g-603278-20261026",
+        "judgment": null,
+        "leaders": [
+          {
+            "code": "603278",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "大业股份",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 9.9937,
+              "changePercent": -8.1594,
+              "high": 15.81,
+              "low": 14.23,
+              "open": 15.5,
+              "previousClose": 15.81,
+              "price": 14.52,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:02+08:00",
+              "turnoverAmount": 1399643000.0,
+              "turnoverPercent": 27.59,
+              "warnings": []
+            },
+            "reason": null,
+            "role": "龙头"
+          }
+        ],
+        "note": "6板（10月16日—10月23日）为机器人方向最高标，10月26日冲7板炸板断板，11月2日、11月3日连续跌停，腱绳仍处送样未量产、无收益，断板后第7个交易日二波基本无望；组内襄阳轴承11月2日反包涨停与龙头连续跌停明显背离（星岛、财联社、证券时报）。",
+        "observedText": "已观察 6 个交易日（满 10 个交易日踢出）",
+        "observedTradingDays": 6,
+        "roomSince": "2026-10-26",
+        "theme": "人形机器人（腱绳/减速器轴承）"
+      },
+      {
+        "brokeOn": "2026-10-28",
+        "flags": [
+          {
+            "code": null,
+            "kind": "断板",
+            "text": "断板"
+          }
+        ],
+        "followers": [],
+        "id": "g-600838-20261028",
+        "judgment": null,
+        "leaders": [
+          {
+            "code": "600838",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "上海九百",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 7.7291,
+              "changePercent": -9.9602,
+              "high": 12.27,
+              "low": 11.3,
+              "open": 12.02,
+              "previousClose": 12.55,
+              "price": 11.3,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:01+08:00",
+              "turnoverAmount": 1351766700.0,
+              "turnoverPercent": 29.06,
+              "warnings": []
+            },
+            "reason": null,
+            "role": "龙头"
+          }
+        ],
+        "note": "10月21日—10月27日5连板，是当时全场空间标杆，带动茂业商业、广百股份等零售股；10月28日巨量分歧断板并收到上交所监管工作函，断板后第5个交易日仍无二波迹象，继续在淘汰室观察（上海证券报、每日经济新闻）。",
+        "observedText": "已观察 4 个交易日（满 10 个交易日踢出）",
+        "observedTradingDays": 4,
+        "roomSince": "2026-10-28",
+        "theme": "大消费/新零售（上海国资商业百货）"
+      }
+    ],
+    "leader": [
+      {
+        "brokeOn": null,
+        "flags": [],
+        "followers": [
+          {
+            "code": "002696",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": true,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.209420+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "百洋股份",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 4.5307,
+              "changePercent": -10.0324,
+              "high": 11.68,
+              "low": 11.12,
+              "open": 11.5,
+              "previousClose": 12.36,
+              "price": 11.12,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 594351500.0,
+              "turnoverPercent": 15.82,
+              "warnings": []
+            },
+            "reason": "18天10板，是当前名义连板最高标，受鱼粉涨价与“洋”字辈炒作共同带动，11月3日再度涨停，跟羊字辈情绪（金融界涨停复盘、财联社）。",
+            "role": "小弟"
+          },
+          {
+            "code": "002172",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": true,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.209420+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "澳洋健康",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 7.7941,
+              "changePercent": -10.0,
+              "high": 6.65,
+              "low": 6.12,
+              "open": 6.56,
+              "previousClose": 6.8,
+              "price": 6.12,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 852181400.0,
+              "turnoverPercent": 17.75,
+              "warnings": []
+            },
+            "reason": "4连板后11月3日冲涨停未封、收涨4.62%，属“洋”字辈叠加医院、三胎概念，当日发布异动公告（凤凰网财经、深交所公告）。",
+            "role": "小弟"
+          },
+          {
+            "code": "002088",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": "换手板",
+              "breakCount": 2,
+              "consecutiveBoards": 2,
+              "firstSealTime": "09:30:12",
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": true,
+              "lastSealTime": "10:07:39",
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": 16023432,
+              "warnings": []
+            },
+            "name": "鲁阳节能",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 6.0024,
+              "changePercent": 9.964,
+              "high": 9.16,
+              "low": 8.66,
+              "open": 8.82,
+              "previousClose": 8.33,
+              "price": 9.16,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 304486900.0,
+              "turnoverPercent": 6.68,
+              "warnings": []
+            },
+            "reason": "“阳”字辈扩散标的，3天2板、11月3日涨停并当晚发布异动公告，跟随阳字辈高标情绪（金融界涨停复盘、新浪财经）。",
+            "role": "小弟"
+          },
+          {
+            "code": "002029",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": 1,
+              "consecutiveBoards": null,
+              "firstSealTime": "09:25:00",
+              "inBroken": true,
+              "inLimitDown": true,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.212906+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "七匹狼",
+            "orderBook": null,
+            "quote": {
+              "amplitudePercent": 19.9419,
+              "changePercent": -9.971,
+              "high": 11.36,
+              "low": 9.3,
+              "open": 11.36,
+              "previousClose": 10.33,
+              "price": 9.3,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 1613886600.0,
+              "turnoverPercent": 23.86,
+              "warnings": []
+            },
+            "reason": "2连板，市场由“羊”字辈衍生出“狼吃羊”说法，属羊字辈周边炒作，跟随同一玄学情绪（南方财经、金融界涨停复盘）。",
+            "role": "小弟"
+          }
+        ],
+        "id": "g-600261-20261103",
+        "judgment": {
+          "drive": "“羊字辈”当日涨停逾10只，它为同题材中最先封板的高标",
+          "height": "4连板（9天5板），与东方海洋并列为当前最高连续板",
+          "reason": "9:35封板，是当日“羊字辈”高标中最先封板的一只；它封板后鲁阳节能、圣阳股份、大西洋、阳光股份等一批“羊字辈”涨停，它盘中开板后回封，9天5板、连续4板为当前最高连续板（财联社11月3日连板股分析、金融界涨停复盘）。",
+          "resilience": "T字，盘中开板后回封，经过分歧",
+          "verdict": "晋升"
+        },
+        "leaders": [
+          {
+            "code": "600261",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": true,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.209420+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "阳光照明",
+            "orderBook": {
+              "asksClear": false,
+              "bid1Amount": null,
+              "bid1Price": null,
+              "bid1Volume": 0.0,
+              "sealAmount": null,
+              "sealChange5m": {
+                "amount": null,
+                "baselineAgeSeconds": null,
+                "baselineAmount": null
+              },
+              "sealed": null,
+              "sourceTime": "2026-11-04T15:00:01+08:00",
+              "status": "partial",
+              "warnings": [
+                "买一价无效。"
+              ]
+            },
+            "quote": {
+              "amplitudePercent": 9.899,
+              "changePercent": -9.899,
+              "high": 4.95,
+              "low": 4.46,
+              "open": 4.95,
+              "previousClose": 4.95,
+              "price": 4.46,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:01+08:00",
+              "turnoverAmount": 669120700.0,
+              "turnoverPercent": 10.89,
+              "warnings": []
+            },
+            "reason": null,
+            "role": "龙头"
+          },
+          {
+            "code": "002086",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": null,
+              "consecutiveBoards": null,
+              "firstSealTime": null,
+              "inBroken": false,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.249358+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "东方海洋",
+            "orderBook": {
+              "asksClear": false,
+              "bid1Amount": 1126842,
+              "bid1Price": 3.27,
+              "bid1Volume": 3446.0,
+              "sealAmount": null,
+              "sealChange5m": {
+                "amount": null,
+                "baselineAgeSeconds": null,
+                "baselineAmount": null
+              },
+              "sealed": false,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "status": "ok",
+              "warnings": []
+            },
+            "quote": {
+              "amplitudePercent": 17.2515,
+              "changePercent": -4.0936,
+              "high": 3.67,
+              "low": 3.08,
+              "open": 3.58,
+              "previousClose": 3.42,
+              "price": 3.28,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 2661483300.0,
+              "turnoverPercent": 50.92,
+              "warnings": []
+            },
+            "reason": null,
+            "role": "龙头"
+          }
+        ],
+        "note": "阳光照明4连板（9天5板）T字回封、封单1.99亿元，东方海洋4连板（10天6板）T字、封单2.16亿元，二者并列当前最高连续板，均在当日盘中开板后回封、经历分歧；当日羊字辈涨停逾10只，情绪仍在扩散，但两只均已发异动公告、东方海洋双主业亏损、阳光照明前三季净利降超七成（财联社11月3日连板股分析、金融界涨停复盘、中财网）。",
+        "observedText": null,
+        "observedTradingDays": null,
+        "roomSince": "2026-11-03",
+        "theme": "羊字辈玄学（简称含羊/洋/阳）"
+      }
+    ],
+    "waiting": [
+      {
+        "brokeOn": null,
+        "flags": [],
+        "followers": [],
+        "id": "g-000995-20261103",
+        "judgment": null,
+        "leaders": [
+          {
+            "code": "000995",
+            "divergent": false,
+            "limitUp": {
+              "boardTypeText": null,
+              "breakCount": 1,
+              "consecutiveBoards": null,
+              "firstSealTime": "09:30:06",
+              "inBroken": true,
+              "inLimitDown": false,
+              "inLimitUp": false,
+              "lastSealTime": null,
+              "poolFetchedAt": "2026-11-04T18:30:10.212906+08:00",
+              "sealAmount": null,
+              "warnings": []
+            },
+            "name": "皇台酒业",
+            "orderBook": {
+              "asksClear": false,
+              "bid1Amount": 399184,
+              "bid1Price": 16.36,
+              "bid1Volume": 244.0,
+              "sealAmount": null,
+              "sealChange5m": {
+                "amount": null,
+                "baselineAgeSeconds": null,
+                "baselineAmount": null
+              },
+              "sealed": false,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "status": "ok",
+              "warnings": []
+            },
+            "quote": {
+              "amplitudePercent": 18.9977,
+              "changePercent": -4.662,
+              "high": 18.88,
+              "low": 15.62,
+              "open": 18.45,
+              "previousClose": 17.16,
+              "price": 16.36,
+              "quoteStatus": "ok",
+              "sessionPhase": null,
+              "sourceTime": "2026-11-04T15:00:00+08:00",
+              "turnoverAmount": 1270419800.0,
+              "turnoverPercent": 41.52,
+              "warnings": []
+            },
+            "reason": null,
+            "role": "龙头"
+          }
+        ],
+        "note": "3板一字，封单1.38亿元、换手约1.9%，是当日大消费方向唯一的一字硬板；受白酒板块和11月10日临时股东会换届预期带动，前三季仍亏损1789.8万元，机构三日净买入8026万元，尚在等候室等确认（证券时报、中国证券报）。",
+        "observedText": null,
+        "observedTradingDays": null,
+        "roomSince": "2026-11-03",
+        "theme": "白酒大消费（董事会换届预期）"
+      }
+    ]
+  },
+  "sentiment": {
+    "basis": "今日收盘",
+    "boardPhrases": "收盘",
+    "brokenCount": 30,
+    "brokenRate": 0.2381,
+    "fetchedAt": {
+      "broken": "2026-11-04T18:30:10.212906+08:00",
+      "limitDown": "2026-11-04T18:30:10.209420+08:00",
+      "limitUp": "2026-11-04T18:30:10.249358+08:00",
+      "yesterdayLimitUp": "2026-11-04T18:30:10.234688+08:00"
+    },
+    "highestBoard": {
+      "boards": 3,
+      "codes": [
+        "002058",
+        "002578",
+        "002827",
+        "600892",
+        "601599",
+        "605577"
+      ],
+      "names": [
+        "紫竹高科",
+        "闽发铝业",
+        "高争民爆",
+        "大晟文化",
+        "浙文影业",
+        "龙版传媒"
+      ]
+    },
+    "limitDownCount": 10,
+    "limitUpCount": 96,
+    "tradingDay": "2026-11-04",
+    "yesterdayConsecutive": 15,
+    "yesterdayContinued": 6,
+    "yesterdayTradingDay": "2026-11-03"
+  },
+  "session": {
+    "inSession": false,
+    "refreshSeconds": null
+  },
+  "source": {
+    "checkedAt": "2026-11-04T18:30:10.318216+08:00",
+    "lastReadAt": "2026-11-04T18:30:10+08:00",
+    "reason": null,
+    "stale": false
+  },
+  "status": "partial",
+  "structure": {
+    "asOf": "2026-11-03",
+    "deepseekNotice": "DeepSeek 部分未完成：分组和小弟未更新，沿用上一版小弟",
+    "deepseekStatus": "partial",
+    "generatedAt": "2026-11-04T15:39:13.328208+08:00",
+    "generatedBy": "deepseek",
+    "marketNote": "上一交易日（11月3日）主板缩量走弱，沪指跌0.82%、深成指跌1.21%，涨停47家、炸板30家、跌停13家，连板高度降至4板，高位股断板与“羊字辈”玄学逆势抱团并存。",
+    "membershipLocked": false,
+    "refresh": {
+      "date": "2026-11-04",
+      "finishedAt": "2026-11-04T15:39:13.337695+08:00",
+      "message": "已完成程序整理和 DeepSeek 判断。",
+      "notice": "今日未更新",
+      "result": "updated"
+    },
+    "version": "kx-20261104-003"
+  },
+  "warnings": []
+}

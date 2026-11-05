@@ -31,9 +31,9 @@ from neckline.screening.select import Entry, Selection
 FIXTURES = Path(__file__).resolve().parents[2] / "App" / "NecklineTests" / "Fixtures"
 # KX 看板的夹具由 KX 测试从隔离库产出（Backend/tests/fixtures），App 原样复制；极限值夹具是 App 自己的。
 KX_BACKEND_FIXTURES = Path(__file__).resolve().parent / "fixtures"
-KX_COPIED = {"kx_board_sample.json", "kx_board_degraded.json", "kx_board_schema2.json",
-             "kx_board_schema3.json", "kx_board_call_auction.json", "kx_board_pre_open.json"}
-KX_APP_ONLY = {"kx_board_extreme.json"}
+KX_COPIED = {"kx_board_v3.json", "kx_board_v3_partial.json", "kx_board_v3_sealed.json",
+             "kx_board_v3_auction.json", "kx_board_v3_stale.json", "kx_board_unavailable.json"}
+KX_APP_ONLY: set[str] = set()
 FIXTURE_TOKEN = "fixture-token-not-real"
 WRONG_TOKEN = "not-the-fixture-token"
 DEVICE_TOKEN = "0123456789abcdef" * 4
@@ -305,7 +305,7 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
 
     health = json.loads(bodies["health.json"])
     assert health["mcp"] is False and health["tushare"] is False and health["mairui"] is False
-    for key in ("mcp", "tushare", "mairui", "kxPool", "kxPicks"):
+    for key in ("mcp", "tushare", "mairui", "kxBoard"):
         health.pop(key)
     bodies["health.json"] = json.dumps(health, ensure_ascii=False).encode()
 

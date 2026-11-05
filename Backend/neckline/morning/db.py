@@ -1,9 +1,10 @@
-"""V4 晨报库：原件、采集记录、模型回执、晨报、推送设备与推送记录，以及 KX 看板的名单、推荐与日线统计缓存。
+"""V4 晨报库：原件、采集记录、模型回执、晨报、推送设备与推送记录。
 
 只读路径用 mode=ro 打开且不执行 DDL；建表只在显式的 init-db 与写命令里做。时间一律存 UTC ISO（到秒）。
 库结构版本 2 在版本 1 的基础上只加三张 KX 表；版本 3 只给 kx_pool 加三列（题材、首次入选日、能否买入）。
 版本 4 只加 filing_reads 与 evaluations 两张表。
-init_schema 把版本 1、2、3 的库原地升级到当前版本，不动已有数据。
+版本 5 删掉 kx_pool、kx_picks、kx_daily_stats（KX 看板改为只读 KX，不再落库）。
+init_schema 把版本 1、2、3、4 的库在同一个事务里升到版本 5，升级失败整体回滚。
 """
 from __future__ import annotations
 
@@ -22,8 +23,10 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 4
-_UPGRADABLE_FROM = (1, 2, 3)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 5
+_UPGRADABLE_FROM = (1, 2, 3, 4)  # 这些版本的库可由 init_schema 原地升级到当前版本
+# 版本 5 退役的三张表。索引随表一起删掉。
+_RETIRED_KX_TABLES = ("kx_daily_stats", "kx_picks", "kx_pool")
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -100,44 +103,6 @@ CREATE TABLE IF NOT EXISTS push_log (
 );
 """
 
-# 版本 2 新增三张 KX 表（只加表，不改版本 1 的任何表）；版本 3 在 kx_pool 末尾加 theme / first_seen / buyable。
-# theme、first_seen 是 schema 2/3 的字段（schema 1 为 NULL，industry 为空串表示没有行业）。
-# buyable 这一列 4.2.1 起不再使用、一律为空，保留是为了不升库结构。
-KX_DDL = """
-CREATE TABLE IF NOT EXISTS kx_pool (
-  code TEXT PRIMARY KEY CHECK(length(code) = 6),
-  position INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  industry TEXT NOT NULL,
-  version TEXT NOT NULL,
-  verified_at TEXT NOT NULL,
-  theme TEXT,
-  first_seen TEXT,
-  buyable INTEGER
-);
-CREATE TABLE IF NOT EXISTS kx_picks (
-  request_id TEXT NOT NULL,
-  position INTEGER NOT NULL CHECK(position >= 0),
-  code TEXT NOT NULL CHECK(length(code) = 6),
-  picked_at TEXT NOT NULL,
-  trade_date TEXT NOT NULL,
-  received_at TEXT NOT NULL,
-  PRIMARY KEY(request_id, position),
-  UNIQUE(request_id, code)
-);
-CREATE INDEX IF NOT EXISTS idx_kx_picks_code ON kx_picks(code, picked_at);
-CREATE TABLE IF NOT EXISTS kx_daily_stats (
-  base_date TEXT NOT NULL,
-  pool_version TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('daily','basic')),
-  fetched_at TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  PRIMARY KEY(base_date, pool_version, kind)
-);
-"""
-# 版本 3 的升级：已有 kx_pool 补上的列，顺序与新库的建表语句一致。
-KX_POOL_V3_COLUMNS = (("theme", "TEXT"), ("first_seen", "TEXT"), ("buyable", "INTEGER"))
-
 # 版本 4 只加两张表：公告 PDF 读数，以及留给后续评估层的 evaluations。不改已有表。
 V4_DDL = """
 CREATE TABLE IF NOT EXISTS filing_reads (
@@ -192,8 +157,8 @@ def _statements(script: str) -> list[str]:
 def init_schema(path: Path) -> None:
     """显式建表（init-db 与写命令调用）。
 
-    新库一次建到当前版本；版本 1、2、3 的库在同一个事务里补上缺的表和 kx_pool 的列并把版本号升到当前版本，
-    任何一步失败都整体回滚，已有数据不动。已有的列不会重复添加（降级只改版本号、不删列，再升级时列已在）。
+    新库一次建到当前版本，不再建 KX 的三张表。版本 1～4 的库在同一个事务里补上缺的晨报表、
+    删掉 kx_pool / kx_picks / kx_daily_stats，并把版本号升到当前版本。任何一步失败都整体回滚。
     已经是当前版本时什么都不改。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -212,12 +177,10 @@ def init_schema(path: Path) -> None:
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for statement in _statements(DDL) + _statements(KX_DDL) + _statements(V4_DDL):
+            for statement in _statements(DDL) + _statements(V4_DDL):
                 conn.execute(statement)
-            present = {row[1] for row in conn.execute("PRAGMA table_info(kx_pool)")}
-            for name, kind in KX_POOL_V3_COLUMNS:
-                if name not in present:
-                    conn.execute(f"ALTER TABLE kx_pool ADD COLUMN {name} {kind}")
+            for name in _RETIRED_KX_TABLES:
+                conn.execute(f"DROP TABLE IF EXISTS {name}")
             conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.execute("COMMIT")

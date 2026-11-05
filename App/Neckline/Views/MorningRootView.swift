@@ -67,7 +67,7 @@ struct MorningRootView: View {
             .navigationSplitViewColumnWidth(min: 140, ideal: 160, max: 220)
         } detail: {
             if model.tab == .kx {
-                KXBoardTable(kx: kx, openSettings: { MorningChrome.openSettings(model) })
+                KXBoardView(kx: kx, openSettings: { MorningChrome.openSettings(model) })
             } else {
                 k10Panes
             }

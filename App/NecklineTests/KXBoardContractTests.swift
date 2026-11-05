@@ -1,477 +1,381 @@
 import XCTest
-import SwiftUI
-#if os(iOS)
-import UIKit
-#else
-import AppKit
-#endif
 @testable import Neckline
 
-/// KX 看板：接口契约、高亮与分区、分组列、数字与文案。夹具是后端测试从隔离库产出的真实响应。
+/// 看板 v2 的解码和展示规则。六份后端夹具都要过，未知枚举不能让整份失败。
 final class KXBoardContractTests: XCTestCase {
-    // MARK: 夹具解码
+    func testDecodesSixBackendFixtures() throws {
+        let closed = try decode("kx_board_v3")
+        XCTAssertEqual(closed.generatedAt, "2026-11-04T18:30:10+08:00")
+        XCTAssertEqual(closed.source?.checkedAt, "2026-11-04T18:30:10.318216+08:00")
+        XCTAssertEqual(closed.source?.stale, false)
+        XCTAssertEqual(closed.structure?.version, "kx-20261104-003")
+        XCTAssertEqual(closed.structure?.asOf, "2026-11-03")
+        XCTAssertEqual(closed.structure?.deepseekStatus, .ok)
+        XCTAssertEqual(closed.structure?.generatedAt, "2026-11-04T15:39:13.328208+08:00")
+        XCTAssertEqual(closed.status, "partial")
+        XCTAssertEqual(closed.session?.inSession, false)
+        XCTAssertNil(closed.session?.refreshSeconds)
+        XCTAssertEqual(closed.sentiment?.limitUpCount, 96)
+        XCTAssertEqual(closed.sentiment?.brokenCount, 30)
+        XCTAssertEqual(closed.sentiment?.brokenRate ?? 0, 0.2381, accuracy: 0.0000001)
+        XCTAssertEqual(closed.sentiment?.limitDownCount, 10)
+        XCTAssertEqual(closed.sentiment?.highestBoard?.boards, 3)
+        XCTAssertEqual(closed.sentiment?.highestBoard?.names.count, 6)
+        XCTAssertEqual(closed.rooms.ordered.map(\.room), [.leader, .waiting, .eliminated])
+        XCTAssertEqual(closed.rooms.ordered.map { $0.groups.count }, [1, 1, 3])
+        XCTAssertEqual(closed.rooms.leader.first?.leaders.map(\.code), ["600261", "002086"])
+        XCTAssertEqual(closed.rooms.leader.first?.followers.map(\.code), ["002696", "002172", "002088", "002029"])
+        XCTAssertEqual(try stock(closed, "002088").limitUp.boardTypeText, "换手板")
+        XCTAssertEqual(try stock(closed, "000678").divergent, true)
 
-    func testSampleBoardFixtureDecodes() throws {
-        let board = try decodeBoard("kx_board_sample")
-        XCTAssertEqual(board.generatedAt, "2026-10-20T10:31:07+08:00")
-        XCTAssertEqual(board.pool.version, "kx-20261017")
-        XCTAssertEqual(board.pool.count, 12)
-        XCTAssertEqual(board.pool.checkedAt, "2026-10-20T10:31:07+08:00")
-        XCTAssertFalse(board.pool.stale)
-        XCTAssertNil(board.pool.reason)
-        XCTAssertEqual(board.session.tradeDate, "2026-10-20")
-        XCTAssertTrue(board.session.inSession)
-        XCTAssertEqual(board.session.refreshSeconds, 60)
-        XCTAssertEqual(board.session.quoteTime, "2026-10-20T10:29:58+08:00")
-        XCTAssertEqual(board.stats.asOf, "2026-10-19")
-        XCTAssertEqual(board.picks.referenceDate, "2026-10-20")
-        XCTAssertEqual(board.picks.lastPickAt, "2026-10-20T10:20:00+08:00")
-        XCTAssertTrue(board.gaps.isEmpty)
-        XCTAssertEqual(board.rows.count, 12)
-        XCTAssertEqual(board.rows.map(\.code), [
-            "600010", "000001", "000003", "600008", "600007", "600006",
-            "600005", "600011", "000004", "600009", "000002", "000000",
-        ])
+        let partial = try decode("kx_board_v3_partial")
+        XCTAssertEqual(partial.structure?.deepseekStatus, .unknown("partial"))
+        XCTAssertEqual(partial.structure?.deepseekNotice, "DeepSeek 部分未完成：分组和小弟未更新，沿用上一版小弟")
+        XCTAssertEqual(partial.structure?.refresh?.notice, "今日未更新")
+        XCTAssertEqual(partial.factWarnings.first?.groupId, "g-600261-20261103")
 
-        let first = board.rows[0]
-        XCTAssertEqual(first.name, "股票10")
-        XCTAssertEqual(first.industry, "行业2")
-        XCTAssertEqual(first.highlight, .today)
-        XCTAssertEqual(first.lastPickedAt, "2026-10-20T10:20:00+08:00")
-        XCTAssertEqual(first.quoteStatus, .ok)
-        XCTAssertNil(first.note)
-        XCTAssertEqual(first.price, 13.5)
-        XCTAssertEqual(first.changePercent, 0.0)
-        XCTAssertEqual(first.open, 13.63)
-        XCTAssertEqual(first.high, 13.9)
-        XCTAssertEqual(first.low, 13.37)
-        XCTAssertEqual(first.previousClose, 13.5)
-        XCTAssertEqual(first.turnoverYi, 1.1)
-        XCTAssertEqual(first.volumeLots, 81481.0)
-        XCTAssertEqual(first.rangePosition, 0.2453)
-        XCTAssertEqual(first.pullbackFromHighPercent, -2.88)
-        XCTAssertEqual(first.volumeRatio, 1.0)
-        XCTAssertEqual(first.totalMvYi, 11.0)
-        XCTAssertEqual(first.circMvYi, 6.5)
-        XCTAssertEqual(first.averages.ma5, KXAverage(value: 13.4, position: .above))
-        XCTAssertEqual(first.averages.ma20, KXAverage(value: 13.025, position: .above))
-        XCTAssertEqual(board.rows[1].averages.ma5?.position, .below)
-        XCTAssertEqual(board.rows[4].highlight, .faded)
-        XCTAssertEqual(board.rows[4].lastPickedAt, "2026-10-19T14:20:00+08:00")
+        let sealed = try decode("kx_board_v3_sealed")
+        let leader = try stock(sealed, "600261")
+        XCTAssertEqual(leader.orderBook?.sealed, true)
+        XCTAssertEqual(leader.orderBook?.sealAmount, 199_000_000)
+        XCTAssertEqual(leader.orderBook?.sealChange5m?.amount, -12_000_000)
+        XCTAssertEqual(sealed.session?.inSession, true)
+        XCTAssertEqual(sealed.session?.refreshSeconds, 60)
+
+        let auction = try decode("kx_board_v3_auction")
+        XCTAssertEqual(try stock(auction, "600261").quote.sessionPhase, .callAuction)
+        XCTAssertEqual(auction.source?.checkedAt, "2026-11-04T09:18:00+08:00")
+        XCTAssertEqual(auction.sentiment?.basis, "交易时段")
+
+        let stale = try decode("kx_board_v3_stale")
+        XCTAssertEqual(stale.source?.stale, true)
+        XCTAssertEqual(stale.source?.reason, "KX 暂时连不上。")
+        XCTAssertTrue(stale.rooms.waiting.isEmpty)
+        XCTAssertFalse(stale.rooms.leader.isEmpty)
+
+        let failure = try JSONDecoder().decode(KXFailureBody.self, from: fixture("kx_board_unavailable"))
+        XCTAssertEqual(failure.reason, "kx_unavailable")
+        XCTAssertEqual(failure.message, "KX 看板还没读到过：KX 暂时连不上。")
+        XCTAssertThrowsError(try JSONDecoder().decode(KXBoard.self, from: fixture("kx_board_unavailable")))
     }
 
-    func testDegradedBoardFixtureKeepsNullsAsNil() throws {
-        let board = try decodeBoard("kx_board_degraded")
-        XCTAssertTrue(board.pool.stale)
-        XCTAssertEqual(board.pool.reason, "KX 暂时连不上。")
-        XCTAssertNil(board.stats.asOf)
-        XCTAssertEqual(board.gaps, ["TuShare 行情频率超限，这次没有重试。"])
-        XCTAssertEqual(board.rows.count, 6)
-
-        let daily = board.rows[0]
-        XCTAssertEqual(daily.quoteStatus, .ok)
-        XCTAssertNotNil(daily.price)
-        XCTAssertNil(daily.change5dPercent)
-        XCTAssertNil(daily.change20dPercent)
-        XCTAssertNil(daily.avgTurnover20Yi)
-        XCTAssertNil(daily.volumeRatio)
-        XCTAssertNil(daily.totalMvYi)
-        XCTAssertNil(daily.circMvYi)
-        XCTAssertEqual(daily.averages, KXAverages.none)
-
-        let missing = try XCTUnwrap(board.rows.first { $0.quoteStatus == .missing })
-        XCTAssertEqual(missing.code, "000001")
-        XCTAssertEqual(missing.note, "没有取得这只的行情")
-        XCTAssertNil(missing.price)
-        XCTAssertNil(missing.changePercent)
-        XCTAssertNil(missing.rangePosition)
-        XCTAssertNil(missing.volumeLots)
-        XCTAssertNil(missing.quoteTime)
-        XCTAssertTrue(missing.hasNoQuote)
-
-        let stale = try XCTUnwrap(board.rows.first { $0.quoteStatus == .stale })
-        XCTAssertEqual(stale.code, "000002")
-        XCTAssertEqual(stale.price, 10.59)
-        XCTAssertEqual(stale.note, "报价日期是 2026-10-16，不是 2026-10-20")
-        XCTAssertNil(stale.change5dPercent)
-        XCTAssertTrue(stale.isMuted)
-        XCTAssertFalse(daily.isMuted)
-    }
-
-    // MARK: 题材、热度、竞价阶段（schema 2 / 3 名单）
-
-    func testSchema2FixtureDecodesThemeAndHeat() throws {
-        let board = try decodeBoard("kx_board_schema2")
-        XCTAssertEqual(board.pool.version, "kx-20261020-001")
-        XCTAssertEqual(board.pool.count, 12)
-        XCTAssertEqual(board.rows.count, 12)
-        XCTAssertEqual(board.rows.map(\.code), [
-            "600010", "600007", "600006", "600005", "600011", "000004",
-            "000003", "600009", "000002", "000001", "600008", "000000",
-        ])
-        // schema 2 名单没有行业。10:30 的报价没有竞价阶段。
-        XCTAssertTrue(board.rows.allSatisfy { $0.industry == nil && $0.sessionPhase == nil })
-
-        let first = board.rows[0]
-        XCTAssertEqual(first.theme, "题材2")
-        XCTAssertEqual(first.firstSeen, "2026-10-19")
-        XCTAssertEqual(first.heatDay, 2)
-        XCTAssertEqual(first.highlight, .today)
-
-        let faded = try row(board, code: "600007")
-        XCTAssertEqual(faded.highlight, .faded)
-        XCTAssertEqual(faded.heatDay, 2)
-
-        XCTAssertEqual(try row(board, code: "600005").heatDay, 9)
-        XCTAssertEqual(try row(board, code: "600005").firstSeen, "2026-10-01")
-        XCTAssertEqual(try row(board, code: "000000").heatDay, 1)
-        XCTAssertNil(try row(board, code: "000004").heatDay, "热度空就是空，不当成 0 或 1")
-        // 夹具里每一行都有题材，所以每一行都有第二行。
-        XCTAssertTrue(board.rows.allSatisfy(\.hasSecondLine))
-    }
-
-    func testSchema3IntradayCallAuctionAndPreOpenFixturesMatchTheBackendRules() throws {
-        let intraday = try decodeBoard("kx_board_schema3")
-        XCTAssertEqual(intraday.pool.version, "kx-20261029-001")
-        XCTAssertEqual(intraday.rows.count, 12)
-        XCTAssertTrue(intraday.rows.allSatisfy { $0.theme != nil && $0.industry == nil && $0.sessionPhase == nil && $0.quoteStatus == .ok })
-        XCTAssertEqual(intraday.rows[0].highlight, .today)
-
-        let call = try decodeBoard("kx_board_call_auction")
-        let today = try row(call, code: "000001")
-        XCTAssertEqual(today.highlight, .today)
-        XCTAssertEqual(today.sessionPhase, .callAuction)
-        XCTAssertEqual(today.sessionPhaseLabel, "竞价中")
-        let stale = try row(call, code: "000002")
-        XCTAssertEqual(stale.quoteStatus, .stale)
-        XCTAssertNil(stale.sessionPhase)
-        XCTAssertNil(stale.sessionPhaseLabel)
-        let live = call.rows.filter { $0.code != "000002" }
-        XCTAssertEqual(live.count, 5)
-        for row in live {
-            XCTAssertEqual(row.sessionPhase, .callAuction, row.code)
-            XCTAssertEqual(row.quoteStatus, .ok, row.code)
-            XCTAssertNil(row.note, row.code)
-            XCTAssertNotNil(row.price, row.code)
-            XCTAssertNotNil(row.changePercent, row.code)
-            XCTAssertNotNil(row.changeAmount, row.code)
-            XCTAssertNotNil(row.previousClose, row.code)
-            XCTAssertNotNil(row.change5dPercent, row.code)
-            XCTAssertNotNil(row.averages.ma5, row.code)
-            XCTAssertNil(row.open, row.code)
-            XCTAssertNil(row.high, row.code)
-            XCTAssertNil(row.low, row.code)
-            XCTAssertNil(row.amplitudePercent, row.code)
-            XCTAssertNil(row.turnoverRatePercent, row.code)
-            XCTAssertNil(row.turnoverYi, row.code)
-            XCTAssertNil(row.volumeLots, row.code)
-            XCTAssertNil(row.openChangePercent, row.code)
-            XCTAssertNil(row.rangePosition, row.code)
-            XCTAssertNil(row.pullbackFromHighPercent, row.code)
-            XCTAssertNil(row.volumeRatio, row.code)
-            XCTAssertTrue(row.hasSecondLine, row.code)
+    func testUnknownEnumsAndMissingFieldsDoNotFailTheBoard() throws {
+        let board = try edited("kx_board_v3") { object in
+            var structure = object["structure"] as! [String: Any]
+            structure["deepseekStatus"] = "later"
+            object["structure"] = structure
+            var rooms = object["rooms"] as! [String: Any]
+            var leader = rooms["leader"] as! [[String: Any]]
+            var leaders = leader[0]["leaders"] as! [[String: Any]]
+            leaders[0]["role"] = "中军"
+            var quote = leaders[0]["quote"] as! [String: Any]
+            quote["quoteStatus"] = "sideways"
+            quote["sessionPhase"] = "lunch"
+            quote.removeValue(forKey: "price")
+            leaders[0]["quote"] = quote
+            leader[0]["leaders"] = leaders
+            var flags = leader[0]["flags"] as? [[String: Any]] ?? []
+            flags.append(["kind": "观察", "code": NSNull(), "text": "观察"])
+            leader[0]["flags"] = flags
+            rooms["leader"] = leader
+            rooms.removeValue(forKey: "waiting")
+            object["rooms"] = rooms
+            object["factWarnings"] = ["格式不符的原文"]
         }
+        XCTAssertEqual(board.structure?.deepseekStatus, .unknown("later"))
+        let leader = try XCTUnwrap(board.rooms.leader.first?.leaders.first)
+        XCTAssertEqual(leader.role, .unknown("中军"))
+        XCTAssertEqual(leader.quote.quoteStatus, .unknown("sideways"))
+        XCTAssertEqual(leader.quote.sessionPhase, .unknown("lunch"))
+        XCTAssertNil(leader.quote.price)
+        XCTAssertEqual(board.rooms.leader.first?.flags.last?.kind, .unknown("观察"))
+        XCTAssertTrue(board.rooms.waiting.isEmpty)
+        XCTAssertEqual(board.factWarnings.map(\.text), ["格式不符的原文"])
+        XCTAssertNil(board.factWarnings.first?.groupId)
 
-        let pre = try decodeBoard("kx_board_pre_open")
-        XCTAssertFalse(pre.rows.isEmpty)
-        for row in pre.rows {
-            XCTAssertEqual(row.sessionPhase, .preOpen, row.code)
-            XCTAssertEqual(row.sessionPhaseLabel, "开盘价")
-            XCTAssertEqual(row.quoteStatus, .ok, row.code)
-            XCTAssertNil(row.note, row.code)
-            XCTAssertEqual(row.open, row.price, row.code)
-            XCTAssertEqual(row.high, row.price, row.code)
-            XCTAssertEqual(row.low, row.price, row.code)
-            XCTAssertNil(row.rangePosition, row.code)
-            XCTAssertNotNil(row.volumeRatio, row.code)
-            XCTAssertNotNil(row.change5dPercent, row.code)
+        let odd = try edited("kx_board_v3") { object in
+            var structure = object["structure"] as! [String: Any]
+            structure["deepseekStatus"] = true
+            object["structure"] = structure
+            object["status"] = 3
         }
+        XCTAssertNil(odd.structure?.deepseekStatus)
+        XCTAssertNil(odd.status)
+        XCTAssertEqual(odd.rooms.leader.count, 1)
     }
 
-    func testSessionPhaseDecodesKnownAndUnknownValues() throws {
-        XCTAssertEqual(try themedRow(theme: nil, heatDay: nil, phase: "call_auction").sessionPhase, .callAuction)
-        XCTAssertEqual(try themedRow(theme: nil, heatDay: nil, phase: "pre_open").sessionPhase, .preOpen)
-        XCTAssertEqual(try themedRow(theme: nil, heatDay: nil, phase: "halted").sessionPhase, .unknown)
-        XCTAssertNil(try themedRow(theme: nil, heatDay: nil, phase: nil).sessionPhase)
-        XCTAssertEqual(KXCopy.sessionPhaseLabel(.callAuction), "竞价中")
-        XCTAssertEqual(KXCopy.sessionPhaseLabel(.preOpen), "开盘价")
-        XCTAssertNil(KXCopy.sessionPhaseLabel(.unknown))
-        XCTAssertNil(KXCopy.sessionPhaseLabel(nil))
+    func testTodayStatusAndPoolFacts() throws {
+        let up = try limit(#"{"inLimitUp":true,"inBroken":false,"inLimitDown":false}"#)
+        XCTAssertEqual(KXCopy.todayStatus(up).map(\.text), ["涨停"])
+        XCTAssertEqual(KXCopy.todayStatus(up).map(\.tone), [.up])
+
+        let broken = try limit(#"{"inLimitUp":false,"inBroken":true,"inLimitDown":false}"#)
+        XCTAssertEqual(KXCopy.todayStatus(broken).map(\.tone), [.broken])
+
+        let down = try limit(#"{"inLimitUp":false,"inBroken":false,"inLimitDown":true}"#)
+        XCTAssertEqual(KXCopy.todayStatus(down).map(\.text), ["跌停"])
+        XCTAssertEqual(KXCopy.todayStatus(down).map(\.tone), [.down])
+        XCTAssertNil(KXCopy.poolFacts(down))
+
+        let both = try limit(#"{"inLimitUp":false,"inBroken":true,"inLimitDown":true}"#)
+        XCTAssertEqual(KXCopy.todayStatus(both).map(\.text), ["炸板", "跌停"])
+        XCTAssertEqual(KXCopy.todayStatus(both).map(\.tone), [.broken, .down])
+
+        let quiet = try limit(#"{"inLimitUp":false,"inBroken":false,"inLimitDown":false}"#)
+        XCTAssertEqual(KXCopy.todayStatus(quiet).map(\.text), ["未涨停"])
+        XCTAssertEqual(KXCopy.todayStatus(quiet).map(\.tone), [.off])
+
+        let missing = try limit(#"{}"#)
+        XCTAssertEqual(KXCopy.todayStatus(missing).map(\.text), ["—"])
+        XCTAssertEqual(KXCopy.todayStatus(missing).map(\.tone), [.missing])
+
+        let mixed = try limit(#"{"inLimitUp":false,"inBroken":null}"#)
+        XCTAssertEqual(KXCopy.todayStatus(mixed).map(\.text), ["—"])
+
+        let closed = try decode("kx_board_v3")
+        let wolf = try stock(closed, "002029")
+        XCTAssertEqual(KXCopy.poolFacts(wolf.limitUp)?.map(\.text), ["— 板", "—", "首封 09:25", "开板 1"])
+        let follower = try stock(closed, "002088")
+        XCTAssertEqual(KXCopy.poolFacts(follower.limitUp)?.map(\.text), ["2 板", "换手板", "首封 09:30", "开板 2"])
+        XCTAssertFalse(KXCopy.poolFacts(follower.limitUp)!.contains { $0.text.contains("一字") })
+
+        let sealed = try stock(try decode("kx_board_v3_sealed"), "600261")
+        XCTAssertEqual(KXCopy.todayStatus(sealed.limitUp).map(\.text), ["涨停"])
+        XCTAssertEqual(
+            KXCopy.poolFacts(sealed.limitUp)?.map(\.text),
+            ["5 板", "开盘封死，至今没开板", "首封 09:30", "开板 0"]
+        )
     }
 
-    func testSchema1FixturesHaveNoThemeHeatOrPhaseAndStayOneLine() throws {
-        for name in ["kx_board_sample", "kx_board_degraded"] {
-            let board = try decodeBoard(name)
-            for row in board.rows {
-                XCTAssertNil(row.theme, "\(name) \(row.code)")
-                XCTAssertNil(row.firstSeen, "\(name) \(row.code)")
-                XCTAssertNil(row.heatDay, "\(name) \(row.code)")
-                XCTAssertNil(row.sessionPhase, "\(name) \(row.code)")
-                XCTAssertNil(row.sessionPhaseLabel, "\(name) \(row.code)")
-                XCTAssertNotNil(row.industry, "\(name) \(row.code)")
-                XCTAssertNil(row.heat)
-                XCTAssertFalse(row.hasSecondLine, "\(name) \(row.code)：schema 1 名单不加第二行")
-            }
-        }
-        // 旧后端的响应没有 sessionPhase：照常解码，阶段为空。
-        let legacy = try edited("kx_board_sample") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            for index in rows.indices { rows[index].removeValue(forKey: "sessionPhase") }
-            object["rows"] = rows
-        }
-        XCTAssertNil(legacy.rows[0].sessionPhase)
+    func testOrderLineSealBidWarningsAndAuction() throws {
+        let closed = try decode("kx_board_v3")
+        let sun = try stock(closed, "600261")
+        let bid = try XCTUnwrap(KXCopy.orderLine(sun))
+        XCTAssertEqual(bid.kind, .bid)
+        XCTAssertEqual(bid.amount, "—")
+        XCTAssertNil(bid.delta)
+        XCTAssertEqual(bid.warnings, "买一价无效。")
+        XCTAssertNil(KXCopy.extraWarnings(sun))
+
+        let ocean = try stock(closed, "002086")
+        XCTAssertEqual(KXCopy.orderLine(ocean)?.kind, .bid)
+        XCTAssertEqual(KXCopy.orderLine(ocean)?.amount, "112.7万")
+        XCTAssertNil(KXCopy.orderLine(ocean)?.warnings)
+
+        XCTAssertNil(KXCopy.orderLine(try stock(closed, "002724")))
+
+        let sealed = try stock(try decode("kx_board_v3_sealed"), "600261")
+        let seal = try XCTUnwrap(KXCopy.orderLine(sealed))
+        XCTAssertEqual(seal.kind, .seal)
+        XCTAssertEqual(seal.amount, "1.99亿")
+        XCTAssertEqual(seal.delta, KXDelta(text: "−1200万", direction: .down))
+        XCTAssertNil(seal.warnings)
+
+        let auction = try stock(try decode("kx_board_v3_auction"), "600261")
+        XCTAssertTrue(KXCopy.isAuction(auction))
+        XCTAssertEqual(KXCopy.orderLine(auction)?.kind, .bid)
+        XCTAssertEqual(KXCopy.orderLine(auction)?.warnings, "集合竞价阶段无法判断封单")
+        XCTAssertFalse(KXCopy.orderLine(auction)!.amount.contains("封单"))
+
+        let forced = try decodeStock("""
+        {"code":"600261","name":"阳光照明","quote":{"sessionPhase":"call_auction"},
+         "orderBook":{"sealed":true,"sealAmount":199000000,"sealChange5m":{"amount":12000000},"warnings":["甲","乙"]}}
+        """)
+        XCTAssertEqual(KXCopy.orderLine(forced)?.kind, .bid)
+        XCTAssertEqual(KXCopy.orderLine(forced)?.warnings, "甲；乙")
+        XCTAssertEqual(KXCopy.sealDelta(12_000_000), KXDelta(text: "+1200万", direction: .up))
+        XCTAssertEqual(KXCopy.sealDelta(0)?.text, "0")
+        XCTAssertNil(KXCopy.sealDelta(nil))
+
+        let extra = try decodeStock("""
+        {"code":"1","name":"甲","quote":{"warnings":["报价缺字段"]},"limitUp":{"warnings":["池子缺字段"]},"orderBook":{"sealed":false,"warnings":["报价缺字段"]}}
+        """)
+        XCTAssertEqual(KXCopy.extraWarnings(extra), "池子缺字段")
     }
 
-    func testSecondLineAppearsForThemeHeatOrSessionPhase() throws {
-        XCTAssertTrue(try themedRow(theme: "人形机器人", heatDay: nil, phase: nil).hasSecondLine)
-        XCTAssertTrue(try themedRow(theme: nil, heatDay: 3, phase: nil).hasSecondLine)
-        XCTAssertTrue(try themedRow(theme: nil, heatDay: nil, phase: "call_auction").hasSecondLine)
-        XCTAssertTrue(try themedRow(theme: nil, heatDay: nil, phase: "pre_open").hasSecondLine)
-        XCTAssertTrue(try themedRow(theme: "人形机器人", heatDay: 1, phase: "call_auction").hasSecondLine)
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: nil, phase: nil).hasSecondLine)
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: nil, phase: "later").hasSecondLine, "不认识的阶段不出标签")
-        XCTAssertNil(try themedRow(theme: "", heatDay: nil, phase: nil).themeText)
-        XCTAssertFalse(try themedRow(theme: "  \n", heatDay: nil, phase: nil).hasSecondLine)
-        XCTAssertEqual(try themedRow(theme: " 固态电池 ", heatDay: nil, phase: nil).themeText, "固态电池")
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: 0, phase: nil).hasSecondLine)
-        XCTAssertFalse(try themedRow(theme: nil, heatDay: -1, phase: nil).hasSecondLine)
+    func testAmountAndBrokenRate() {
+        XCTAssertEqual(KXCopy.amount(199_000_000), "1.99亿")
+        XCTAssertEqual(KXCopy.amount(100_000_000), "1亿")
+        XCTAssertEqual(KXCopy.amount(12_000_000), "1200万")
+        XCTAssertEqual(KXCopy.amount(1_126_842), "112.7万")
+        XCTAssertEqual(KXCopy.amount(5_000), "0.5万")
+        XCTAssertEqual(KXCopy.amount(nil), "—")
+        XCTAssertEqual(KXCopy.brokenRate(0.2381), "23.8%")
+        XCTAssertEqual(KXCopy.brokenRate(0), "0.0%")
+        XCTAssertEqual(KXCopy.brokenRate(nil), "—")
+        XCTAssertEqual(KXCopy.price(4.46), "4.46")
+        XCTAssertEqual(KXCopy.percent(-9.899), "-9.90%")
+        XCTAssertEqual(KXCopy.percent(9.964), "+9.96%")
+        XCTAssertEqual(KXCopy.percent(0), "0.00%")
+        XCTAssertEqual(KXCopy.trend(0), .flat)
+        XCTAssertEqual(KXCopy.percent(nil), "—")
     }
 
-    func testHeatBadgeTiers() {
-        XCTAssertEqual(KXHeat(day: 1), .firstDay)
-        XCTAssertEqual(KXHeat(day: 2), .warm(day: 2))
-        XCTAssertEqual(KXHeat(day: 3), .warm(day: 3))
-        XCTAssertEqual(KXHeat(day: 4), .warm(day: 4))
-        XCTAssertEqual(KXHeat(day: 5), .hot(day: 5))
-        XCTAssertEqual(KXHeat(day: 12), .hot(day: 12))
-        XCTAssertNil(KXHeat(day: nil))
-        XCTAssertNil(KXHeat(day: 0))
-        XCTAssertNil(KXHeat(day: -3))
+    func testFactWarningsLandOnTheGroupOrThePage() throws {
+        let partial = try decode("kx_board_v3_partial")
+        let leader = try XCTUnwrap(partial.rooms.leader.first)
+        XCTAssertEqual(KXCopy.mismatches(group: leader, board: partial), ["依据里写“连续4板”，麦蕊涨停池当天为 3 板"])
+        XCTAssertTrue(KXCopy.orphanFactTexts(partial).isEmpty)
+        XCTAssertFalse(KXCopy.grayLine(board: partial)?.contains("连续4板") ?? true)
 
-        XCTAssertEqual(KXHeat(day: 1)?.text, "首日")
-        XCTAssertEqual(KXHeat(day: 2)?.text, "第2天")
-        XCTAssertEqual(KXHeat(day: 4)?.text, "第4天")
-        XCTAssertEqual(KXHeat(day: 5)?.text, "第5天")
-        XCTAssertEqual(KXHeat(day: 12)?.text, "第12天")
+        let edited = try edited("kx_board_v3_partial") { object in
+            object["factWarnings"] = [
+                ["groupId": "g-600261-20261103", "text": "对得上"],
+                ["groupId": "", "text": "空组"],
+                ["groupId": "missing-group", "text": "找不到组"],
+            ]
+        }
+        XCTAssertEqual(KXCopy.mismatches(group: try XCTUnwrap(edited.rooms.leader.first), board: edited), ["对得上"])
+        XCTAssertEqual(KXCopy.orphanFactTexts(edited), ["空组", "找不到组"])
+        XCTAssertEqual(
+            KXCopy.grayLine(board: edited),
+            "今日未更新 · 部分行情不完整 · 这句与麦蕊数据不符：空组；找不到组"
+        )
     }
 
-    // MARK: 手机第二行的尺寸
+    func testAmberAndGrayNotices() throws {
+        let closed = try decode("kx_board_v3")
+        XCTAssertTrue(KXCopy.amberLines(board: closed).isEmpty)
+        XCTAssertEqual(KXCopy.grayLine(board: closed), "部分行情不完整")
 
-    @MainActor
-    func testRowHeightsFollowTheMockup() throws {
-        let scale: CGFloat = 2
-        let schema1 = try decodeBoard("kx_board_sample")
-        for row in schema1.rows {
-            let image = try render(KXRowView(row: row, group: .overview), width: 375, scale: scale)
-            XCTAssertEqual(CGFloat(image.height) / scale, KXMetrics.rowHeight, "\(row.code)：没有第二行时行高保持 52")
-        }
-        let schema2 = try decodeBoard("kx_board_schema2")
-        for group in KXColumnGroup.allCases {
-            for row in schema2.rows {
-                let image = try render(KXRowView(row: row, group: group), width: 375, scale: scale)
-                let height = CGFloat(image.height) / scale
-                // 样图 A1：上 7、第一行 34、间距 4、第二行 17、下 6，共 68；题材再长也不换行，所以一样高。
-                XCTAssertEqual(height, 68, accuracy: 0.5, "\(group.title) \(row.code)")
-            }
-        }
-        XCTAssertEqual(KXMetrics.twoLineRowHeight, 68)
-        XCTAssertEqual(KXMetrics.twoLineTop, 7)
-        XCTAssertEqual(KXMetrics.firstLineHeight, 34)
-        XCTAssertEqual(KXMetrics.secondLineGap, 4)
-        XCTAssertEqual(KXMetrics.secondLineHeight, 17)
-        XCTAssertEqual(KXMetrics.twoLineBottom, 6)
-        XCTAssertEqual(KXMetrics.badgeTextHeight + 2 * KXMetrics.badgePaddingV, KXMetrics.secondLineHeight, "徽标高 17")
-        XCTAssertEqual(KXMetrics.badgeGap, 6)
-        XCTAssertEqual(KXMetrics.badgePaddingV, 1)
-        XCTAssertEqual(KXMetrics.badgePaddingH, 6)
-        XCTAssertEqual(KXMetrics.badgeRadius, 5)
+        let partial = try decode("kx_board_v3_partial")
+        XCTAssertEqual(KXCopy.amberLines(board: partial), ["DeepSeek 部分未完成：分组和小弟未更新，沿用上一版小弟"])
+        XCTAssertEqual(KXCopy.grayLine(board: partial), "今日未更新 · 部分行情不完整")
 
-        let scalePhase: CGFloat = 2
-        let onlyPhase = try themedRow(theme: nil, heatDay: nil, phase: "call_auction")
-        XCTAssertTrue(onlyPhase.hasSecondLine)
-        XCTAssertEqual(onlyPhase.sessionPhaseLabel, "竞价中")
-        let phaseImage = try render(KXRowView(row: onlyPhase, group: .overview), width: 375, scale: scalePhase)
-        XCTAssertEqual(CGFloat(phaseImage.height) / scalePhase, 68, accuracy: 0.5, "只有阶段标签时行高仍是 68")
-        let auction = try decodeBoard("kx_board_call_auction")
-        for row in auction.rows where row.sessionPhaseLabel != nil {
-            let image = try render(KXRowView(row: row, group: .today), width: 375, scale: scalePhase)
-            XCTAssertEqual(CGFloat(image.height) / scalePhase, 68, accuracy: 0.5, "\(row.code)")
+        let stale = try decode("kx_board_v3_stale")
+        XCTAssertEqual(KXCopy.amberLines(board: stale), ["未能核对，最后读到 18:30"])
+        XCTAssertEqual(KXCopy.grayLine(board: stale), "部分行情不完整")
+
+        let pending = try edited("kx_board_v3") { object in
+            var structure = object["structure"] as! [String: Any]
+            structure["deepseekStatus"] = "failed"
+            structure["deepseekNotice"] = NSNull()
+            var refresh = structure["refresh"] as! [String: Any]
+            refresh["notice"] = "今日未更新"
+            structure["refresh"] = refresh
+            object["structure"] = structure
+            object["gaps"] = ["1 组数据不合格，没有显示"]
+            object["status"] = "ok"
         }
+        XCTAssertEqual(KXCopy.amberLines(board: pending), ["DeepSeek 未完成"])
+        XCTAssertEqual(KXCopy.grayLine(board: pending), "今日未更新 · 1 组数据不合格，没有显示")
+
+        let noted = try edited("kx_board_v3") { object in
+            var structure = object["structure"] as! [String: Any]
+            structure["deepseekNotice"] = "补充一句"
+            object["structure"] = structure
+            object["status"] = "ok"
+        }
+        XCTAssertTrue(KXCopy.amberLines(board: noted).isEmpty)
+        XCTAssertEqual(KXCopy.grayLine(board: noted), "补充一句")
     }
 
-    /// 80 字的长题材：375 点宽下第二行始终单行，用省略号收尾，不换行，也不挤压第一行。
-    /// 做法：把同一行的长题材换成短题材，各排四个分组；整行高度相同，上面第一行的像素逐点相同。
-    @MainActor
-    func testEightyCharacterThemeStaysOnOneLineWithoutSqueezingTheFirstLine() throws {
-        let long = try decodeBoard("kx_board_extreme")
-        let short = try edited("kx_board_extreme") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            for index in rows.indices where rows[index]["theme"] is String { rows[index]["theme"] = "题材" }
-            object["rows"] = rows
-        }
-        XCTAssertEqual(long.rows.compactMap(\.theme).map(\.count), [80, 80, 80])
-        XCTAssertEqual(long.rows.map(\.hasSecondLine), [true, true, true, true])
-        XCTAssertEqual(long.rows.map(\.heat), [.hot(day: 12), .warm(day: 4), .firstDay, nil])
-        XCTAssertEqual(long.rows.map(\.sessionPhase), [nil, nil, nil, nil])
+    func testHeaderAndFooterUseBeijingTime() throws {
+        let closed = try decode("kx_board_v3")
+        XCTAssertEqual(KXCopy.headerMeta(board: closed, refreshFailed: false), "18:30 · 已收盘")
+        XCTAssertEqual(KXCopy.headerMeta(board: closed, refreshFailed: true), "18:30 · 刷新失败")
+        XCTAssertEqual(KXCopy.headerSub(board: closed), "按 11/03 收盘整理")
+        XCTAssertEqual(
+            KXCopy.footer(closed).line,
+            "11/04 · 读取 18:30:10 · 报价 15:00:02 · 涨停池 18:30:10 · 结构写入 15:39:13"
+        )
+        XCTAssertEqual(KXCopy.footer(closed).version, "kx-20261104-003")
 
-        let scale: CGFloat = 2
-        // 第一行占 7 到 41，第二行从 45 起；截到 41 就只含第一行。
-        let firstLineCrop = (KXMetrics.twoLineTop + KXMetrics.firstLineHeight) * scale
-        for group in KXColumnGroup.allCases {
-            for (longRow, shortRow) in zip(long.rows, short.rows) {
-                let name = "\(group.title) \(longRow.code)"
-                let longImage = try render(KXRowView(row: longRow, group: group), width: 375, scale: scale)
-                let shortImage = try render(KXRowView(row: shortRow, group: group), width: 375, scale: scale)
-                XCTAssertEqual(longImage.height, shortImage.height, "\(name)：长题材把行撑高了")
-                XCTAssertEqual(longImage.width, shortImage.width, "\(name)：长题材把行撑宽了")
-                XCTAssertEqual(CGFloat(longImage.width) / scale, 375, "\(name)")
-                XCTAssertEqual(CGFloat(longImage.height) / scale, KXMetrics.twoLineRowHeight, accuracy: 0.5, "\(name)：第二行换行了")
+        let sealed = try decode("kx_board_v3_sealed")
+        XCTAssertEqual(KXCopy.headerMeta(board: sealed, refreshFailed: false), "10:30 · 盘中")
+        let auction = try decode("kx_board_v3_auction")
+        XCTAssertEqual(KXCopy.headerMeta(board: auction, refreshFailed: false), "09:18 · 盘中")
+        XCTAssertTrue(KXCopy.sentiment(auction.sentiment).intraday)
+        XCTAssertFalse(KXCopy.sentiment(closed.sentiment).intraday)
+        XCTAssertEqual(KXCopy.sentiment(closed.sentiment).limitUp, "96")
+        XCTAssertEqual(KXCopy.sentiment(closed.sentiment).brokenRate, "23.8%")
+        XCTAssertEqual(KXCopy.sentiment(closed.sentiment).nameTitle, "6 只的名字")
+        XCTAssertEqual(KXCopy.sentiment(closed.sentiment).yesterday, "昨日连板 15 只，今日继续 6 只")
 
-                let longTop = try pixels(of: XCTUnwrap(longImage.cropping(to: CGRect(x: 0, y: 0, width: longImage.width, height: Int(firstLineCrop)))))
-                let shortTop = try pixels(of: XCTUnwrap(shortImage.cropping(to: CGRect(x: 0, y: 0, width: shortImage.width, height: Int(firstLineCrop)))))
-                XCTAssertTrue(longTop == shortTop, "\(name)：第二行的题材挤动了第一行")
-                if longRow.theme != nil {
-                    XCTAssertTrue(try pixels(of: longImage) != pixels(of: shortImage), "\(name)：长题材没有画出来")
+        XCTAssertEqual(KXCopy.clock("2026-11-04T02:30:10Z"), "10:30")
+        XCTAssertEqual(KXCopy.clock("2026-11-04T18:30:10.318216+08:00"), "18:30")
+        XCTAssertEqual(KXCopy.monthDay("2026-11-03"), "11/03")
+        XCTAssertNil(KXCopy.clock(nil))
+        XCTAssertNil(KXCopy.clock("昨天"))
+
+        let shifted = try edited("kx_board_v3") { object in
+            var rooms = object["rooms"] as! [String: Any]
+            for name in ["leader", "waiting", "eliminated"] {
+                var groups = rooms[name] as! [[String: Any]]
+                for index in groups.indices {
+                    for key in ["leaders", "followers"] {
+                        var people = groups[index][key] as! [[String: Any]]
+                        for person in people.indices {
+                            var quote = people[person]["quote"] as! [String: Any]
+                            quote["sourceTime"] = "2026-11-02T15:00:00+08:00"
+                            people[person]["quote"] = quote
+                        }
+                        groups[index][key] = people
+                    }
                 }
+                rooms[name] = groups
             }
+            object["rooms"] = rooms
         }
-
-        // 第二行自己：热度徽标全部露出，题材至少还剩 40 点。
-        let widest = long.rows[0]
-        let badges = idealSize(KXHeatBadge(heat: try XCTUnwrap(widest.heat))).width + KXMetrics.badgeGap
-        XCTAssertLessThan(badges, (375 - KXMetrics.inset * 2) - 40, "375 点宽放不下徽标加题材")
-        let secondLine = try render(KXSecondLine(row: widest), width: 375 - KXMetrics.inset * 2, scale: scale)
-        XCTAssertEqual(CGFloat(secondLine.height) / scale, KXMetrics.secondLineHeight, accuracy: 0.5, "第二行换行了")
+        XCTAssertTrue(KXCopy.footer(shifted).line.contains("报价 11/02 15:00:00"))
     }
 
-    #if os(macOS)
-    @MainActor
-    func testMacTableShowsThemeAndHeatAndHasNoBuyableColumn() throws {
-        let columns = KXTableColumn.allCases
-        XCTAssertEqual(Array(columns.prefix(4)), [.name, .theme, .heat, .price])
-        XCTAssertEqual(columns.prefix(4).map(\.title), ["名称", "题材", "热度", "现价"])
-        XCTAssertFalse(columns.map(\.title).contains("行业"))
-        XCTAssertFalse(columns.map(\.title).contains("可买"))
-        XCTAssertEqual(columns.count, 26)
-        XCTAssertEqual(KXTableColumn.theme.alignment, .leading)
-        XCTAssertEqual(KXTableColumn.heat.alignment, .trailing)
-        XCTAssertGreaterThan(KXTableColumn.theme.width.upperBound, KXTableColumn.price.width.upperBound * 2, "题材是宽列")
-
-        let board = try decodeBoard("kx_board_schema2")
-        let normal = try row(board, code: "600010")
-        XCTAssertEqual(KXTableColumn.theme.sortKey(normal), .text("题材2"))
-        XCTAssertEqual(KXTableColumn.heat.sortKey(try row(board, code: "600005")), .number(9))
-        XCTAssertEqual(KXTableColumn.heat.sortKey(try row(board, code: "000004")), .number(nil))
-
-        // schema 1 名单：题材列写「—」，热度列写「—」。
-        let old = try decodeBoard("kx_board_sample").rows[0]
-        XCTAssertNil(old.themeText)
-        XCTAssertEqual(KXTableColumn.theme.sortKey(old), .text(""))
-        XCTAssertEqual(KXTableColumn.heat.sortKey(old), .number(nil))
-
-        // 长题材最多两行：窄列里不超过两行的高度，也比一行高（确实折行了）。
-        let extreme = try decodeBoard("kx_board_extreme").rows[0]
-        let oneLine = idealSize(KXTableCell(row: normal, column: .theme).frame(width: 220)).height
-        let longTheme = idealSize(KXTableCell(row: extreme, column: .theme).frame(width: 220)).height
-        XCTAssertGreaterThan(longTheme, oneLine + 8, "长题材没有折成第二行")
-        XCTAssertLessThan(longTheme, oneLine + 26, "长题材超过了两行")
-    }
-    #endif
-
-    // MARK: 高亮状态映射与分区
-
-    func testHighlightMappingAndSections() throws {
-        let board = try decodeBoard("kx_board_sample")
-        XCTAssertEqual(KXHighlight.today.section, .today)
-        XCTAssertEqual(KXHighlight.faded.section, .faded)
-        XCTAssertEqual(KXHighlight.normal.section, .all)
-        XCTAssertEqual(KXSection.allCases.map(\.title), ["今日推荐", "昨日推荐", "全部"])
-
-        let sections = board.sections
-        XCTAssertEqual(sections.map(\.section), [.today, .faded, .all])
-        XCTAssertEqual(sections.map(\.rows.count), [4, 1, 7])
-        // 区内保持服务端给的行序，不重排。
-        XCTAssertEqual(sections[0].rows.map(\.code), ["600010", "000001", "000003", "600008"])
-        XCTAssertEqual(sections[1].rows.map(\.code), ["600007"])
-        XCTAssertEqual(sections[2].rows.map(\.code), ["600006", "600005", "600011", "000004", "600009", "000002", "000000"])
-        XCTAssertEqual(sections.flatMap(\.rows).map(\.code), board.rows.map(\.code))
-        XCTAssertEqual(board.rows(in: .faded).map(\.code), ["600007"])
-        XCTAssertTrue(board.rows.filter(\.isToday).allSatisfy { $0.highlight == .today })
-        XCTAssertEqual(board.rows.filter(\.isFaded).map(\.code), ["600007"])
-    }
-
-    func testEmptySectionIsNotShown() throws {
-        // 降级夹具里没有昨日推荐。
-        let degraded = try decodeBoard("kx_board_degraded")
-        XCTAssertEqual(degraded.sections.map(\.section), [.today, .all])
-        XCTAssertEqual(degraded.sections.map(\.rows.count), [1, 5])
-
-        let noPicks = try edited("kx_board_sample") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            for index in rows.indices { rows[index]["highlight"] = "normal" }
-            object["rows"] = rows
+    func testChromeDoesNotAddTradingAdvice() throws {
+        let board = try decode("kx_board_v3")
+        let chrome = [
+            KXCopy.headerMeta(board: board, refreshFailed: false),
+            KXCopy.headerSub(board: board),
+            KXCopy.grayLine(board: board) ?? "",
+            KXCopy.footer(board).line,
+            KXCopy.emptyRoom,
+            "封单", "买一挂单", "未涨停", "竞价中", "涨停", "炸板", "跌停",
+        ]
+        for word in ["买入", "卖出", "持仓", "收益"] {
+            XCTAssertFalse(chrome.contains { $0.contains(word) }, word)
         }
-        XCTAssertEqual(noPicks.sections.map(\.section), [.all])
-        let empty = try edited("kx_board_sample") { $0["rows"] = [[String: Any]]() }
-        XCTAssertTrue(empty.sections.isEmpty)
-    }
-
-    func testUnknownEnumValuesDegradeSafely() throws {
-        let board = try edited("kx_board_sample") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[0]["highlight"] = "boosted"
-            rows[1]["quoteStatus"] = "halted"
-            var averages = rows[2]["averages"] as! [String: Any]
-            averages["ma5"] = ["value": 10.0, "position": "touching"]
-            rows[2]["averages"] = averages
-            object["rows"] = rows
+        let leader = try XCTUnwrap(board.rooms.leader.first)
+        if case .judgment(let verdict, _, let title, _)? = KXCopy.deepseekBody(leader) {
+            XCTAssertEqual(verdict, "晋升")
+            XCTAssertEqual(title, "高度、带动、承接、说明")
+        } else {
+            XCTFail("龙头组应有结论")
         }
-        XCTAssertEqual(board.rows[0].highlight, .normal)
-        XCTAssertEqual(board.rows[0].highlight.section, .all)
-        XCTAssertEqual(board.rows[1].quoteStatus, .missing)
-        XCTAssertEqual(board.rows[2].averages.ma5?.position, .flat)
-        XCTAssertEqual(KXAverageDots.color(board.rows[2].averages.ma5), NKKX.flat)
+        let eliminated = try XCTUnwrap(board.rooms.eliminated.first)
+        XCTAssertEqual(KXCopy.eliminatedLine(eliminated), "断板日 10/26 · 已观察 6 个交易日（满 10 个交易日踢出）")
+        XCTAssertEqual(KXCopy.flagLabels(try XCTUnwrap(board.rooms.eliminated.dropFirst().first)).contains("背离 000678"), true)
+        if case .note = KXCopy.deepseekBody(eliminated) {
+        } else {
+            XCTFail("没有结论时只留说明")
+        }
     }
 
-    // MARK: 接口
-
-    func testClientRequestsBoardWithBearerOnly() async throws {
-        let data = try fixture("kx_board_sample")
+    func testClientRequestsBoardAndMapsFailures() async throws {
         let transport = KXScriptTransport()
-        transport.next = (200, data)
+        transport.next = (200, try fixture("kx_board_v3"))
         let api = KXBoardAPI(baseURL: URL(string: "https://fixture.invalid")!, token: " fixture-token-not-real ", transport: transport)
         let board = try await api.board()
-        XCTAssertEqual(board.rows.count, 12)
-
+        XCTAssertEqual(board.rooms.leader.count, 1)
         let request = try XCTUnwrap(transport.requests.first)
-        XCTAssertEqual(transport.requests.count, 1)
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.url?.path, "/api/v4/kx/board")
         XCTAssertNil(request.url?.query)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-token-not-real")
-        XCTAssertFalse(request.url?.absoluteString.contains("fixture-token-not-real") ?? true)
 
         let prefixed = KXBoardAPI(baseURL: URL(string: "https://fixture.invalid/nk/")!, token: "fixture-token-not-real", transport: transport)
         _ = try await prefixed.board()
         XCTAssertEqual(transport.requests.last?.url?.path, "/nk/api/v4/kx/board")
-    }
 
-    func testClientMapsFailures() async throws {
-        await expectFailure(.unauthorized, status: 401, body: #"{"detail":"未授权:缺失或错误的 Bearer token"}"#)
+        await expectFailure(.unauthorized, status: 401, body: #"{"detail":"未授权"}"#)
         await expectFailure(.notConfigured, status: 503, body: #"{"detail":{"reason":"v4_not_configured"}}"#)
         await expectFailure(.dbNotReady, status: 503, body: #"{"detail":{"reason":"v4_db_not_ready"}}"#)
         await expectFailure(
-            .poolUnverified("KX 名单还没有成功同步过，暂不出看板：KX 暂时连不上。"),
+            .unavailable("KX 看板还没读到过：KX 暂时连不上。"),
             status: 503,
-            body: #"{"detail":{"reason":"pool_unverified","message":"KX 名单还没有成功同步过，暂不出看板：KX 暂时连不上。"}}"#
+            body: String(data: try fixture("kx_board_unavailable"), encoding: .utf8)!
         )
-        await expectFailure(
-            .calendarGap("交易日历没有覆盖今天，暂不出看板：2027-01-04"),
-            status: 503,
-            body: #"{"detail":{"reason":"calendar_gap","message":"交易日历没有覆盖今天，暂不出看板：2027-01-04"}}"#
-        )
-        await expectFailure(.poolUnverified(nil), status: 503, body: #"{"detail":{"reason":"pool_unverified"}}"#)
-        await expectFailure(.unreadable, status: 503, body: #"{"detail":{"reason":"something_else"}}"#)
+        await expectFailure(.unavailable(nil), status: 503, body: #"{"detail":{"reason":"kx_unavailable"}}"#)
+        await expectFailure(.unreadable, status: 503, body: #"{"detail":{"reason":"pool_unverified","message":"旧原因"}}"#)
+        await expectFailure(.unreadable, status: 503, body: #"{"detail":{"reason":"calendar_gap"}}"#)
         await expectFailure(.unreadable, status: 500, body: "")
         await expectFailure(.unreadable, status: 200, body: "{}")
         await expectFailure(.unreadable, status: 200, body: "not json")
@@ -483,7 +387,7 @@ final class KXBoardContractTests: XCTestCase {
         let trap = KXScriptTransport(error: URLError(.badServerResponse))
         let blank = KXBoardAPI(baseURL: URL(string: "https://fixture.invalid")!, token: "   ", transport: trap)
         await expectThrows(KXBoardError.missingToken) { _ = try await blank.board() }
-        XCTAssertTrue(trap.requests.isEmpty, "没有令牌时不发请求")
+        XCTAssertTrue(trap.requests.isEmpty)
 
         let cancelled = KXScriptTransport(error: URLError(.cancelled))
         let cancelling = KXBoardAPI(baseURL: URL(string: "https://fixture.invalid")!, token: "fixture-token-not-real", transport: cancelled)
@@ -494,310 +398,24 @@ final class KXBoardContractTests: XCTestCase {
         } catch {
             XCTFail("取消应当抛出 CancellationError，实际 \(error)")
         }
-    }
 
-    func testFailureBodyWithStringDetailHasNoReason() throws {
-        let body = try JSONDecoder().decode(KXFailureBody.self, from: Data(#"{"detail":"Not authenticated"}"#.utf8))
-        XCTAssertNil(body.reason)
-        XCTAssertNil(body.message)
+        XCTAssertFalse(KXBoardError.unavailable("原因").isTransient)
         XCTAssertFalse(KXBoardError.unauthorized.isTransient)
         XCTAssertTrue(KXBoardError.unreachable.isTransient)
         XCTAssertTrue(KXBoardError.unreadable.isTransient)
-        XCTAssertFalse(KXBoardError.poolUnverified(nil).isTransient)
-        XCTAssertFalse(KXBoardError.calendarGap(nil).isTransient)
-    }
 
-    // MARK: 分组列选择
-
-    func testColumnGroupsPickTheRightColumns() {
-        XCTAssertEqual(KXColumnGroup.allCases, [.overview, .today, .volume, .trend])
-        XCTAssertEqual(KXColumnGroup.allCases.map(\.title), ["概览", "今日", "量能", "趋势"])
-        XCTAssertEqual(KXColumnGroup.overview.columns, [.price, .changePercent, .range, .volumeRatio, .averages])
-        XCTAssertEqual(KXColumnGroup.today.columns, [.openChange, .amplitude, .turnoverRate, .turnover])
-        XCTAssertEqual(KXColumnGroup.volume.columns, [.turnover, .volume, .avgTurnover20, .volumeRatio])
-        XCTAssertEqual(KXColumnGroup.trend.columns, [.change5d, .change20d, .circMv, .totalMv])
-
-        XCTAssertEqual(KXColumn.volumeRatio.heading(in: .overview), "量能")
-        XCTAssertEqual(KXColumn.volumeRatio.heading(in: .volume), "倍数")
-        XCTAssertEqual(KXColumnGroup.overview.columns.map { $0.heading(in: .overview) }, ["现价", "涨跌幅", "区间", "量能", "均线"])
-        XCTAssertEqual(KXColumnGroup.today.columns.map { $0.heading(in: .today) }, ["开盘涨跌", "振幅", "换手率", "成交额"])
-        XCTAssertEqual(KXColumnGroup.volume.columns.map { $0.heading(in: .volume) }, ["成交额", "成交量", "20日均额", "倍数"])
-        XCTAssertEqual(KXColumnGroup.trend.columns.map { $0.heading(in: .trend) }, ["5日", "20日", "流通市值", "总市值"])
-    }
-
-    func testColumnMetricsKeepTheMockupAndAtLeastSixPointsBetweenNumbers() {
-        // 概览组的最小宽度与样图的 CSS 一致：现价 52、色块 56（左边距 6）、区间条 54（左边距 8）、量能 36（6）、均线 24（5）。
-        XCTAssertEqual(KXColumnGroup.overview.columns.map(\.minWidth), [52, 56, 54, 36, 24])
-        XCTAssertEqual(KXColumnGroup.overview.columns.map(\.leadingGap), [6, 6, 8, 6, 5])
-        XCTAssertEqual(KXMetrics.rowHeight, 52)
-        XCTAssertEqual(KXMetrics.rangeTrackWidth, 50)
-        XCTAssertEqual(KXMetrics.ratioBarWidth, 32)
-
-        // 任何两列数字之间固定留 6 以上；只有均线三点（不是数字）沿用样图的 5。
-        for group in KXColumnGroup.allCases {
-            for column in group.columns where column != .averages {
-                XCTAssertGreaterThanOrEqual(column.leadingGap, KXMetrics.columnGap, "\(group.title)·\(column.heading(in: group)) 左边的空白不够 6")
-            }
-            XCTAssertEqual(Set(group.columns).count, group.columns.count, "\(group.title) 有重复列")
-        }
-        XCTAssertEqual(KXMetrics.columnGap, 6)
-    }
-
-    /// 最宽的真实值：现价 1234.56、涨跌幅 -10.00% 与 +20.00%、5 日 -12.3%、20 日 +123.4%、成交额 123.4亿、成交量 1234万手、
-    /// 20 日均额 99.9亿、倍数 12.3×、市值（12345 亿显示为 1.23万亿）。四个分组在最小的 iPhone（375 点宽）上
-    /// 每个格子都是单行、完整显示，数据列加固定间距之后名称仍有位置。
-    @MainActor
-    func testExtremeValuesFitTheSmallestPhoneWithoutTouchingOrTruncating() throws {
-        let board = try decodeBoard("kx_board_extreme")
-        XCTAssertEqual(board.rows.count, 4)
-        let widest = board.rows[0]
-        XCTAssertEqual(KXCopy.fixed(widest.price, 2), "1234.56")
-        XCTAssertEqual(KXCopy.signedPercent(widest.changePercent), "+20.00%")
-        XCTAssertEqual(KXCopy.signedPercent(board.rows[1].changePercent), "-10.00%")
-        XCTAssertEqual(KXCopy.signedPercent(widest.change5dPercent, 1), "-12.3%")
-        XCTAssertEqual(KXCopy.signedPercent(widest.change20dPercent, 1), "+123.4%")
-        XCTAssertEqual(KXCopy.yi(widest.turnoverYi), "123.4亿")
-        XCTAssertEqual(KXCopy.volume(lots: widest.volumeLots), "1234万手")
-        XCTAssertEqual(KXCopy.yi(widest.avgTurnover20Yi), "99.9亿")
-        XCTAssertEqual(KXCopy.ratio(widest.volumeRatio), "12.3×")
-        XCTAssertEqual(KXCopy.marketValue(yi: widest.circMvYi), "1.23万亿")
-        XCTAssertEqual(KXCopy.marketValue(yi: board.rows[2].circMvYi), "9999亿")
-
-        let phone: CGFloat = 375 - KXMetrics.inset * 2
-        // 四个汉字的名称缩到最小比例（0.85）时的宽度；数据列占完之后剩下的宽度不能比它小。
-        let nameFloor: CGFloat = 4 * 15 * KXMetrics.nameMinimumScale
-        for group in KXColumnGroup.allCases {
-            for row in board.rows {
-                var used: CGFloat = 0
-                for column in group.columns {
-                    let size = idealSize(KXCell(row: row, column: column))
-                    XCTAssertLessThan(size.height, 32, "\(group.title)·\(column.heading(in: group)) 换行了：\(row.name)")
-                    used += max(column.minWidth, size.width) + column.leadingGap
-                }
-                XCTAssertGreaterThanOrEqual(phone - used, nameFloor, "\(group.title)：375 点宽放不下 \(row.name) 的极端数字，名称只剩 \(phone - used)")
-            }
-        }
-        // 平常的数字不比样图宽：示例夹具每组的数据列都在样图的宽度之内。
-        let sample = try decodeBoard("kx_board_sample")
-        for group in KXColumnGroup.allCases {
-            for row in sample.rows {
-                let used = group.columns.reduce(CGFloat(0)) { $0 + max($1.minWidth, idealSize(KXCell(row: row, column: $1)).width) + $1.leadingGap }
-                XCTAssertGreaterThanOrEqual(phone - used, 80, "\(group.title)：平常的数字不该挤到名称")
-            }
-        }
-    }
-
-    @MainActor
-    private func idealSize<V: View>(_ view: V) -> CGSize {
-        #if os(iOS)
-        return UIHostingController(rootView: view.fixedSize()).sizeThatFits(in: CGSize(width: 4000, height: 400))
-        #else
-        return NSHostingView(rootView: view.fixedSize()).fittingSize
-        #endif
-    }
-
-    // MARK: 区间条
-
-    func testRangeGeometry() throws {
-        let board = try decodeBoard("kx_board_sample")
-        let falling = KXRangeGeometry(row: board.rows[0])
-        XCTAssertEqual(try XCTUnwrap(falling.marker), 0.2453, accuracy: 0.0001)
-        let segment = try XCTUnwrap(falling.segment)
-        // 开盘位置 (13.63-13.37)/(13.9-13.37)；现价在开盘下方，色段是绿的。
-        XCTAssertEqual(segment.start, 0.2453, accuracy: 0.0001)
-        XCTAssertEqual(segment.end, 0.26 / 0.53, accuracy: 0.0001)
-        XCTAssertFalse(segment.rising)
-
-        let rising = try row(board, code: "600006")
-        let up = KXRangeGeometry(row: rising)
-        XCTAssertTrue(try XCTUnwrap(up.segment).rising)
-
-        // 最高等于最低：服务端 rangePosition 为空，什么都不画。
-        let flat = try edited("kx_board_sample") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[0]["rangePosition"] = NSNull()
-            rows[0]["high"] = 13.5
-            rows[0]["low"] = 13.5
-            object["rows"] = rows
-        }
-        let nothing = KXRangeGeometry(row: flat.rows[0])
-        XCTAssertNil(nothing.marker)
-        XCTAssertNil(nothing.segment)
-
-        // 有位置但开盘、最高、最低缺一个：只画竖线。
-        let partial = try edited("kx_board_sample") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[0]["open"] = NSNull()
-            object["rows"] = rows
-        }
-        let markerOnly = KXRangeGeometry(row: partial.rows[0])
-        XCTAssertNotNil(markerOnly.marker)
-        XCTAssertNil(markerOnly.segment)
-
-        // 位置越界时夹在 0 到 1 之间。
-        let clamped = try edited("kx_board_sample") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[0]["rangePosition"] = 1.4
-            object["rows"] = rows
-        }
-        XCTAssertEqual(KXRangeGeometry(row: clamped.rows[0]).marker, 1.0)
-    }
-
-    // MARK: 数字格式
-
-    func testNumberFormatting() {
-        XCTAssertEqual(KXCopy.dash, "—")
-        XCTAssertEqual(KXCopy.fixed(nil, 2), "—")
-        XCTAssertEqual(KXCopy.fixed(10.4, 2), "10.40")
-        XCTAssertEqual(KXCopy.signed(1.36, 2), "+1.36")
-        XCTAssertEqual(KXCopy.signed(-7.77, 2), "-7.77")
-        XCTAssertEqual(KXCopy.signed(0, 2), "0.00")
-        XCTAssertEqual(KXCopy.signed(-0.001, 2), "0.00", "显示为零的不带负号")
-        XCTAssertEqual(KXCopy.signedPercent(4.48), "+4.48%")
-        XCTAssertEqual(KXCopy.signedPercent(-1.18), "-1.18%")
-        XCTAssertEqual(KXCopy.signedPercent(0.0), "0.00%")
-        XCTAssertEqual(KXCopy.signedPercent(nil), "—")
-        XCTAssertEqual(KXCopy.signedPercent(8.84, 1), "+8.8%")
-        XCTAssertEqual(KXCopy.percent(2.14), "2.14%")
-        XCTAssertEqual(KXCopy.percent(nil), "—")
-        XCTAssertEqual(KXCopy.yi(15.64), "15.6亿")
-        XCTAssertEqual(KXCopy.yi(nil), "—")
-        XCTAssertEqual(KXCopy.volume(lots: 81481), "8.1万手")
-        XCTAssertEqual(KXCopy.volume(lots: 2_248_000), "225万手")
-        XCTAssertEqual(KXCopy.volume(lots: 9_500), "9500手")
-        XCTAssertEqual(KXCopy.volume(lots: nil), "—")
-        XCTAssertEqual(KXCopy.marketValue(yi: 6.5), "6.5亿")
-        XCTAssertEqual(KXCopy.marketValue(yi: 128.1), "128亿")
-        XCTAssertEqual(KXCopy.marketValue(yi: 3058), "3058亿")
-        XCTAssertEqual(KXCopy.marketValue(yi: 12_000), "1.20万亿")
-        XCTAssertEqual(KXCopy.marketValue(yi: nil), "—")
-        XCTAssertEqual(KXCopy.ratio(1.5), "1.5×")
-        XCTAssertEqual(KXCopy.ratio(nil), "—")
-        XCTAssertEqual(KXCopy.pullback(-2.88), "距高 -2.9%")
-        XCTAssertEqual(KXCopy.pullback(0), "距高 0.0%")
-        XCTAssertEqual(KXCopy.pullback(-0.04), "距高 0.0%")
-        XCTAssertEqual(KXCopy.pullback(nil), "—")
-    }
-
-    func testTrendFollowsDisplayedDigits() {
-        XCTAssertEqual(KXTrend(1.36), .up)
-        XCTAssertEqual(KXTrend(-0.01), .down)
-        XCTAssertEqual(KXTrend(0.0), .flat)
-        XCTAssertEqual(KXTrend(0.004), .flat, "显示 0.00% 的是平")
-        XCTAssertEqual(KXTrend(-0.004), .flat)
-        XCTAssertEqual(KXTrend(nil), .flat)
-        XCTAssertEqual(KXTrend(0.04, digits: 1), .flat)
-        XCTAssertEqual(KXTrend(0.06, digits: 1), .up)
-        XCTAssertEqual(KXTrend.up.color, NKKX.up)
-        XCTAssertEqual(KXTrend.down.color, NKKX.down)
-        XCTAssertEqual(KXTrend.flat.color, NKKX.flat)
-    }
-
-    func testMissingValuesNeverBecomeZero() throws {
-        let degraded = try decodeBoard("kx_board_degraded")
-        let missing = try row(degraded, code: "000001")
-        XCTAssertEqual(KXCopy.fixed(missing.price, 2), "—")
-        XCTAssertEqual(KXCopy.signedPercent(missing.changePercent), "—")
-        XCTAssertEqual(KXCopy.percent(missing.amplitudePercent), "—")
-        XCTAssertEqual(KXCopy.yi(missing.turnoverYi), "—")
-        XCTAssertEqual(KXCopy.volume(lots: missing.volumeLots), "—")
-        XCTAssertEqual(KXCopy.pullback(missing.pullbackFromHighPercent), "—")
-        XCTAssertEqual(KXCopy.ratio(missing.volumeRatio), "—")
-        XCTAssertEqual(KXCopy.signedPercent(missing.change5dPercent, 1), "—")
-        XCTAssertEqual(KXCopy.marketValue(yi: missing.circMvYi), "—")
-        // 日线没取到但报价有：报价照常显示，日线那几格写「—」。
-        let daily = try row(degraded, code: "000003")
-        XCTAssertEqual(KXCopy.fixed(daily.price, 2), "11.05")
-        XCTAssertEqual(KXCopy.ratio(daily.volumeRatio), "—")
-        XCTAssertEqual(KXCopy.signedPercent(daily.change20dPercent, 1), "—")
-    }
-
-    // MARK: 页眉与页脚
-
-    func testHeaderMetaAndFooter() throws {
-        let sample = try decodeBoard("kx_board_sample")
-        XCTAssertEqual(KXCopy.meta(board: sample, refreshFailed: false), "10:31 更新 · 盘中")
-        XCTAssertEqual(KXCopy.meta(board: sample, refreshFailed: true), "10:31 更新 · 刷新失败")
-        XCTAssertEqual(KXCopy.footerLines(board: sample), [
-            "名单 kx-20261017 · 10:31 核对　报价 10:29:58",
-            "最后收到推荐 10/20 10:20",
-        ])
-
-        let closed = try edited("kx_board_sample") { object in
-            var session = object["session"] as! [String: Any]
-            session["inSession"] = false
-            session["refreshSeconds"] = NSNull()
-            object["session"] = session
-        }
-        XCTAssertEqual(KXCopy.meta(board: closed, refreshFailed: false), "10:31 更新 · 已收盘")
-
-        let degraded = try decodeBoard("kx_board_degraded")
-        XCTAssertEqual(KXCopy.footerLines(board: degraded), [
-            "kx-20261017 · 名单未能核对，最后核对 10/20 10:31　报价 10:29:58",
-            "最后收到推荐 10/20 10:20",
-            "TuShare 行情频率超限，这次没有重试。",
-        ])
-
-        // 核对时间不在同一天：写月日；没有推荐记录：写「—」；报价时间缺：不写报价。
-        let old = try edited("kx_board_sample") { object in
-            var pool = object["pool"] as! [String: Any]
-            pool["checkedAt"] = "2026-10-19T09:00:00+08:00"
-            object["pool"] = pool
-            var session = object["session"] as! [String: Any]
-            session["quoteTime"] = NSNull()
-            object["session"] = session
-            var picks = object["picks"] as! [String: Any]
-            picks["lastPickAt"] = NSNull()
-            object["picks"] = picks
-        }
-        XCTAssertEqual(KXCopy.footerLines(board: old), [
-            "名单 kx-20261017 · 10/19 09:00 核对",
-            "最后收到推荐 —",
-        ])
-    }
-
-    func testClockIsBeijingTimeWhateverTheOffset() {
-        XCTAssertEqual(KXCopy.clock("2026-10-20T10:31:07+08:00"), "10:31")
-        XCTAssertEqual(KXCopy.clock("2026-10-20T02:31:07Z"), "10:31")
-        XCTAssertEqual(KXCopy.clockWithSeconds("2026-10-20T10:29:58+08:00"), "10:29:58")
-        XCTAssertEqual(KXCopy.monthDayClock("2026-10-19T10:28:00+08:00"), "10/19 10:28")
-        XCTAssertNil(KXCopy.clock(nil))
-        XCTAssertNil(KXCopy.clock("昨天"))
-    }
-
-    // MARK: 状态文案
-
-    func testStateMessages() {
-        let missing = KXCopy.message(for: .missingToken)
-        XCTAssertEqual(missing.title, "还没有填写令牌")
-        XCTAssertTrue(missing.settings)
-        XCTAssertTrue(missing.retry)
-        let unauthorized = KXCopy.message(for: .unauthorized)
-        XCTAssertEqual(unauthorized.title, "令牌不正确")
-        XCTAssertTrue(unauthorized.settings)
-
-        let pool = KXCopy.message(for: .poolUnverified("KX 名单还没有成功同步过，暂不出看板：KX 暂时连不上。"))
-        XCTAssertEqual(pool.title, "KX 名单还没有同步")
-        XCTAssertEqual(pool.detail, "KX 名单还没有成功同步过，暂不出看板：KX 暂时连不上。")
-        XCTAssertTrue(pool.retry)
-        XCTAssertFalse(pool.settings)
-        XCTAssertFalse(pool.problem, "不堆警告：状态页不用红色")
-        XCTAssertNil(KXCopy.message(for: .poolUnverified("  ")).detail)
-
-        let calendar = KXCopy.message(for: .calendarGap("交易日历没有覆盖今天，暂不出看板：2027-01-04"))
-        XCTAssertEqual(calendar.title, "交易日历还没有覆盖今天")
-        XCTAssertEqual(calendar.detail, "交易日历没有覆盖今天，暂不出看板：2027-01-04")
-
+        let message = KXCopy.message(for: .unavailable("KX 看板还没读到过：KX 暂时连不上。"))
+        XCTAssertEqual(message.title, "KX 看板暂时读不了")
+        XCTAssertEqual(message.detail, "KX 看板还没读到过：KX 暂时连不上。")
         XCTAssertEqual(KXCopy.message(for: .unreachable).title, "连不上服务")
         XCTAssertEqual(KXCopy.message(for: .unreadable).title, "KX 看板暂时读不了")
+        XCTAssertNil(KXCopy.message(for: .unreadable).detail)
         XCTAssertEqual(KXCopy.message(for: .notConfigured).title, "服务还没配好")
         XCTAssertEqual(KXCopy.message(for: .dbNotReady).title, "数据库还没就绪")
-        XCTAssertEqual(KXCopy.emptyPoolMessage.title, "名单里还没有股票")
+        XCTAssertNil(KXCopy.message(for: .unavailable("  ")).detail)
     }
 
-    // MARK: 辅助
-
-    private func decodeBoard(_ name: String) throws -> KXBoard {
+    private func decode(_ name: String) throws -> KXBoard {
         try JSONDecoder().decode(KXBoard.self, from: fixture(name))
     }
 
@@ -807,41 +425,17 @@ final class KXBoardContractTests: XCTestCase {
         return try JSONDecoder().decode(KXBoard.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    /// 以 schema 2 夹具的第一行为底，换上指定的题材、热度、阶段（nil 写成 null）。
-    private func themedRow(theme: String?, heatDay: Int?, phase: String?) throws -> KXRow {
-        let board = try edited("kx_board_schema2") { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[0]["theme"] = theme ?? NSNull()
-            rows[0]["heatDay"] = heatDay ?? NSNull()
-            rows[0]["sessionPhase"] = phase ?? NSNull()
-            object["rows"] = rows
-        }
-        return board.rows[0]
+    private func limit(_ json: String) throws -> KXLimitUp {
+        try JSONDecoder().decode(KXLimitUp.self, from: Data(json.utf8))
     }
 
-    /// 把视图按给定宽度画成位图（高度取自然高度）。
-    @MainActor
-    private func render<V: View>(_ view: V, width: CGFloat, scale: CGFloat) throws -> CGImage {
-        let renderer = ImageRenderer(content: view.frame(width: width).environment(\.colorScheme, .light))
-        renderer.scale = scale
-        return try XCTUnwrap(renderer.cgImage, "没能画出位图")
+    private func decodeStock(_ json: String) throws -> KXStock {
+        try JSONDecoder().decode(KXStock.self, from: Data(json.utf8))
     }
 
-    private func pixels(of image: CGImage) throws -> [UInt8] {
-        let width = image.width, height = image.height
-        var data = [UInt8](repeating: 0, count: width * height * 4)
-        let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        XCTAssertTrue(drawn, "没能读出像素")
-        return data
-    }
-
-    private func row(_ board: KXBoard, code: String) throws -> KXRow {
-        try XCTUnwrap(board.rows.first { $0.code == code }, "夹具里没有 \(code)")
+    private func stock(_ board: KXBoard, _ code: String, file: StaticString = #filePath, line: UInt = #line) throws -> KXStock {
+        let all = board.rooms.ordered.flatMap { $0.groups.flatMap { $0.leaders + $0.followers } }
+        return try XCTUnwrap(all.first { $0.code == code }, "没有 \(code)", file: file, line: line)
     }
 
     private func fixture(_ name: String) throws -> Data {

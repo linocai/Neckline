@@ -1,0 +1,6 @@
+{
+  "detail": {
+    "message": "KX 看板还没读到过：KX 暂时连不上。",
+    "reason": "kx_unavailable"
+  }
+}

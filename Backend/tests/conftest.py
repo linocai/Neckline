@@ -17,16 +17,19 @@ def isolate_market_and_mcp(monkeypatch):
                 "KX_READ_KEY", "KX_PICKS_TOKEN", "KX_BASE_URL"):
         monkeypatch.delenv(key, raising=False)
     from neckline.kx import services as kx_services
+    from neckline.kx.board import reset_board_state
     from neckline.market import services
     from neckline.mcp.status import set_mcp_serving
 
     set_mcp_serving(False)
     services.use(None)
     kx_services.use(None)
+    reset_board_state()
     yield
     set_mcp_serving(False)
     services.use(None)
     kx_services.use(None)
+    reset_board_state()
     import asyncio
     asyncio.run(kx_services.close_default_services())
     asyncio.run(services.close_default_services())

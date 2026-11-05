@@ -2,185 +2,367 @@
 
 import Foundation
 
-/// 涨跌方向。按显示的位数取整后判断：显示 0.00 的就是平。
 enum KXTrend: Equatable {
     case up
     case down
     case flat
 
-    init(_ value: Double?, digits: Int = 2) {
-        guard let value else {
+    init(_ value: Double?) {
+        guard let value, value.isFinite else {
             self = .flat
             return
         }
-        let scale = pow(10, Double(digits))
-        let rounded = (value * scale).rounded() / scale
-        self = rounded > 0 ? .up : (rounded < 0 ? .down : .flat)
+        if value > 0 { self = .up }
+        else if value < 0 { self = .down }
+        else { self = .flat }
     }
+}
+
+struct KXStatusPiece: Equatable {
+    enum Tone: Equatable {
+        case up
+        case broken
+        case down
+        case off
+        case missing
+    }
+
+    var text: String
+    var tone: Tone
+}
+
+struct KXFactBit: Equatable {
+    var text: String
+    var missing: Bool
+}
+
+struct KXDelta: Equatable {
+    enum Direction: Equatable {
+        case up
+        case down
+        case flat
+    }
+
+    var text: String
+    var direction: Direction
+}
+
+struct KXOrderLine: Equatable {
+    enum Kind: Equatable {
+        case seal
+        case bid
+    }
+
+    var kind: Kind
+    var amount: String
+    var delta: KXDelta?
+    var warnings: String?
+}
+
+struct KXLabeledLine: Equatable {
+    var label: String
+    var value: String
+}
+
+enum KXDeepseekBody: Equatable {
+    case judgment(verdict: String, reason: String, foldTitle: String, lines: [KXLabeledLine])
+    case note(String)
+}
+
+struct KXSentimentText: Equatable {
+    var limitUp: String
+    var broken: String
+    var brokenRate: String
+    var limitDown: String
+    var boards: String
+    var showsBoardUnit: Bool
+    var highestLabel: String
+    var names: [String]
+    var nameTitle: String?
+    var yesterday: String
+    var intraday: Bool
+}
+
+struct KXFooter: Equatable {
+    var line: String
+    var version: String?
 }
 
 enum KXCopy {
     static let dash = "—"
+    static let emptyRoom = "今天没有"
+    static let unreadableTitle = "KX 看板暂时读不了"
+    static let mismatchTitle = "这句与麦蕊数据不符"
+    static let partialQuote = "部分行情不完整"
+    static let deepseekPending = "DeepSeek 未完成"
 
     // MARK: 数字
 
-    /// 固定位数。保留符号；显示为零的不带负号。
-    static func fixed(_ value: Double?, _ digits: Int) -> String {
+    static func price(_ value: Double?) -> String {
         guard let value, value.isFinite else { return dash }
-        return format(round(value, digits), digits)
+        return format(value, digits: 2)
     }
 
-    /// 带符号：正数前加 +，零不带符号。
-    static func signed(_ value: Double?, _ digits: Int) -> String {
+    static func percent(_ value: Double?) -> String {
         guard let value, value.isFinite else { return dash }
-        let rounded = round(value, digits)
-        return (rounded > 0 ? "+" : "") + format(rounded, digits)
+        let body = format(value, digits: 2)
+        return (value > 0 ? "+" : "") + body + "%"
     }
 
-    static func percent(_ value: Double?, _ digits: Int = 2) -> String {
-        guard let value, value.isFinite else { return dash }
-        return fixed(value, digits) + "%"
+    static func trend(_ value: Double?) -> KXTrend {
+        KXTrend(value)
     }
 
-    static func signedPercent(_ value: Double?, _ digits: Int = 2) -> String {
-        guard let value, value.isFinite else { return dash }
-        return signed(value, digits) + "%"
-    }
-
-    /// 成交额、日均成交额，亿元，一位小数。
-    static func yi(_ value: Double?) -> String {
-        guard let value, value.isFinite else { return dash }
-        return fixed(value, 1) + "亿"
-    }
-
-    /// 成交量，手。一万手以上写「万手」，不到的写「手」。
-    static func volume(lots: Double?) -> String {
-        guard let lots, lots.isFinite else { return dash }
-        if lots >= 10_000 {
-            let wan = lots / 10_000
-            return fixed(wan, wan >= 100 ? 0 : 1) + "万手"
+    /// ≥1 亿写「x.xx亿」，否则写「x.x万」。末尾的 0 去掉，和样图一样。
+    static func amount(_ yuan: Double?) -> String {
+        guard let yuan, yuan.isFinite else { return dash }
+        let magnitude = abs(yuan)
+        if magnitude >= 100_000_000 {
+            return trim(format(magnitude / 100_000_000, digits: 2)) + "亿"
         }
-        return fixed(lots, 0) + "手"
+        return trim(format(magnitude / 10_000, digits: 1)) + "万"
     }
 
-    /// 市值，亿元。一万亿以上写「万亿」。
-    static func marketValue(yi value: Double?) -> String {
+    /// 炸板率是 0～1，写成百分数一位小数。
+    static func brokenRate(_ value: Double?) -> String {
         guard let value, value.isFinite else { return dash }
-        if value >= 10_000 { return fixed(value / 10_000, 2) + "万亿" }
-        return fixed(value, value >= 100 ? 0 : 1) + "亿"
+        return format(value * 100, digits: 1) + "%"
     }
 
-    static func ratio(_ value: Double?) -> String {
+    static func whole(_ value: Double?) -> String {
         guard let value, value.isFinite else { return dash }
-        return fixed(value, 1) + "×"
+        if value.rounded(.toNearestOrAwayFromZero) == value, abs(value) < 1e15 {
+            return String(Int(value))
+        }
+        return trim(format(value, digits: 1))
     }
 
-    /// 区间条下面的小字，写的是距今日最高跌了多少（小于等于 0）。
-    static func pullback(_ value: Double?) -> String {
-        guard let value, value.isFinite else { return dash }
-        return "距高 " + percent(value, 1)
+    static func sealDelta(_ yuan: Double?) -> KXDelta? {
+        guard let yuan, yuan.isFinite else { return nil }
+        if yuan == 0 { return KXDelta(text: "0", direction: .flat) }
+        let sign = yuan > 0 ? "+" : "\u{2212}"
+        return KXDelta(text: sign + amount(abs(yuan)), direction: yuan > 0 ? .up : .down)
     }
 
-    private static func round(_ value: Double, _ digits: Int) -> Double {
-        let scale = pow(10, Double(digits))
-        let rounded = (value * scale).rounded() / scale
-        return rounded == 0 ? 0 : rounded
+    // MARK: 今日状态与盘口
+
+    static func todayStatus(_ limit: KXLimitUp) -> [KXStatusPiece] {
+        let up = limit.inLimitUp
+        let broken = limit.inBroken
+        let down = limit.inLimitDown
+        if up == nil, broken == nil, down == nil {
+            return [KXStatusPiece(text: dash, tone: .missing)]
+        }
+        var parts: [KXStatusPiece] = []
+        if up == true { parts.append(KXStatusPiece(text: "涨停", tone: .up)) }
+        if broken == true { parts.append(KXStatusPiece(text: "炸板", tone: .broken)) }
+        if down == true { parts.append(KXStatusPiece(text: "跌停", tone: .down)) }
+        if !parts.isEmpty { return parts }
+        if up == false, broken == false, down == false {
+            return [KXStatusPiece(text: "未涨停", tone: .off)]
+        }
+        return [KXStatusPiece(text: dash, tone: .missing)]
     }
 
-    private static func format(_ value: Double, _ digits: Int) -> String {
-        String(format: "%.\(digits)f", value)
+    static func inPool(_ limit: KXLimitUp) -> Bool {
+        limit.inLimitUp == true || limit.inBroken == true
     }
 
-    // MARK: 时间
-
-    /// 「HH:mm」。解析不了返回 nil。
-    static func clock(_ iso: String?) -> String? {
-        guard let date = KXClock.parse(iso) else { return nil }
-        return KXClock.string(date, "HH:mm")
+    /// 只在涨停池或炸板池里才有几板、板型、首封、开板。板型用接口原文。
+    static func poolFacts(_ limit: KXLimitUp) -> [KXFactBit]? {
+        guard inPool(limit) else { return nil }
+        let boards = limit.consecutiveBoards.map { KXFactBit(text: whole($0) + " 板", missing: false) }
+            ?? KXFactBit(text: "— 板", missing: true)
+        let typeText = clean(limit.boardTypeText)
+        let type = KXFactBit(text: typeText ?? dash, missing: typeText == nil)
+        let seal = shortClock(limit.firstSealTime)
+        let first = KXFactBit(text: "首封 " + (seal ?? dash), missing: seal == nil)
+        let opened = limit.breakCount.map { KXFactBit(text: "开板 " + whole($0), missing: false) }
+            ?? KXFactBit(text: "开板 \(dash)", missing: true)
+        return [boards, type, first, opened]
     }
 
-    static func clockWithSeconds(_ iso: String?) -> String? {
-        guard let date = KXClock.parse(iso) else { return nil }
-        return KXClock.string(date, "HH:mm:ss")
+    static func isAuction(_ stock: KXStock) -> Bool {
+        stock.quote.sessionPhase == .callAuction
     }
 
-    /// 「10/19 10:28」。
-    static func monthDayClock(_ iso: String?) -> String? {
-        guard let date = KXClock.parse(iso) else { return nil }
-        return KXClock.string(date, "M/d HH:mm")
+    /// 竞价中不写「封单」。sealed 不是 true 时只写买一挂单。没有盘口就不写这一行。
+    static func orderLine(_ stock: KXStock) -> KXOrderLine? {
+        guard let book = stock.orderBook else { return nil }
+        let warnings = joined(book.warnings)
+        if book.sealed == true, !isAuction(stock) {
+            return KXOrderLine(kind: .seal, amount: amount(book.sealAmount), delta: sealDelta(book.sealChange5m?.amount), warnings: warnings)
+        }
+        return KXOrderLine(kind: .bid, amount: amount(book.bid1Amount), delta: nil, warnings: warnings)
     }
 
-    // MARK: 页眉与页脚
-
-    /// 右上角小字：「10:32 更新 · 盘中」。刷新没成功时，后半写「刷新失败」，前半仍是最近一次成功的时间。
-    static func meta(board: KXBoard, refreshFailed: Bool) -> String {
-        let status = refreshFailed ? "刷新失败" : (board.session.inSession ? "盘中" : "已收盘")
-        guard let time = clock(board.generatedAt) else { return status }
-        return "\(time) 更新 · \(status)"
+    static func extraWarnings(_ stock: KXStock) -> String? {
+        let seen = Set((stock.orderBook?.warnings ?? []).compactMap(clean))
+        let more = (stock.quote.warnings + stock.limitUp.warnings).compactMap(clean).filter { !seen.contains($0) }
+        return more.isEmpty ? nil : more.joined(separator: "；")
     }
 
-    /// 底部小字。名单版本与核对时间、报价时间、最后收到推荐的时间；名单没能核对和整体缺口如实写在这里。
-    static func footerLines(board: KXBoard) -> [String] {
-        var first: [String] = []
-        let pool = board.pool
-        if pool.stale {
-            let checked = monthDayClock(pool.checkedAt) ?? pool.checkedAt
-            first.append("\(pool.version) · 名单未能核对，最后核对 \(checked)")
+    static func flagLabel(_ flag: KXFlag) -> String {
+        if let code = clean(flag.code) {
+            return flag.kind.raw + " " + code
+        }
+        if let colon = flag.text.firstIndex(of: ":") {
+            let left = flag.text[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+            let right = flag.text[flag.text.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !left.isEmpty, !right.isEmpty { return left + " " + right }
+        }
+        return flag.text
+    }
+
+    static func flagLabels(_ group: KXGroup) -> [String] {
+        group.flags.map(flagLabel).filter { !$0.isEmpty }
+    }
+
+    static func roomSince(_ group: KXGroup) -> String {
+        "进房 \(monthDay(group.roomSince))"
+    }
+
+    static func eliminatedLine(_ group: KXGroup) -> String {
+        "断板日 \(monthDay(group.brokeOn)) · \(clean(group.observedText) ?? dash)"
+    }
+
+    static func deepseekBody(_ group: KXGroup) -> KXDeepseekBody? {
+        let note = clean(group.note)
+        if let judgment = group.judgment {
+            var lines = [
+                KXLabeledLine(label: "高度", value: clean(judgment.height) ?? dash),
+                KXLabeledLine(label: "带动", value: clean(judgment.drive) ?? dash),
+                KXLabeledLine(label: "承接", value: clean(judgment.resilience) ?? dash),
+            ]
+            var title = "高度、带动、承接"
+            if let note {
+                lines.append(KXLabeledLine(label: "说明", value: note))
+                title += "、说明"
+            }
+            return .judgment(
+                verdict: clean(judgment.verdict) ?? dash,
+                reason: clean(judgment.reason) ?? dash,
+                foldTitle: title,
+                lines: lines
+            )
+        }
+        if let note { return .note(note) }
+        return nil
+    }
+
+    static func mismatches(group: KXGroup, board: KXBoard) -> [String] {
+        guard let id = clean(group.id) else { return [] }
+        return board.factWarnings.compactMap { warning in
+            guard warning.groupId == id else { return nil }
+            return clean(warning.text)
+        }
+    }
+
+    static func orphanFactTexts(_ board: KXBoard) -> [String] {
+        let ids = Set(board.rooms.ordered.flatMap { $0.groups.compactMap(\.id) })
+        return board.factWarnings.compactMap { warning in
+            guard let text = clean(warning.text) else { return nil }
+            if let id = clean(warning.groupId), ids.contains(id) { return nil }
+            return text
+        }
+    }
+
+    // MARK: 页眉、提示、页脚
+
+    static func headerMeta(board: KXBoard, refreshFailed: Bool) -> String {
+        let time = clock(board.source?.checkedAt) ?? dash
+        let state: String
+        if refreshFailed {
+            state = "刷新失败"
+        } else if board.session?.inSession == true {
+            state = "盘中"
         } else {
-            first.append("名单 \(pool.version) · \(sameDayOrDated(pool.checkedAt, reference: board.generatedAt)) 核对")
+            state = "已收盘"
         }
-        if let quote = board.session.quoteTime {
-            first.append("报价 \(quoteClock(quote, reference: board.generatedAt))")
+        return "\(time) · \(state)"
+    }
+
+    static func headerSub(board: KXBoard) -> String {
+        "按 \(monthDay(board.structure?.asOf)) 收盘整理"
+    }
+
+    static func amberLines(board: KXBoard) -> [String] {
+        var lines: [String] = []
+        if board.source?.stale == true {
+            let time = clock(board.source?.lastReadAt) ?? dash
+            lines.append("未能核对，最后读到 \(time)")
         }
-        var lines = [first.joined(separator: "　")]
-        if let last = monthDayClock(board.picks.lastPickAt) {
-            lines.append("最后收到推荐 \(last)")
-        } else {
-            lines.append("最后收到推荐 \(dash)")
-        }
-        let gaps = board.gaps.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if !gaps.isEmpty {
-            lines.append(gaps.joined(separator: " "))
+        if let status = board.structure?.deepseekStatus, !status.isOK {
+            lines.append(clean(board.structure?.deepseekNotice) ?? deepseekPending)
         }
         return lines
     }
 
-    /// 与参照时刻同一天只写时分，不同天加上月日。
-    private static func sameDayOrDated(_ iso: String, reference: String) -> String {
-        guard let date = KXClock.parse(iso) else { return iso }
-        if let ref = KXClock.parse(reference), KXClock.sameDay(date, ref) {
-            return KXClock.string(date, "HH:mm")
+    static func grayLine(board: KXBoard) -> String? {
+        var parts: [String] = []
+        if board.structure?.deepseekStatus?.isOK == true, let notice = clean(board.structure?.deepseekNotice) {
+            parts.append(notice)
         }
-        return KXClock.string(date, "M/d HH:mm")
+        if let notice = clean(board.structure?.refresh?.notice) {
+            parts.append(notice)
+        }
+        if board.status == "partial" {
+            parts.append(partialQuote)
+        }
+        parts.append(contentsOf: board.gaps.compactMap(clean))
+        let orphans = orphanFactTexts(board)
+        if !orphans.isEmpty {
+            parts.append(mismatchTitle + "：" + orphans.joined(separator: "；"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    private static func quoteClock(_ iso: String, reference: String) -> String {
-        guard let date = KXClock.parse(iso) else { return iso }
-        if let ref = KXClock.parse(reference), !KXClock.sameDay(date, ref) {
-            return KXClock.string(date, "M/d HH:mm")
-        }
-        return KXClock.string(date, "HH:mm:ss")
+    static func sentiment(_ sentiment: KXSentiment?) -> KXSentimentText {
+        let highest = sentiment?.highestBoard
+        let names = highest?.names ?? []
+        let codes = highest?.codes ?? []
+        let count = names.isEmpty ? codes.count : names.count
+        let boards = highest?.boards
+        let label = boards == nil && count == 0 ? "最高 —" : "最高 · \(count) 只"
+        return KXSentimentText(
+            limitUp: whole(sentiment?.limitUpCount),
+            broken: whole(sentiment?.brokenCount),
+            brokenRate: brokenRate(sentiment?.brokenRate),
+            limitDown: whole(sentiment?.limitDownCount),
+            boards: boards == nil ? dash : whole(boards),
+            showsBoardUnit: boards != nil,
+            highestLabel: label,
+            names: names,
+            nameTitle: names.isEmpty ? nil : "\(count) 只的名字",
+            yesterday: "昨日连板 \(whole(sentiment?.yesterdayConsecutive)) 只，今日继续 \(whole(sentiment?.yesterdayContinued)) 只",
+            intraday: sentiment?.basis == "交易时段"
+        )
     }
 
-    // MARK: 竞价阶段
-
-    /// 手机第二行与 macOS 现价格里的小字。不认识的阶段和空都不出标签。
-    static func sessionPhaseLabel(_ phase: KXSessionPhase?) -> String? {
-        switch phase {
-        case .callAuction: return "竞价中"
-        case .preOpen: return "开盘价"
-        case .unknown, .none: return nil
+    static func footer(_ board: KXBoard) -> KXFooter {
+        let read = board.source?.checkedAt
+        let quote = latestQuoteTime(board)
+        let pool = board.sentiment?.fetchedAt?.limitUp
+        let written = board.structure?.generatedAt
+        let base = KXClock.parse(read).map(KXClock.dayKey)
+        func one(_ label: String, _ raw: String?) -> String {
+            guard let raw, let date = KXClock.parse(raw) else { return "\(label) \(dash)" }
+            let clock = KXClock.string(date, "HH:mm:ss")
+            if let base, KXClock.dayKey(date) == base {
+                return "\(label) \(clock)"
+            }
+            return "\(label) \(KXClock.string(date, "MM/dd")) \(clock)"
         }
+        let prefix: String
+        if let read, let date = KXClock.parse(read) {
+            prefix = KXClock.string(date, "MM/dd") + " · "
+        } else {
+            prefix = ""
+        }
+        let line = prefix + [one("读取", read), one("报价", quote), one("涨停池", pool), one("结构写入", written)].joined(separator: " · ")
+        return KXFooter(line: line, version: clean(board.structure?.version))
     }
 
-    // MARK: 状态文案
-
-    static let emptyPoolTitle = "名单里还没有股票"
-    static let poolUnverifiedTitle = "KX 名单还没有同步"
-    static let calendarGapTitle = "交易日历还没有覆盖今天"
-    static let unreadableTitle = "KX 看板暂时读不了"
-
-    /// 沿用晨报的状态风格：一个图标、一句话、必要时一行原因和按钮。
     static func message(for error: KXBoardError) -> MorningMessage {
         switch error {
         case .missingToken:
@@ -195,12 +377,9 @@ enum KXCopy {
         case .dbNotReady:
             return MorningMessage(title: MorningCopy.dbNotReady, detail: nil, problem: false, retry: true,
                                   icon: MorningCopy.symbol(for: .dbNotReady))
-        case .poolUnverified(let reason):
-            return MorningMessage(title: poolUnverifiedTitle, detail: clean(reason), problem: false, retry: true,
-                                  icon: "list.bullet.rectangle")
-        case .calendarGap(let reason):
-            return MorningMessage(title: calendarGapTitle, detail: clean(reason), problem: false, retry: true,
-                                  icon: "calendar.badge.exclamationmark")
+        case .unavailable(let reason):
+            return MorningMessage(title: unreadableTitle, detail: clean(reason), problem: false, retry: true,
+                                  icon: MorningCopy.symbol(for: .unreadable))
         case .unreachable:
             return MorningMessage(title: MorningCopy.unreachable, detail: nil, problem: false, retry: true,
                                   icon: MorningCopy.symbol(for: .unreachable))
@@ -210,16 +389,75 @@ enum KXCopy {
         }
     }
 
-    static let emptyPoolMessage = MorningMessage(title: emptyPoolTitle, detail: nil, problem: false, retry: true, icon: "tray")
+    // MARK: 时间
 
-    private static func clean(_ text: String?) -> String? {
+    static func clock(_ iso: String?) -> String? {
+        guard let date = KXClock.parse(iso) else { return nil }
+        return KXClock.string(date, "HH:mm")
+    }
+
+    static func clockWithSeconds(_ iso: String?) -> String? {
+        guard let date = KXClock.parse(iso) else { return nil }
+        return KXClock.string(date, "HH:mm:ss")
+    }
+
+    static func monthDay(_ raw: String?) -> String {
+        guard let raw = clean(raw) else { return dash }
+        if !raw.contains("T") {
+            let parts = raw.split(separator: "-", omittingEmptySubsequences: false)
+            if parts.count >= 3, parts[1].count == 2, parts[2].count >= 2 {
+                return "\(parts[1])/\(parts[2].prefix(2))"
+            }
+        }
+        guard let date = KXClock.parse(raw) else { return dash }
+        return KXClock.string(date, "MM/dd")
+    }
+
+    static func shortClock(_ raw: String?) -> String? {
+        guard let raw = clean(raw) else { return nil }
+        if let date = KXClock.parse(raw) { return KXClock.string(date, "HH:mm") }
+        guard let range = raw.range(of: #"\d{2}:\d{2}"#, options: .regularExpression) else { return nil }
+        return String(raw[range])
+    }
+
+    static func clean(_ text: String?) -> String? {
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    private static func joined(_ items: [String]) -> String? {
+        let cleaned = items.compactMap(clean)
+        return cleaned.isEmpty ? nil : cleaned.joined(separator: "；")
+    }
+
+    private static func latestQuoteTime(_ board: KXBoard) -> String? {
+        var best: (Date, String)?
+        for room in board.rooms.ordered {
+            for group in room.groups {
+                for stock in group.leaders + group.followers {
+                    guard let raw = stock.quote.sourceTime, let date = KXClock.parse(raw) else { continue }
+                    if best == nil || date > best!.0 { best = (date, raw) }
+                }
+            }
+        }
+        return best?.1
+    }
+
+    private static func format(_ value: Double, digits: Int) -> String {
+        String(format: "%.\(digits)f", locale: Locale(identifier: "en_US_POSIX"), value)
+    }
+
+    private static func trim(_ text: String) -> String {
+        guard text.contains(".") else { return text }
+        var result = text
+        while result.last == "0" { result.removeLast() }
+        if result.last == "." { result.removeLast() }
+        return result
+    }
 }
 
-private enum KXClock {
-    private static let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+enum KXClock {
+    static let shanghai = TimeZone(identifier: "Asia/Shanghai")!
     private static let plain: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
@@ -231,18 +469,32 @@ private enum KXClock {
         return formatter
     }()
     private static var formatters: [String: DateFormatter] = [:]
+    private static let lock = NSLock()
 
-    static func parse(_ iso: String?) -> Date? {
-        guard let iso, !iso.isEmpty else { return nil }
-        return plain.date(from: iso) ?? fractional.date(from: iso)
+    static func parse(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if let date = fractional.date(from: raw) ?? plain.date(from: raw) { return date }
+        let trimmed = trimmingFraction(raw)
+        guard trimmed != raw else { return nil }
+        return fractional.date(from: trimmed) ?? plain.date(from: trimmed)
     }
 
     static func string(_ date: Date, _ pattern: String) -> String {
-        formatter(pattern).string(from: date)
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter(pattern).string(from: date)
     }
 
-    static func sameDay(_ lhs: Date, _ rhs: Date) -> Bool {
-        string(lhs, "yyyy-MM-dd") == string(rhs, "yyyy-MM-dd")
+    static func dayKey(_ date: Date) -> String {
+        string(date, "yyyy-MM-dd")
+    }
+
+    private static func trimmingFraction(_ raw: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"(\.\d{3})\d+"#) else { return raw }
+        let range = NSRange(raw.startIndex..., in: raw)
+        return regex.stringByReplacingMatches(in: raw, range: range, withTemplate: "$1")
     }
 
     private static func formatter(_ pattern: String) -> DateFormatter {

@@ -120,8 +120,7 @@ def create_router(*, require_token_dependency: Callable[..., Any],
                 "mcp": mcp_serving(),
                 "tushare": bool((os.environ.get("TUSHARE_TOKEN") or "").strip()),
                 "mairui": bool((os.environ.get("MAIRUI_LICENCE") or "").strip()),
-                "kxPool": kx_settings.read_key() is not None,
-                "kxPicks": kx_settings.picks_token() is not None}
+                "kxBoard": kx_settings.read_key() is not None}
         if version is not None:
             body["version"] = version
         if release_set is not None:

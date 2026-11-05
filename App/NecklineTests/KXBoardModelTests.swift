@@ -1,7 +1,8 @@
 import XCTest
 @testable import Neckline
 
-/// KX 看板的状态与刷新调度：前台、活跃、交易时段三个条件都满足才自动续取，间隔用接口给的秒数。
+/// KX 看板的状态与刷新调度：前台、活跃、交易时段三个条件都满足才自动续取。
+/// 间隔用接口给的秒数，但不快于 60 秒。
 @MainActor
 final class KXBoardModelTests: XCTestCase {
     private var suites: [String] = []
@@ -14,89 +15,76 @@ final class KXBoardModelTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: 调度策略
-
     func testRefreshPolicyNeedsVisibleActiveAndInSession() throws {
         let inSession = try board()
-        let closed = try board { object in
-            var session = object["session"] as! [String: Any]
-            session["inSession"] = false
-            session["refreshSeconds"] = NSNull()
-            object["session"] = session
-        }
-        let custom = try board { object in
-            var session = object["session"] as! [String: Any]
-            session["refreshSeconds"] = 45
-            object["session"] = session
-        }
-        let zero = try board { object in
-            var session = object["session"] as! [String: Any]
-            session["refreshSeconds"] = 0
-            object["session"] = session
-        }
-        let noInterval = try board { object in
-            var session = object["session"] as! [String: Any]
-            session["refreshSeconds"] = NSNull()
-            object["session"] = session
-        }
+        let closed = try board(live: false)
+        let faster = try board(seconds: 45)
+        let slower = try board(seconds: 90)
+        let zero = try board(seconds: 0)
+        let noInterval = try board(seconds: NSNull())
 
         XCTAssertEqual(KXRefreshPolicy.interval(visible: true, active: true, board: inSession), 60)
-        XCTAssertEqual(KXRefreshPolicy.interval(visible: true, active: true, board: custom), 45, "间隔以接口为准")
-        XCTAssertNil(KXRefreshPolicy.interval(visible: false, active: true, board: inSession), "切到别的标签就停")
-        XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: false, board: inSession), "后台或锁屏就停")
+        XCTAssertEqual(KXRefreshPolicy.interval(visible: true, active: true, board: faster), 60, "不快于 60 秒")
+        XCTAssertEqual(KXRefreshPolicy.interval(visible: true, active: true, board: slower), 90)
+        XCTAssertNil(KXRefreshPolicy.interval(visible: false, active: true, board: inSession))
+        XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: false, board: inSession))
         XCTAssertNil(KXRefreshPolicy.interval(visible: false, active: false, board: inSession))
-        XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: true, board: closed), "非交易时段只取一次")
-        XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: true, board: nil), "没有拿到看板不续取")
+        XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: true, board: closed))
+        XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: true, board: nil))
         XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: true, board: zero))
         XCTAssertNil(KXRefreshPolicy.interval(visible: true, active: true, board: noInterval))
         XCTAssertEqual(KXRefreshPolicy.interval(for: inSession), 60)
     }
 
-    // MARK: 自动续取
-
-    func testVisibleInSessionFetchesImmediatelyThenEverySixtySeconds() async throws {
+    func testVisibleInSessionFetchesImmediatelyThenOnTheInterval() async throws {
         let client = FakeKXClient(.success(try board()))
         let sleeper = TickSleeper()
         let model = makeModel(client: client, sleeper: sleeper)
-        XCTAssertEqual(client.calls, 0, "没打开页面前不取")
+        XCTAssertEqual(client.calls, 0)
 
         model.setVisible(true)
         let first = await waitUntil { client.calls == 1 && sleeper.waiting == 1 }
-        XCTAssertTrue(first, "页面出现时取一次，然后等 60 秒")
+        XCTAssertTrue(first)
         XCTAssertEqual(sleeper.seconds, [60])
         guard case .ready(let loaded) = model.state else { return XCTFail("应有数据") }
-        XCTAssertEqual(loaded.rows.count, 12)
+        XCTAssertEqual(loaded.rooms.ordered.map { $0.groups.count }, [1, 1, 3])
 
         sleeper.tick()
         let second = await waitUntil { client.calls == 2 && sleeper.waiting == 1 }
-        XCTAssertTrue(second, "过了 60 秒再取一次")
+        XCTAssertTrue(second)
         XCTAssertEqual(sleeper.seconds, [60, 60])
         XCTAssertTrue(model.isAutoRefreshing)
     }
 
-    func testIntervalComesFromTheInterface() async throws {
-        let client = FakeKXClient(.success(try board { object in
-            var session = object["session"] as! [String: Any]
-            session["refreshSeconds"] = 45
-            object["session"] = session
-        }))
+    func testIntervalFloorsAtSixty() async throws {
+        let client = FakeKXClient(.success(try board(seconds: 45)))
         let sleeper = TickSleeper()
         let model = makeModel(client: client, sleeper: sleeper)
         model.setVisible(true)
         let waiting = await waitUntil { sleeper.waiting == 1 }
         XCTAssertTrue(waiting)
-        XCTAssertEqual(sleeper.seconds, [45])
+        XCTAssertEqual(sleeper.seconds, [60])
+    }
+
+    func testSlowerIntervalComesFromTheInterface() async throws {
+        let client = FakeKXClient(.success(try board(seconds: 90)))
+        let sleeper = TickSleeper()
+        let model = makeModel(client: client, sleeper: sleeper)
+        model.setVisible(true)
+        let waiting = await waitUntil { sleeper.waiting == 1 }
+        XCTAssertTrue(waiting)
+        XCTAssertEqual(sleeper.seconds, [90])
     }
 
     func testOutOfSessionFetchesOnlyOnce() async throws {
-        let client = FakeKXClient(.success(try closedBoard()))
+        let client = FakeKXClient(.success(try board(live: false)))
         let sleeper = TickSleeper()
         let model = makeModel(client: client, sleeper: sleeper)
         model.setVisible(true)
         let done = await waitUntil { client.calls == 1 && !model.isAutoRefreshing }
-        XCTAssertTrue(done, "非交易时段取一次就结束")
+        XCTAssertTrue(done)
         XCTAssertTrue(sleeper.seconds.isEmpty)
-        XCTAssertEqual(KXCopy.meta(board: try XCTUnwrap(model.board), refreshFailed: false), "10:31 更新 · 已收盘")
+        XCTAssertEqual(KXCopy.headerMeta(board: try XCTUnwrap(model.board), refreshFailed: false), "18:30 · 已收盘")
         XCTAssertEqual(client.calls, 1)
     }
 
@@ -110,14 +98,14 @@ final class KXBoardModelTests: XCTestCase {
 
         model.setActive(false)
         let stopped = await waitUntil { sleeper.waiting == 0 && !model.isAutoRefreshing }
-        XCTAssertTrue(stopped, "进入后台、锁屏就停")
+        XCTAssertTrue(stopped)
         sleeper.tick()
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(client.calls, 1, "停下以后不再取")
+        XCTAssertEqual(client.calls, 1)
 
         model.setActive(true)
         let resumed = await waitUntil { client.calls == 2 && sleeper.waiting == 1 }
-        XCTAssertTrue(resumed, "回到前台立刻取一次，再接着续取")
+        XCTAssertTrue(resumed)
     }
 
     func testLeavingTheTabStopsAndComingBackFetchesAgain() async throws {
@@ -130,7 +118,7 @@ final class KXBoardModelTests: XCTestCase {
 
         model.setVisible(false)
         let stopped = await waitUntil { sleeper.waiting == 0 && !model.isAutoRefreshing }
-        XCTAssertTrue(stopped, "切到别的标签就停")
+        XCTAssertTrue(stopped)
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(client.calls, 1)
 
@@ -162,7 +150,7 @@ final class KXBoardModelTests: XCTestCase {
         model.setActive(false)
         model.setVisible(true)
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(client.calls, 0, "App 不活跃时页面出现也不取")
+        XCTAssertEqual(client.calls, 0)
         model.setActive(true)
         let fetched = await waitUntil { client.calls == 1 }
         XCTAssertTrue(fetched)
@@ -175,7 +163,7 @@ final class KXBoardModelTests: XCTestCase {
         await model.refresh()
         XCTAssertEqual(client.calls, 1)
         XCTAssertNotNil(model.board)
-        XCTAssertFalse(model.isAutoRefreshing, "页面不在前台时，下拉刷新不启动自动续取")
+        XCTAssertFalse(model.isAutoRefreshing)
         XCTAssertTrue(sleeper.seconds.isEmpty)
     }
 
@@ -185,19 +173,17 @@ final class KXBoardModelTests: XCTestCase {
         let model = makeModel(client: client, sleeper: sleeper)
         model.setVisible(true)
         let failed = await waitUntil { client.calls == 1 && !model.isAutoRefreshing }
-        XCTAssertTrue(failed, "没拿到看板时循环结束")
+        XCTAssertTrue(failed)
         XCTAssertEqual(model.state, .error(.unreachable))
 
         client.result = .success(try board())
         await model.refresh()
-        XCTAssertEqual(client.calls, 2, "下拉刷新只取一次")
+        XCTAssertEqual(client.calls, 2)
         XCTAssertNotNil(model.board)
         let resumed = await waitUntil { sleeper.waiting == 1 }
-        XCTAssertTrue(resumed, "刷新成功后接着自动续取")
-        XCTAssertEqual(client.calls, 2, "恢复续取时不重复取")
+        XCTAssertTrue(resumed)
+        XCTAssertEqual(client.calls, 2)
     }
-
-    // MARK: 状态
 
     func testStartsLoadingThenShowsBoard() async throws {
         let client = FakeKXClient(.success(try board()))
@@ -212,18 +198,17 @@ final class KXBoardModelTests: XCTestCase {
     func testServerRefusalsReplaceTheState() async throws {
         for failure: KXBoardError in [
             .missingToken, .unauthorized, .notConfigured, .dbNotReady,
-            .poolUnverified("KX 名单还没有成功同步过，暂不出看板：KX 暂时连不上。"),
-            .calendarGap("交易日历没有覆盖今天"), .unreachable, .unreadable,
+            .unavailable("KX 看板还没读到过：KX 暂时连不上。"), .unreachable, .unreadable,
         ] {
             let client = FakeKXClient(.failure(failure))
             let model = makeModel(client: client)
             await model.refresh()
             XCTAssertEqual(model.state, .error(failure))
         }
-        let model = makeModel(client: FakeKXClient(.failure(KXBoardError.poolUnverified("原因"))))
+        let model = makeModel(client: FakeKXClient(.failure(KXBoardError.unavailable("原因"))))
         await model.refresh()
-        let message = KXCopy.message(for: .poolUnverified("原因"))
-        XCTAssertEqual(message.title, "KX 名单还没有同步")
+        let message = KXCopy.message(for: .unavailable("原因"))
+        XCTAssertEqual(message.title, "KX 看板暂时读不了")
         XCTAssertEqual(message.detail, "原因")
     }
 
@@ -235,9 +220,9 @@ final class KXBoardModelTests: XCTestCase {
 
         client.result = .failure(KXBoardError.unreachable)
         await model.refresh()
-        XCTAssertEqual(model.board, shown, "连不上时保留已有数据")
+        XCTAssertEqual(model.board, shown)
         XCTAssertTrue(model.refreshFailed)
-        XCTAssertEqual(KXCopy.meta(board: try XCTUnwrap(model.board), refreshFailed: model.refreshFailed), "10:31 更新 · 刷新失败")
+        XCTAssertEqual(KXCopy.headerMeta(board: try XCTUnwrap(model.board), refreshFailed: true), "18:30 · 刷新失败")
 
         client.result = .failure(KXBoardError.unreadable)
         await model.refresh()
@@ -257,50 +242,42 @@ final class KXBoardModelTests: XCTestCase {
         XCTAssertNotNil(model.board)
         client.result = .failure(KXBoardError.unauthorized)
         await model.refresh()
-        XCTAssertEqual(model.state, .error(.unauthorized), "令牌被拒后不留着旧行情")
+        XCTAssertEqual(model.state, .error(.unauthorized))
         XCTAssertNil(model.board)
         XCTAssertFalse(model.refreshFailed)
+
+        client.result = .success(try board())
+        await model.refresh()
+        client.result = .failure(KXBoardError.unavailable("KX 看板还没读到过。"))
+        await model.refresh()
+        XCTAssertEqual(model.state, .error(.unavailable("KX 看板还没读到过。")))
+        XCTAssertNil(model.board)
     }
 
-    func testRefreshKeepsCurrentGroupAndReplacesRowsInPlace() async throws {
+    func testRefreshReplacesTheBoardInPlace() async throws {
         let client = FakeKXClient(.success(try board()))
         let model = makeModel(client: client)
-        XCTAssertEqual(model.group, .overview)
         await model.refresh()
-        model.group = .trend
-
         let updated = try board { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[0]["price"] = 13.88
-            object["rows"] = rows
+            var rooms = object["rooms"] as! [String: Any]
+            var leader = rooms["leader"] as! [[String: Any]]
+            var leaders = leader[0]["leaders"] as! [[String: Any]]
+            var quote = leaders[0]["quote"] as! [String: Any]
+            quote["price"] = 9.99
+            leaders[0]["quote"] = quote
+            leader[0]["leaders"] = leaders
+            rooms["leader"] = leader
+            object["rooms"] = rooms
         }
         client.result = .success(updated)
         await model.refresh()
-        XCTAssertEqual(model.group, .trend, "刷新不重置分组")
-        XCTAssertEqual(model.board?.rows.first?.price, 13.88)
-        XCTAssertNotEqual(model.state, .loading, "刷新时不退回读取中，页面不闪")
+        XCTAssertEqual(model.board?.rooms.leader.first?.leaders.first?.quote.price, 9.99)
+        XCTAssertNotEqual(model.state, .loading)
     }
-
-    func testPickChangesMoveRowsBetweenSectionsOnRefresh() async throws {
-        let client = FakeKXClient(.success(try board()))
-        let model = makeModel(client: client)
-        await model.refresh()
-        XCTAssertEqual(model.board?.sections.map(\.rows.count), [4, 1, 7])
-        client.result = .success(try board { object in
-            var rows = object["rows"] as! [[String: Any]]
-            rows[4]["highlight"] = "normal"
-            object["rows"] = rows
-        })
-        await model.refresh()
-        XCTAssertEqual(model.board?.sections.map(\.section), [.today, .all])
-        XCTAssertEqual(model.board?.sections.map(\.rows.count), [4, 8])
-    }
-
-    // MARK: 连接变化
 
     func testConnectionChangeResetsAndIgnoresStaleResponses() async throws {
         let first = FakeKXClient(.success(try board()))
-        let second = FakeKXClient(.success(try closedBoard()))
+        let second = FakeKXClient(.success(try board(live: false)))
         var clients: [FakeKXClient] = [first, second]
         let defaults = isolatedDefaults()
         let config = makeConfig(defaults: defaults, token: "fixture-token-not-real")
@@ -314,13 +291,13 @@ final class KXBoardModelTests: XCTestCase {
 
         config.apiToken = "another-fixture-token"
         await model.handleConnectionChange()
-        XCTAssertEqual(model.state, .loading, "换了令牌先清空")
+        XCTAssertEqual(model.state, .loading)
         let refetched = await waitUntil { second.calls == 1 && !model.isAutoRefreshing }
-        XCTAssertTrue(refetched, "页面在前台时用新连接重新取")
+        XCTAssertTrue(refetched)
 
         first.release(.success(try board()))
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(model.board?.session.inSession, false, "旧连接晚到的响应被丢掉")
+        XCTAssertEqual(model.board?.session?.inSession, false)
     }
 
     func testUnchangedConnectionIsIgnored() async throws {
@@ -331,8 +308,6 @@ final class KXBoardModelTests: XCTestCase {
         XCTAssertNotEqual(model.state, .loading)
         XCTAssertEqual(client.calls, 1)
     }
-
-    // MARK: 辅助
 
     private func makeModel(client: FakeKXClient, sleeper: TickSleeper = TickSleeper()) -> KXBoardModel {
         let config = makeConfig(defaults: isolatedDefaults(), token: "fixture-token-not-real")
@@ -353,19 +328,14 @@ final class KXBoardModelTests: XCTestCase {
         return defaults
     }
 
-    private func board(_ edit: (inout [String: Any]) -> Void = { _ in }) throws -> KXBoard {
-        var object = try JSONSerialization.jsonObject(with: fixtureData("kx_board_sample")) as! [String: Any]
-        edit(&object)
+    private func board(live: Bool = true, seconds: Any = 60, _ edit: ((inout [String: Any]) -> Void)? = nil) throws -> KXBoard {
+        var object = try JSONSerialization.jsonObject(with: fixtureData("kx_board_v3")) as! [String: Any]
+        var session = object["session"] as! [String: Any]
+        session["inSession"] = live
+        session["refreshSeconds"] = live ? seconds : NSNull()
+        object["session"] = session
+        if let edit { edit(&object) }
         return try JSONDecoder().decode(KXBoard.self, from: JSONSerialization.data(withJSONObject: object))
-    }
-
-    private func closedBoard() throws -> KXBoard {
-        try board { object in
-            var session = object["session"] as! [String: Any]
-            session["inSession"] = false
-            session["refreshSeconds"] = NSNull()
-            object["session"] = session
-        }
     }
 
     private func fixtureData(_ name: String) throws -> Data {
@@ -375,7 +345,6 @@ final class KXBoardModelTests: XCTestCase {
         return try Data(contentsOf: try XCTUnwrap(url, "缺少夹具 \(name).json"))
     }
 
-    /// 轮询到条件成立或超时。调度在独立任务里跑，测试靠它等到下一个稳定点。
     private func waitUntil(timeout: TimeInterval = 3, _ condition: () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
@@ -406,7 +375,6 @@ private final class FakeKXClient: KXBoardClient, @unchecked Sendable {
         return callCount
     }
 
-    /// 为 true 时下一次请求停住，直到 release。
     var hold: Bool {
         get { lock.lock(); defer { lock.unlock() }; return holding }
         set { lock.lock(); holding = newValue; lock.unlock() }
@@ -438,7 +406,6 @@ private final class FakeKXClient: KXBoardClient, @unchecked Sendable {
     }
 }
 
-/// 假的等待：记下每次要等多久，停住直到 tick；被取消就抛 CancellationError。
 private final class TickSleeper: @unchecked Sendable {
     private final class Waiter {
         var continuation: CheckedContinuation<Void, Error>?
@@ -456,7 +423,6 @@ private final class TickSleeper: @unchecked Sendable {
         return requested
     }
 
-    /// 还停着的等待数。
     var waiting: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -478,7 +444,6 @@ private final class TickSleeper: @unchecked Sendable {
         }
     }
 
-    /// 让最早一个还停着的等待结束。
     func tick() {
         lock.lock()
         let index = waiters.firstIndex { !$0.finished }

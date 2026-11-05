@@ -1,16 +1,13 @@
-"""进程内的 KX 服务。测试用 use() 换成假 transport，避免打到真的 KX、麦蕊或 TuShare。"""
+"""进程内的 KX 服务。测试用 use() 换成假 transport，避免打到真的 KX。"""
 from __future__ import annotations
 
-import os
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
 
-from neckline.kx.daily import DailyStats, TuShareBoardSource
-from neckline.kx.pool import PoolSync
 from neckline.kx.source import KxSource
-from neckline.market import services as market_services
-from neckline.market.mairui import Mairui
 from neckline.morning.schedule import CST
 
 
@@ -20,17 +17,13 @@ def cst_now() -> datetime:
 
 @dataclass
 class KxServices:
-    pool: PoolSync
-    mairui: Mairui
-    stats: DailyStats
+    source: KxSource
     now: Callable[[], datetime] = cst_now
-    owns_mairui: bool = False
+    monotonic: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     async def aclose(self) -> None:
-        await self.pool.aclose()
-        await self.stats.aclose()
-        if self.owns_mairui:
-            await self.mairui.aclose()
+        await self.source.aclose()
 
 
 _default: KxServices | None = None
@@ -40,11 +33,7 @@ _override: KxServices | None = None
 def default_services() -> KxServices:
     global _default
     if _default is None:
-        _default = KxServices(
-            pool=PoolSync(KxSource()),
-            mairui=market_services.current().mairui,  # 与单票概览共用麦蕊客户端、连接数限制和缓存
-            stats=DailyStats(TuShareBoardSource(os.environ.get("TUSHARE_TOKEN"))),
-        )
+        _default = KxServices(source=KxSource())
     return _default
 
 

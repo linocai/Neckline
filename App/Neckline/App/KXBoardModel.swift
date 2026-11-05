@@ -11,10 +11,10 @@ enum KXRefreshPolicy {
         return interval(for: board)
     }
 
-    /// 只看接口：交易时段并且给了正的刷新间隔。
+    /// 只看接口：交易时段并且给了正的刷新间隔。间隔用接口的秒数，但不快于 60 秒。
     static func interval(for board: KXBoard) -> TimeInterval? {
-        guard board.session.inSession, let seconds = board.session.refreshSeconds, seconds > 0 else { return nil }
-        return seconds
+        guard board.session?.inSession == true, let seconds = board.session?.refreshSeconds, seconds > 0 else { return nil }
+        return max(seconds, 60)
     }
 }
 
@@ -42,8 +42,6 @@ final class KXBoardModel {
     private(set) var state: LoadState = .loading
     /// 已经有数据时，最近一次续取没成功。数据保留，页眉小字写明。
     private(set) var refreshFailed = false
-    /// 当前分组。刷新、切标签都不重置。
-    var group: KXColumnGroup = .overview
     private(set) var isVisible = false
     private(set) var isActive = true
 

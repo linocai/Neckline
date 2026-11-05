@@ -24,7 +24,6 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         let kx = KXBoardModel(config: config)
         #if DEBUG
         Self.applyQALaunchState(to: model)
-        Self.applyQALaunchState(to: kx)
         #endif
         _config = StateObject(wrappedValue: config)
         _model = State(initialValue: model)
@@ -113,17 +112,6 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         case "history": model.k10Section = .history
         case "kx": model.tab = .kx
         case "settings": model.tab = .settings
-        default: break
-        }
-    }
-
-    /// 截图进程直接落在指定的分组上，省得点分段控件。
-    private static func applyQALaunchState(to kx: KXBoardModel) {
-        guard ProcessInfo.processInfo.environment["NK_QA_API_URL"] != nil else { return }
-        switch ProcessInfo.processInfo.environment["NK_QA_KX_GROUP"] {
-        case "today": kx.group = .today
-        case "volume": kx.group = .volume
-        case "trend": kx.group = .trend
         default: break
         }
     }

@@ -85,45 +85,59 @@ extension Color {
     }
 }
 
-/// KX 看板。涨红跌绿平灰是 A 股惯例；今日、昨日推荐的底色和竖条用晨报的强调色加透明度。取值与样图一致。
+/// KX 看板的颜色。涨红、跌绿、平灰；琥珀色提示和 DeepSeek 底色按样图。
 enum NKKX {
     static let up = Color(light: 0xE0312B, dark: 0xFF5A4E)
     static let down = Color(light: 0x139A5B, dark: 0x30C67C)
     static let flat = Color(light: 0x8E8E93, dark: 0x8E8E93)
-    static let todayFill = Color(light: 0x0754E9, lightAlpha: 0.10, dark: 0x4C8DFF, darkAlpha: 0.20)
-    static let ydayFill = Color(light: 0x0754E9, lightAlpha: 0.04, dark: 0x4C8DFF, darkAlpha: 0.08)
-    static let bar = NKMorning.accent
-    static let ydayBarOpacity = 0.35
-    /// 热度徽标第 5 天起的浅红底（浅色、深色同一个值，样图如此）；首日用强调色描边，第 2 到 4 天用 NKMorning.tagFill。
-    static let heatHotFill = Color(light: 0xE0312B, lightAlpha: 0.12, dark: 0xE0312B, darkAlpha: 0.12)
-    /// 涨跌幅色块上的字。
-    static let pillText = Color.white
-    /// 分段控件选中项的投影。
+    static let amber = Color(light: 0x9C5D00, dark: 0xFFC14D)
+    static let amberInk = Color(light: 0x6B3E00, dark: 0xFFE7A3)
+    static let amberBackground = Color(light: 0xFF9F0A, lightAlpha: 0.18, dark: 0xFF9F0A, darkAlpha: 0.28)
+    static let deepseekFill = Color(light: 0x0754E9, lightAlpha: 0.08, dark: 0x4C8DFF, darkAlpha: 0.16)
+    /// 分段控件选中项的投影。K10 的分段控件还在用。
     static let segmentShadow = Color.black.opacity(0.12)
 }
 
-/// KX 看板的字号。看板一行要放下一整组数字，磅值固定，不随动态字体放大。
+/// KX 看板的字号，按样图 CSS 像素换算成点。固定磅值，不随动态字体放大。
 enum NKKXFont {
-    static let title = Font.system(size: 28, weight: .semibold)
-    static let meta = Font.system(size: 12)
     static let segment = Font.system(size: 13)
     static let segmentOn = Font.system(size: 13, weight: .semibold)
-    static let columnHead = Font.system(size: 11)
+    static let titlePhone = Font.system(size: 28, weight: .semibold)
+    static let titleMac = Font.system(size: 22, weight: .semibold)
+    static let meta = Font.system(size: 12)
+    static let alert = Font.system(size: 13, weight: .semibold)
+    static let sentiValue = Font.system(size: 20, weight: .semibold)
+    static let sentiRate = Font.system(size: 11, weight: .medium)
+    static let sentiUnit = Font.system(size: 12, weight: .semibold)
+    static let label = Font.system(size: 11)
+    static let yesterdayPhone = Font.system(size: 13)
+    static let yesterdayMac = Font.system(size: 14)
+    static let intraday = Font.system(size: 11)
+    static let link = Font.system(size: 12)
+    static let disclosure = Font.system(size: 11)
+    static let names = Font.system(size: 12)
+    static let market = Font.system(size: 13)
+    static let mark = Font.system(size: 10, weight: .bold)
     static let section = Font.system(size: 12, weight: .semibold)
     static let sectionCount = Font.system(size: 12)
-    static let name = Font.system(size: 15, weight: .medium)
-    static let nameToday = Font.system(size: 15, weight: .bold)
-    static let code = Font.system(size: 11).monospacedDigit()
-    static let cell = Font.system(size: 15).monospacedDigit()
-    static let cellBold = Font.system(size: 15, weight: .bold).monospacedDigit()
-    static let pill = Font.system(size: 13.5, weight: .semibold).monospacedDigit()
-    static let ratio = Font.system(size: 12).monospacedDigit()
-    static let rangeNote = Font.system(size: 10).monospacedDigit()
+    static let empty = Font.system(size: 14)
+    static let theme = Font.system(size: 16, weight: .semibold)
+    static let tag = Font.system(size: 11)
+    static let name = Font.system(size: 15, weight: .semibold)
+    static let code = Font.system(size: 11)
+    static let price = Font.system(size: 15, weight: .semibold)
+    static let status = Font.system(size: 12, weight: .semibold)
+    static let facts = Font.system(size: 12)
+    static let auction = Font.system(size: 10, weight: .semibold)
+    static let reason = Font.system(size: 13)
+    static let extra = Font.system(size: 12)
+    static let why = Font.system(size: 11)
+    static let followerLabel = Font.system(size: 11, weight: .semibold)
+    static let followerReason = Font.system(size: 12)
+    static let verdict = Font.system(size: 12, weight: .semibold)
     static let foot = Font.system(size: 10.5)
-    /// 热度徽标与阶段标签。
-    static let badge = Font.system(size: 10.5, weight: .semibold).monospacedDigit()
-    /// 手机第二行的题材。
-    static let theme = Font.system(size: 12)
+    static let version = Font.system(size: 10)
+    static let gray = Font.system(size: 12)
 }
 
 /// 多行文字的字号规格。只在这里写磅值、相对的文本样式和字重。
