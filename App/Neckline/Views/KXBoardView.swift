@@ -692,15 +692,17 @@ struct KXQuoteLine: View {
             if showsInlineStatus, stock.divergent == true {
                 KXTag(text: "背离")
             }
+            // 名称按实际宽度显示、最后才压缩，代码紧跟其后（样图如此）；挤的时候先让代码和状态让位。
             Text(stock.name.isEmpty ? KXCopy.dash : stock.name)
                 .font(NKKXFont.name)
                 .foregroundStyle(NKMorning.textPrimary)
                 .lineLimit(1)
-                .frame(maxWidth: 90, alignment: .leading)
+                .layoutPriority(3)
             Text(verbatim: stock.code)
                 .font(NKKXFont.code)
                 .foregroundStyle(NKMorning.textTertiary)
                 .monospacedDigit()
+                .lineLimit(1)
             Spacer(minLength: 8)
             Text(verbatim: KXCopy.price(stock.quote.price))
                 .font(NKKXFont.price)
@@ -726,7 +728,7 @@ struct KXQuoteLine: View {
             if showsInlineStatus {
                 KXRichText.statusLine(KXCopy.todayStatus(stock.limitUp))
                     .lineLimit(1)
-                    .frame(maxWidth: 132, alignment: .trailing)
+                    .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(1)
             }
         }
