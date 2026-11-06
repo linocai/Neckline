@@ -1,0 +1,324 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>K10 板块热点样图</title><style>
+:root{
+  --page:#F5F6F8; --card:#FFFFFF; --bar:#FFFFFF; --side:#F3F1F2;
+  --t1:#1C1C1E; --t2:#6E6E73; --t3:#8E8E93; --line:#E5E5EA;
+  --accent:#0754E9; --tag:#F2F2F7; --sel:rgba(7,84,233,.12);
+  --red:#FF3B30; --redFill:rgba(255,59,48,.08); --blue:#007AFF; --blueFill:rgba(0,122,255,.07);
+}
+.dark{
+  --page:#1C1C1E; --card:#2C2C2E; --bar:#1C1C1E; --side:#232325;
+  --t1:#F5F5F7; --t2:#98989D; --t3:#636366; --line:#38383A;
+  --accent:#4C8DFF; --tag:#3A3A3C; --sel:rgba(76,141,255,.22);
+  --red:#FF453A; --redFill:rgba(255,69,58,.16); --blue:#0A84FF; --blueFill:rgba(10,132,255,.16);
+}
+*{box-sizing:border-box}
+body{margin:0;background:#E8EAED;color:#1C1C1E;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",sans-serif}
+header.doc,footer.doc{max-width:920px;margin:0 auto;padding:28px 22px 8px}
+header.doc h1{margin:0 0 8px;font-size:22px}
+header.doc p,footer.doc p{margin:8px 0;color:#333;line-height:1.65}
+header.doc b,figcaption b{color:#111}
+.warn{color:#9A5B00}
+.row{display:flex;flex-wrap:wrap;gap:22px 28px;justify-content:center;align-items:flex-start;max-width:1760px;margin:0 auto;padding:6px 20px 32px}
+.row h2{flex:1 0 100%;margin:10px 0 0;text-align:center;font-size:16px;font-weight:600}
+figure{margin:0;display:flex;flex-direction:column;align-items:center;gap:10px}
+figcaption{max-width:390px;font-size:13px;color:#444;line-height:1.55}
+figure.wide figcaption{max-width:1100px}
+.phone{width:390px;height:844px;border-radius:48px;background:#0B0B0D;padding:11px;box-shadow:0 16px 40px rgba(0,0,0,.18);flex:none}
+.screen{width:100%;height:100%;border-radius:37px;overflow:hidden;position:relative;background:var(--page);color:var(--t1);display:flex;flex-direction:column}
+.island{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:100px;height:32px;border-radius:16px;background:#000;z-index:2}
+.status{height:54px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 18px;font-weight:600;font-size:15px;position:relative;z-index:1}
+.sigs{display:flex;align-items:center;gap:5px}
+.nav{padding:0 16px 4px;flex:none}
+.nav h2{margin:0;font-size:28px;font-weight:700;letter-spacing:-.4px;line-height:1.15}
+.meta{margin-top:4px;font-size:12px;color:var(--t2);line-height:1.35;font-variant-numeric:tabular-nums}
+.seg{display:flex;margin:2px 16px 8px;background:rgba(118,118,128,.16);border-radius:9px;padding:2px;flex:none}
+.seg span{flex:1;text-align:center;font-size:13px;font-weight:500;line-height:28px;border-radius:7px;color:var(--t1)}
+.seg span.on{background:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12),0 1px 3px rgba(0,0,0,.06)}
+.dark .seg{background:rgba(118,118,128,.28)}
+.dark .seg span.on{background:#636366;color:#fff;box-shadow:none}
+.gap{font-size:12px;color:var(--t2);line-height:1.4;padding:2px 16px 8px}
+.scroll{flex:1;min-height:0;min-width:0;overflow-x:hidden;overflow-y:auto;padding-bottom:12px;margin-bottom:78px}
+.blk{margin:14px 16px 6px;font-size:13px;font-weight:600;color:var(--t2)}
+.list{margin:0 16px;background:var(--card);border-radius:12px;overflow:hidden;border:.5px solid var(--line)}
+.scroll>.list:first-child,.scroll>.hist{margin-top:8px}
+.item{padding:11px 14px;min-width:0}
+.item+.item{border-top:.5px solid var(--line)}
+.item.sel{background:var(--sel)}
+.l1{display:flex;align-items:center;gap:8px;min-width:0}
+.l1 .n{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.l1 .c,.c{font-size:13px;color:var(--t2);font-weight:400;font-variant-numeric:tabular-nums;flex:none}
+.l1 .time,.time{margin-left:auto;flex:none;font-size:12px;color:var(--t3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{flex:none;font-size:12px;font-weight:600;color:var(--t1);background:var(--tag);border-radius:5px;padding:2px 7px;line-height:1.3;white-space:nowrap}
+.tag{flex:none;font-size:11px;color:var(--t2);background:var(--tag);border-radius:5px;padding:1px 6px;white-space:nowrap}
+.count{font-size:12px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-variant-numeric:tabular-nums}
+.l2{font-size:15px;font-weight:600;margin-top:4px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.l3{margin-top:3px;font-size:13px;color:var(--t2);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.l3.one{display:block;white-space:nowrap;text-overflow:ellipsis;-webkit-line-clamp:unset}
+.l4{margin-top:3px;font-size:13px;line-height:1.4;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.l4 .k{color:var(--t2);font-weight:400}
+.quiet{padding:13px 14px;font-size:15px;color:var(--t2);line-height:1.4}
+.hrow{display:flex;align-items:center;gap:8px;padding:13px 14px;font-size:15px;min-width:0}
+.hrow+.hrow{border-top:.5px solid var(--line)}
+.hrow span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tabbar{position:absolute;z-index:4;left:50%;bottom:18px;transform:translateX(-50%);width:236px;height:56px;border-radius:28px;background:rgba(255,255,255,.94);box-shadow:0 8px 28px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.06);display:flex;justify-content:space-around;align-items:center}
+.dark .tabbar{background:rgba(44,44,46,.94);box-shadow:0 8px 28px rgba(0,0,0,.45),0 0 0 .5px rgba(255,255,255,.06)}
+.tabbar span{width:64px;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;font-weight:500;color:var(--t3);line-height:1.1}
+.tabbar span.on{color:var(--accent);font-weight:600}
+.home{position:absolute;z-index:5;left:50%;bottom:7px;transform:translateX(-50%);width:124px;height:5px;border-radius:3px;background:#111}
+.dark .home,.lock .home{background:rgba(255,255,255,.86)}
+.navbar{height:48px;flex:none;display:flex;align-items:center;padding:0 12px;position:relative}
+.back{width:32px;height:32px;border-radius:16px;background:var(--card);color:var(--t1);display:flex;align-items:center;justify-content:center;box-shadow:0 1px 2px rgba(0,0,0,.06),0 0 0 .5px var(--line);z-index:1}
+.navbar .ttl{position:absolute;left:48px;right:48px;text-align:center;font-size:17px;font-weight:600}
+.detail{padding:2px 16px 8px;min-width:0}
+.dhead{display:flex;align-items:baseline;gap:8px}
+.dhead .n{font-size:20px;font-weight:600}
+.dmeta{font-size:12px;color:var(--t2);margin-top:2px;font-variant-numeric:tabular-nums}
+.dtitle{font-size:19px;font-weight:600;margin-top:6px;line-height:1.3}
+.concl{font-size:15px;line-height:1.45;margin-top:6px}
+.sect{font-size:12px;font-weight:500;color:var(--t3);margin:12px 0 4px}
+.card{background:var(--card);border-radius:12px;padding:2px 14px;border:.5px solid var(--line)}
+.q{padding:6px 0}
+.q+.q{border-top:.5px solid var(--line)}
+.q b{display:block;font-size:12px;font-weight:600;color:var(--t2);margin-bottom:2px}
+.q p{margin:0;font-size:14px;line-height:1.5}
+.ld{padding:5px 0 1px}
+.ld+.ld{border-top:.5px solid var(--line);margin-top:2px;padding-top:5px}
+.ld1{display:flex;align-items:baseline;gap:8px;font-size:15px;font-weight:600}
+.ld2{font-size:14px;line-height:1.45;margin-top:2px;font-weight:400}
+.risk{margin-top:14px;display:flex;gap:8px;align-items:flex-start;color:var(--red);font-size:14px;line-height:1.5;background:var(--redFill);border-radius:10px;padding:9px 12px}
+.risk .ic{flex:none;font-weight:700}
+.views{background:var(--blueFill);border-radius:12px;padding:4px 14px;color:var(--blue)}
+.v{padding:8px 0;font-size:14px;line-height:1.5}
+.v+.v{border-top:.5px solid rgba(127,127,127,.25)}
+.v small{display:block;font-size:11.5px;opacity:.85;margin-bottom:1px}
+.src{display:flex;align-items:center;gap:8px;padding:9px 0}
+.src+.src{border-top:.5px solid var(--line)}
+.src .txt{flex:1;min-width:0}
+.s1{font-size:12px;color:var(--t2);font-variant-numeric:tabular-nums}
+.s2{font-size:14px;line-height:1.4;margin-top:2px}
+.chev{color:var(--t3);flex:none;font-size:18px;line-height:1}
+.mac{width:1100px;height:720px;border-radius:12px;overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.18);background:var(--page);color:var(--t1);display:flex;flex-direction:column;flex:none;border:.5px solid rgba(0,0,0,.14)}
+.dark.mac{border-color:rgba(255,255,255,.08)}
+.titlebar{height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--bar);border-bottom:.5px solid var(--line);position:relative}
+.dots{display:flex;gap:8px}
+.dots i{width:12px;height:12px;border-radius:50%;display:block}
+.dots i:nth-child(1){background:#FF5F57}
+.dots i:nth-child(2){background:#FEBC2E}
+.dots i:nth-child(3){background:#28C840}
+.wintitle{position:absolute;left:0;right:0;text-align:center;font-size:13px;font-weight:600;pointer-events:none}
+.tools{margin-left:auto;display:flex;align-items:center;gap:14px;position:relative;z-index:1}
+.tool{color:var(--t2);display:flex}
+.body{flex:1;min-height:0;display:flex}
+.side{width:156px;flex:none;min-height:0;background:var(--side);border-right:.5px solid var(--line);padding-top:8px}
+.sideitem{margin:2px 8px;padding:6px 10px;border-radius:8px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--t1)}
+.sideitem.on{background:rgba(0,0,0,.06);font-weight:600}
+.dark .sideitem.on{background:rgba(255,255,255,.10)}
+.listcol{width:392px;flex:none;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;border-right:.5px solid var(--line);background:var(--page)}
+.detailcol{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;background:var(--page);padding:20px 28px 32px}
+.listcol h3{margin:6px 16px 0;font-size:26px;font-weight:700;letter-spacing:-.3px;line-height:1.15}
+.listcol .meta{margin:4px 16px 2px}
+.datepop{margin:10px 16px 0;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:3px}
+.caret{font-size:10px;color:var(--t2)}
+.mac .detail{padding:0}
+.mac .risk{margin-bottom:52px}
+.lock{background:linear-gradient(180deg,#6E8494 0%,#A9BCC9 38%,#E4EBEF 72%,#F2F4F6 100%);color:#fff}
+.lock .status{color:#fff}
+.lockclock{margin-top:28px;text-align:center;font-size:76px;font-weight:400;letter-spacing:-2px;line-height:1;font-variant-numeric:tabular-nums;text-shadow:0 1px 1px rgba(0,0,0,.12)}
+.lockdate{text-align:center;margin-top:6px;font-size:18px;font-weight:500}
+.push{margin:28px 14px 0;background:rgba(255,255,255,.92);color:#1C1C1E;border-radius:22px;padding:12px 14px 13px;box-shadow:0 10px 30px rgba(0,0,0,.16)}
+.push-h{display:flex;align-items:center;gap:6px;font-size:13px;color:#3A3A3C;font-weight:600}
+.push-h .when{margin-left:auto;color:#8E8E93;font-weight:500}
+.push-b{margin-top:3px;font-size:15px;font-weight:600;line-height:1.35}
+.appic{width:20px;height:20px;border-radius:5px;background:#0754E9;color:#fff;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.appic svg{width:12px;height:12px}
+footer.doc h2{margin:12px 0 6px;font-size:18px}
+table{width:100%;border-collapse:collapse;margin:8px 0 12px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid #E5E5EA;font-size:13px;line-height:1.45}
+th{font-size:12px;color:#666;font-weight:600}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px}
+.pending{color:#9A5B00}
+</style></head><body><header class="doc">
+  <h1>K10 板块热点样图（4.3.1）</h1>
+  <p class="warn">图里的文字都是示意，不是交易建议。没有目标价、仓位或涨幅预期。</p>
+  <p>晨报从这一版起分两条线。个股仍是原来的名单；新增板块热点，一天最多 3 个事件，每个事件对应 1 个板块、3 只龙头。</p>
+  <p><b>方案 A（推荐）。</b>同一页上下两块，各是一张圆角卡片。板块行要能直接看懂：板块名、事件标题、一行结论、龙头三家、首次公开时间。点进去的详情和个股同一套结构。四个问题里，③写成「资金会不会借题发挥」，④换成三只龙头，每只有代码、简称和一句价格判断。风险用红，各方怎么看用蓝，并写明媒体、券商或公司。</p>
+  <p><b>方案 B。</b>用分段控件在「个股」和「板块热点」之间切换。只画了一屏 iPhone 浅色，用来对比。</p>
+  <p>主画面是 11/02 周一，窗口 10/30 15:00 – 11/02 08:00。个股 0 只，板块 2 个。两条板块按首次公开时间从早到晚排。</p>
+</header><div class="row"><h2>方案 A · iPhone 晨报列表</h2><figure><div class="phone" id="a-list-l"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:06</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="nav"><h2>晨报 11/02 周一</h2><div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div></div><div class="seg"><span class="on">最新</span><span class="">历史</span></div><div class="scroll"><div class="blk">个股</div><div class="list"><div class="quiet">今天没有入选的个股</div></div><div class="blk">板块热点</div><div class="list"><div class="item"><div class="l1"><span class="pill">AI语料</span><span class="count">创业板 21 只</span><span class="time">10-31 07:23</span></div><div class="l2">国家数据局召开数据标注先行先试工作座谈会</div><div class="l3 one">数据标注列入先行先试，语料和内容供给直接相关，周五已经公开，开盘前没有信息差。</div><div class="l4"><span class="k">龙头：</span>昆仑万维 · 中文在线 · 芒果超媒</div></div><div class="item"><div class="l1"><span class="pill">互联网金融</span><span class="count">创业板 55 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div><div class="l4"><span class="k">龙头：</span>东方财富 · 同花顺 · 指南针</div></div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>① 列表，浅色。</b>上面是个股，下面是板块热点。个股这期没有入选。板块一行里能看到名称、标题、结论、三只龙头和首次公开时间。</figcaption></figure><figure><div class="phone dark" id="a-list-d"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:06</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="nav"><h2>晨报 11/02 周一</h2><div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div></div><div class="seg"><span class="on">最新</span><span class="">历史</span></div><div class="scroll"><div class="blk">个股</div><div class="list"><div class="quiet">今天没有入选的个股</div></div><div class="blk">板块热点</div><div class="list"><div class="item"><div class="l1"><span class="pill">AI语料</span><span class="count">创业板 21 只</span><span class="time">10-31 07:23</span></div><div class="l2">国家数据局召开数据标注先行先试工作座谈会</div><div class="l3 one">数据标注列入先行先试，语料和内容供给直接相关，周五已经公开，开盘前没有信息差。</div><div class="l4"><span class="k">龙头：</span>昆仑万维 · 中文在线 · 芒果超媒</div></div><div class="item"><div class="l1"><span class="pill">互联网金融</span><span class="count">创业板 55 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div><div class="l4"><span class="k">龙头：</span>东方财富 · 同花顺 · 指南针</div></div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>② 列表，深色。</b>底色、卡片和系统蓝沿用现在的深色晨报。</figcaption></figure></div><div class="row"><h2>方案 A · iPhone 板块详情</h2><figure><div class="phone" id="a-detail-l"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:07</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="navbar"><span class="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></span><span class="ttl">互联网金融</span></div><div class="scroll"><div class="detail"><div class="dhead"><span class="n">互联网金融</span></div>
+<div class="dmeta">创业板 55 只 · 首次公开 11-01 15:19</div>
+<div class="dtitle">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div>
+<div class="concl">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div>
+<div class="sect">四个问题</div>
+<div class="card">
+  <div class="q"><b>① 利好值多少</b><p>央行、证监会专门研究支持资本市场工具使用，政策对象明确，属于直接受益。</p></div>
+  <div class="q"><b>② 市场已反映多少</b><p>板块前 5 日跟随大盘回落，没有提前异动，消息未被交易。</p></div>
+  <div class="q"><b>③ 资金会不会借题发挥</b><p>周一开盘前消息集中发酵，金融科技是资金熟悉的方向，有接力基础；但会议细节未出，持续性要看后续文件。</p></div>
+  <div class="q"><b>④ 价格</b>
+    <div class="ld"><div class="ld1"><span>东方财富</span><span class="c">300059</span></div><div class="ld2">明显高开不追，回落企稳再看</div></div>
+    <div class="ld"><div class="ld1"><span>同花顺</span><span class="c">300033</span></div><div class="ld2">高开幅度不大可关注承接</div></div>
+    <div class="ld"><div class="ld1"><span>指南针</span><span class="c">300803</span></div><div class="ld2">弹性最大，冲高不追</div></div>
+  </div>
+</div>
+<div class="risk"><span class="ic">!</span><span>风险：会议只是研究部署，没有具体措施时容易冲高回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 金十数据</small>金融监管部门今日召开两个座谈会。</div>
+  <div class="v"><small>媒体 · 央广网</small>座谈会研究推动支持资本市场工具使用。</div>
+</div>
+<div class="sect">原文</div>
+<div class="card">
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-01 15:19</div><div class="s2">央行、证监会将于明天召开座谈会</div></div><span class="chev">›</span></div>
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-02 05:17</div><div class="s2">金融监管部门今日召开两个座谈会</div></div><span class="chev">›</span></div>
+</div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>③ 板块详情，浅色。</b>结构和个股详情一样。④换成三只龙头，每只一句价格判断。内容在屏内往下滚。</figcaption></figure><figure><div class="phone dark" id="a-detail-d"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:07</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="navbar"><span class="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></span><span class="ttl">互联网金融</span></div><div class="scroll"><div class="detail"><div class="dhead"><span class="n">互联网金融</span></div>
+<div class="dmeta">创业板 55 只 · 首次公开 11-01 15:19</div>
+<div class="dtitle">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div>
+<div class="concl">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div>
+<div class="sect">四个问题</div>
+<div class="card">
+  <div class="q"><b>① 利好值多少</b><p>央行、证监会专门研究支持资本市场工具使用，政策对象明确，属于直接受益。</p></div>
+  <div class="q"><b>② 市场已反映多少</b><p>板块前 5 日跟随大盘回落，没有提前异动，消息未被交易。</p></div>
+  <div class="q"><b>③ 资金会不会借题发挥</b><p>周一开盘前消息集中发酵，金融科技是资金熟悉的方向，有接力基础；但会议细节未出，持续性要看后续文件。</p></div>
+  <div class="q"><b>④ 价格</b>
+    <div class="ld"><div class="ld1"><span>东方财富</span><span class="c">300059</span></div><div class="ld2">明显高开不追，回落企稳再看</div></div>
+    <div class="ld"><div class="ld1"><span>同花顺</span><span class="c">300033</span></div><div class="ld2">高开幅度不大可关注承接</div></div>
+    <div class="ld"><div class="ld1"><span>指南针</span><span class="c">300803</span></div><div class="ld2">弹性最大，冲高不追</div></div>
+  </div>
+</div>
+<div class="risk"><span class="ic">!</span><span>风险：会议只是研究部署，没有具体措施时容易冲高回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 金十数据</small>金融监管部门今日召开两个座谈会。</div>
+  <div class="v"><small>媒体 · 央广网</small>座谈会研究推动支持资本市场工具使用。</div>
+</div>
+<div class="sect">原文</div>
+<div class="card">
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-01 15:19</div><div class="s2">央行、证监会将于明天召开座谈会</div></div><span class="chev">›</span></div>
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-02 05:17</div><div class="s2">金融监管部门今日召开两个座谈会</div></div><span class="chev">›</span></div>
+</div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>④ 板块详情，深色。</b>风险仍是红，各方怎么看仍是蓝。</figcaption></figure></div><div class="row"><h2>方案 A · Mac 列表加详情</h2><figure class="wide"><div class="mac" id="a-mac-l">
+  <div class="titlebar">
+    <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="tool"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/></svg></span>
+    <span class="wintitle">晨报</span>
+    <span class="tools"><span class="tool"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg></span><span class="tool"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4.8V11H14"/></svg></span></span>
+  </div>
+  <div class="body">
+    <aside class="side">
+      <div class="sideitem on"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg><span>K10</span></div>
+      <div class="sideitem"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>KX</span></div>
+    </aside>
+    <div class="listcol">
+      <div class="datepop">11/02 周一 <span class="caret">▾</span></div>
+      <h3>晨报 11/02 周一</h3>
+      <div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div>
+      <div class="blk">个股</div><div class="list"><div class="quiet">今天没有入选的个股</div></div><div class="blk">板块热点</div><div class="list"><div class="item"><div class="l1"><span class="pill">AI语料</span><span class="count">创业板 21 只</span><span class="time">10-31 07:23</span></div><div class="l2">国家数据局召开数据标注先行先试工作座谈会</div><div class="l3 one">数据标注列入先行先试，语料和内容供给直接相关，周五已经公开，开盘前没有信息差。</div><div class="l4"><span class="k">龙头：</span>昆仑万维 · 中文在线 · 芒果超媒</div></div><div class="item sel"><div class="l1"><span class="pill">互联网金融</span><span class="count">创业板 55 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div><div class="l4"><span class="k">龙头：</span>东方财富 · 同花顺 · 指南针</div></div></div>
+    </div>
+    <div class="detailcol"><div class="detail"><div class="dhead"><span class="n">互联网金融</span></div>
+<div class="dmeta">创业板 55 只 · 首次公开 11-01 15:19</div>
+<div class="dtitle">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div>
+<div class="concl">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div>
+<div class="sect">四个问题</div>
+<div class="card">
+  <div class="q"><b>① 利好值多少</b><p>央行、证监会专门研究支持资本市场工具使用，政策对象明确，属于直接受益。</p></div>
+  <div class="q"><b>② 市场已反映多少</b><p>板块前 5 日跟随大盘回落，没有提前异动，消息未被交易。</p></div>
+  <div class="q"><b>③ 资金会不会借题发挥</b><p>周一开盘前消息集中发酵，金融科技是资金熟悉的方向，有接力基础；但会议细节未出，持续性要看后续文件。</p></div>
+  <div class="q"><b>④ 价格</b>
+    <div class="ld"><div class="ld1"><span>东方财富</span><span class="c">300059</span></div><div class="ld2">明显高开不追，回落企稳再看</div></div>
+    <div class="ld"><div class="ld1"><span>同花顺</span><span class="c">300033</span></div><div class="ld2">高开幅度不大可关注承接</div></div>
+    <div class="ld"><div class="ld1"><span>指南针</span><span class="c">300803</span></div><div class="ld2">弹性最大，冲高不追</div></div>
+  </div>
+</div>
+<div class="risk"><span class="ic">!</span><span>风险：会议只是研究部署，没有具体措施时容易冲高回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 金十数据</small>金融监管部门今日召开两个座谈会。</div>
+  <div class="v"><small>媒体 · 央广网</small>座谈会研究推动支持资本市场工具使用。</div>
+</div>
+<div class="sect">原文</div>
+<div class="card">
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-01 15:19</div><div class="s2">央行、证监会将于明天召开座谈会</div></div><span class="chev">›</span></div>
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-02 05:17</div><div class="s2">金融监管部门今日召开两个座谈会</div></div><span class="chev">›</span></div>
+</div></div></div>
+  </div>
+</div><figcaption><b>⑤ Mac 两栏，浅色。</b>左侧边栏仍是 K10、KX。中间是两块名单，右侧是选中的互联网金融。窗口铺满。</figcaption></figure><figure class="wide"><div class="mac dark" id="a-mac-d">
+  <div class="titlebar">
+    <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="tool"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/></svg></span>
+    <span class="wintitle">晨报</span>
+    <span class="tools"><span class="tool"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg></span><span class="tool"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4.8V11H14"/></svg></span></span>
+  </div>
+  <div class="body">
+    <aside class="side">
+      <div class="sideitem on"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg><span>K10</span></div>
+      <div class="sideitem"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>KX</span></div>
+    </aside>
+    <div class="listcol">
+      <div class="datepop">11/02 周一 <span class="caret">▾</span></div>
+      <h3>晨报 11/02 周一</h3>
+      <div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div>
+      <div class="blk">个股</div><div class="list"><div class="quiet">今天没有入选的个股</div></div><div class="blk">板块热点</div><div class="list"><div class="item"><div class="l1"><span class="pill">AI语料</span><span class="count">创业板 21 只</span><span class="time">10-31 07:23</span></div><div class="l2">国家数据局召开数据标注先行先试工作座谈会</div><div class="l3 one">数据标注列入先行先试，语料和内容供给直接相关，周五已经公开，开盘前没有信息差。</div><div class="l4"><span class="k">龙头：</span>昆仑万维 · 中文在线 · 芒果超媒</div></div><div class="item sel"><div class="l1"><span class="pill">互联网金融</span><span class="count">创业板 55 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div><div class="l4"><span class="k">龙头：</span>东方财富 · 同花顺 · 指南针</div></div></div>
+    </div>
+    <div class="detailcol"><div class="detail"><div class="dhead"><span class="n">互联网金融</span></div>
+<div class="dmeta">创业板 55 只 · 首次公开 11-01 15:19</div>
+<div class="dtitle">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div>
+<div class="concl">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div>
+<div class="sect">四个问题</div>
+<div class="card">
+  <div class="q"><b>① 利好值多少</b><p>央行、证监会专门研究支持资本市场工具使用，政策对象明确，属于直接受益。</p></div>
+  <div class="q"><b>② 市场已反映多少</b><p>板块前 5 日跟随大盘回落，没有提前异动，消息未被交易。</p></div>
+  <div class="q"><b>③ 资金会不会借题发挥</b><p>周一开盘前消息集中发酵，金融科技是资金熟悉的方向，有接力基础；但会议细节未出，持续性要看后续文件。</p></div>
+  <div class="q"><b>④ 价格</b>
+    <div class="ld"><div class="ld1"><span>东方财富</span><span class="c">300059</span></div><div class="ld2">明显高开不追，回落企稳再看</div></div>
+    <div class="ld"><div class="ld1"><span>同花顺</span><span class="c">300033</span></div><div class="ld2">高开幅度不大可关注承接</div></div>
+    <div class="ld"><div class="ld1"><span>指南针</span><span class="c">300803</span></div><div class="ld2">弹性最大，冲高不追</div></div>
+  </div>
+</div>
+<div class="risk"><span class="ic">!</span><span>风险：会议只是研究部署，没有具体措施时容易冲高回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 金十数据</small>金融监管部门今日召开两个座谈会。</div>
+  <div class="v"><small>媒体 · 央广网</small>座谈会研究推动支持资本市场工具使用。</div>
+</div>
+<div class="sect">原文</div>
+<div class="card">
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-01 15:19</div><div class="s2">央行、证监会将于明天召开座谈会</div></div><span class="chev">›</span></div>
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-02 05:17</div><div class="s2">金融监管部门今日召开两个座谈会</div></div><span class="chev">›</span></div>
+</div></div></div>
+  </div>
+</div><figcaption><b>⑥ Mac 两栏，深色。</b>侧栏、名单和详情一起换成深色。</figcaption></figure></div><div class="row"><h2>状态（方案 A，iPhone 浅色）</h2><figure><div class="phone" id="st-empty"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:08</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="nav"><h2>晨报 10/29 周四</h2><div class="meta">10/28 15:00 – 10/29 08:00 · 个股 1 只 · 板块 0 个</div></div><div class="seg"><span class="on">最新</span><span class="">历史</span></div><div class="scroll"><div class="blk">个股</div>
+<div class="list"><div class="item">
+  <div class="l1"><span class="n">朗坤科技</span><span class="c">301305</span><span class="tag">业绩预增</span><span class="time">10-28 18:40</span></div>
+  <div class="l2">三季报已经披露</div>
+  <div class="l3">开盘若明显高开不追。</div>
+</div></div>
+<div class="blk">板块热点</div>
+<div class="list"><div class="quiet">今天没有板块热点</div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>⑦ 板块 0 个。</b>板块那张卡片里只有一行「今天没有板块热点」，不是警告。上面的个股是示意，用来对照。</figcaption></figure><figure><div class="phone" id="st-gap"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:09</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="nav"><h2>晨报 11/02 周一</h2><div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div></div><div class="seg"><span class="on">最新</span><span class="">历史</span></div><div class="scroll"><div class="gap">板块线没有完成：日线没取到</div><div class="blk">个股</div><div class="list"><div class="quiet">今天没有入选的个股</div></div><div class="blk">板块热点</div><div class="list"><div class="item"><div class="l1"><span class="pill">AI语料</span><span class="count">创业板 21 只</span><span class="time">10-31 07:23</span></div><div class="l2">国家数据局召开数据标注先行先试工作座谈会</div><div class="l3 one">数据标注列入先行先试，语料和内容供给直接相关，周五已经公开，开盘前没有信息差。</div><div class="l4"><span class="k">龙头：</span>昆仑万维 · 中文在线 · 芒果超媒</div></div><div class="item"><div class="l1"><span class="pill">互联网金融</span><span class="count">创业板 55 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div><div class="l4"><span class="k">龙头：</span>东方财富 · 同花顺 · 指南针</div></div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>⑧ 板块线没跑完。</b>头部多一行灰色说明，样式和现在的缺口行一样，不另做警告条。</figcaption></figure><figure><div class="phone" id="st-hist"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:10</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="nav"><h2>历史</h2></div><div class="seg"><span class="">最新</span><span class="on">历史</span></div><div class="scroll"><div class="list hist"><div class="hrow"><span>11/02 周一 · 个股 0 只 · 板块 1 个</span><span class="chev">›</span></div><div class="hrow"><span>10/30 周五 · 个股 3 只 · 板块 2 个</span><span class="chev">›</span></div><div class="hrow"><span>10/29 周四 · 个股 1 只 · 板块 0 个</span><span class="chev">›</span></div><div class="hrow"><span>10/28 周三 · 个股 2 只 · 板块 1 个</span><span class="chev">›</span></div><div class="hrow"><span>10/27 周二 · 个股 0 只 · 板块 0 个</span><span class="chev">›</span></div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>⑨ 历史。</b>每期一行。第一行是指定写法；下面几行只为把列表铺开，数字是示意。</figcaption></figure><figure><div class="phone" id="st-push"><div class="screen lock"><div class="island" aria-hidden="true"></div><div class="status"><span>8:01</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div>
+<div class="lockclock">8:01</div>
+<div class="lockdate">11月2日 周一</div>
+<div class="push">
+  <div class="push-h"><span class="appic"><svg class="i" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg></span><span>Neckline</span><span class="when">现在</span></div>
+  <div class="push-b">晨报已出：个股 1 只，板块 2 个</div>
+</div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>⑩ 推送。</b>文案是「晨报已出：个股 1 只，板块 2 个」。这是另一则示意，不是 11/02 那期的条数。</figcaption></figure></div><div class="row"><h2>方案 B · 只作对比</h2><figure><div class="phone" id="b-phone"><div class="screen"><div class="island" aria-hidden="true"></div><div class="status"><span>8:11</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div><div class="nav"><h2>晨报 11/02 周一</h2><div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div></div><div class="seg"><span class="on">最新</span><span class="">历史</span></div><div class="seg"><span class="">个股</span><span class="on">板块热点</span></div><div class="scroll"><div class="list"><div class="item"><div class="l1"><span class="pill">AI语料</span><span class="count">创业板 21 只</span><span class="time">10-31 07:23</span></div><div class="l2">国家数据局召开数据标注先行先试工作座谈会</div><div class="l3 one">数据标注列入先行先试，语料和内容供给直接相关，周五已经公开，开盘前没有信息差。</div><div class="l4"><span class="k">龙头：</span>昆仑万维 · 中文在线 · 芒果超媒</div></div><div class="item"><div class="l1"><span class="pill">互联网金融</span><span class="count">创业板 55 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">会议直指资本市场工具，券商、金融信息服务直接受益，周末消息开盘前已广泛传播，资金有借题发挥的基础。</div><div class="l4"><span class="k">龙头：</span>东方财富 · 同花顺 · 指南针</div></div></div></div><div class="tabbar"><span class="on"><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.5 1.5"/></svg>K10</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg class="i" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4 7.4 7.4 0 0 0-.1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4 7.4 7.4 0 0 0 .1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div><div class="home" aria-hidden="true"></div></div></div><figcaption><b>⑪ 方案 B，iPhone 浅色。</b>顶上仍有「最新｜历史」，下面再用「个股｜板块热点」切换。这一屏只看板块。</figcaption></figure></div><footer class="doc" id="fields">
+  <h2>字段对照</h2>
+  <p>只对照板块热点。个股区沿用现在的名单，不在这张表里。画面上不出现这些字段名。</p>
+  <table>
+    <thead><tr><th>界面上的元素</th><th>晨报记录字段</th></tr></thead>
+    <tbody>
+      <tr><td>列表里的事件标题；详情页的大标题</td><td><code>content.sectors.entries[].title</code></td></tr>
+      <tr><td>板块名（列表上的标签，详情页的名称）</td><td><code>content.sectors.entries[].sector.name</code></td></tr>
+      <tr><td>列表里的一行结论；详情标题下面的结论</td><td><code>content.sectors.entries[].conclusion</code></td></tr>
+      <tr><td>① 利好值多少</td><td><code>content.sectors.entries[].questions.value</code></td></tr>
+      <tr><td>② 市场已反映多少</td><td><code>content.sectors.entries[].questions.priced</code></td></tr>
+      <tr><td>③ 资金会不会借题发挥</td><td><code>content.sectors.entries[].questions.money</code></td></tr>
+      <tr><td>龙头代码</td><td><code>content.sectors.entries[].leaders[].companyCode</code></td></tr>
+      <tr><td>龙头简称</td><td><code>content.sectors.entries[].leaders[].companyName</code></td></tr>
+      <tr><td>④ 里每只龙头的一句价格判断</td><td><code>content.sectors.entries[].leaders[].price</code></td></tr>
+      <tr><td>风险（红字）</td><td><code>content.sectors.entries[].risk</code></td></tr>
+      <tr><td>各方怎么看的每一条（出处 + 正文）</td><td><code>content.sectors.entries[].views[]</code></td></tr>
+      <tr><td>原文的来源、时间和标题</td><td><code>content.sectors.entries[].sources[]</code></td></tr>
+      <tr><td>列表右侧时间；详情里的「首次公开」</td><td><code>content.sectors.entries[].firstPublished</code></td></tr>
+      <tr><td>「创业板 N 只」（名单和详情都有）</td><td><code>sectors.entries[].sector.memberCount</code>（B3 补上，按当期股票池计的创业板成分股只数）</td></tr>
+    </tbody>
+  </table>
+  <p>各方怎么看、原文的子字段，清单里没有再拆开，所以上面整条对应 <code>views[]</code> 和 <code>sources[]</code>。</p>
+</footer>
+</body></html>
