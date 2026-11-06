@@ -519,7 +519,7 @@ def test_zhongchuang_announcement_reaches_the_morning_window_and_matches_300056(
     assert len(docs) == 2  # 收盘前那条在窗口之外
 
     messages, in_window, duplicates, unmatched = prefilter_window(docs, pool)
-    assert (in_window, duplicates, unmatched) == (2, 0, 1)
+    assert (in_window, duplicates, len(unmatched)) == (2, 0, 1)
     (message,) = messages
     assert list(message.companies) == ["300056.SZ"]
     assert message.title == f"中创环保：{TITLE}" and message.source_label == "巨潮公告"

@@ -8,8 +8,8 @@
 业务时钟从快照里该日晨报的 started_at 起步，按真实流逝时间前进。
 采集不采，推送不发。行情读快照，模型回执落在 --receipts，同样请求不重复计费。
 股票池必须显式给 --pool-snapshot（按交易日构造）或 --pool-seed-only（只用别名种子）。两者都不传就停，不联网。
-给了 --sector-snapshot 时，概念和日线从这份 JSON 写入工作库，不联网。板块线接入前，出报流程还不读它。
-联网搜索与聊天共用这把密钥和这份回执目录；evaluation.search 为 null 时不搜。
+给了 --sector-snapshot 时，概念、成分和日线从这份 JSON 写入工作库，不联网。
+搜索和模型仍走回执目录。evaluation.search 为 null 时不搜。
 密钥和模型名只从 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 读取，不打印。
 """
 from __future__ import annotations
@@ -216,7 +216,39 @@ def _tokens(stats: dict) -> dict[str, int]:
     return {label: totals[key] for key, label in _TOKEN_KEYS}
 
 
-def _summary(result: dict, content: dict | None) -> dict:
+def _leader_codes(block: object) -> list[str]:
+    if not isinstance(block, dict):
+        return []
+    codes = []
+    for item in block.get("leaders") or []:
+        if isinstance(item, dict):
+            codes.append(str(item.get("code") or "").split(".")[0])
+    return codes
+
+
+def _sector_summary(rows: list[dict] | None) -> list[dict]:
+    """每个事件的标题、板块、状态、verdict，以及成交额和涨停两种龙头。"""
+    items = []
+    for row in rows or []:
+        package = row.get("package") if isinstance(row.get("package"), dict) else {}
+        rankings = package.get("leaderRankings") if isinstance(package.get("leaderRankings"), dict) else {}
+        event = package.get("event") if isinstance(package.get("event"), dict) else {}
+        published = event.get("firstPublished") if isinstance(event.get("firstPublished"), str) else ""
+        items.append((published, str(row.get("event_id") or ""), {
+            "title": row.get("title") or "",
+            "sector": row.get("sector"),
+            "state": row.get("state"),
+            "verdict": row.get("verdict"),
+            "leaders": {
+                "amount": _leader_codes(rankings.get("amount")),
+                "limitups": _leader_codes(rankings.get("limitups")),
+            },
+        }))
+    items.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in items]
+
+
+def _summary(result: dict, content: dict | None, sector_rows: list[dict] | None = None) -> dict:
     stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
     if not stats and isinstance((content or {}).get("stats"), dict):
         stats = content["stats"]
@@ -235,6 +267,7 @@ def _summary(result: dict, content: dict | None) -> dict:
             "evaluation": evaluation.get("seconds"),
         },
         "search": stats.get("search") if isinstance(stats.get("search"), dict) else {"enabled": False},
+        "sectors": _sector_summary(sector_rows),
     }
 
 
@@ -323,15 +356,17 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
                          client_factory=client_factory, pusher=Pusher(dest, None, clock), clock=clock,
                          fetcher=pdf_fetcher(filings_cache, config.rules["filings"]),
                          market=SnapshotSource(market_snapshot), search_factory=search_factory,
-                         pool_source="database")
+                         pool_source="database", sector_live=False)
     with db.read(dest) as conn:
         report = db.get_report(conn, trade_date)
         rows = db.list_evaluations(conn, f"morning-{trade_date}")
+        sector_rows = db.list_sector_events(conn, f"morning-{trade_date}")
     content = report.get("content") if isinstance(report, dict) else None
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "report.json", report if report is not None else result)
     _write_json(out / "evaluations.json", rows)
-    _write_json(out / "summary.json", _summary(result, content if isinstance(content, dict) else None))
+    _write_json(out / "summary.json", _summary(result, content if isinstance(content, dict) else None,
+                                               sector_rows))
     (out / "samples.md").write_text(
         _samples(content if isinstance(content, dict) else None, rows), encoding="utf-8")
     return result

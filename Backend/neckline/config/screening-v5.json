@@ -2,7 +2,7 @@
   "configVersion": "screening-v5",
   "approval": "approved",
   "approvedAt": "2026-11-05",
-  "note": "v5（用户 11/05）：股票池改为全部在市创业板（代码前缀 300/301/302），只排除简称含 ST 的；原 1,089 家改为别名和主营摘要的种子，每期晨报开工时用 TuShare 刷新。sectors 是板块清单和日线参数。收录、分类、评估与交付与 v4 相同。",
+  "note": "v5（用户 11/05）：股票池改为全部在市创业板（代码前缀 300/301/302），只排除简称含 ST 的；原 1,089 家改为别名和主营摘要的种子，每期晨报开工时用 TuShare 刷新。sectors 含板块清单、日线，以及板块线的粗筛、挑候选、归并、评估和交付。收录、分类、评估与交付与 v4 相同。",
   "schedule": {
     "previousClose": "15:00",
     "windowEnd": "08:00",
@@ -239,6 +239,100 @@
       "leaderWindow": 20,
       "boardWindows": [1, 5, 20],
       "limitWindow": 5
+    },
+    "prefilter": {
+      "dropSources": ["cninfo-announcement"],
+      "bodyHeadChars": 80,
+      "rules": [
+        {
+          "name": "otherListed",
+          "scope": "opening",
+          "pattern": "(?<!\\d)(?:60\\d{4}|688\\d{3}|689\\d{3}|00[0-3]\\d{3}|920\\d{3}|8[37]\\d{4}|4[03]\\d{4})\\.(?:SH|SZ|BJ)|[(（]\\d{4,5}\\.HK[)）]|\\.(?:US|O|N)[)）]"
+        },
+        {
+          "name": "overseas",
+          "scope": "openingPrefix",
+          "prefixChars": 30,
+          "pattern": "^(?:【)?(美国|美联储|美财长|美股|美元|欧洲|欧盟|欧元区|欧洲央行|英国|英央行|英国央行|德国|法国|日本|日本央行|日央行|韩国|俄罗斯|俄|乌克兰|乌|伊朗|以色列|以军|哈马斯|沙特|印度|巴基斯坦|特朗普|白宫|五角大楼|澳大利亚|澳洲联储|加拿大|巴西|土耳其|朝鲜|越南|墨西哥|阿根廷|南非|意大利|西班牙|瑞士|瑞典|挪威|荷兰|新加坡|印尼|马来西亚|泰国|菲律宾|中东|北约|联合国|欧佩克|OPEC|IMF|国际货币基金组织|世界银行|WTO|黎巴嫩|叙利亚|也门|胡塞|卡塔尔|阿联酋|埃及|新西兰|波兰|匈牙利|芬兰|丹麦|奥地利|比利时|爱尔兰|希腊|葡萄牙|捷克)",
+          "absentPattern": "中国|我国|国内|对华|中方|A股|大陆",
+          "absentChars": 300
+        },
+        {
+          "name": "macroRelease",
+          "scope": "openingPrefix",
+          "prefixChars": 120,
+          "pattern": "预期.{0,20}前值|前值.{0,20}预期|(?:月率|年率|季率)(?:初值|终值)?\\s*[-\\d]"
+        },
+        {
+          "name": "tape",
+          "scope": "opening",
+          "pattern": "收盘|收涨|收跌|午盘|早盘|尾盘|盘中|开盘|涨停|跌停|龙虎榜|主力资金|资金流|北向资金|融资余额|两融|结算价|中间价|汇率|价格涨跌榜|产业榜|大宗交易|解禁|打新|招股|申购|ETF|净值|收评|午评|早评|复盘|异动|板块拉升|板块走强|板块下挫|行情一览"
+        },
+        {
+          "name": "research",
+          "scope": "opening",
+          "pattern": "^【[^】]{0,20}(?:证券|研究|团队|策略|宏观|固收)[^】]{0,10}】|公司点评|深度报告|首次覆盖|买入评级|增持评级|点评[：:]"
+        },
+        {
+          "name": "periodic",
+          "scope": "title",
+          "pattern": "(?:季度|年度|半年度)报告(?:摘要)?$|季报[：:]|业绩快报|业绩预告"
+        }
+      ]
+    },
+    "candidates": {
+      "contract": "sector-candidates-v1",
+      "batchChars": 16000,
+      "headChars": 80,
+      "concurrency": 6,
+      "modelOptions": {
+        "max_tokens": 32768,
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+        "response_format": {"type": "json_object"}
+      }
+    },
+    "mapping": {
+      "contract": "sector-mapping-v1",
+      "excerptChars": 1500,
+      "modelOptions": {
+        "max_tokens": 32768,
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+        "response_format": {"type": "json_object"}
+      }
+    },
+    "leaders": {
+      "rankBy": "amount"
+    },
+    "evaluation": {
+      "contract": "sector-evaluation-v1",
+      "concurrency": 6,
+      "modelOptions": {
+        "max_tokens": 16384,
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+        "response_format": {"type": "json_object"}
+      },
+      "search": {
+        "endpoint": "https://api.deepseek.com/v1/tools/search",
+        "count": 10,
+        "summaryChars": 1000,
+        "timeoutSeconds": 30,
+        "maxAttempts": 2
+      },
+      "package": {
+        "pdfMaxPages": 40,
+        "originalChars": 12000,
+        "openingChars": 3000,
+        "headingsMax": 60,
+        "mediaChars": 2000,
+        "maxMedia": 5,
+        "pdfMaxBytes": 30000000
+      }
+    },
+    "delivery": {
+      "maxEvents": 3
     }
   }
 }

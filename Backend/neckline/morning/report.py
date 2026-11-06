@@ -39,6 +39,7 @@ from neckline.screening.text import section_heading
 
 from . import db
 from .schedule import CST, CalendarGap, deadline, is_trading_day, morning_window
+from .sector_line import run_sector_line, validate_sector_settings
 from .stock_pool import PoolFetchError, pool_from_rows, refresh_stock_pool, rows_from_pool, store_rows
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,7 @@ def _validate_sectors(rules: dict) -> None:
     if (not isinstance(windows, list) or not windows
             or any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in windows)):
         raise ValueError("sectors.market.boardWindows 类型不对")
+    validate_sector_settings(sectors)
 
 
 def _validate_company_pool(pool: dict) -> None:
@@ -897,7 +899,8 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
                 search_factory: Callable[[str], SearchClient] | None = None,
                 pool_source: str | None = None,
                 pool_post: Callable[..., dict] | None = None,
-                pool_environ: Mapping[str, str] | None = None) -> dict:
+                pool_environ: Mapping[str, str] | None = None,
+                sector_live: bool = True) -> dict:
     """幂等：同一交易日重复运行只会续上未完成的部分；回执保证同样的模型请求不重复计费。
 
     先看当天报告：已有 running 就是续跑，不再采集，消息边界用首次写入的 started_at。
@@ -952,7 +955,7 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
         docs = list(db.iter_documents(conn, published_from=start, published_to=end, fetched_by=collected_by,
                                       include_end=True))
         runs = db.collections_since(conn, start - timedelta(days=3))
-    messages, in_window, duplicates, unmatched = prefilter_window(docs, config.pool)
+    messages, in_window, duplicates, unmatched_messages = prefilter_window(docs, config.pool)
     del docs
     filings_dir = db_path.parent / "filings"
     filings_settings = rules["filings"]
@@ -994,17 +997,26 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     with db.read(db_path) as conn:
         evaluations = db.list_evaluations(conn, report_id)
     delivered = assemble(selection, evaluations, config.pool, max_items=rules["delivery"]["maxItems"])
+    sector_client = _bounded_client(client, day=day, schedule=schedule, clock=clock)
+    sector_search = None if search_client is None else _bounded_search(search_client, day=day, schedule=schedule, clock=clock)
+    sector = run_sector_line(
+        db_path, report_id=report_id, day=day, window=window, messages=unmatched_messages, config=config,
+        pool=config.pool, skip=[entry["companyCode"] for entry in delivered.entries], client=sector_client,
+        clock=clock, search_client=sector_search, sector_live=sector_live)
     gaps = coverage_gaps(runs, start, end)
     filing_failures = sum(int(count) for count in filing_stats.failed.values())
     summary = gap_summary(gaps, selection, config.pool, unevaluated=delivered.unevaluated,
                           overflow=delivered.overflow, filing_failures=filing_failures, evaluations=evaluations,
                           pool_note=pool_note)
+    if sector.gap:
+        summary = f"{summary}；{sector.gap}" if summary else sector.gap
     usage: dict[str, int] = {}
     for batch in result.batches:
         for key in ("prompt_tokens", "completion_tokens"):
             usage[key] = usage.get(key, 0) + int(batch.usage.get(key) or 0)
     finished = clock()
-    stats = {"contract": CONTRACT, "inWindow": in_window, "duplicates": duplicates, "unmatched": unmatched,
+    stats = {"contract": CONTRACT, "inWindow": in_window, "duplicates": duplicates,
+             "unmatched": len(unmatched_messages),
              "messages": len(messages), "history": len(history), "companies": len(result.results),
              "classification": {"calls": len(result.batches),
                                 "fromReceipt": sum(b.from_receipt for b in result.batches),
@@ -1017,12 +1029,14 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
              "candidates": len(selection.candidates), "pushed": len(delivered.entries), "overflow": delivered.overflow,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
              "collectionGaps": gaps, "collection": collection["status"],
-             "pool": {key: pool_record[key] for key in ("count", "sha256", "refreshedAt", "reused")}}
+             "pool": {key: pool_record[key] for key in ("count", "sha256", "refreshedAt", "reused")},
+             "sectors": sector.stats}
     if finished > deadline(day, schedule):
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,
                      reason=f"{schedule['deadline']} 前没能出报", now=finished, pusher=pusher)
     content = _pack(report_id=report_id, day=day, window=window, selection=selection, delivered=delivered,
                     config_version=rules["configVersion"], gap=summary, generated_at=finished, stats=stats)
+    content["sectors"] = sector.content
     with db.write(db_path) as conn:
         updated = db.complete_report(conn, report_id=report_id, content=content, stats=stats, gap_summary=summary,
                                      available_at=finished)

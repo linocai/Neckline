@@ -6,7 +6,7 @@
 版本 5 删掉 kx_pool、kx_picks、kx_daily_stats（KX 看板改为只读 KX，不再落库）。
 版本 6 只加表：stock_pool、stock_pool_meta（当前股票池和最近一次刷新），
 sector_concepts、sector_members、sector_concepts_meta（同花顺概念和最近一次刷新），
-market_daily（创业板日线）。这一版还没上线，没有半套 v6 要再迁一次。
+market_daily（创业板日线）、sector_events（板块线事件）。这一版还没上线，没有半套 v6 要再迁一次。
 init_schema 把版本 1～5 的库在同一个事务里升到版本 6，升级失败整体回滚。
 """
 from __future__ import annotations
@@ -189,6 +189,24 @@ CREATE TABLE IF NOT EXISTS market_daily (
   PRIMARY KEY (code, trade_date)
 );
 CREATE INDEX IF NOT EXISTS idx_market_daily_trade_date ON market_daily(trade_date);
+CREATE TABLE IF NOT EXISTS sector_events (
+  report_id TEXT NOT NULL,
+  event_id TEXT NOT NULL CHECK(length(event_id) = 16),
+  title TEXT NOT NULL,
+  sector TEXT,
+  reason TEXT,
+  repeat INTEGER NOT NULL CHECK(repeat IN (0, 1)),
+  state TEXT NOT NULL CHECK(state IN ('prepared','succeeded','invalid','gap','skipped')),
+  verdict TEXT CHECK(verdict IS NULL OR verdict IN ('推','不推')),
+  package_json TEXT NOT NULL,
+  output_json TEXT,
+  error TEXT,
+  usage_json TEXT NOT NULL DEFAULT '{}',
+  seconds REAL,
+  prepared_at TEXT NOT NULL,
+  settled_at TEXT,
+  PRIMARY KEY (report_id, event_id)
+);
 """
 
 
@@ -788,6 +806,96 @@ def write_market_day(conn: sqlite3.Connection, trade_date: str, rows: Sequence[M
 
 def delete_market_daily_outside(conn: sqlite3.Connection, start: str, end: str) -> int:
     cursor = conn.execute("DELETE FROM market_daily WHERE trade_date<? OR trade_date>?", (start, end))
+    return cursor.rowcount
+
+
+# ------------------------------------------------------------------ 板块事件
+
+
+def _sector_event(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["repeat"] = bool(data["repeat"])
+    data["package"] = json.loads(data.pop("package_json"))
+    raw_output = data.pop("output_json")
+    if raw_output is None:
+        data["output"] = None
+    else:
+        try:
+            data["output"] = json.loads(raw_output)
+        except ValueError:
+            data["output"] = raw_output
+    data["usage"] = json.loads(data.pop("usage_json") or "{}")
+    return data
+
+
+def get_sector_event(conn: sqlite3.Connection, report_id: str, event_id: str) -> dict | None:
+    row = conn.execute("SELECT * FROM sector_events WHERE report_id=? AND event_id=?",
+                       (report_id, event_id)).fetchone()
+    return None if row is None else _sector_event(row)
+
+
+def list_sector_events(conn: sqlite3.Connection, report_id: str) -> list[dict]:
+    rows = conn.execute("SELECT * FROM sector_events WHERE report_id=? ORDER BY event_id", (report_id,)).fetchall()
+    return [_sector_event(row) for row in rows]
+
+
+def insert_sector_event(conn: sqlite3.Connection, *, report_id: str, event_id: str, title: str,
+                        sector: str | None, reason: str | None, repeat: bool, state: str,
+                        package: Mapping, prepared_at: datetime, verdict: str | None = None,
+                        output: Any = None, error: str | None = None, usage: Mapping | None = None,
+                        seconds: float | None = None, settled_at: datetime | None = None) -> bool:
+    """写入一条事件。同一期同一编号已经有行时不覆盖，续跑沿用原来的数据包和终态。"""
+    if len(event_id) != 16:
+        raise ValueError("事件编号须为 16 位")
+    if state not in ("prepared", "succeeded", "invalid", "gap", "skipped"):
+        raise ValueError("板块事件状态无效")
+    if state == "prepared" and settled_at is not None:
+        raise ValueError("prepared 还没有收口时间")
+    if state != "prepared" and settled_at is None:
+        raise ValueError("终态必须带收口时间")
+    if state == "succeeded" and verdict not in ("推", "不推"):
+        raise ValueError("verdict 无效")
+    if state != "succeeded":
+        verdict = None
+    if isinstance(output, str):
+        output_json = output
+    elif output is None:
+        output_json = None
+    else:
+        output_json = _dumps(output)
+    cursor = conn.execute(
+        """INSERT INTO sector_events(report_id, event_id, title, sector, reason, repeat, state, verdict,
+                                     package_json, output_json, error, usage_json, seconds, prepared_at, settled_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(report_id, event_id) DO NOTHING""",
+        (report_id, event_id, title, sector, reason, 1 if repeat else 0, state, verdict, _dumps(package),
+         output_json, error, _dumps(dict(usage or {})), seconds, utc(prepared_at),
+         None if settled_at is None else utc(settled_at)))
+    return cursor.rowcount == 1
+
+
+def settle_sector_event(conn: sqlite3.Connection, *, report_id: str, event_id: str, state: str,
+                        settled_at: datetime, verdict: str | None = None, output: Any = None,
+                        error: str | None = None, usage: Mapping | None = None,
+                        seconds: float | None = None) -> int:
+    """只允许从 prepared 收成 succeeded、invalid 或 gap。返回更新行数。"""
+    if state not in ("succeeded", "invalid", "gap"):
+        raise ValueError("板块事件只能收成 succeeded、invalid 或 gap")
+    if state == "succeeded" and verdict not in ("推", "不推"):
+        raise ValueError("verdict 无效")
+    if state != "succeeded":
+        verdict = None
+    if isinstance(output, str):
+        output_json = output
+    elif output is None:
+        output_json = None
+    else:
+        output_json = _dumps(output)
+    cursor = conn.execute(
+        """UPDATE sector_events SET state=?, verdict=?, output_json=?, error=?, usage_json=?, seconds=?, settled_at=?
+           WHERE report_id=? AND event_id=? AND state='prepared'""",
+        (state, verdict, output_json, error, _dumps(dict(usage or {})), seconds, utc(settled_at),
+         report_id, event_id))
     return cursor.rowcount
 
 

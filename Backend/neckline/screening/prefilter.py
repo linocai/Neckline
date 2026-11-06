@@ -76,12 +76,17 @@ def as_of(docs: Iterable[Mapping], collected_by: datetime) -> list[Mapping]:
     return list(latest.values())
 
 
-def prefilter_window(docs: Iterable[Mapping], pool: CompanyPool) -> tuple[list[Message], int, int, int]:
-    """窗口内的原件（每个文档一个版本）→ 去重、匹配公司池。返回（消息、窗口内条数、重复、未点名）。"""
+def prefilter_window(docs: Iterable[Mapping], pool: CompanyPool) -> tuple[list[Message], int, int, list[Message]]:
+    """窗口内的原件（每个文档一个版本）→ 去重、匹配公司池。
+
+    返回（点名了池内公司的消息、窗口内条数、重复条数、没点名任何池内公司的消息）。
+    第四项是原来的 Message 对象，不另复制正文，交给板块线。
+    """
     in_window = sorted((to_message(d) for d in docs), key=lambda m: (m.published_at, m.ref))
     seen: dict[str, Message] = {}
     kept: list[Message] = []
-    duplicates = unmatched = 0
+    unmatched: list[Message] = []
+    duplicates = 0
     for message in in_window:
         key = hashlib.sha256(re.sub(r"\s+", "", message.title + message.text).encode()).hexdigest()
         if key in seen:
@@ -91,7 +96,7 @@ def prefilter_window(docs: Iterable[Mapping], pool: CompanyPool) -> tuple[list[M
         seen[key] = message
         message.companies = pool.match(message.title + "\n" + message.text)
         if not message.companies:
-            unmatched += 1
+            unmatched.append(message)
             continue
         kept.append(message)
     return kept, len(in_window), duplicates, unmatched
@@ -113,8 +118,9 @@ def prefilter(docs: Sequence[Mapping], pool: CompanyPool, window: Window, *, his
     visible = as_of(docs, window.collected_by)
     in_window = [d for d in visible if window.start <= datetime.fromisoformat(d["publishedAt"]) <= window.end]
     kept, count, duplicates, unmatched = prefilter_window(in_window, pool)
+    unmatched_count = len(unmatched)
     floor = window.start - timedelta(days=history_days)
     earlier = (d for d in visible if floor <= datetime.fromisoformat(d["publishedAt"]) < window.start)
     history = match_history(earlier, pool.subset({code for m in kept for code in m.companies}))
     return PrefilterResult(messages=kept, history=history, input_count=count,
-                           duplicate_count=duplicates, unmatched_count=unmatched)
+                           duplicate_count=duplicates, unmatched_count=unmatched_count)

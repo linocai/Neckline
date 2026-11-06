@@ -103,7 +103,8 @@ def main(argv: list[str] | None = None) -> None:
     with db.read(args.db) as conn:
         docs = list(db.iter_documents(conn, published_from=start, published_to=end, fetched_by=collected_by,
                                       include_end=True))
-        messages, in_window, duplicates, unmatched = prefilter_window(docs, pool)
+        messages, in_window, duplicates, unmatched_messages = prefilter_window(docs, pool)
+        unmatched = len(unmatched_messages)
         history = match_history(
             db.iter_documents(conn, published_from=start - timedelta(days=settings["history"]["lookbackDays"]),
                               published_to=start, fetched_by=collected_by, include_end=False),

@@ -11,7 +11,7 @@ from neckline.morning import db
 from tests.kx_support import KX_TABLES, make_legacy_db
 
 _SECTOR_TABLES = {"sector_concepts", "sector_members", "sector_concepts_meta", "market_daily"}
-_V6_TABLES = {"stock_pool", "stock_pool_meta"} | _SECTOR_TABLES
+_V6_TABLES = {"stock_pool", "stock_pool_meta", "sector_events"} | _SECTOR_TABLES
 
 
 def _version(path) -> int:
@@ -148,6 +148,7 @@ def test_a_failed_v5_upgrade_rolls_back_without_adding_pool_tables(tmp_path, mon
     assert _version(path) == 5
     assert _names(path) == before_names
     assert "stock_pool" not in _names(path)
+    assert "sector_events" not in _names(path)
     assert _SECTOR_TABLES.isdisjoint(_names(path))
     with pytest.raises(db.NotReady):
         with db.read(path):
