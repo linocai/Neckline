@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -39,6 +41,17 @@ _FROZEN_MAPPING = "69444b1f553b23434ad4b99df82df354f978c58a57a2f927342f022238817
 _FROZEN_EVALUATION = "cb5a4e4cc300b3bda2ff49aedc92249c69a3943ff3655e24ca8e8a79fc9b86eb"
 _FROZEN_USER = "288abcf9436803775f6f38c317265487aeff08fff31633a0d108a4c443db7d32"
 _FROZEN_BODY = "41d71b51510ca1c5a0260b417358d84575eb37bff34627f4e1d493c9da1337ce"
+_V6_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "report-v6-two-lines.json"
+
+
+def _stable_report(payload: dict) -> dict:
+    """夹具对照只看两条线的交付字段。stats 里的耗时随运行变化。"""
+    content = payload["content"]
+    return {
+        "reportId": payload["reportId"], "tradeDate": payload["tradeDate"], "status": payload["status"],
+        "gapSummary": payload["gapSummary"], "configVersion": payload["configVersion"],
+        "entries": content["entries"], "sectors": content["sectors"],
+    }
 
 
 def _pool() -> CompanyPool:
@@ -774,10 +787,12 @@ def test_cli_success_publishes_the_sector_entry(tmp_path, monkeypatch):
     monkeypatch.setattr("neckline.push.apns.send_push", apns)
     _install_clients(monkeypatch, _sector_handler(FakeModel()))
     assert cli.main(["--db", str(path), "morning", "--now", "2026-10-13T08:02:00+08:00"]) == 0
-    assert any("家公司" in body for _token, _title, body in apns.sent)
     app = FastAPI()
     app.include_router(create_router(require_token_dependency=lambda: None))
-    latest = TestClient(app).get("/api/v4/reports/latest").json()
+    from neckline.morning.web import create_router as web_router
+    app.include_router(web_router())
+    client = TestClient(app)
+    latest = client.get("/api/v4/reports/latest").json()
     assert mcp_report(None)["content"] == latest["content"]
     sectors = latest["content"]["sectors"]
     assert sectors["candidates"] >= 1 and sectors["entries"]
@@ -787,6 +802,26 @@ def test_cli_success_publishes_the_sector_entry(tmp_path, monkeypatch):
     assert "price" in latest["content"]["entries"][0]["questions"]
     assert "price" not in entry["questions"]
     assert latest["content"]["stats"]["sectors"]["raw"] >= 1
+    stocks = len(latest["content"]["entries"])
+    expected = f"个股 {stocks} 只，板块 {len(sectors['entries'])} 个"
+    if latest["gapSummary"]:
+        expected += "（有缺口）"
+    assert apns.sent == [("ab" * 32, "晨报已出", expected)]
+    listed = client.get("/api/v4/reports", params={"limit": 5}).json()["reports"]
+    assert listed[0]["counts"] == {"stocks": stocks, "sectors": len(sectors["entries"])}
+    assert client.get("/api/v4/reports/2026-10-13").json()["content"]["sectors"] == sectors
+    page = client.get("/read/" + "r" * 32)
+    assert "<h2>板块热点</h2>" in page.text and entry["title"] in page.text
+    assert f"创业板 {entry['sector']['memberCount']} 只" in page.text
+    assert "①" in page.text and "②" in page.text and "③" in page.text
+    assert client.get("/read/" + "r" * 32, params={"format": "json"}).json()["content"]["sectors"] == sectors
+    blob = json.dumps(latest, ensure_ascii=False)
+    assert "test-key" not in blob and "r" * 32 not in blob
+    if os.environ.get("NK_WRITE_V6_FIXTURE") == "1" or not _V6_FIXTURE.is_file():
+        _V6_FIXTURE.write_text(json.dumps(latest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    saved = json.loads(_V6_FIXTURE.read_text(encoding="utf-8"))
+    assert _stable_report(saved) == _stable_report(latest)
+    assert saved["content"]["entries"] and saved["content"]["sectors"]["entries"]
 
 
 def test_replay_summary_lists_both_leader_rankings(tmp_path, monkeypatch):

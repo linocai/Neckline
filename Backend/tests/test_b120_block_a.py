@@ -367,7 +367,7 @@ def test_complete_report_zero_rows_follows_the_stored_status(path):
 
     ready, _calls = _morning(path, now=now, handler=finish_first, api_key="k", send=apns)
     assert ready["state"] == "available" and ready["entries"] == 1
-    assert apns.sent == [(TOKEN, "晨报已出", "1 家公司")]
+    assert apns.sent == [(TOKEN, "晨报已出", "个股 1 只，板块 0 个")]
 
 
 # ------------------------------------------------------------------ 8. 推送补发
@@ -379,7 +379,7 @@ def test_finalize_redelivers_ready_and_problem(path):
     now = at("2026-10-13", "08:02")
     flaky = _Flaky()
     ready, _calls = _morning(path, now=now, handler=FakeModel(), api_key="k", send=flaky)
-    assert ready["state"] == "available" and flaky.sent == [(TOKEN, "晨报已出", "2 家公司（有缺口）")]
+    assert ready["state"] == "available" and flaky.sent == [(TOKEN, "晨报已出", "个股 2 只，板块 0 个（有缺口）")]
     again = finalize(path, now=at("2026-10-13", "09:15"), config=_config(), pusher=_push(path, flaky, now))
     assert again["state"] == "available" and len(flaky.sent) == 2 and again["push"]["sent"] == 1
     third = finalize(path, now=at("2026-10-13", "09:16"), config=_config(), pusher=_push(path, flaky, now))
@@ -474,7 +474,7 @@ def test_cli_morning_round_trip_reads_back_through_api_and_mcp(path, monkeypatch
     monkeypatch.setattr(cli, "DeepSeekClient", Wrapped)
     apns = _patch_sender(monkeypatch)
     assert cli.main(["--db", str(path), "morning", "--now", "2026-10-13T08:02:00+08:00"]) == 0
-    assert collects == [1] and model.hits == 3 and apns.sent == [(TOKEN, "晨报已出", "2 家公司（有缺口）")]
+    assert collects == [1] and model.hits == 3 and apns.sent == [(TOKEN, "晨报已出", "个股 2 只，板块 0 个（有缺口）")]
     printed = json.loads(capsys.readouterr().out)
     assert printed["state"] == "available" and printed["entries"] == 2
     app = FastAPI()

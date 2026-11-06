@@ -17,7 +17,7 @@ from neckline.morning import cli, db
 from neckline.morning.api import create_router as api_router
 from neckline.morning.api import report_out
 from neckline.morning.replay import main as replay_main
-from neckline.morning.report import _ready_body, build_content, gap_summary
+from neckline.morning.report import Pusher, _ready_body, build_content, finalize, gap_summary, run_morning
 from neckline.morning.schedule import morning_window
 from neckline.morning.web import render_report
 from neckline.mcp.server import _report as mcp_report
@@ -26,7 +26,7 @@ from neckline.screening.pool import Company, CompanyPool
 from neckline.screening.prefilter import Message, Window
 from neckline.screening.select import Entry, Selection
 from tests.test_b124_evaluate import _answer, _http
-from tests.test_morning import CST, READ_KEY, FakeApns, FakeModel, _run, _seed_window, _with_device, at
+from tests.test_morning import CST, READ_KEY, FakeApns, FakeModel, _config, _run, _seed_window, _with_device, at
 
 @pytest.fixture
 def path(tmp_path: Path) -> Path:
@@ -228,18 +228,22 @@ def test_gap_summary_names_unreadable_filings_and_thin_materials():
     selection = Selection(candidates=entries, reasons=Counter(), gaps=[])
     summary = gap_summary([], selection, pool, filing_failures=2, evaluations=evaluations)
     assert summary == "2 份公告没读出数字；6 家材料不全：甲、乙、丙、丁、戊等"
-    assert _ready_body(1, summary) == "1 家公司（有缺口）"
-    assert _ready_body(0, summary) == "今天没有值得推的（有缺口）"
+    assert _ready_body(1, 0, summary) == "个股 1 只，板块 0 个（有缺口）"
+    assert _ready_body(0, 0, summary) == "今天没有值得推的（有缺口）"
     quiet = [_eval(code, verdict="不推", output={"title": "不推", "conclusion": "跳过"}, package={"gaps": []})
              for code, _name in codes]
     assert gap_summary([], selection, pool, evaluations=quiet) is None
 
 
 def test_push_body_for_count_zero_and_gap():
-    assert _ready_body(3) == "3 家公司"
-    assert _ready_body(0) == "今天没有值得推的"
-    assert _ready_body(3, "采集不完整：金十快讯没取全") == "3 家公司（有缺口）"
-    assert _ready_body(0, "另有 2 条判推未列入") == "今天没有值得推的（有缺口）"
+    assert _ready_body(1, 2) == "个股 1 只，板块 2 个"
+    assert _ready_body(0, 1) == "个股 0 只，板块 1 个"
+    assert _ready_body(0, 0) == "今天没有值得推的"
+    assert _ready_body(3, 0) == "个股 3 只，板块 0 个"
+    assert _ready_body(1, 2, "采集不完整：金十快讯没取全") == "个股 1 只，板块 2 个（有缺口）"
+    assert _ready_body(0, 1, "采集不完整：金十快讯没取全") == "个股 0 只，板块 1 个（有缺口）"
+    assert _ready_body(3, 0, "采集不完整：金十快讯没取全") == "个股 3 只，板块 0 个（有缺口）"
+    assert _ready_body(0, 0, "另有 2 条判推未列入") == "今天没有值得推的（有缺口）"
 
 
 def test_web_renders_new_entries_empty_day_and_old_report():
@@ -260,6 +264,8 @@ def test_web_renders_new_entries_empty_day_and_old_report():
     assert "利好值多少" in page and "市场已反映多少" in page
     assert "资金为什么买或不买" in page and "价格划不划算" in page
     assert "风险：授权可能延期" in page and "各方观点" in page and "媒体" in page
+    assert "<h2>板块热点</h2>" in page and "<p>今天没有板块热点</p>" in page
+    assert "今天没有入选的个股" not in page
     assert 'class="risk"' in page and 'class="views"' in page
     assert "--risk:#ff3b30" in page and "--view:#007aff" in page
     assert "prefers-color-scheme:dark" in page and "--risk:#ff453a" in page and "--view:#0a84ff" in page
@@ -269,7 +275,9 @@ def test_web_renders_new_entries_empty_day_and_old_report():
     empty["entries"] = []
     empty["evaluated"] = 4
     quiet = render_report("/read/k", _page_report(empty)).body.decode()
-    assert "今天没有值得推的" in quiet
+    assert "<h2>个股</h2>" in quiet and "<h2>板块热点</h2>" in quiet
+    assert "<p>今天没有入选的个股</p>" in quiet
+    assert "<p>今天没有板块热点</p>" in quiet
     assert "评估了 4 家公司的隔夜消息，没有值得推的" in quiet
     assert '<span class="lab">利好值多少</span>' not in quiet
 
@@ -283,6 +291,8 @@ def test_web_renders_new_entries_empty_day_and_old_report():
     old = render_report("/read/k", _page_report(legacy)).body.decode()
     assert "授权" in old and '<span class="lab">利好值多少</span>' not in old and "极高" not in old
     assert "今天没有符合条件的利好" not in old
+    assert "<h2>板块热点</h2>" in old and "<p>今天没有板块热点</p>" in old
+    assert "今天没有入选的个股" not in old
 
 
 def test_cli_evaluations_lists_every_state_without_writing(path: Path, capsys):
@@ -391,7 +401,7 @@ def test_morning_report_reaches_api_mcp_and_web_with_the_same_entries(path: Path
     result = _run(path, model, apns, at("2026-10-13", "08:02"))
     assert result["state"] == "available" and result["entries"] == 2
     assert result["gapSummary"] == "2 家材料不全：海特生物、震裕科技"
-    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司（有缺口）")]
+    assert apns.sent == [("ab" * 32, "晨报已出", "个股 2 只，板块 0 个（有缺口）")]
     monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
     monkeypatch.setenv("NECKLINE_READ_KEY", READ_KEY)
     app = FastAPI()
@@ -409,8 +419,15 @@ def test_morning_report_reaches_api_mcp_and_web_with_the_same_entries(path: Path
     assert "importance" not in json.dumps(latest["content"], ensure_ascii=False)
     listed = client.get("/api/v4/reports").json()["reports"]
     assert listed[0]["entryCount"] == 2
+    assert listed[0]["counts"] == {"stocks": 2, "sectors": len(latest["content"]["sectors"]["entries"])}
     page = client.get(f"/read/{READ_KEY}")
     assert "海特生物 300683" in page.text and "利好值多少" in page.text
+    assert "<h2>板块热点</h2>" in page.text
+    if latest["content"]["sectors"]["entries"]:
+        assert "今天没有板块热点" not in page.text
+    else:
+        assert "<p>今天没有板块热点</p>" in page.text
+    assert "今天没有入选的个股" not in page.text
     assert client.get(f"/read/{READ_KEY}?format=json").json()["content"] == latest["content"]
     with db.read(path) as conn:
         stored = db.get_report(conn, "2026-10-13")
@@ -469,3 +486,129 @@ def test_old_output_without_money_logic_counts_as_ordinary():
     both_old = _timed([("300002", 10, None), ("300001", 9, "很强")], max_items=1)
     assert [entry["companyCode"] for entry in both_old["entries"]] == ["300001"]
     assert "moneyLogic" not in json.dumps(both_old["entries"], ensure_ascii=False)
+
+
+def _shell(entries: list, sectors: dict | None = None) -> dict:
+    content = {
+        "window": {"start": "2026-10-12T15:00+08:00", "end": "2026-10-13T08:00+08:00"},
+        "generatedAt": "2026-10-13T08:02+08:00", "configVersion": "screening-v5", "entries": entries,
+    }
+    if sectors is not None:
+        content["sectors"] = sectors
+    return content
+
+
+def _store_available(path: Path, day: str, content: dict, gap: str | None) -> None:
+    now = at(day, "08:02")
+    start, end = morning_window(date.fromisoformat(day), SCHEDULE)
+    with db.write(path) as conn:
+        db.begin_report(conn, report_id=f"morning-{day}", trade_date=day, window_start=start, window_end=end,
+                        config_version="screening-v5", config_sha256="0" * 64, started_at=now)
+        db.complete_report(conn, report_id=f"morning-{day}", content=content, stats={}, gap_summary=gap,
+                           available_at=now)
+
+
+def _refuse_client(_report_id: str):
+    raise AssertionError("已出的晨报不应再评估")
+
+
+def _push_stored(path: Path, day: str) -> str:
+    apns = FakeApns()
+    now = at(day, "08:10")
+    run_morning(path, now=now, config=_config(), clock=lambda: now, collector=lambda _at: {"status": "completed"},
+                client_factory=_refuse_client, pusher=Pusher(path, apns, lambda: now))
+    assert len(apns.sent) == 1 and apns.sent[0][1] == "晨报已出"
+    return apns.sent[0][2]
+
+
+_SECTOR = {
+    "title": "金融座谈会",
+    "sector": {"name": "人工智能", "code": "885001.TI", "memberCount": 12},
+    "conclusion": "资金会看一眼",
+    "questions": {"value": "有政策", "priced": "还没涨透", "money": "可能接力"},
+    "leaders": [
+        {"companyCode": "300082", "companyName": "奥克股份", "price": "明显高开不追"},
+        {"companyCode": "300001", "companyName": "甲公司", "price": "回落再看"},
+        {"companyCode": "300002", "companyName": "乙公司", "price": "不追高"},
+    ],
+    "risk": "可能落空",
+    "views": [{"by": "媒体", "name": "财联社", "text": "认为有催化", "sourceTitle": "媒体标题",
+               "sourceUrl": "https://news.example/a"}],
+    "sources": [{
+        "documentId": "doc_forum", "sourceLabel": "金十快讯", "publishedAt": "2026-10-12T17:30+08:00",
+        "title": "座谈会", "url": "https://example.test/forum",
+    }],
+    "firstPublished": "2026-10-12T17:30+08:00",
+}
+
+
+def test_web_sector_section_shows_the_event_leaders_and_plain_empty_states():
+    sectors = {"candidates": 1, "evaluated": 1, "overflow": 0, "entries": [_SECTOR]}
+    page = render_report("/read/k", _page_report(_shell([], sectors))).body.decode()
+    assert "<h2>板块热点</h2>" in page and "<p>今天没有入选的个股</p>" in page
+    assert "今天没有板块热点" not in page
+    assert "金融座谈会" in page and "人工智能" in page and "创业板 12 只" in page
+    assert "资金会看一眼" in page
+    assert "① 利好值多少" in page and "有政策" in page
+    assert "② 市场已反映多少" in page and "还没涨透" in page
+    assert "③ 资金会不会借题发挥" in page and "可能接力" in page
+    assert "300082 奥克股份：明显高开不追" in page
+    assert "300001 甲公司：回落再看" in page and "300002 乙公司：不追高" in page
+    assert "风险：可能落空" in page and "各方怎么看" in page and "财联社" in page
+    assert "https://news.example/a" in page and "10-12 17:30" in page
+    assert 'href="/read/k/doc/doc_forum"' in page
+    assert 'class="gap">今天没有' not in page
+    quiet = render_report("/read/k", _page_report(_shell([]))).body.decode()
+    assert "<p>今天没有入选的个股</p>" in quiet and "<p>今天没有板块热点</p>" in quiet
+    assert 'class="gap"' not in quiet
+
+
+def test_stored_and_finalize_push_use_the_same_two_line_copy(path: Path, monkeypatch):
+    _with_device(path)
+    both = {"candidates": 2, "evaluated": 2, "overflow": 0, "entries": [_SECTOR, {**_SECTOR, "title": "另一件事"}]}
+    _store_available(path, "2026-10-12", _shell([{"companyCode": "300001"}, {"companyCode": "300002"}]), None)
+    _store_available(path, "2026-10-13", _shell([{"companyCode": "300683", "companyName": "海特生物"}], both), "材料不全")
+    _store_available(path, "2026-10-14", _shell([], {"entries": [{"title": "只有板块"}]}), None)
+    _store_available(path, "2026-10-15", _shell([]), None)
+    _store_available(path, "2026-10-16", _shell([]), "采集没取全")
+    assert _push_stored(path, "2026-10-12") == "个股 2 只，板块 0 个"
+    assert _push_stored(path, "2026-10-13") == "个股 1 只，板块 2 个（有缺口）"
+    assert _push_stored(path, "2026-10-14") == "个股 0 只，板块 1 个"
+    assert _push_stored(path, "2026-10-15") == "今天没有值得推的"
+    assert _push_stored(path, "2026-10-16") == "今天没有值得推的（有缺口）"
+    with db.write(path) as conn:
+        conn.execute("DELETE FROM push_log")
+    apns = FakeApns()
+    now = at("2026-10-13", "09:15")
+    again = finalize(path, now=now, config=_config(), pusher=Pusher(path, apns, lambda: now))
+    assert again["state"] == "available"
+    assert apns.sent == [("ab" * 32, "晨报已出", "个股 1 只，板块 2 个（有缺口）")]
+
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+    monkeypatch.setenv("NECKLINE_READ_KEY", READ_KEY)
+    app = FastAPI()
+    app.include_router(api_router(require_token_dependency=lambda: None))
+    from neckline.morning.web import create_router as web_router
+    app.include_router(web_router())
+    client = TestClient(app)
+    latest = client.get("/api/v4/reports/latest").json()
+    assert latest["tradeDate"] == "2026-10-16" and "sectors" not in latest["content"]
+    day = client.get("/api/v4/reports/2026-10-13").json()
+    assert day["content"]["sectors"] == both
+    assert day["content"]["sectors"]["entries"][0]["leaders"][0]["price"] == "明显高开不追"
+    old = client.get("/api/v4/reports/2026-10-12").json()
+    assert "sectors" not in old["content"] and len(old["content"]["entries"]) == 2
+    listed = {item["tradeDate"]: item for item in client.get("/api/v4/reports", params={"limit": 10}).json()["reports"]}
+    assert listed["2026-10-13"]["counts"] == {"stocks": 1, "sectors": 2}
+    assert listed["2026-10-14"]["counts"] == {"stocks": 0, "sectors": 1}
+    assert listed["2026-10-12"]["counts"] == {"stocks": 2, "sectors": 0}
+    assert listed["2026-10-15"]["counts"] == {"stocks": 0, "sectors": 0}
+    assert listed["2026-10-16"]["counts"] == {"stocks": 0, "sectors": 0}
+    empty_page = client.get(f"/read/{READ_KEY}").text
+    assert "<p>今天没有入选的个股</p>" in empty_page and "<p>今天没有板块热点</p>" in empty_page
+    filled = client.get(f"/read/{READ_KEY}/day/2026-10-13").text
+    assert "<h2>板块热点</h2>" in filled and "金融座谈会" in filled and "创业板 12 只" in filled
+    assert "今天没有板块热点" not in filled
+    assert client.get(f"/read/{READ_KEY}/day/2026-10-13", params={"format": "json"}).json()["content"]["sectors"] == both
+    via_mcp = mcp_report("2026-10-13")
+    assert via_mcp["content"]["sectors"] == both

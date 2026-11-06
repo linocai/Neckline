@@ -62,6 +62,11 @@ _QUESTION_LABELS = (
     ("money", "资金为什么买或不买"),
     ("price", "价格划不划算"),
 )
+_SECTOR_QUESTIONS = (
+    ("value", "① 利好值多少"),
+    ("priced", "② 市场已反映多少"),
+    ("money", "③ 资金会不会借题发挥"),
+)
 
 
 def _page(title: str, body: str) -> HTMLResponse:
@@ -161,12 +166,50 @@ def _entries(base: str, entries: list[dict]) -> str:
     return _legacy_entries(base, entries)
 
 
-def _empty_copy(content: dict) -> str:
-    if "evaluated" not in content:
-        return "<p>今天没有符合条件的利好。</p>"
-    count = content.get("evaluated")
-    shown = count if isinstance(count, int) and not isinstance(count, bool) else 0
-    return f"<p>今天没有值得推的</p><p>评估了 {shown} 家公司的隔夜消息，没有值得推的</p>"
+def _empty_stocks(content: dict) -> str:
+    parts = ["<p>今天没有入选的个股</p>"]
+    if "evaluated" in content:
+        count = content.get("evaluated")
+        shown = count if isinstance(count, int) and not isinstance(count, bool) else 0
+        parts.append(f"<p>评估了 {shown} 家公司的隔夜消息，没有值得推的</p>")
+    return "".join(parts)
+
+
+def _sector_block(base: str, entries: list) -> str:
+    items = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        sector = entry.get("sector") if isinstance(entry.get("sector"), dict) else {}
+        count = sector.get("memberCount")
+        count_html = (f"<span class=\"tag\">创业板 {escape(str(count))} 只</span>"
+                      if isinstance(count, int) and not isinstance(count, bool) else "")
+        published = entry.get("firstPublished") or ""
+        shown = published[5:16].replace("T", " ") if isinstance(published, str) and len(published) >= 16 else ""
+        when = f"<span class=\"tag\">{escape(shown)}</span>" if shown else ""
+        questions = entry.get("questions") if isinstance(entry.get("questions"), dict) else {}
+        question_html = "".join(
+            f"<div class=\"q\"><span class=\"lab\">{escape(label)}</span>{escape(str(questions.get(key) or ''))}</div>"
+            for key, label in _SECTOR_QUESTIONS)
+        leaders = []
+        for leader in entry.get("leaders") or []:
+            if not isinstance(leader, dict):
+                continue
+            leaders.append(f"<div>{escape(str(leader.get('companyCode') or ''))} "
+                           f"{escape(str(leader.get('companyName') or ''))}："
+                           f"{escape(str(leader.get('price') or ''))}</div>")
+        leader_html = ("<div class=\"q\"><span class=\"lab\">龙头</span>" + "".join(leaders) + "</div>") if leaders else ""
+        views = entry.get("views") if isinstance(entry.get("views"), list) else []
+        view_html = ("<div class=\"views\"><div>各方怎么看</div>"
+                     + "".join(_view_html(view) for view in views if isinstance(view, dict)) + "</div>") if views else ""
+        sources = "".join(_source_line(base, source) for source in entry.get("sources") or [] if isinstance(source, dict))
+        items.append(
+            f"<li><div class=\"hl\">{escape(str(entry.get('title') or ''))}</div>"
+            f"<div><span class=\"co\">{escape(str(sector.get('name') or ''))}</span>{count_html}{when}</div>"
+            f"<div class=\"why\">{escape(str(entry.get('conclusion') or ''))}</div>"
+            f"{question_html}{leader_html}<p class=\"risk\">风险：{escape(str(entry.get('risk') or ''))}</p>"
+            f"{view_html}<div class=\"src\">原文：{sources}</div></li>")
+    return "<ol>" + "".join(items) + "</ol>"
 
 
 def _intro(base: str) -> str:
@@ -282,7 +325,12 @@ def render_report(base: str, report: dict) -> HTMLResponse:
                 f"规则 {escape(c['configVersion'])}</div>")
         if c.get("gapSummary"):
             body += f"<div class=\"gap\">缺口：{escape(c['gapSummary'])}</div>"
-        body += _entries(base, c["entries"]) if c["entries"] else _empty_copy(c)
+        body += "<h2>个股</h2>"
+        body += _entries(base, c["entries"]) if c["entries"] else _empty_stocks(c)
+        sectors = c.get("sectors") if isinstance(c.get("sectors"), dict) else {}
+        sector_entries = sectors.get("entries") if isinstance(sectors.get("entries"), list) else []
+        body += "<h2>板块热点</h2>"
+        body += _sector_block(base, sector_entries) if sector_entries else "<p>今天没有板块热点</p>"
     body += (f"<footer><a href=\"{base}/history\">历史</a>　·　<a href=\"{base}/day/{escape(report['trade_date'])}?format=json\">JSON</a>"
              f"</footer>")
     return _page(title, body)

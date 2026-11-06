@@ -91,7 +91,7 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
 
     @server.tool(name="get_morning_report", title="读取晨报", annotations=_READ)
     async def get_morning_report(trade_date: str | None = None) -> dict[str, Any]:
-        """读取最新或指定交易日的晨报，和推送、App 是同一份。每条有结论、四个问题（利好值多少、市场已反映多少、资金为什么买或不买、价格划不划算）、风险和各方观点。判「不推」的不在名单里。trade_date 形如 2026-10-16，不填则读最新一期。"""
+        """读取最新或指定交易日的晨报，和推送、App 是同一份。每期有个股（最多 10 只）和板块热点（最多 3 个事件，每个事件一个板块、三只龙头）。个股每条有结论、四个问题（利好值多少、市场已反映多少、资金为什么买或不买、价格划不划算）、风险和各方观点。判「不推」的不在名单里。trade_date 形如 2026-10-16，不填则读最新一期。"""
         return _report(trade_date)
 
     @server.tool(name="get_document", title="读取原文", annotations=_READ)
@@ -101,7 +101,7 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
 
     @server.tool(name="check_pool", title="查询股票池", annotations=_READ)
     async def check_pool(query: str) -> dict[str, Any]:
-        """查询一只股票是否在 K10 股票池。可以是六位代码、带 .SZ 的代码、简称或别名。不返回整份名单。"""
+        """查询一只股票是否在 K10 股票池。K10 股票池是全部在市创业板（不含 ST）。可以是六位代码、带 .SZ 的代码、简称或别名。不返回整份名单。"""
         return assess(query)
 
     @server.tool(name="get_stock_overview", title="读取单票技术面概览", annotations=_READ)

@@ -551,7 +551,7 @@ def test_morning_report_end_to_end_api_web_and_single_push(path, monkeypatch):
     result = _run(path, model, apns, at("2026-10-13", "08:02"))
     assert result["state"] == "available" and result["entries"] == 2
     assert result["gapSummary"] == "2 家材料不全：海特生物、震裕科技"
-    assert apns.sent == [("ab" * 32, "晨报已出", "2 家公司（有缺口）")]
+    assert apns.sent == [("ab" * 32, "晨报已出", "个股 2 只，板块 0 个（有缺口）")]
     calls = model.hits
     again = _run(path, model, apns, at("2026-10-13", "08:10"))
     assert again["state"] == "available" and model.hits == calls and len(apns.sent) == 1
@@ -693,8 +693,9 @@ def test_old_report_output_drops_importance_and_review_without_rewriting_the_row
     app.include_router(api_router(require_token_dependency=lambda: None))
     client = TestClient(app)
     listed = client.get("/api/v4/reports").json()["reports"]
-    assert listed[0]["entryCount"] == 1
+    assert listed[0]["entryCount"] == 1 and listed[0]["counts"] == {"stocks": 1, "sectors": 0}
     latest = client.get("/api/v4/reports/latest").json()
+    assert "sectors" not in latest["content"]
     assert latest["content"]["entries"][0]["headline"] == "授权"
     assert "importance" not in json.dumps(latest["content"]["entries"], ensure_ascii=False)
 

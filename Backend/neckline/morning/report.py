@@ -684,15 +684,26 @@ class Pusher:
         return {"devices": len(tokens), "sent": sent, "failed": failed}
 
 
-def _ready_body(count: int, gap: str | None = None) -> str:
-    text = f"{count} 家公司" if count else "今天没有值得推的"
+def _line_counts(content: object) -> tuple[int, int]:
+    """主线 entries 与板块 sectors.entries。旧记录没有 sectors 时板块按 0。"""
+    if not isinstance(content, Mapping):
+        return 0, 0
+    entries = content.get("entries")
+    stocks = len(entries) if isinstance(entries, list) else 0
+    sectors = content.get("sectors")
+    sector_entries = sectors.get("entries") if isinstance(sectors, Mapping) else None
+    return stocks, len(sector_entries) if isinstance(sector_entries, list) else 0
+
+
+def _ready_body(stocks: int, sectors: int = 0, gap: str | None = None) -> str:
+    text = "今天没有值得推的" if stocks == 0 and sectors == 0 else f"个股 {stocks} 只，板块 {sectors} 个"
     if gap:
         text += "（有缺口）"
     return text
 
 
-def _push_ready(pusher: Pusher, report_id: str, count: int, gap: str | None) -> dict:
-    return pusher.notify(report_id=report_id, kind="ready", title="晨报已出", body=_ready_body(count, gap))
+def _push_ready(pusher: Pusher, report_id: str, stocks: int, sectors: int, gap: str | None) -> dict:
+    return pusher.notify(report_id=report_id, kind="ready", title="晨报已出", body=_ready_body(stocks, sectors, gap))
 
 
 def _calendar_gap(day: date, exc: CalendarGap, pusher: Pusher, collection: str | None) -> dict:
@@ -707,10 +718,10 @@ def _calendar_gap(day: date, exc: CalendarGap, pusher: Pusher, collection: str |
 
 
 def _stored_ready(pusher: Pusher, report_id: str, stored: Mapping[str, Any]) -> dict:
-    entries = (stored.get("content") or {}).get("entries") or []
-    return {"tradeDate": stored["trade_date"], "state": "available", "entries": len(entries),
+    stocks, sectors = _line_counts(stored.get("content"))
+    return {"tradeDate": stored["trade_date"], "state": "available", "entries": stocks,
             "gapSummary": stored.get("gap_summary"),
-            "push": _push_ready(pusher, report_id, len(entries), stored.get("gap_summary"))}
+            "push": _push_ready(pusher, report_id, stocks, sectors, stored.get("gap_summary"))}
 
 
 def _bounded_search(client: SearchClient, *, day: date, schedule: Mapping[str, Any],
@@ -1047,7 +1058,8 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
             return _stored_ready(pusher, report_id, stored)
         return {"tradeDate": day.isoformat(), "state": stored["status"] if stored else "running",
                 "reason": stored.get("failure_reason") if stored else None}
-    push = _push_ready(pusher, report_id, len(content["entries"]), summary)
+    stocks, sectors = _line_counts(content)
+    push = _push_ready(pusher, report_id, stocks, sectors, summary)
     return {"tradeDate": day.isoformat(), "state": "available", "entries": len(content["entries"]),
             "gapSummary": summary, "push": push, "stats": stats}
 

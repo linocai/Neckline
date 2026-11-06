@@ -602,7 +602,7 @@ def test_morning_run_stores_one_push_and_one_skip(path: Path) -> None:
     apns = FakeApns()
     result = _morning(path, handler, apns)
     assert result["state"] == "available" and result["entries"] == 1
-    assert apns.sent == [("ab" * 32, "晨报已出", "1 家公司（有缺口）")]
+    assert apns.sent == [("ab" * 32, "晨报已出", "个股 1 只，板块 0 个（有缺口）")]
     assert "calls" not in result["stats"] and "fromReceipt" not in result["stats"]
     assert result["stats"]["classification"]["calls"] == 1
     evaluation = result["stats"]["evaluation"]

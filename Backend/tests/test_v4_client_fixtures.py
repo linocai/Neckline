@@ -241,6 +241,8 @@ def _assert_shapes(bodies: dict[str, bytes]) -> None:
     assert [item["status"] for item in history] == ["available", "failed", "running", "available"]
     assert [item["tradeDate"] for item in history] == ["2026-10-19", "2026-10-16", "2026-10-15", "2026-10-14"]
     assert history[0]["entryCount"] == 3 and history[3]["entryCount"] == 0
+    assert history[0]["counts"] == {"stocks": 3, "sectors": 0}
+    assert all(item["counts"] == {"stocks": 0, "sectors": 0} for item in history[1:])
     assert history[1]["failureReason"] == "09:15 前没能出报"
     assert json.loads(bodies["document.json"])["url"]
     assert json.loads(bodies["document-not-found.json"]) == {"detail": {"reason": "no_document"}}
@@ -310,6 +312,11 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
     bodies["health.json"] = json.dumps(health, ensure_ascii=False).encode()
 
     _assert_shapes(bodies)
+    # counts 留给 B5 的 App。现行夹具还没有这个字段，对齐前摘掉，避免改写 App 夹具。
+    history_body = json.loads(bodies["reports-history.json"])
+    for item in history_body["reports"]:
+        item.pop("counts")
+    bodies["reports-history.json"] = json.dumps(history_body, ensure_ascii=False).encode()
     blob = b"\n".join(bodies.values()).decode()
     for secret in (FIXTURE_TOKEN, WRONG_TOKEN, DEVICE_TOKEN):
         if secret in blob:

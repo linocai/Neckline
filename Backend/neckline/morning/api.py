@@ -60,6 +60,17 @@ def present_content(content: object) -> object:
     return shown
 
 
+def line_counts(content: object) -> dict[str, int]:
+    """历史列表的两条线只数。旧记录没有 sectors 时板块为 0。"""
+    if not isinstance(content, dict):
+        return {"stocks": 0, "sectors": 0}
+    entries = content.get("entries")
+    stocks = len(entries) if isinstance(entries, list) else 0
+    sectors = content.get("sectors")
+    sector_entries = sectors.get("entries") if isinstance(sectors, dict) else None
+    return {"stocks": stocks, "sectors": len(sector_entries) if isinstance(sector_entries, list) else 0}
+
+
 def report_out(report: dict) -> dict:
     return {"reportId": report["report_id"], "tradeDate": report["trade_date"], "status": report["status"],
             "windowStart": report["window_start"], "windowEnd": report["window_end"],
@@ -143,6 +154,7 @@ def create_router(*, require_token_dependency: Callable[..., Any],
             reports = db.list_reports(conn, max(1, min(limit, 120)))
         return {"reports": [{"tradeDate": r["trade_date"], "status": r["status"], "availableAt": r["available_at"],
                              "entryCount": len((r["content"] or {}).get("entries", [])),
+                             "counts": line_counts(r["content"]),
                              "failureReason": r["failure_reason"] if r["status"] == "failed" else None}
                             for r in reports]}
 

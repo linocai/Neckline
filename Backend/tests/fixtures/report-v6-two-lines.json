@@ -1,0 +1,299 @@
+{
+  "availableAt": "2026-10-13T00:02:00+00:00",
+  "configVersion": "screening-v5",
+  "content": {
+    "candidates": 2,
+    "configVersion": "screening-v5",
+    "entries": [
+      {
+        "companyCode": "300683",
+        "companyName": "海特生物",
+        "conclusion": "值得跟踪",
+        "firstDisclosed": null,
+        "questions": {
+          "money": "有新增量",
+          "price": "明显高开不追",
+          "priced": "还没怎么涨",
+          "value": "利好有量"
+        },
+        "risk": "可能落空",
+        "sources": [
+          {
+            "documentId": "doc_a26ff13eaecffdb5260b9f01b41325b7@1",
+            "publishedAt": "2026-10-12T16:45+08:00",
+            "sourceLabel": "金十快讯",
+            "title": "海特生物：签署授权协议",
+            "url": "https://flash.jin10.com/detail/h1"
+          }
+        ],
+        "title": "值得跟踪",
+        "type": "业绩预增",
+        "views": [
+          {
+            "by": "媒体",
+            "name": "来源",
+            "sourceTitle": "海特生物：签署授权协议",
+            "sourceUrl": "https://flash.jin10.com/detail/h1",
+            "text": "转述"
+          }
+        ]
+      },
+      {
+        "companyCode": "300953",
+        "companyName": "震裕科技",
+        "conclusion": "值得跟踪",
+        "firstDisclosed": null,
+        "questions": {
+          "money": "有新增量",
+          "price": "明显高开不追",
+          "priced": "还没怎么涨",
+          "value": "利好有量"
+        },
+        "risk": "可能落空",
+        "sources": [
+          {
+            "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4@1",
+            "publishedAt": "2026-10-12T17:05+08:00",
+            "sourceLabel": "金十快讯",
+            "title": "震裕科技：预计前三季度净利增长58%",
+            "url": "https://flash.jin10.com/detail/z1"
+          }
+        ],
+        "title": "值得跟踪",
+        "type": "业绩预增",
+        "views": [
+          {
+            "by": "媒体",
+            "name": "来源",
+            "sourceTitle": "震裕科技：预计前三季度净利增长58%",
+            "sourceUrl": "https://flash.jin10.com/detail/z1",
+            "text": "转述"
+          }
+        ]
+      }
+    ],
+    "evaluated": 2,
+    "gapSummary": "股票池没能刷新（未配置 TUSHARE_TOKEN），沿用上一份；2 家材料不全：海特生物、震裕科技",
+    "generatedAt": "2026-10-13T08:02+08:00",
+    "kind": "morning",
+    "reportId": "morning-2026-10-13",
+    "sectors": {
+      "candidates": 1,
+      "entries": [
+        {
+          "conclusion": "资金会看一眼",
+          "firstPublished": "2026-10-12T17:30+08:00",
+          "leaders": [
+            {
+              "companyCode": "300082",
+              "companyName": "奥克股份",
+              "price": "明显高开不追"
+            }
+          ],
+          "questions": {
+            "money": "可能接力",
+            "priced": "还没涨透",
+            "value": "有政策"
+          },
+          "risk": "可能落空",
+          "sector": {
+            "code": "885001.TI",
+            "memberCount": 3,
+            "name": "人工智能"
+          },
+          "sources": [
+            {
+              "documentId": "doc_1897318c3719945f5b916863d3446c71@1",
+              "publishedAt": "2026-10-12T17:30+08:00",
+              "sourceLabel": "金十快讯",
+              "title": "央行、证监会将于明天召开座谈会",
+              "url": "https://flash.jin10.com/detail/forum"
+            }
+          ],
+          "title": "值得看的板块",
+          "views": [
+            {
+              "by": "媒体",
+              "name": "财联社",
+              "sourceTitle": "媒体标题",
+              "sourceUrl": "https://news.example/a",
+              "text": "认为有催化"
+            }
+          ]
+        }
+      ],
+      "evaluated": 1,
+      "overflow": 0
+    },
+    "stats": {
+      "candidates": 2,
+      "classification": {
+        "calls": 1,
+        "fromReceipt": 0,
+        "seconds": 0.0,
+        "usage": {
+          "completion_tokens": 5,
+          "prompt_tokens": 10
+        }
+      },
+      "collection": "completed",
+      "collectionGaps": [],
+      "companies": 3,
+      "contract": "screening-classify-v4",
+      "duplicates": 0,
+      "evaluation": {
+        "calls": 2,
+        "candidates": 2,
+        "droppedViews": 0,
+        "fromReceipt": 0,
+        "gap": 0,
+        "invalid": 0,
+        "repaired": 0,
+        "repairs": 0,
+        "seconds": 0.006,
+        "usage": {
+          "completion_tokens": 10,
+          "prompt_cache_hit_tokens": 2,
+          "prompt_tokens": 20,
+          "reasoning_tokens": 4
+        },
+        "verdicts": {
+          "不推": 0,
+          "推": 2
+        },
+        "vetoed": 0
+      },
+      "filings": {
+        "attempted": 0,
+        "failed": {},
+        "fromStore": 0,
+        "ok": 0,
+        "seconds": 0.0
+      },
+      "gaps": [],
+      "history": 1,
+      "inWindow": 4,
+      "messages": 3,
+      "overflow": 0,
+      "pool": {
+        "count": 3,
+        "refreshedAt": "2026-10-12T04:00:00+00:00",
+        "reused": true,
+        "sha256": "c4958820c65bb1cd8d2f82ab00bb1d2957c441e24e614637873254f8e7fd52d7"
+      },
+      "prepare": {
+        "seconds": 0.004
+      },
+      "pushed": 2,
+      "search": {
+        "calls": 2,
+        "dropped": {
+          "afterCutoff": 0,
+          "badUrl": 0,
+          "empty": 0,
+          "noDate": 0
+        },
+        "enabled": true,
+        "failed": 0,
+        "fromReceipt": 0,
+        "kept": 2,
+        "returned": 2,
+        "seconds": 0.0,
+        "viewsCited": 0
+      },
+      "sectors": {
+        "candidates": {
+          "batches": 1,
+          "calls": 1,
+          "fromReceipt": 0,
+          "messages": 1,
+          "seconds": 0.0,
+          "usage": {
+            "completion_tokens": 3,
+            "prompt_cache_hit_tokens": 1,
+            "prompt_tokens": 4,
+            "reasoning_tokens": 2
+          }
+        },
+        "dropped": {
+          "dropSources": 0,
+          "macroRelease": 0,
+          "otherListed": 0,
+          "overseas": 0,
+          "periodic": 0,
+          "research": 0,
+          "tape": 0
+        },
+        "evaluation": {
+          "calls": 1,
+          "droppedViews": 0,
+          "evaluated": 1,
+          "fromReceipt": 0,
+          "gap": 0,
+          "invalid": 0,
+          "repaired": 0,
+          "repairs": 0,
+          "seconds": 0.005,
+          "usage": {
+            "completion_tokens": 3,
+            "prompt_cache_hit_tokens": 1,
+            "prompt_tokens": 4,
+            "reasoning_tokens": 2
+          },
+          "verdicts": {
+            "不推": 0,
+            "推": 1
+          },
+          "vetoed": 0
+        },
+        "kept": 1,
+        "mapping": {
+          "calls": 1,
+          "events": 1,
+          "fromReceipt": 0,
+          "null": 0,
+          "repeat": 0,
+          "seconds": 0.0,
+          "usage": {
+            "completion_tokens": 3,
+            "prompt_cache_hit_tokens": 1,
+            "prompt_tokens": 4,
+            "reasoning_tokens": 2
+          }
+        },
+        "overflow": 0,
+        "raw": 1,
+        "search": {
+          "calls": 1,
+          "dropped": {
+            "afterCutoff": 0,
+            "badUrl": 0,
+            "empty": 0,
+            "noDate": 0
+          },
+          "enabled": true,
+          "failed": 0,
+          "fromReceipt": 0,
+          "kept": 1,
+          "returned": 1,
+          "seconds": 0.0,
+          "viewsCited": 1
+        }
+      },
+      "unmatched": 1
+    },
+    "tradeDate": "2026-10-13",
+    "window": {
+      "end": "2026-10-13T08:00+08:00",
+      "start": "2026-10-12T15:00+08:00"
+    }
+  },
+  "failedAt": null,
+  "failureReason": null,
+  "gapSummary": "股票池没能刷新（未配置 TUSHARE_TOKEN），沿用上一份；2 家材料不全：海特生物、震裕科技",
+  "reportId": "morning-2026-10-13",
+  "status": "available",
+  "tradeDate": "2026-10-13",
+  "windowEnd": "2026-10-13T00:00:00+00:00",
+  "windowStart": "2026-10-12T07:00:00+00:00"
+}

@@ -301,6 +301,11 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
     morning_tool = next(item for item in tools if item["name"] == "get_morning_report")
     description = morning_tool.get("description") or ""
     assert "四个问题" in description and "不推" in description and "evaluations" not in description
+    assert "最多 10 只" in description and "板块热点" in description and "最多 3 个事件" in description
+    pool_tool = next(item for item in tools if item["name"] == "check_pool")
+    descriptions = "\n".join(item.get("description") or "" for item in tools)
+    assert "1,089" not in descriptions and "1,089" not in BRIEF
+    assert "K10 股票池是全部在市创业板（不含 ST）" in (pool_tool.get("description") or "")
 
     assert _payload(_rpc(test_client, headers, "tools/call", {"name": "read_brief", "arguments": {}}, 3))["brief"] == BRIEF
     report = _payload(_rpc(test_client, headers, "tools/call", {"name": "get_morning_report", "arguments": {}}, 4))
