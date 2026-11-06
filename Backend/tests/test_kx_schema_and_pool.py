@@ -1,4 +1,4 @@
-"""库结构 v6：v1～v5 升上来之后三张 KX 表消失、股票池两张表在，其他表的数据还在；升级失败整体回滚。"""
+"""库结构 v6：v1～v5 升上来之后三张 KX 表消失、股票池和板块表在，其他表的数据还在；升级失败整体回滚。"""
 from __future__ import annotations
 
 import sqlite3
@@ -9,6 +9,9 @@ import pytest
 
 from neckline.morning import db
 from tests.kx_support import KX_TABLES, make_legacy_db
+
+_SECTOR_TABLES = {"sector_concepts", "sector_members", "sector_concepts_meta", "market_daily"}
+_V6_TABLES = {"stock_pool", "stock_pool_meta"} | _SECTOR_TABLES
 
 
 def _version(path) -> int:
@@ -61,8 +64,10 @@ def test_a_fresh_database_has_no_kx_tables(tmp_path):
         assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool_meta").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM sector_concepts").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM market_daily").fetchone()[0] == 0
     assert KX_TABLES.isdisjoint(_names(path))
-    assert {"stock_pool", "stock_pool_meta"} <= _names(path)
+    assert _V6_TABLES <= _names(path)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
@@ -79,7 +84,7 @@ def test_each_older_database_upgrades_to_v6_and_keeps_other_rows(tmp_path, versi
     db.init_schema(path)
     assert _version(path) == 6
     assert KX_TABLES.isdisjoint(_names(path))
-    assert {"stock_pool", "stock_pool_meta"} <= _names(path)
+    assert _V6_TABLES <= _names(path)
     with db.read(path) as conn:
         assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
         assert db.latest_report(conn)["report_id"] == "r1"
@@ -130,7 +135,7 @@ def test_a_failed_upgrade_rolls_back_as_a_whole(tmp_path, monkeypatch, version):
     monkeypatch.undo()
     db.init_schema(path)
     assert _version(path) == 6 and KX_TABLES.isdisjoint(_names(path))
-    assert {"stock_pool", "stock_pool_meta"} <= _names(path)
+    assert _V6_TABLES <= _names(path)
 
 
 def test_a_failed_v5_upgrade_rolls_back_without_adding_pool_tables(tmp_path, monkeypatch):
@@ -143,6 +148,7 @@ def test_a_failed_v5_upgrade_rolls_back_without_adding_pool_tables(tmp_path, mon
     assert _version(path) == 5
     assert _names(path) == before_names
     assert "stock_pool" not in _names(path)
+    assert _SECTOR_TABLES.isdisjoint(_names(path))
     with pytest.raises(db.NotReady):
         with db.read(path):
             pass

@@ -24,7 +24,7 @@ from neckline.news.model import SourceDocument
 
 from tests.test_morning import FakeModel, at
 
-# screening-v4.json 去掉 configVersion、approvedAt、note、companyPool、matching 之后，
+# screening-v4.json 去掉 configVersion、approvedAt、note、companyPool、matching、sectors 之后，
 # json.dumps(ensure_ascii=False, sort_keys=True, separators=(",", ":")) 的 sha256。
 # v5 做同样处理后必须相等，用来证明除股票池以外的规则没有改。
 MAINLINE_SHA256 = "31ec6c4d09783812a290f57658a20cf7897b0064ce7d0dfa1c2f84aa329bcae1"
@@ -128,7 +128,7 @@ def test_pool_rows_follow_listing_st_prefix_and_summary_rules():
 def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     rules = load_config().rules
     body = {key: value for key, value in rules.items()
-            if key not in {"configVersion", "approvedAt", "note", "companyPool", "matching"}}
+            if key not in {"configVersion", "approvedAt", "note", "companyPool", "matching", "sectors"}}
     digest = hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert digest == MAINLINE_SHA256
     # matching 只多了扩池新增公司的常用词简称，原来 7 个原样保留

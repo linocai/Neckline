@@ -212,7 +212,39 @@ def _validate_screening_rules(rules: object) -> dict:
         _require_min_int(market_limits, key, f"evaluation.market.{key}", 1)
     delivery = _require_dict(rules, "delivery", "delivery")
     _require_min_int(delivery, "maxItems", "delivery.maxItems", 1)
+    _validate_sectors(rules)
     return rules
+
+
+def _validate_sectors(rules: dict) -> None:
+    """板块清单和日线参数。缺了或类型不对就拒绝整份配置，不补默认值。"""
+    sectors = _require_dict(rules, "sectors", "sectors")
+    concepts = _require_dict(sectors, "concepts", "sectors.concepts")
+    names = _require(concepts, "excludeNames", "sectors.concepts.excludeNames")
+    if not isinstance(names, list) or any(not isinstance(item, str) or not item for item in names):
+        raise ValueError("sectors.concepts.excludeNames 类型不对")
+    patterns = _require(concepts, "excludePatterns", "sectors.concepts.excludePatterns")
+    if not isinstance(patterns, list) or any(not isinstance(item, str) or not item for item in patterns):
+        raise ValueError("sectors.concepts.excludePatterns 类型不对")
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError("sectors.concepts.excludePatterns 类型不对") from exc
+    minimum = _require_min_int(concepts, "minMembers", "sectors.concepts.minMembers", 1)
+    maximum = _require_min_int(concepts, "maxMembers", "sectors.concepts.maxMembers", 1)
+    if maximum < minimum:
+        raise ValueError("sectors.concepts.maxMembers 须 ≥ sectors.concepts.minMembers")
+    _require_min_int(concepts, "refreshDays", "sectors.concepts.refreshDays", 1)
+    market = _require_dict(sectors, "market", "sectors.market")
+    _require_min_int(market, "lookbackDays", "sectors.market.lookbackDays", 1)
+    _require_min_int(market, "leaderCount", "sectors.market.leaderCount", 1)
+    _require_min_int(market, "leaderWindow", "sectors.market.leaderWindow", 1)
+    _require_min_int(market, "limitWindow", "sectors.market.limitWindow", 1)
+    windows = _require(market, "boardWindows", "sectors.market.boardWindows")
+    if (not isinstance(windows, list) or not windows
+            or any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in windows)):
+        raise ValueError("sectors.market.boardWindows 类型不对")
 
 
 def _validate_company_pool(pool: dict) -> None:

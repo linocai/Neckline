@@ -4,7 +4,9 @@
 库结构版本 2 在版本 1 的基础上只加三张 KX 表；版本 3 只给 kx_pool 加三列（题材、首次入选日、能否买入）。
 版本 4 只加 filing_reads 与 evaluations 两张表。
 版本 5 删掉 kx_pool、kx_picks、kx_daily_stats（KX 看板改为只读 KX，不再落库）。
-版本 6 只加 stock_pool 与 stock_pool_meta（当前股票池和最近一次刷新）。
+版本 6 只加表：stock_pool、stock_pool_meta（当前股票池和最近一次刷新），
+sector_concepts、sector_members、sector_concepts_meta（同花顺概念和最近一次刷新），
+market_daily（创业板日线）。这一版还没上线，没有半套 v6 要再迁一次。
 init_schema 把版本 1～5 的库在同一个事务里升到版本 6，升级失败整体回滚。
 """
 from __future__ import annotations
@@ -135,7 +137,8 @@ CREATE TABLE IF NOT EXISTS evaluations (
 );
 """
 
-# 版本 6 只加两张表：当前股票池，以及最近一次刷新的元信息。刷新在一个事务里整表替换。
+# 版本 6 只加表：股票池，同花顺概念和成分（只存创业板代码），以及日线。
+# 概念刷新在一个事务里整表替换。refreshed_at 只在成功时改；失败只写 error，沿用上一份。
 V6_DDL = """
 CREATE TABLE IF NOT EXISTS stock_pool (
   code TEXT PRIMARY KEY,
@@ -154,6 +157,38 @@ CREATE TABLE IF NOT EXISTS stock_pool_meta (
   content_sha256 TEXT NOT NULL,
   source TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sector_concepts (
+  ts_code TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  member_count INTEGER NOT NULL CHECK(member_count >= 0),
+  refreshed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sector_members (
+  ts_code TEXT NOT NULL,
+  code TEXT NOT NULL,
+  PRIMARY KEY (ts_code, code)
+);
+CREATE TABLE IF NOT EXISTS sector_concepts_meta (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  refreshed_at TEXT,
+  count INTEGER NOT NULL CHECK(count >= 0),
+  content_sha256 TEXT NOT NULL,
+  error TEXT
+);
+CREATE TABLE IF NOT EXISTS market_daily (
+  code TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  open REAL NOT NULL,
+  high REAL NOT NULL,
+  low REAL NOT NULL,
+  close REAL NOT NULL,
+  pre_close REAL NOT NULL,
+  pct_chg REAL NOT NULL,
+  amount REAL NOT NULL,
+  limit_up INTEGER NOT NULL CHECK(limit_up IN (0, 1)),
+  PRIMARY KEY (code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_market_daily_trade_date ON market_daily(trade_date);
 """
 
 
@@ -664,6 +699,96 @@ def replace_stock_pool(conn: sqlite3.Connection, rows: Sequence[Mapping], *, ref
             _dumps(list(row.get("aliases") or ())), row.get("summary"), row.get("summarySource") or source,
             refreshed_at))
     conn.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?)", (refreshed_at, len(rows), sha256, source))
+
+
+def read_sector_concepts(conn: sqlite3.Connection) -> dict | None:
+    """当前概念清单。还没有刷新记录时返回 None。失败过的记录仍返回，error 里是原因。"""
+    meta = conn.execute(
+        "SELECT refreshed_at, count, content_sha256, error FROM sector_concepts_meta WHERE id=1").fetchone()
+    if meta is None:
+        return None
+    members: dict[str, list[str]] = {}
+    for row in conn.execute("SELECT ts_code, code FROM sector_members ORDER BY ts_code, code"):
+        members.setdefault(row["ts_code"], []).append(row["code"])
+    concepts = []
+    for row in conn.execute("SELECT ts_code, name, member_count, refreshed_at FROM sector_concepts ORDER BY ts_code"):
+        concepts.append({
+            "tsCode": row["ts_code"], "name": row["name"], "memberCount": row["member_count"],
+            "members": members.get(row["ts_code"], []), "refreshedAt": row["refreshed_at"],
+        })
+    return {"refreshedAt": meta["refreshed_at"], "count": meta["count"], "sha256": meta["content_sha256"],
+            "error": meta["error"], "concepts": concepts}
+
+
+def replace_sector_concepts(conn: sqlite3.Connection, concepts: Sequence[Mapping], *, refreshed_at: str,
+                            sha256: str) -> None:
+    """整表替换概念、成分和成功元信息。调用方负责放进同一个事务。"""
+    concepts = list(concepts)
+    conn.execute("DELETE FROM sector_members")
+    conn.execute("DELETE FROM sector_concepts")
+    conn.execute("DELETE FROM sector_concepts_meta")
+    for item in concepts:
+        conn.execute("INSERT INTO sector_concepts VALUES (?,?,?,?)", (
+            item["tsCode"], item["name"], int(item["memberCount"]), refreshed_at))
+        for code in item["members"]:
+            conn.execute("INSERT INTO sector_members VALUES (?,?)", (item["tsCode"], code))
+    conn.execute("INSERT INTO sector_concepts_meta VALUES (1,?,?,?,NULL)",
+                 (refreshed_at, len(concepts), sha256))
+
+
+def set_sector_refresh_error(conn: sqlite3.Connection, error: str) -> None:
+    """记下这次失败。不改概念行，也不改上次成功的时间和哈希。"""
+    row = conn.execute("SELECT 1 FROM sector_concepts_meta WHERE id=1").fetchone()
+    if row is None:
+        conn.execute("INSERT INTO sector_concepts_meta VALUES (1,NULL,0,?,?)", ("", error))
+        return
+    conn.execute("UPDATE sector_concepts_meta SET error=? WHERE id=1", (error,))
+
+
+def market_codes(conn: sqlite3.Connection) -> list[str]:
+    return [row[0] for row in conn.execute("SELECT DISTINCT code FROM market_daily ORDER BY code")]
+
+
+def market_dates(conn: sqlite3.Connection) -> list[str]:
+    return [row[0] for row in conn.execute("SELECT DISTINCT trade_date FROM market_daily ORDER BY trade_date")]
+
+
+def read_market_daily(conn: sqlite3.Connection, *, start: str | None = None, end: str | None = None) -> list[dict]:
+    sql = """SELECT code, trade_date, open, high, low, close, pre_close, pct_chg, amount, limit_up
+             FROM market_daily"""
+    clauses: list[str] = []
+    args: list[str] = []
+    if start is not None:
+        clauses.append("trade_date>=?")
+        args.append(start)
+    if end is not None:
+        clauses.append("trade_date<=?")
+        args.append(end)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY trade_date, code"
+    rows = []
+    for row in conn.execute(sql, args):
+        rows.append({
+            "code": row["code"], "tradeDate": row["trade_date"], "open": row["open"], "high": row["high"],
+            "low": row["low"], "close": row["close"], "preClose": row["pre_close"], "pctChg": row["pct_chg"],
+            "amount": row["amount"], "limitUp": bool(row["limit_up"]),
+        })
+    return rows
+
+
+def write_market_day(conn: sqlite3.Connection, trade_date: str, rows: Sequence[Mapping]) -> None:
+    """替换一个交易日的日线。调用方负责放进同一个事务。"""
+    conn.execute("DELETE FROM market_daily WHERE trade_date=?", (trade_date,))
+    for row in rows:
+        conn.execute("INSERT INTO market_daily VALUES (?,?,?,?,?,?,?,?,?,?)", (
+            row["code"], trade_date, row["open"], row["high"], row["low"], row["close"], row["preClose"],
+            row["pctChg"], row["amount"], 1 if row.get("limitUp") else 0))
+
+
+def delete_market_daily_outside(conn: sqlite3.Connection, start: str, end: str) -> int:
+    cursor = conn.execute("DELETE FROM market_daily WHERE trade_date<? OR trade_date>?", (start, end))
+    return cursor.rowcount
 
 
 def merge_running_stats(conn: sqlite3.Connection, report_id: str, patch: Mapping) -> None:

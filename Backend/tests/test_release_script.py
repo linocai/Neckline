@@ -165,7 +165,7 @@ def _v4_database(path: Path, version: int = 1) -> None:
 
 def _real_v4_database(path: Path, version: int = 1) -> None:
     """真实结构的库。v1 只有晨报表；v2 加三张 KX 表（无 theme 列）；v3/v4 的 kx_pool 带三列；
-    v4 再加 filing_reads 与 evaluations；v5 不再有三张 KX 表；v6 再加股票池两张表。v2～v4 带一行名单。"""
+    v4 再加 filing_reads 与 evaluations；v5 不再有三张 KX 表；v6 再加股票池、板块概念和日线。v2～v4 带一行名单。"""
     script = morning_db.DDL
     if version == 2:
         script += KX_V2_DDL
@@ -1879,7 +1879,8 @@ def test_upgrade_from_v5_to_v6_adds_the_pool_tables_and_keeps_documents(tmp_path
     assert result["switched"] is True and result["schema"] == {"before": 5, "target": 6, "action": "upgrade"}
     facts = _db_facts(driven.db)
     assert facts["version"] == 6
-    assert {"stock_pool", "stock_pool_meta"} <= facts["tables"]
+    assert {"stock_pool", "stock_pool_meta", "sector_concepts", "sector_members",
+            "sector_concepts_meta", "market_daily"} <= facts["tables"]
     assert not _KX_TABLES & facts["tables"]
     assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
 
@@ -1893,12 +1894,23 @@ def test_downgrade_from_v6_to_v5_keeps_the_pool_rows(tmp_path, monkeypatch):
                      "2026-11-05T00:00:00+00:00"))
         con.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?)",
                     ("2026-11-05T00:00:00+00:00", 1, "ab", "tushare"))
+        con.execute("INSERT INTO sector_concepts VALUES (?,?,?,?)",
+                    ("885001.TI", "人工智能", 3, "2026-11-05T00:00:00+00:00"))
+        con.execute("INSERT INTO sector_members VALUES (?,?)", ("885001.TI", "300001.SZ"))
+        con.execute("INSERT INTO sector_concepts_meta VALUES (1,?,?,?,?)",
+                    ("2026-11-05T00:00:00+00:00", 1, "cd", None))
+        con.execute("INSERT INTO market_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    ("300001.SZ", "2026-11-04", 1, 1, 1, 1, 1, 0, 1000, 0))
         con.commit()
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
     assert result["switched"] is True and result["schema"] == {"before": 6, "target": 5, "action": "downgrade"}
     assert _db_facts(driven.db)["version"] == 5
-    assert {"stock_pool", "stock_pool_meta"} <= _db_facts(driven.db)["tables"]
+    assert {"stock_pool", "stock_pool_meta", "sector_concepts", "sector_members",
+            "sector_concepts_meta", "market_daily"} <= _db_facts(driven.db)["tables"]
     assert _table_count(driven.db, "stock_pool") == 1
+    assert _table_count(driven.db, "sector_concepts") == 1
+    assert _table_count(driven.db, "sector_members") == 1
+    assert _table_count(driven.db, "market_daily") == 1
     assert not _KX_TABLES & _db_facts(driven.db)["tables"]
     assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
 
@@ -1909,7 +1921,7 @@ def test_failed_readiness_after_v5_to_v6_restores_version_five_and_keeps_the_new
     with pytest.raises(RuntimeError, match=f"已回滚到 {_PREVIOUS}"):
         release.switch(release=_TARGET, previous=_PREVIOUS)
     assert _db_facts(driven.db)["version"] == 5
-    assert {"stock_pool", "stock_pool_meta"} <= _db_facts(driven.db)["tables"]
+    assert {"stock_pool", "stock_pool_meta", "sector_concepts", "market_daily"} <= _db_facts(driven.db)["tables"]
     assert not _KX_TABLES & _db_facts(driven.db)["tables"]
     assert _documents(driven.db) == [("doc-1", "tushare", "n-1")]
     assert _switch_state(driven.root)["schemaRollback"] == {"status": "restored", "from": 6, "version": 5}

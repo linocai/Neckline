@@ -7,6 +7,7 @@
   python -m neckline.morning.cli show [--date YYYY-MM-DD]
   python -m neckline.morning.cli evaluations --date YYYY-MM-DD [--json]
   python -m neckline.morning.cli refresh-pool [--now ISO]
+  python -m neckline.morning.cli refresh-concepts [--now ISO]
 
 库路径取 --db 或环境变量 NECKLINE_V4_DB_PATH，没有默认值。凭据只从环境变量读（DEEPSEEK_API_KEY、
 TUSHARE_TOKEN、JIN10_MCP_TOKEN、APNS_*），不写日志。业务时钟可用 --now 显式给出。
@@ -30,6 +31,9 @@ from neckline.screening.deepseek import DeepSeekClient
 from . import db
 from .collect import run_collection
 from .report import Pusher, finalize, load_config, note_error, run_morning
+from .sectors import (
+    MEMBER_INTERVAL_SECONDS, ConceptRefresh, concepts_refresh_due, refresh_concepts,
+)
 from .stock_pool import PoolFetchError, refresh_stock_pool
 from .schedule import CST
 
@@ -158,6 +162,54 @@ def _evaluations(path: Path, day: str, as_json: bool) -> int:
     return 0
 
 
+def _refresh_concepts_if_due(path: Path, now: datetime) -> None:
+    """20:00 采集跑完后：距上次成功满 refreshDays 天（或从没成功过）才刷新。失败只记日志。"""
+    try:
+        config = load_config()
+    except Exception as exc:
+        _LOG.error("板块清单没能刷新：%s", type(exc).__name__)
+        return
+    rules = config.rules["sectors"]["concepts"]
+    today = now.astimezone(CST).date()
+    try:
+        with db.read(path) as conn:
+            meta = db.read_sector_concepts(conn)
+        if not concepts_refresh_due(meta, today=today, refresh_days=int(rules["refreshDays"])):
+            return
+        with db.write(path) as conn:
+            result = refresh_concepts(
+                conn, rules=rules, prefixes=tuple(config.rules["companyPool"]["prefixes"]), now=now,
+                interval_seconds=MEMBER_INTERVAL_SECONDS)
+    except Exception as exc:
+        _LOG.error("板块清单没能刷新：%s", type(exc).__name__)
+        return
+    if result.error is None:
+        _LOG.info("板块清单已刷新：%s 个", result.count)
+
+
+def _refresh_concepts(path: Path, config, now: datetime) -> int:
+    """手工刷新概念清单，不受 refreshDays 限制。失败不改上一份，不打印 token。"""
+    rules = config.rules["sectors"]["concepts"]
+    try:
+        with db.write(path) as conn:
+            result = refresh_concepts(
+                conn, rules=rules, prefixes=tuple(config.rules["companyPool"]["prefixes"]), now=now,
+                interval_seconds=MEMBER_INTERVAL_SECONDS)
+    except Exception as exc:
+        print(type(exc).__name__, file=sys.stderr)
+        return 1
+    if result.error:
+        print(result.error, file=sys.stderr)
+        return 1
+    _print(_concept_payload(result))
+    return 0
+
+
+def _concept_payload(result: ConceptRefresh) -> dict:
+    return {"count": result.count, "sha256": result.sha256, "refreshedAt": result.refreshed_at,
+            "replaced": result.replaced}
+
+
 def _refresh_pool(path: Path, config, now: datetime) -> int:
     """手工刷新当前股票池。失败不写库、不打印 token。"""
     day = now.astimezone(CST).date()
@@ -212,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluations.add_argument("--date", required=True)
     evaluations.add_argument("--json", action="store_true")
     sub.add_parser("refresh-pool").add_argument("--now")
+    sub.add_parser("refresh-concepts").add_argument("--now")
     args = ap.parse_args(argv)
     path = _db_path(args.db)
 
@@ -240,7 +293,15 @@ def main(argv: list[str] | None = None) -> int:
         bootstrap = _now(args.bootstrap_start) if args.bootstrap_start else None
         _print(run_collection(path, now=now, config=_collection_config(), tokens=_tokens(),
                               bootstrap_start=bootstrap, max_pages=args.max_pages, clock=clock))
+        _refresh_concepts_if_due(path, now)
         return 0
+    if args.command == "refresh-concepts":
+        try:
+            config = load_config()
+        except Exception as exc:
+            _LOG.error("筛选规则配置无效：%s", type(exc).__name__)
+            return 1
+        return _refresh_concepts(path, config, now)
     if args.command == "refresh-pool":
         try:
             config = load_config()

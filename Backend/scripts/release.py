@@ -29,7 +29,8 @@ Database schema version. ``build`` records the commit's ``SCHEMA_VERSION`` in th
 (``schemaBefore``, read-only, no DDL) and plans ``none`` / ``upgrade`` / ``downgrade``; ``--check-only`` reports the plan.
 An upgrade runs ``init-db`` as the neckline user after the new files, wheel and manifest are in place and verified,
 before the units return. Schema 5's ``init_schema`` drops ``kx_pool``, ``kx_picks`` and ``kx_daily_stats``.
-Schema 6 only adds ``stock_pool`` and ``stock_pool_meta``.
+Schema 6 only adds ``stock_pool``, ``stock_pool_meta``, ``sector_concepts``, ``sector_members``,
+``sector_concepts_meta`` and ``market_daily``.
 A downgrade of an add-tables-only step (2→1, 3→2, 3→1, 4→3, 4→2, 4→1, and 6→5) only rewrites ``user_version``
 after the services are stopped and before the files are replaced; extra tables are kept.
 A downgrade from schema 5 or 6 to 4, 3 or 2 recreates, in that same transaction, the empty KX tables the
@@ -102,7 +103,7 @@ KX_SCHEMA = 2  # 清单 schemaVersion 达到它的发布才报告、也才要求
 _KX_BASELINE_KEYS = ("kxPool", "kxPicks", "kxBoard")
 # 只改版本号的降级：旧代码按列名读写，多出来的表和列保留不删。
 # 从 5 或 6 往回：目标是 2、3、4 时先在同一事务里补建空 KX 表，再写 user_version。不需要的表保留。
-# 6→5 只改版本号，stock_pool 留着，B131 按 user_version=5 打开。
+# 6→5 只改版本号。stock_pool、板块概念和日线都留着，B131 按 user_version=5 打开。
 ADDITIVE_DOWNGRADES = frozenset({
     (2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1),
     (5, 4), (5, 3), (5, 2), (5, 1),
