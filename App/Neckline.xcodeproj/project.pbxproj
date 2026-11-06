@@ -13,6 +13,7 @@
 		0D6F880EF61399E7A9034723 /* MorningModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3597301592C33B76EF3BBF66 /* MorningModels.swift */; };
 		131E0E18B2E62F1A7D5237A1 /* EntryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6796D92CDB96A78D6277B651 /* EntryDetailView.swift */; };
 		185F8382719BE9C67BE88690 /* KXBoardContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70642E258DC95995AF29264A /* KXBoardContractTests.swift */; };
+		1A9D6B2B7C24D9D307BE55CE /* report-v6-two-lines.json in Resources */ = {isa = PBXBuildFile; fileRef = B5CF9D26867B14AA6B343905 /* report-v6-two-lines.json */; };
 		233BFB247F98044520E1C6B5 /* kx_board_v3_partial.json in Resources */ = {isa = PBXBuildFile; fileRef = 74E0B26A56A5201F64BFE1C4 /* kx_board_v3_partial.json */; };
 		2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E32D24CA427022EEC9C9A9 /* AppConfig.swift */; };
 		2E54774157117080103B1B4D /* report-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = DAD5DF9777E116FDCD8FC584 /* report-failed.json */; };
@@ -33,6 +34,7 @@
 		814C995AF6F5C1E330B786BA /* MorningCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */; };
 		85D0F3F786AC53940DAA463B /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 3DB7575968EFAD12CE247E44 /* Localizable.strings */; };
 		8B722EC9B595A2BEB85C81FB /* KXBoardModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4DD532647A3D314E8E8F7C5 /* KXBoardModels.swift */; };
+		8DA90CC3204A05141E54B8B6 /* SectorDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC69361D52144FB63945F601 /* SectorDetailView.swift */; };
 		903D54E0A001B3561507A639 /* not-configured.json in Resources */ = {isa = PBXBuildFile; fileRef = 45D5268003FE60EFA0761757 /* not-configured.json */; };
 		92BD41ACD16E258286E18A49 /* KXBoardAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B0DDBE6652E351D6B8F85C5 /* KXBoardAPI.swift */; };
 		93A6404435A7B165F66F6701 /* MorningComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED7FF84C0CF8D88C3C40E81 /* MorningComponents.swift */; };
@@ -98,6 +100,7 @@
 		A75B75043B9190B8F306FF1D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NecklineApp.swift; sourceTree = "<group>"; };
 		B4D7BB58A402D15EC1FC2CDB /* reports-history.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "reports-history.json"; sourceTree = "<group>"; };
+		B5CF9D26867B14AA6B343905 /* report-v6-two-lines.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-v6-two-lines.json"; sourceTree = "<group>"; };
 		BC33E699B9891551265741C6 /* Neckline.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Neckline.entitlements; sourceTree = "<group>"; };
 		BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningCopy.swift; sourceTree = "<group>"; };
 		BE181EDBB34EFB442E211D35 /* kx_board_unavailable.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = kx_board_unavailable.json; sourceTree = "<group>"; };
@@ -113,6 +116,7 @@
 		E58C9CD7CCAE1EE8E0BE381E /* NKSegmentedControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKSegmentedControl.swift; sourceTree = "<group>"; };
 		E9CBFCAD520E4315CAEB0DD1 /* MorningContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningContractTests.swift; sourceTree = "<group>"; };
 		EA345930F854C4BD2024D7E7 /* KXBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KXBoardView.swift; sourceTree = "<group>"; };
+		EC69361D52144FB63945F601 /* SectorDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectorDetailView.swift; sourceTree = "<group>"; };
 		EE4F8C33AF7B94DF50E1392E /* MorningPush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningPush.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -202,6 +206,7 @@
 				8637BB4377BD0557D4D5223C /* MorningRootView.swift */,
 				DA4B808A78796CBF073A531A /* MorningSettingsView.swift */,
 				63AF15102713B1CA1D617741 /* ReportView.swift */,
+				EC69361D52144FB63945F601 /* SectorDetailView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -237,6 +242,7 @@
 				DADCC85586E10EA993971C5A /* report-empty.json */,
 				DAD5DF9777E116FDCD8FC584 /* report-failed.json */,
 				5C14D4C709EBCECE8A15A579 /* report-not-found.json */,
+				B5CF9D26867B14AA6B343905 /* report-v6-two-lines.json */,
 				B4D7BB58A402D15EC1FC2CDB /* reports-history.json */,
 				865C6D568107580FC642159F /* unauthorized.json */,
 			);
@@ -362,6 +368,7 @@
 				3DB9E4BDA138D8E29F8927F2 /* report-empty.json in Resources */,
 				2E54774157117080103B1B4D /* report-failed.json in Resources */,
 				AADC26923148ABE07BC435FD /* report-not-found.json in Resources */,
+				1A9D6B2B7C24D9D307BE55CE /* report-v6-two-lines.json in Resources */,
 				D0A0E0ACDBE488FF4EFB433E /* reports-history.json in Resources */,
 				EEC0BA092C7ED60560285A3D /* unauthorized.json in Resources */,
 			);
@@ -395,6 +402,7 @@
 				4A15B194383364C09C699C5B /* NKSegmentedControl.swift in Sources */,
 				E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */,
 				FAC77C477B95FF79ABCAD7D7 /* ReportView.swift in Sources */,
+				8DA90CC3204A05141E54B8B6 /* SectorDetailView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -474,7 +482,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.3.0;
+				MARKETING_VERSION = 4.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "top.linotsai.neckline$(NK_BUNDLE_SUFFIX)";
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
@@ -543,7 +551,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 131;
+				CURRENT_PROJECT_VERSION = 132;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_LANGUAGE = "zh-Hans";
 				DEVELOPMENT_TEAM = HX73DFL88G;
@@ -560,7 +568,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 4.3.0;
+				MARKETING_VERSION = 4.3.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				NK_BUNDLE_SUFFIX = "";
@@ -608,7 +616,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 131;
+				CURRENT_PROJECT_VERSION = 132;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_LANGUAGE = "zh-Hans";
 				DEVELOPMENT_TEAM = HX73DFL88G;
@@ -631,7 +639,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 4.3.0;
+				MARKETING_VERSION = 4.3.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				NK_BUNDLE_SUFFIX = "";
@@ -666,7 +674,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.3.0;
+				MARKETING_VERSION = 4.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "top.linotsai.neckline$(NK_BUNDLE_SUFFIX)";
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;

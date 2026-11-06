@@ -7,6 +7,11 @@ enum MorningCopy {
     static let noReport = "还没有晨报"
     static let noReportDetail = "每个交易日 08:00 截止后出报"
     static let emptyEntries = "今天没有值得推的"
+    static let sectionStocks = "个股"
+    static let sectionSectors = "板块热点"
+    static let emptyStocks = "今天没有入选的个股"
+    static let emptySectors = "今天没有板块热点"
+    static let leadersPrefix = "龙头："
     static let questionsHeading = "四个问题"
     static let viewsHeading = "各方怎么看"
     static let sourcesHeading = "原文"
@@ -14,6 +19,8 @@ enum MorningCopy {
     static let questionPriced = "② 市场已反映多少"
     static let questionMoney = "③ 资金为什么买、为什么不买"
     static let questionPrice = "④ 价格划不划算"
+    static let sectorQuestionMoney = "③ 资金会不会借题发挥"
+    static let sectorQuestionPrice = "④ 价格"
     static let failedTitle = "晨报出问题了"
     static let running = "正在出报"
     static let runningDetail = "完成后下拉刷新"
@@ -47,12 +54,16 @@ enum MorningCopy {
 
     static func header(tradeDate: String) -> String {
         guard let parts = ShanghaiClock.day(tradeDate) else { return "晨报 \(tradeDate)" }
-        return "晨报 \(parts.month)/\(parts.day) \(parts.weekday)"
+        return "晨报 \(Self.paddedMonthDay(parts.month, parts.day)) \(parts.weekday)"
     }
 
     static func historyTitle(tradeDate: String) -> String {
         guard let parts = ShanghaiClock.day(tradeDate) else { return tradeDate }
-        return "\(parts.month)/\(parts.day) \(parts.weekday)"
+        return "\(Self.paddedMonthDay(parts.month, parts.day)) \(parts.weekday)"
+    }
+
+    fileprivate static func paddedMonthDay(_ month: Int, _ day: Int) -> String {
+        String(format: "%02d/%02d", month, day)
     }
 
     static func windowLine(report: MorningReport) -> String {
@@ -62,15 +73,52 @@ enum MorningCopy {
         return windowLine(start: report.windowStart, end: report.windowEnd, generatedAt: nil)
     }
 
-    /// 名单页眉的时间范围。有条目时带上「N 家公司」。没有正文的期仍用窗口行。
+    /// 名单页眉的时间范围。有正文时带上两条线的只数。没有正文的期仍用窗口行。
     static func listMeta(report: MorningReport) -> String {
         guard let content = report.content else { return windowLine(report: report) }
         let left = ShanghaiClock.monthDayClock(content.window.start) ?? content.window.start
         let right = ShanghaiClock.monthDayClock(content.window.end) ?? content.window.end
         let range = "\(left) \u{2013} \(right)"
-        let count = content.entries.count
-        guard count > 0 else { return range }
-        return "\(range) · \(companyCount(count))"
+        return "\(range) · \(lineCounts(stocks: content.entries.count, sectors: content.sectorEntries.count))"
+    }
+
+    static func lineCounts(stocks: Int, sectors: Int) -> String {
+        "个股 \(stocks) 只 · 板块 \(sectors) 个"
+    }
+
+    /// 成分股只数。空则不显示。0 仍显示。
+    static func memberCountLine(_ count: Int?) -> String? {
+        guard let count else { return nil }
+        return "创业板 \(count) 只"
+    }
+
+    static func leaderNames(_ names: [String]) -> String? {
+        let cleaned = names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return nil }
+        return cleaned.joined(separator: " · ")
+    }
+
+    /// 「创业板 N 只 · 首次公开 …」。只数为空时只留首次公开。
+    static func sectorDetailMeta(memberCount: Int?, firstPublished: String) -> String {
+        let published = firstPublished.trimmingCharacters(in: .whitespacesAndNewlines)
+        let disclosed = published.isEmpty ? nil : firstDisclosedLine(published)
+        let count = memberCountLine(memberCount)
+        return [count, disclosed].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// 历史每期一行。已出的写两条线只数；没出成的仍写状态，避免把失败看成两条都是 0。
+    static func historyLine(tradeDate: String, status: MorningStatus, stocks: Int, sectors: Int) -> String {
+        let day = historyTitle(tradeDate: tradeDate)
+        switch status {
+        case .available:
+            return "\(day) · \(lineCounts(stocks: stocks, sectors: sectors))"
+        case .failed:
+            return "\(day) · 出问题"
+        case .running:
+            return "\(day) · 正在生成"
+        case .unknown:
+            return "\(day) · 状态不明"
+        }
     }
 
     static func companyCount(_ count: Int) -> String {
@@ -243,7 +291,7 @@ private enum ShanghaiClock {
     static func monthDayClock(_ value: String) -> String? {
         guard let parts = shanghaiParts(value), let month = parts.month, let day = parts.day,
               let hour = parts.hour, let minute = parts.minute else { return nil }
-        return "\(month)/\(day) \(clock(hour, minute))"
+        return "\(MorningCopy.paddedMonthDay(month, day)) \(clock(hour, minute))"
     }
 
     static func hourMinute(_ value: String) -> String? {

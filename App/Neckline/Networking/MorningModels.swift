@@ -1,5 +1,6 @@
 // 晨报接口模型。时间保持字符串，展示时再按北京时间格式化。
 // 新晨报用 title / conclusion / questions / risk / views；旧晨报只留 headline / reason 作回退。
+// 4.3.1 起正文另有 sectors。旧晨报没有这个键；历史没有 counts 时，板块按 0。
 
 import Foundation
 
@@ -53,8 +54,14 @@ struct MorningContent: Codable, Equatable {
     let configVersion: String
     let gapSummary: String?
     let entries: [MorningEntry]
+    /// 板块热点。旧晨报没有这个键。
+    let sectors: MorningSectorBlock?
     let candidates: Int?
     let evaluated: Int?
+
+    var sectorEntries: [MorningSectorEntry] {
+        sectors?.entries ?? []
+    }
 }
 
 struct MorningWindow: Codable, Equatable {
@@ -166,6 +173,82 @@ struct MorningSource: Codable, Equatable {
     let url: String?
 }
 
+struct MorningSectorBlock: Codable, Equatable {
+    let candidates: Int
+    let evaluated: Int
+    let overflow: Int
+    let entries: [MorningSectorEntry]
+}
+
+struct MorningSector: Codable, Equatable {
+    let name: String
+    let code: String
+    /// 当期股票池里的创业板成分股只数。空则界面不写「创业板 N 只」。
+    let memberCount: Int?
+}
+
+struct MorningSectorLeader: Codable, Equatable {
+    let companyCode: String
+    let companyName: String
+    let price: String
+}
+
+struct MorningSectorQuestions: Codable, Equatable {
+    let value: String
+    let priced: String
+    let money: String
+}
+
+/// 板块原文。documentId 为空时只展示、不能点开。
+struct MorningSectorSource: Codable, Equatable {
+    let documentId: String?
+    let sourceLabel: String
+    let publishedAt: String
+    let title: String?
+    let url: String?
+
+    var documentID: String? {
+        let raw = documentId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : raw
+    }
+}
+
+struct MorningSectorEntry: Codable, Equatable {
+    let title: String
+    let sector: MorningSector
+    let conclusion: String
+    let questions: MorningSectorQuestions
+    let leaders: [MorningSectorLeader]
+    let risk: String
+    let views: [MorningView]
+    let sources: [MorningSectorSource]
+    let firstPublished: String
+
+    var displayTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var displayConclusion: String {
+        conclusion.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var memberLine: String? {
+        MorningCopy.memberCountLine(sector.memberCount)
+    }
+
+    var publishedLine: String {
+        MorningCopy.listStamp(firstPublished)
+    }
+
+    var leaderNames: String? {
+        MorningCopy.leaderNames(leaders.map(\.companyName))
+    }
+
+    var detailMeta: String {
+        MorningCopy.sectorDetailMeta(memberCount: sector.memberCount, firstPublished: firstPublished)
+    }
+}
+
 struct MorningDocument: Codable, Equatable {
     let documentId: String
     let sourceLabel: String
@@ -180,12 +263,22 @@ struct MorningHistory: Codable, Equatable {
     let reports: [MorningHistoryItem]
 }
 
+struct MorningHistoryCounts: Codable, Equatable {
+    let stocks: Int
+    let sectors: Int
+}
+
 struct MorningHistoryItem: Codable, Equatable {
     let tradeDate: String
     let status: MorningStatus
     let availableAt: String?
     let entryCount: Int
+    /// 两条线只数。旧后端没有时，个股用 entryCount，板块按 0。
+    let counts: MorningHistoryCounts?
     let failureReason: String?
+
+    var stockCount: Int { counts?.stocks ?? entryCount }
+    var sectorCount: Int { counts?.sectors ?? 0 }
 }
 
 struct MorningHealth: Codable, Equatable {

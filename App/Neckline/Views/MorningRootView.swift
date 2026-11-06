@@ -231,6 +231,8 @@ struct MorningRootView: View {
     @ViewBuilder private func detailColumn(_ report: MorningReport, promptIfNone: Bool) -> some View {
         if let entry = model.detailEntry(in: report) {
             EntryDetailView(entry: entry, model: model)
+        } else if let sector = model.detailSector(in: report) {
+            SectorDetailView(entry: sector, model: model)
         } else if promptIfNone {
             Color.clear
                 .morningScreen()

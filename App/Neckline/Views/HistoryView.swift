@@ -53,15 +53,17 @@ struct HistoryView: View {
 
     private func historyRow(_ item: MorningHistoryItem) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(MorningCopy.historyTitle(tradeDate: item.tradeDate))
-                    .nkScaledFont(.company)
-                    .foregroundStyle(NKMorning.textPrimary)
-                    .monospacedDigit()
-                Text(MorningCopy.historySubtitle(status: item.status, entryCount: item.entryCount))
-                    .nkScaledFont(.caption)
-                    .foregroundStyle(NKMorning.textSecondary)
-            }
+            Text(MorningCopy.historyLine(
+                tradeDate: item.tradeDate,
+                status: item.status,
+                stocks: item.stockCount,
+                sectors: item.sectorCount
+            ))
+            .nkScaledFont(.titleLine)
+            .foregroundStyle(NKMorning.textPrimary)
+            .monospacedDigit()
+            .lineLimit(1)
+            .truncationMode(.tail)
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
                 .font(NKMorningFont.disclosure)

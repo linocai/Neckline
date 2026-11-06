@@ -169,7 +169,16 @@ final class MorningModel {
         return Self.entries(in: report).first { $0.listID == selectedEntryKey }
     }
 
+    func detailSector(in report: MorningReport) -> MorningSectorEntry? {
+        guard let selectedEntryKey else { return nil }
+        return report.content?.sectorEntries.first { $0.listID == selectedEntryKey }
+    }
+
     func select(_ entry: MorningEntry) {
+        selectedEntryKey = entry.listID
+    }
+
+    func select(_ entry: MorningSectorEntry) {
         selectedEntryKey = entry.listID
     }
 
@@ -399,8 +408,13 @@ final class MorningModel {
 
     private func adoptSelection(for report: MorningReport) {
         let entries = Self.entries(in: report)
-        if let selectedEntryKey, entries.contains(where: { $0.listID == selectedEntryKey }) { return }
-        selectedEntryKey = report.content?.entries.first?.listID
+        let sectors = report.content?.sectorEntries ?? []
+        if let selectedEntryKey,
+           entries.contains(where: { $0.listID == selectedEntryKey })
+            || sectors.contains(where: { $0.listID == selectedEntryKey }) {
+            return
+        }
+        selectedEntryKey = entries.first?.listID ?? sectors.first?.listID
     }
 
     private func discardLegacyCache() {
@@ -412,7 +426,10 @@ final class MorningModel {
         switch report.status {
         case .available:
             guard let content = report.content else { return .error(.unreadable) }
-            return content.entries.isEmpty ? .empty(report) : .ready(report)
+            if content.entries.isEmpty && content.sectorEntries.isEmpty {
+                return .empty(report)
+            }
+            return .ready(report)
         case .failed:
             return .failed(report)
         case .running:
@@ -468,6 +485,13 @@ extension MorningEntry {
     var listID: String {
         let source = sources.first?.documentId ?? ""
         return "\(companyCode)|\(displayTitle)|\(type)|\(source)"
+    }
+}
+
+extension MorningSectorEntry {
+    var listID: String {
+        let source = sources.first?.documentID ?? ""
+        return "sector|\(sector.code)|\(title)|\(source)"
     }
 }
 

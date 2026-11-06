@@ -134,6 +134,124 @@ struct MorningEntryRow: View {
     }
 }
 
+struct MorningSectorRow: View {
+    let entry: MorningSectorEntry
+    var selected = false
+    #if os(iOS)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #endif
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            nameCountAndTime
+            if !entry.displayTitle.isEmpty {
+                Text(entry.displayTitle)
+                    .font(NKMorningFont.titleLine.weight(.semibold))
+                    .foregroundStyle(NKMorning.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if !entry.displayConclusion.isEmpty {
+                Text(entry.displayConclusion)
+                    .font(NKMorningFont.caption)
+                    .foregroundStyle(NKMorning.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if let names = entry.leaderNames {
+                (Text(MorningCopy.leadersPrefix).foregroundStyle(NKMorning.textSecondary)
+                    + Text(names).foregroundStyle(NKMorning.textPrimary))
+                    .font(NKMorningFont.caption)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .padding(.horizontal, NKMorningSpace.rowH)
+        .padding(.vertical, NKMorningSpace.rowV)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selected ? NKMorning.selection : Color.clear)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var nameCountAndTime: some View {
+        #if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                sectorPill
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let member = entry.memberLine {
+                        memberText(member)
+                    }
+                    Spacer(minLength: 8)
+                    timeLabel
+                }
+            }
+        } else {
+            standardNameCountAndTime
+        }
+        #else
+        standardNameCountAndTime
+        #endif
+    }
+
+    private var standardNameCountAndTime: some View {
+        HStack(alignment: .center, spacing: 8) {
+            sectorPill
+                .layoutPriority(1)
+            if let member = entry.memberLine {
+                memberText(member)
+            }
+            Spacer(minLength: 8)
+            timeLabel
+                .layoutPriority(2)
+        }
+    }
+
+    private var sectorPill: some View {
+        Text(entry.sector.name)
+            .font(NKMorningFont.caption.weight(.semibold))
+            .foregroundStyle(NKMorning.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(NKMorning.tagFill, in: RoundedRectangle(cornerRadius: NKMorningRadius.tag, style: .continuous))
+    }
+
+    private func memberText(_ member: String) -> some View {
+        Text(member)
+            .font(NKMorningFont.caption)
+            .monospacedDigit()
+            .foregroundStyle(NKMorning.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    @ViewBuilder private var timeLabel: some View {
+        if !entry.publishedLine.isEmpty {
+            Text(entry.publishedLine)
+                .font(NKMorningFont.caption)
+                .monospacedDigit()
+                .foregroundStyle(NKMorning.textTertiary)
+                .lineLimit(1)
+        }
+    }
+}
+
+struct MorningQuietLine: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(NKMorningFont.titleLine)
+            .foregroundStyle(NKMorning.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, NKMorningSpace.rowH)
+            .padding(.vertical, 13)
+    }
+}
+
 struct MorningTag: View {
     let type: String
 

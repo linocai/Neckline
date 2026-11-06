@@ -34,6 +34,8 @@ KX_BACKEND_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KX_COPIED = {"kx_board_v3.json", "kx_board_v3_partial.json", "kx_board_v3_sealed.json",
              "kx_board_v3_auction.json", "kx_board_v3_stale.json", "kx_board_unavailable.json"}
 KX_APP_ONLY: set[str] = set()
+# 两条线的晨报样例由板块线测试经隔离库真实入口产出（Backend/tests/fixtures），App 原样复制。
+V6_COPIED = {"report-v6-two-lines.json"}
 FIXTURE_TOKEN = "fixture-token-not-real"
 WRONG_TOKEN = "not-the-fixture-token"
 DEVICE_TOKEN = "0123456789abcdef" * 4
@@ -312,11 +314,6 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
     bodies["health.json"] = json.dumps(health, ensure_ascii=False).encode()
 
     _assert_shapes(bodies)
-    # counts 留给 B5 的 App。现行夹具还没有这个字段，对齐前摘掉，避免改写 App 夹具。
-    history_body = json.loads(bodies["reports-history.json"])
-    for item in history_body["reports"]:
-        item.pop("counts")
-    bodies["reports-history.json"] = json.dumps(history_body, ensure_ascii=False).encode()
     blob = b"\n".join(bodies.values()).decode()
     for secret in (FIXTURE_TOKEN, WRONG_TOKEN, DEVICE_TOKEN):
         if secret in blob:
@@ -329,14 +326,14 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
         for name, raw in bodies.items():
             (FIXTURES / name).write_text(pretty(raw), encoding="utf-8")
         for path in FIXTURES.glob("*.json"):
-            if path.name not in bodies and path.name not in KX_COPIED | KX_APP_ONLY:
+            if path.name not in bodies and path.name not in KX_COPIED | KX_APP_ONLY | V6_COPIED:
                 path.unlink()
 
     missing = [name for name in bodies if not (FIXTURES / name).is_file()]
     assert not missing, missing
     for name, raw in bodies.items():
         assert canon((FIXTURES / name).read_text(encoding="utf-8")) == canon(raw), name
-    for name in KX_COPIED:
+    for name in KX_COPIED | V6_COPIED:
         assert canon((FIXTURES / name).read_text(encoding="utf-8")) == canon(
             (KX_BACKEND_FIXTURES / name).read_text(encoding="utf-8")), name
-    assert {path.name for path in FIXTURES.glob("*.json")} == set(bodies) | KX_COPIED | KX_APP_ONLY
+    assert {path.name for path in FIXTURES.glob("*.json")} == set(bodies) | KX_COPIED | KX_APP_ONLY | V6_COPIED

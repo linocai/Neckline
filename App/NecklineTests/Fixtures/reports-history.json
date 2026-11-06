@@ -2,6 +2,10 @@
   "reports": [
     {
       "availableAt": "2026-10-19T00:03:00+00:00",
+      "counts": {
+        "sectors": 0,
+        "stocks": 3
+      },
       "entryCount": 3,
       "failureReason": null,
       "status": "available",
@@ -9,6 +13,10 @@
     },
     {
       "availableAt": null,
+      "counts": {
+        "sectors": 0,
+        "stocks": 0
+      },
       "entryCount": 0,
       "failureReason": "09:15 前没能出报",
       "status": "failed",
@@ -16,6 +24,10 @@
     },
     {
       "availableAt": null,
+      "counts": {
+        "sectors": 0,
+        "stocks": 0
+      },
       "entryCount": 0,
       "failureReason": null,
       "status": "running",
@@ -23,6 +35,10 @@
     },
     {
       "availableAt": "2026-10-14T00:01:00+00:00",
+      "counts": {
+        "sectors": 0,
+        "stocks": 0
+      },
       "entryCount": 0,
       "failureReason": null,
       "status": "available",

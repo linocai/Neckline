@@ -34,7 +34,7 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(entry.displayTitle, "前三季度净利预增")
         XCTAssertEqual(entry.displayConclusion, "公告预计净利增长 58%")
         XCTAssertEqual(entry.views?.first?.by, .media)
-        XCTAssertEqual(MorningCopy.listMeta(report: report), "10/16 15:00 \u{2013} 10/19 08:00 · 3 家公司")
+        XCTAssertEqual(MorningCopy.listMeta(report: report), "10/16 15:00 \u{2013} 10/19 08:00 · 个股 3 只 · 板块 0 个")
         XCTAssertNil(model.message(for: .ready(report)))
         XCTAssertEqual(fake.historyLimits, [60])
         XCTAssertEqual(model.history.map(\.tradeDate), ["2026-10-19", "2026-10-16", "2026-10-15", "2026-10-14"])
@@ -453,6 +453,55 @@ final class MorningModelTests: XCTestCase {
         _ = MorningModel(config: config, clientFactory: { _ in FakeMorningClient() }, defaults: defaults)
         XCTAssertNil(defaults.object(forKey: "neckline.k10.v15.cache.leftover"))
         XCTAssertEqual(defaults.string(forKey: "neckline.keep"), "keep")
+    }
+
+    func testTwoLineSelectionAndEmptySectors() async throws {
+        let both = try fixture("report-v6-two-lines", as: MorningReport.self)
+        let fake = FakeMorningClient()
+        fake.latestResult = .success(both)
+        let model = makeModel(client: fake)
+        await model.reload(.latest)
+        guard case .ready(let loaded) = model.state(for: .latest) else {
+            return XCTFail("两条线都应留在名单里")
+        }
+        let stock = try XCTUnwrap(loaded.content?.entries.first)
+        let sector = try XCTUnwrap(loaded.content?.sectorEntries.first)
+        XCTAssertEqual(model.detailEntry(in: loaded)?.listID, stock.listID)
+        XCTAssertNil(model.detailSector(in: loaded))
+        model.select(sector)
+        XCTAssertNil(model.detailEntry(in: loaded))
+        XCTAssertEqual(model.detailSector(in: loaded)?.listID, sector.listID)
+        XCTAssertEqual(model.detailSector(in: loaded)?.sector.name, "人工智能")
+        model.select(stock)
+        XCTAssertEqual(model.detailEntry(in: loaded)?.companyName, "海特生物")
+        XCTAssertNil(model.detailSector(in: loaded))
+
+        var sectorsOnlyObject = try JSONSerialization.jsonObject(with: fixtureData("report-v6-two-lines")) as! [String: Any]
+        var sectorsOnlyContent = sectorsOnlyObject["content"] as! [String: Any]
+        sectorsOnlyContent["entries"] = []
+        sectorsOnlyObject["content"] = sectorsOnlyContent
+        let sectorsOnly = try JSONDecoder().decode(MorningReport.self, from: JSONSerialization.data(withJSONObject: sectorsOnlyObject))
+        fake.latestResult = .success(sectorsOnly)
+        await model.reload(.latest)
+        guard case .ready(let sectorReport) = model.state(for: .latest) else {
+            return XCTFail("只有板块时仍应打开名单")
+        }
+        XCTAssertTrue(sectorReport.content?.entries.isEmpty ?? false)
+        XCTAssertEqual(model.detailSector(in: sectorReport)?.listID, sectorReport.content?.sectorEntries.first?.listID)
+        XCTAssertNil(model.detailEntry(in: sectorReport))
+
+        var neitherObject = sectorsOnlyObject
+        var neitherContent = neitherObject["content"] as! [String: Any]
+        var sectors = neitherContent["sectors"] as! [String: Any]
+        sectors["entries"] = []
+        neitherContent["sectors"] = sectors
+        neitherObject["content"] = neitherContent
+        let neither = try JSONDecoder().decode(MorningReport.self, from: JSONSerialization.data(withJSONObject: neitherObject))
+        fake.latestResult = .success(neither)
+        await model.reload(.latest)
+        XCTAssertEqual(model.state(for: .latest), .empty(neither))
+        XCTAssertNil(model.detailEntry(in: neither))
+        XCTAssertNil(model.detailSector(in: neither))
     }
 
     @discardableResult

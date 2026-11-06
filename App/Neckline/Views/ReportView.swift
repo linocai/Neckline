@@ -95,12 +95,8 @@ struct ReportView: View {
         switch model.state(for: slot) {
         case .loading:
             MorningLoadingView()
-        case .ready(let report):
-            entryList(report.content?.entries ?? [])
-        case .empty(let report):
-            if let message = model.message(for: .empty(report)) {
-                status(message)
-            }
+        case .ready(let report), .empty(let report):
+            lineSections(report)
         case .failed, .running, .error:
             if let message = model.message(for: model.state(for: slot)) {
                 status(message)
@@ -108,14 +104,50 @@ struct ReportView: View {
         }
     }
 
-    @ViewBuilder private func entryList(_ entries: [MorningEntry]) -> some View {
-        VStack(spacing: 0) {
-            ForEach(entries, id: \.listID) { entry in
-                entryControl(entry)
-                if entry.listID != entries.last?.listID {
-                    Rectangle().fill(NKMorning.hairline).frame(height: 1)
+    private func lineSections(_ report: MorningReport) -> some View {
+        let stocks = report.content?.entries ?? []
+        let sectors = report.content?.sectorEntries ?? []
+        return VStack(alignment: .leading, spacing: 16) {
+            lineSection(MorningCopy.sectionStocks) {
+                if stocks.isEmpty {
+                    MorningQuietLine(text: MorningCopy.emptyStocks)
+                } else {
+                    ForEach(stocks, id: \.listID) { entry in
+                        entryControl(entry)
+                        if entry.listID != stocks.last?.listID {
+                            Rectangle().fill(NKMorning.hairline).frame(height: 1)
+                        }
+                    }
                 }
             }
+            lineSection(MorningCopy.sectionSectors) {
+                if sectors.isEmpty {
+                    MorningQuietLine(text: MorningCopy.emptySectors)
+                } else {
+                    ForEach(sectors, id: \.listID) { entry in
+                        sectorControl(entry)
+                        if entry.listID != sectors.last?.listID {
+                            Rectangle().fill(NKMorning.hairline).frame(height: 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func lineSection<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(NKMorningFont.caption.weight(.semibold))
+                .foregroundStyle(NKMorning.textSecondary)
+                .accessibilityAddTraits(.isHeader)
+            lineCard(rows: rows)
+        }
+    }
+
+    private func lineCard<Rows: View>(@ViewBuilder rows: () -> Rows) -> some View {
+        VStack(spacing: 0) {
+            rows()
         }
         .background(NKMorning.card)
         .clipShape(RoundedRectangle(cornerRadius: NKMorningRadius.card, style: .continuous))
@@ -141,6 +173,27 @@ struct ReportView: View {
         #else
         NavigationLink { EntryDetailView(entry: entry, model: model) } label: {
             MorningEntryRow(entry: entry)
+        }
+        .buttonStyle(.plain)
+        #endif
+    }
+
+    @ViewBuilder private func sectorControl(_ entry: MorningSectorEntry) -> some View {
+        #if os(macOS)
+        if showsDateMenu {
+            Button { model.select(entry) } label: {
+                MorningSectorRow(entry: entry, selected: model.selectedEntryKey == entry.listID)
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink { SectorDetailView(entry: entry, model: model) } label: {
+                MorningSectorRow(entry: entry)
+            }
+            .buttonStyle(.plain)
+        }
+        #else
+        NavigationLink { SectorDetailView(entry: entry, model: model) } label: {
+            MorningSectorRow(entry: entry)
         }
         .buttonStyle(.plain)
         #endif
