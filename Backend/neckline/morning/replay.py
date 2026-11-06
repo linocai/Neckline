@@ -89,6 +89,14 @@ def _replace_copy(src: Path, dest: Path) -> None:
     dest.chmod(0o600)
 
 
+def _clear_day(conn, trade_date: str) -> None:
+    """这一期从头重跑：删掉快照里这一期的晨报、评估和板块事件，免得沿用线上当时的结论。"""
+    report_id = f"morning-{trade_date}"
+    conn.execute("DELETE FROM evaluations WHERE report_id=?", (report_id,))
+    conn.execute("DELETE FROM sector_events WHERE report_id=?", (report_id,))
+    conn.execute("DELETE FROM reports WHERE trade_date=?", (trade_date,))
+
+
 def _started_at(path: Path, trade_date: str) -> datetime:
     with db.read(path) as conn:
         report = db.get_report(conn, trade_date)
@@ -321,7 +329,7 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
     pool_rows, pool_kind = _replay_rows(config, trade_date, pool_snapshot=pool_snapshot,
                                        pool_seed_only=pool_seed_only, today=today)
     with db.write(dest) as conn:
-        conn.execute("DELETE FROM reports WHERE trade_date=?", (trade_date,))
+        _clear_day(conn, trade_date)
         store_rows(conn, pool_rows, now=started, source=pool_kind)
         if sector_snapshot is not None:
             try:

@@ -438,3 +438,22 @@ class _Model302(FakeModel):
         content = json.dumps({"companies": companies}, ensure_ascii=False)
         return httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}],
                                          "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+
+
+def test_replay_clears_the_day_so_live_evaluations_are_not_reused(tmp_path):
+    from neckline.morning.replay import _clear_day
+    path = tmp_path / "snapshot.db"
+    db.init_schema(path)
+    when = datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)
+    with db.write(path) as conn:
+        for day in ("2026-10-29", "2026-10-30"):
+            db.begin_report(conn, report_id=f"morning-{day}", trade_date=day, window_start=when, window_end=when,
+                            config_version="screening-v5", config_sha256="0" * 64, started_at=when)
+            db.insert_prepared(conn, report_id=f"morning-{day}", company="300001", contract="evaluation-v2",
+                               package={}, prepared_at=when)
+        _clear_day(conn, "2026-10-30")
+    with db.read(path) as conn:
+        assert db.get_report(conn, "2026-10-30") is None
+        assert db.list_evaluations(conn, "morning-2026-10-30") == []
+        assert db.get_report(conn, "2026-10-29") is not None
+        assert len(db.list_evaluations(conn, "morning-2026-10-29")) == 1
