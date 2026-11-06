@@ -285,6 +285,28 @@ def test_batches_keep_only_ids_from_the_same_batch_and_skip_an_empty_one(tmp_pat
     assert empty.calls == []
 
 
+def test_a_batch_cut_off_by_length_is_skipped_and_the_gap_counts_it(tmp_path):
+    # 回放 10/29、11/04 各有一批推理写满上限、没有输出：其余批次照常往下走，缺口写明少了几批
+    pool = _pool()
+    path = _db(tmp_path)
+    _concept(path)
+    first = _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))
+    second = _msg("b", "监管放开行业准入", "试点扩大到三个省。", _at(17))
+    line = candidate_line("n1", first, 80)
+    candidates = dict(_rules(pool).rules["sectors"]["candidates"], batchChars=len(line))
+    normal = _script()
+
+    def handler(messages, options):
+        if "初筛员" in messages[0]["content"] and _ids(messages[1]["content"]) == ["n1"]:
+            return ChatResult("", {"prompt_tokens": 4, "completion_tokens": 9}, "digest", False, 0.1, "length")
+        return normal.handler(messages, options)
+
+    outcome = _run(path, [first, second], Scripted(handler), pool, config=_rules(pool, candidates=candidates))
+    assert outcome.stats["candidates"]["batches"] == 2 and outcome.stats["candidates"]["failedBatches"] == 1
+    assert outcome.gap == "板块线有 1 批消息没挑成（共 2 批）"
+    assert len(outcome.content["entries"]) == 1
+
+
 def test_mapping_checks_names_duplicates_repeats_and_skips_the_call_without_candidates(tmp_path):
     pool = _pool()
     path = _db(tmp_path)

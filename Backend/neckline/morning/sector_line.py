@@ -986,9 +986,11 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
 
 def _annotate(stats: Mapping, gap: str | None) -> str | None:
     """有的批次没挑成时，已经挑出的仍然往下走，并补一行缺口。"""
-    if not stats["candidates"].get("incomplete"):
+    missed = int(stats["candidates"].get("failedBatches") or 0)
+    if not stats["candidates"].get("incomplete") or not missed:
         return gap
-    note = "板块线没有完成：挑候选没有完成"
+    # 板块照常出，只是这几批消息没看过
+    note = f"板块线有 {missed} 批消息没挑成（共 {stats['candidates']['batches']} 批）"
     if not gap:
         return note
     if note in gap:
@@ -1103,10 +1105,10 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
 
     hits = _run_calls(list(batches), workers, work)
     selected: set[str] = set()
-    failed = False
+    failed = 0
     for hit in hits:
         if hit is None:
-            failed = True
+            failed += 1
             continue
         stats["candidates"]["calls"] += int(hit.get("calls") or 0)
         stats["candidates"]["fromReceipt"] += int(hit.get("fromReceipt") or 0)
@@ -1117,7 +1119,7 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
         if hit.get("cutoff"):
             return set(), "板块线没有完成：收口时刻前没评完"
         if hit.get("error"):
-            failed = True
+            failed += 1
             continue
         selected.update(hit.get("ids") or ())
     stats["candidates"]["messages"] = len(selected)
@@ -1125,6 +1127,7 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
         return set(), "板块线没有完成：挑候选没有完成"
     if failed:
         stats["candidates"]["incomplete"] = True
+        stats["candidates"]["failedBatches"] = failed
     return selected, None
 
 
