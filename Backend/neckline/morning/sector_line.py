@@ -42,6 +42,8 @@ _PACKAGE_KEYS = (
     "pdfMaxPages", "originalChars", "openingChars", "headingsMax", "mediaChars", "maxMedia", "pdfMaxBytes",
 )
 _GAP = "收口时刻前没评完"
+_MAPPING_GAP = "板块线没有完成：归并没有完成"
+_MAPPING_HALF = "板块线有一半候选没归并成"
 _REPAIR_PROMPT = (
     "你上一条输出没有通过格式检查：{reason}。"
     "请对照系统提示里的输出格式，把同一份评估重新完整输出为一个 JSON 对象。"
@@ -720,7 +722,7 @@ def _blank_stats(raw: int, dropped: Mapping[str, int] | None = None, kept: int =
         "kept": kept,
         "candidates": {"batches": 0, "calls": 0, "fromReceipt": 0, "messages": 0, "splits": 0,
                        "usage": _zero_usage(), "seconds": 0.0},
-        "mapping": {"calls": 0, "fromReceipt": 0, "events": 0, "null": 0, "repeat": 0, "light": 0,
+        "mapping": {"calls": 0, "fromReceipt": 0, "splits": 0, "events": 0, "null": 0, "repeat": 0, "light": 0,
                     "usage": _zero_usage(), "seconds": 0.0},
         "evaluation": {"calls": 0, "fromReceipt": 0, "evaluated": 0, "verdicts": {"推": 0, "不推": 0},
                        "invalid": 0, "gap": 0, "vetoed": 0, "droppedViews": 0, "repairs": 0, "repaired": 0,
@@ -1082,12 +1084,17 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
 
 
 def _annotate(stats: Mapping, gap: str | None) -> str | None:
-    """有的批次没挑成时，已经挑出的仍然往下走，并补一行缺口。"""
+    """有的批次没挑成、或归并只成了一半时，已经拿到的仍然往下走，并补上缺口。"""
+    notes: list[str] = []
     missed = int(stats["candidates"].get("failedBatches") or 0)
-    if not stats["candidates"].get("incomplete") or not missed:
+    if stats["candidates"].get("incomplete") and missed:
+        # 板块照常出，只是这几批消息没看过
+        notes.append(f"板块线有 {missed} 批消息没挑成（共 {stats['candidates']['batches']} 批）")
+    if stats["mapping"].get("incomplete"):
+        notes.append(_MAPPING_HALF)
+    if not notes:
         return gap
-    # 板块照常出，只是这几批消息没看过
-    note = f"板块线有 {missed} 批消息没挑成（共 {stats['candidates']['batches']} 批）"
+    note = "；".join(notes)
     if not gap:
         return note
     if note in gap:
@@ -1276,6 +1283,111 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
     return selected, None
 
 
+def _add_mapping_hit(stats: dict, hit: Mapping) -> None:
+    mapping = stats["mapping"]
+    mapping["calls"] += int(hit.get("calls") or 0)
+    mapping["fromReceipt"] += int(hit.get("fromReceipt") or 0)
+    mapping["usage"] = _add_usage(mapping["usage"], hit.get("usage") or {})
+    mapping["seconds"] = round(float(mapping["seconds"]) + float(hit.get("seconds") or 0), 3)
+
+
+def _mapping_request(items: Sequence[Mapping], concepts: Sequence[Mapping],
+                     previous: Sequence[tuple[str, str]]) -> list[dict]:
+    user = mapping_user_prompt(items, [item["name"] for item in concepts], previous)
+    return [{"role": "system", "content": MAPPING_SYSTEM}, {"role": "user", "content": user}]
+
+
+def _dropped_items(content: str) -> list:
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("dropped"), list):
+        return []
+    return list(data["dropped"])
+
+
+def _earliest_index(ids: Sequence[str], position: Mapping[str, int]) -> int:
+    found = [position[item] for item in ids if item in position]
+    return min(found) if found else len(position)
+
+
+def _merge_mapping_halves(left: Sequence[Mapping], right: Sequence[Mapping], ordered: Sequence[str],
+                          left_dropped: Sequence, right_dropped: Sequence, names: set[str]) -> list[dict] | str:
+    """同名板块并成一个事件。null 各自保留。两半的 dropped 按前后顺序拼在一起。"""
+    position = {number: index for index, number in enumerate(ordered)}
+    grouped: dict[str, list[Mapping]] = {}
+    loose: list[Mapping] = []
+    for event in (*left, *right):
+        sector = event.get("sector")
+        if isinstance(sector, str) and sector:
+            grouped.setdefault(sector, []).append(event)
+        else:
+            loose.append(event)
+    events: list[dict] = []
+    for sector, bucket in grouped.items():
+        bucket.sort(key=lambda event: _earliest_index(event["ids"], position))
+        head = bucket[0]
+        chosen = {item for event in bucket for item in event["ids"]}
+        events.append({
+            "title": head["title"],
+            "ids": [number for number in ordered if number in chosen],
+            "sector": sector,
+            "reason": head["reason"],
+            "repeat": bool(head["repeat"]),
+            "weighty": any(bool(event.get("weighty")) for event in bucket),
+            "weight": head["weight"],
+        })
+    for event in loose:
+        events.append({
+            "title": event["title"], "ids": list(event["ids"]), "sector": None,
+            "reason": event["reason"], "repeat": bool(event["repeat"]),
+            "weighty": bool(event.get("weighty")), "weight": event["weight"],
+        })
+    events.sort(key=lambda event: _earliest_index(event["ids"], position))
+    dropped = list(left_dropped) + list(right_dropped)
+    return parse_mapping_output(
+        json.dumps({"events": events, "dropped": dropped}, ensure_ascii=False), set(ordered), names)
+
+
+def _split_mapping_length(ordered: Sequence[str], items: Sequence[Mapping], *, concepts: Sequence[Mapping],
+                          previous: Sequence[tuple[str, str]], names: set[str], client: Any, options: Mapping,
+                          cutoff: str, clock: Callable[[], datetime], stats: dict) -> tuple[list[dict], str | None]:
+    """输出被截断时按首次公开时间对半各发一次。只拆这一次；两半都成功就合并，只有一半成功用那一半。"""
+    stats["mapping"]["splits"] += 1
+    mid = len(ordered) // 2
+    parsed: list[tuple[list[dict], list] | None] = []
+    for part_ids, part_items in ((ordered[:mid], items[:mid]), (ordered[mid:], items[mid:])):
+        if _cutoff_reached(clock(), cutoff):
+            return [], "板块线没有完成：收口时刻前没评完"
+        hit = _call_model(client, _mapping_request(part_items, concepts, previous), options)
+        _add_mapping_hit(stats, hit)
+        if hit.get("fatal") or hit.get("error"):
+            parsed.append(None)
+            continue
+        if _cutoff_reached(clock(), cutoff):
+            return [], "板块线没有完成：收口时刻前没评完"
+        if hit.get("finish") != "stop":
+            parsed.append(None)
+            continue
+        events = parse_mapping_output(hit.get("content") or "", set(part_ids), names)
+        if isinstance(events, str):
+            parsed.append(None)
+            continue
+        parsed.append((events, _dropped_items(hit.get("content") or "")))
+    succeeded = [item for item in parsed if item is not None]
+    if len(succeeded) == 2:
+        merged = _merge_mapping_halves(
+            succeeded[0][0], succeeded[1][0], ordered, succeeded[0][1], succeeded[1][1], names)
+        if isinstance(merged, str):
+            return [], _MAPPING_GAP
+        return merged, None
+    if len(succeeded) == 1:
+        stats["mapping"]["incomplete"] = True
+        return succeeded[0][0], None
+    return [], _MAPPING_GAP
+
+
 def _map_candidates(selected: set[str], *, by_number: Mapping[str, Message], names: set[str],
                     concepts: Sequence[Mapping], db_path: Path, day: date, client: Any, settings: Mapping,
                     cutoff: str, clock: Callable[[], datetime], stats: dict) -> tuple[list[dict], str | None]:
@@ -1293,22 +1405,22 @@ def _map_candidates(selected: set[str], *, by_number: Mapping[str, Message], nam
             "id": number, "source": message.source_label, "time": published_label(message.published_at),
             "title": title, "excerpt": excerpt,
         })
-    user = mapping_user_prompt(items, [item["name"] for item in concepts], _previous_events(db_path, day))
-    messages = [{"role": "system", "content": MAPPING_SYSTEM}, {"role": "user", "content": user}]
-    hit = _call_model(client, messages, settings["modelOptions"])
-    stats["mapping"]["calls"] = int(hit.get("calls") or 0)
-    stats["mapping"]["fromReceipt"] = int(hit.get("fromReceipt") or 0)
-    stats["mapping"]["usage"] = hit.get("usage") or _zero_usage()
-    stats["mapping"]["seconds"] = round(float(hit.get("seconds") or 0), 3)
+    previous = _previous_events(db_path, day)
+    hit = _call_model(client, _mapping_request(items, concepts, previous), settings["modelOptions"])
+    _add_mapping_hit(stats, hit)
     if hit.get("fatal") or hit.get("error"):
-        return [], "板块线没有完成：归并没有完成"
+        return [], _MAPPING_GAP
     if _cutoff_reached(clock(), cutoff):
         return [], "板块线没有完成：收口时刻前没评完"
+    if hit.get("finish") == "length" and len(ordered) >= 2:
+        return _split_mapping_length(
+            ordered, items, concepts=concepts, previous=previous, names=names, client=client,
+            options=settings["modelOptions"], cutoff=cutoff, clock=clock, stats=stats)
     if hit.get("finish") != "stop":
-        return [], "板块线没有完成：归并没有完成"
+        return [], _MAPPING_GAP
     parsed = parse_mapping_output(hit.get("content") or "", set(ordered), names)
     if isinstance(parsed, str):
-        return [], "板块线没有完成：归并没有完成"
+        return [], _MAPPING_GAP
     return parsed, None
 
 

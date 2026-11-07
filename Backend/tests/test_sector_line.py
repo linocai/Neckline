@@ -25,11 +25,12 @@ from neckline.morning.sector_line import (
     parse_evaluation_output, parse_mapping_output, run_sector_line, split_batches,
 )
 from neckline.morning.sector_prompt import (
-    CANDIDATE_SYSTEM, EVALUATION_SYSTEM, MAPPING_SYSTEM, candidate_line, evaluation_user_prompt,
+    CANDIDATE_SYSTEM, EVALUATION_SYSTEM, MAPPING_CONTRACT, MAPPING_SYSTEM, candidate_line,
+    evaluation_user_prompt,
 )
 from neckline.morning.sectors import DailyFill, trading_days_ending
 from neckline.morning.stock_pool import store_rows
-from neckline.screening.deepseek import ChatResult, DeepSeekClient, canonical
+from neckline.screening.deepseek import ChatError, ChatResult, ChatUnknown, DeepSeekClient, canonical
 from neckline.screening.pool import Company, CompanyPool
 from neckline.screening.prefilter import Message, Window, to_message
 
@@ -37,7 +38,7 @@ from tests.test_morning import FakeApns, FakeModel, _client, _config, _seed_wind
 
 DAY = date(2026, 10, 13)
 _FROZEN_CANDIDATES = "dc7a543b7e4e059bdb23ab01d293a80b1d83f01d52365e2b65ba9758fd8ac804"
-_FROZEN_MAPPING = "7312bd3a7368155e23fa75aaabf67dab41823f338924375250687f731145624f"
+_FROZEN_MAPPING = "bbcf745a45dc90cce7f9fa8fe4184082a931ad54df8e37032a6bd1f5218f1d8e"
 _FROZEN_EVALUATION = "acc742f77dbfc2412b1168ca7325c6819177077597dbf1457563fdcd52588bab"
 _FROZEN_USER = "86a31227d6519a384ab67c9af878a41c715d6d8a510d990e69092fe08cff6dc9"
 _FROZEN_BODY = "72f6663c907be5b07b34b5b4edf7cd740ce0a89a52b3e5c59c926399d1dfb5c9"
@@ -922,6 +923,13 @@ def test_missing_sector_settings_are_rejected(tmp_path):
     assert loaded.rules["sectors"]["delivery"]["maxEvents"] == 3
     assert "leaders" not in loaded.rules["sectors"]
     assert loaded.rules["sectors"]["carriers"]["max"] == 3
+    assert loaded.rules["sectors"]["mapping"]["contract"] == MAPPING_CONTRACT
+    stale = json.loads(json.dumps(raw))
+    stale["sectors"]["mapping"]["contract"] = "sector-mapping-v2"
+    target = tmp_path / "mapping-v2.json"
+    target.write_text(json.dumps(stale), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"sectors.mapping.contract 须为 {MAPPING_CONTRACT}"):
+        load_config(path=target)
     retired = json.loads(json.dumps(raw))
     retired["sectors"]["leaders"] = {"rankBy": "amount"}
     retired["sectors"]["market"]["leaderCount"] = 3
@@ -1110,8 +1118,298 @@ def test_a_split_resume_does_not_bill_the_same_request_twice(tmp_path, monkeypat
     assert second_run.stats["candidates"]["fromReceipt"] >= 3
 
 
+def _charged(payload, *, prompt, completion, reasoning, seconds, finish="stop"):
+    content = "" if payload is None else json.dumps(payload, ensure_ascii=False)
+    return ChatResult(content, {
+        "prompt_tokens": prompt, "completion_tokens": completion,
+        "prompt_cache_hit_tokens": 0, "reasoning_tokens": reasoning,
+    }, "digest", False, seconds, finish)
+
+
+def _mapping_users(client) -> list[str]:
+    return [call[1]["content"] for call in client.calls if "板块分析员" in call[0]["content"]]
+
+
+def _sector_messages() -> list[Message]:
+    return [
+        _msg("a", "部委印发行业补贴方案", "早上的方案。", _at(16)),
+        _msg("b", "监管放开行业准入", "第二条。", _at(17)),
+        _msg("c", "国家级项目开工", "第三条。", _at(18)),
+        _msg("d", "行业龙头获得大额订单", "第四条。", _at(19)),
+    ]
+
+
+def _seed_previous(path, title="昨天的会", sector="人工智能") -> None:
+    prev = previous_trading_day(DAY)
+    start = datetime(prev.year, prev.month, prev.day, 15, tzinfo=CST)
+    with db.write(path) as conn:
+        db.begin_report(
+            conn, report_id=f"morning-{prev.isoformat()}", trade_date=prev.isoformat(),
+            window_start=start, window_end=_at(8, day=13), config_version="screening-v6",
+            config_sha256="0" * 64, started_at=_at(8, day=13))
+        db.complete_report(
+            conn, report_id=f"morning-{prev.isoformat()}",
+            content={"sectors": {"entries": [{"title": title, "sector": {"name": sector}}]}},
+            stats={}, gap_summary=None, available_at=_at(8, day=13))
+
+
+def _assert_mapping_added(stats, *, prompts, completions, reasonings, seconds, calls=3) -> None:
+    usage = stats["mapping"]["usage"]
+    assert usage["prompt_tokens"] == prompts
+    assert usage["completion_tokens"] == completions
+    assert usage["reasoning_tokens"] == reasonings
+    assert stats["mapping"]["seconds"] == seconds
+    assert stats["mapping"]["calls"] == calls
+    assert stats["mapping"]["fromReceipt"] == 0
+
+
+def test_mapping_length_splits_once_and_merges_the_same_sector(tmp_path):
+    pool = _pool()
+    path = _db(tmp_path)
+    _concept(path)
+    _seed_previous(path)
+    normal = _script()
+
+    def handler(messages, _options):
+        if "板块分析员" not in messages[0]["content"]:
+            return normal.handler(messages, _options)
+        ids = _ids(messages[1]["content"])
+        if ids == ["n1", "n2", "n3", "n4"]:
+            return _charged(None, prompt=10, completion=20, reasoning=30, seconds=1, finish="length")
+        if ids == ["n1", "n2"]:
+            return _charged({"events": [
+                _event({"title": "早间方案", "ids": ["n1"], "sector": "人工智能",
+                        "reason": "早的理由", "repeat": False, "weighty": False, "weight": "早的分量"}),
+                _event({"title": "说不清", "ids": ["n2"], "sector": None,
+                        "reason": "分散", "repeat": False, "weighty": True, "weight": "够看"}),
+            ], "dropped": [{"ids": ["n2"], "reason": "这条仍留在事件里"}]},
+                prompt=1, completion=2, reasoning=3, seconds=2)
+        if ids == ["n3", "n4"]:
+            return _charged({"events": [
+                _event({"title": "晚间方案", "ids": ["n3"], "sector": "人工智能",
+                        "reason": "晚的理由", "repeat": True, "weighty": True, "weight": "晚的分量"}),
+                _event({"title": "另一件", "ids": ["n4"], "sector": None,
+                        "reason": "也对不上", "repeat": False, "weighty": False, "weight": "不够"}),
+            ], "dropped": [{"ids": ["n9"], "reason": "汇总"}]},
+                prompt=4, completion=5, reasoning=6, seconds=4)
+        raise AssertionError(ids)
+
+    client = Scripted(handler)
+    outcome = _run(path, _sector_messages(), client, pool)
+    assert outcome.gap is None and outcome.stats["mapping"]["splits"] == 1
+    _assert_mapping_added(outcome.stats, prompts=15, completions=27, reasonings=39, seconds=7)
+    users = _mapping_users(client)
+    assert [_ids(user) for user in users] == [
+        ["n1", "n2", "n3", "n4"], ["n1", "n2"], ["n3", "n4"],
+    ]
+    full_tail = users[0].split("板块清单：", 1)[1]
+    for user in users[1:]:
+        assert user.split("板块清单：", 1)[1] == full_tail
+        assert "昨天的会｜人工智能" in user
+    assert "国家级项目开工" not in users[1]
+    assert "部委印发行业补贴方案" not in users[2]
+    by_title = {row["title"]: row for row in _rows(path)}
+    assert set(by_title) == {"早间方案", "说不清", "另一件"}
+    early = by_title["早间方案"]
+    assert early["state"] == "succeeded" and early["reason"] == "早的理由" and early["repeat"] is False
+    assert [item["title"] for item in early["package"]["messages"]] == [
+        "部委印发行业补贴方案", "国家级项目开工",
+    ]
+    assert by_title["说不清"]["state"] == "skipped" and by_title["说不清"]["sector"] is None
+    assert by_title["说不清"]["package"]["ids"] == ["n2"]
+    assert by_title["另一件"]["state"] == "skipped" and by_title["另一件"]["sector"] is None
+    assert [entry["sector"]["name"] for entry in outcome.content["entries"]] == ["人工智能"]
+
+
+def test_mapping_length_keeps_the_other_half_and_records_the_gap(tmp_path):
+    pool = _pool()
+    path = _db(tmp_path)
+    _concept(path)
+    normal = _script()
+
+    def handler(messages, _options):
+        if "板块分析员" not in messages[0]["content"]:
+            return normal.handler(messages, _options)
+        ids = _ids(messages[1]["content"])
+        if ids == ["n1", "n2", "n3", "n4"]:
+            return _charged(None, prompt=10, completion=20, reasoning=30, seconds=1, finish="length")
+        if ids == ["n1", "n2"]:
+            return _charged(None, prompt=1, completion=2, reasoning=3, seconds=2, finish="length")
+        if ids == ["n3", "n4"]:
+            return _charged({"events": [_event({
+                "title": "后一半", "ids": ["n3", "n4"], "sector": "人工智能",
+                "reason": "后一半对得上", "repeat": False,
+            })], "dropped": []}, prompt=4, completion=5, reasoning=6, seconds=4)
+        raise AssertionError(ids)
+
+    client = Scripted(handler)
+    outcome = _run(path, _sector_messages(), client, pool)
+    assert outcome.gap == "板块线有一半候选没归并成"
+    assert outcome.stats["mapping"]["splits"] == 1
+    _assert_mapping_added(outcome.stats, prompts=15, completions=27, reasonings=39, seconds=7)
+    assert [_ids(user) for user in _mapping_users(client)] == [
+        ["n1", "n2", "n3", "n4"], ["n1", "n2"], ["n3", "n4"],
+    ]
+    rows = _rows(path)
+    assert [row["title"] for row in rows] == ["后一半"]
+    assert [item["title"] for item in rows[0]["package"]["messages"]] == ["国家级项目开工", "行业龙头获得大额订单"]
+
+
+def test_mapping_length_both_halves_fail_uses_the_original_gap(tmp_path):
+    pool = _pool()
+    path = _db(tmp_path)
+    _concept(path)
+    normal = _script()
+
+    def handler(messages, _options):
+        if "板块分析员" not in messages[0]["content"]:
+            return normal.handler(messages, _options)
+        ids = _ids(messages[1]["content"])
+        if ids == ["n1", "n2", "n3", "n4"]:
+            return _charged(None, prompt=10, completion=20, reasoning=30, seconds=1, finish="length")
+        if ids == ["n1", "n2"]:
+            return _charged(None, prompt=1, completion=2, reasoning=3, seconds=2, finish="length")
+        if ids == ["n3", "n4"]:
+            return _charged(None, prompt=4, completion=5, reasoning=6, seconds=4, finish="length")
+        raise AssertionError(ids)
+
+    client = Scripted(handler)
+    outcome = _run(path, _sector_messages(), client, pool)
+    assert outcome.gap == "板块线没有完成：归并没有完成"
+    assert "一半" not in outcome.gap
+    assert outcome.content["entries"] == [] and _rows(path) == []
+    assert outcome.stats["mapping"]["splits"] == 1
+    _assert_mapping_added(outcome.stats, prompts=15, completions=27, reasonings=39, seconds=7)
+    assert not any("板块消息评估员" in call[0]["content"] for call in client.calls)
+
+
+def test_mapping_does_not_split_on_failure_or_bad_output(tmp_path):
+    pool = _pool()
+    pair = [
+        _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16)),
+        _msg("b", "监管放开行业准入", "试点扩大到三个省。", _at(17)),
+    ]
+    normal = _script()
+
+    def run(name, respond, messages=None):
+        path = tmp_path / f"{name}.db"
+        db.init_schema(path)
+        _concept(path)
+
+        def handler(sent, _options):
+            if "板块分析员" in sent[0]["content"]:
+                outcome = respond(sent)
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return outcome
+            return normal.handler(sent, _options)
+
+        client = Scripted(handler)
+        outcome = _run(path, messages or pair, client, pool)
+        assert outcome.gap == "板块线没有完成：归并没有完成", name
+        assert "一半" not in (outcome.gap or "")
+        assert outcome.content["entries"] == []
+        assert outcome.stats["mapping"]["splits"] == 0, name
+        assert outcome.stats["mapping"]["calls"] == 1, name
+        assert len(_mapping_users(client)) == 1, name
+
+    run("json", lambda _sent: ChatResult(
+        "not-json", {"prompt_tokens": 1, "completion_tokens": 1}, "d", False, 0.1, "stop"))
+
+    def bad_weight(sent):
+        return _ok({"events": [_event({
+            "title": "补贴", "ids": _ids(sent[1]["content"]), "sector": "人工智能",
+            "reason": "直接", "repeat": False, "weighty": "yes", "weight": "够",
+        })], "dropped": []})
+
+    run("weighty", bad_weight)
+    run("http", lambda _sent: ChatError("http:500"))
+    run("unknown", lambda _sent: ChatUnknown("响应不是 JSON"))
+    run("single", lambda _sent: ChatResult(
+        "", {"prompt_tokens": 2, "completion_tokens": 3}, "d", False, 0.1, "length"), messages=[pair[0]])
+
+
+def test_mapping_split_resume_does_not_bill_the_same_request_twice(tmp_path, monkeypatch):
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    path = _db(tmp_path)
+    _concept(path)
+    messages = _sector_messages()
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        system = body["messages"][0]["content"]
+        user = body["messages"][1]["content"] if len(body["messages"]) > 1 else ""
+        if "初筛员" in system:
+            sent.append(("candidate", tuple(_ids(user))))
+            return _http({"events": [{"ids": _ids(user), "event": "事"}]})
+        if "板块分析员" in system:
+            ids = _ids(user)
+            sent.append(("mapping", tuple(ids)))
+            if ids == ["n1", "n2", "n3", "n4"]:
+                return httpx.Response(200, json={
+                    "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 9},
+                })
+            title = "前一半" if ids == ["n1", "n2"] else "后一半"
+            return _http({"events": [_event({
+                "title": title, "ids": [ids[0]], "sector": "人工智能", "reason": "直接受益", "repeat": False,
+            })], "dropped": [{"ids": [ids[1]], "reason": "并进同一件事"}]})
+        sent.append(("eval", tuple(_leader_codes(user))))
+        return _http(_answer(_leader_codes(user)))
+
+    class _Halt(BaseException):
+        pass
+
+    def client(limit):
+        inner = DeepSeekClient(
+            endpoint="https://example.invalid/chat/completions", model="m", api_key="k",
+            receipts=db.DbReceipts(path, "morning-2026-10-13"), timeout_seconds=5, max_attempts=1,
+            transport=httpx.MockTransport(handler))
+        count = {"n": 0}
+
+        class Gate:
+            def complete(self, sent, options):
+                if limit is not None and count["n"] >= limit:
+                    raise _Halt()
+                count["n"] += 1
+                return inner.complete(sent, options)
+
+        return Gate()
+
+    with pytest.raises(_Halt):
+        _run(path, messages, client(3))
+    assert [item for item in sent if item[0] == "mapping"] == [
+        ("mapping", ("n1", "n2", "n3", "n4")),
+        ("mapping", ("n1", "n2")),
+    ]
+    assert _rows(path) == []
+    outcome = _run(path, messages, client(None))
+    assert outcome.gap is None and outcome.stats["mapping"]["splits"] == 1
+    assert outcome.stats["mapping"]["calls"] == 1
+    assert outcome.stats["mapping"]["fromReceipt"] == 2
+    usage = outcome.stats["mapping"]["usage"]
+    assert usage["prompt_tokens"] == 12 and usage["completion_tokens"] == 15
+    assert usage["prompt_cache_hit_tokens"] == 2 and usage["reasoning_tokens"] == 4
+    assert [item for item in sent if item[0] == "mapping"] == [
+        ("mapping", ("n1", "n2", "n3", "n4")),
+        ("mapping", ("n1", "n2")),
+        ("mapping", ("n3", "n4")),
+    ]
+    done = [row for row in _rows(path) if row["state"] == "succeeded"]
+    assert len(done) == 1 and done[0]["title"] == "前一半"
+    assert [item["title"] for item in done[0]["package"]["messages"]] == [
+        "部委印发行业补贴方案", "国家级项目开工",
+    ]
+
+
 def test_sector_prompts_and_one_request_body_stay_frozen():
     assert hashlib.sha256(CANDIDATE_SYSTEM.encode()).hexdigest() == _FROZEN_CANDIDATES
+    assert MAPPING_CONTRACT == "sector-mapping-v3"
+    assert (
+        "金融监管部门针对资本市场、券商、银行、保险等金融行业的会议和工具，"
+        "不算全市场的消息，要保留，对到金融行业的板块。"
+    ) in MAPPING_SYSTEM
     assert hashlib.sha256(MAPPING_SYSTEM.encode()).hexdigest() == _FROZEN_MAPPING
     assert hashlib.sha256(EVALUATION_SYSTEM.encode()).hexdigest() == _FROZEN_EVALUATION
     assert hashlib.sha256(_frozen_user().encode()).hexdigest() == _FROZEN_USER

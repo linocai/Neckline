@@ -309,7 +309,7 @@
       }
     },
     "mapping": {
-      "contract": "sector-mapping-v2",
+      "contract": "sector-mapping-v3",
       "excerptChars": 1500,
       "modelOptions": {
         "max_tokens": 32768,
