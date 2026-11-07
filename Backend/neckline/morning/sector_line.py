@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -45,7 +45,9 @@ _PACKAGE_KEYS = (
     "pdfMaxPages", "originalChars", "openingChars", "headingsMax", "mediaChars", "maxMedia", "pdfMaxBytes",
 )
 _GAP = "收口时刻前没评完"
+_CUTOFF_GAP = "板块线没有完成：收口时刻前没评完"
 _MAPPING_GAP = "板块线没有完成：归并没有完成"
+_WAIT_SLICE = 1.0
 _MAPPING_HALF = "板块线有一半候选没归并成"
 _REPAIR_PROMPT = (
     "你上一条输出没有通过格式检查：{reason}。"
@@ -573,7 +575,10 @@ def _search_block(client: Any, settings: Mapping, *, title: str, sector: str, tr
     query, ori = _search_query(title, sector, trade_date)
     if client is None:
         return _failure(query, "no_key")
-    outcome = client.search(query=query, count=int(settings["count"]), ori_question=ori)
+    try:
+        outcome = client.search(query=query, count=int(settings["count"]), ori_question=ori)
+    except _StillOpen:
+        return {"cutoff": True}
     if outcome.error:
         return _failure(query, outcome.error, seconds=outcome.seconds, from_receipt=outcome.from_receipt)
     payload = outcome.payload if isinstance(outcome.payload, Mapping) else {}
@@ -684,6 +689,8 @@ def build_event_package(*, event: Mapping, day: date, window: Window, pool: Comp
     search = _search_block(
         search_client, search_settings, title=str(event["title"]), sector=str(event["sector"]),
         trade_date=day, collected_by=window.collected_by)
+    if search.get("cutoff"):
+        raise _StillOpen()
     error = search.get("error")
     if isinstance(error, str) and error:
         gaps.append(f"联网搜索失败：{error}")
@@ -750,6 +757,18 @@ def _settle(db_path: Path, **kwargs: Any) -> dict | None:
     with db.write(db_path) as conn:
         db.settle_sector_event(conn, **kwargs)
         return db.get_sector_event(conn, kwargs["report_id"], kwargs["event_id"])
+
+
+def _seal_gap(db_path: Path, report_id: str, event: Mapping, now: datetime) -> None:
+    """到点还没结案的收成缺口。已经是终态的不动，迟到的成功因为不再是 prepared 而写不回去。"""
+    row = _load(db_path, report_id, event["id"])
+    if row is None:
+        _insert(db_path, report_id=report_id, event_id=event["id"], title=event["title"],
+                sector=event["sector"], reason=event["reason"], repeat=False, state="gap",
+                package=_skipped_package(event), prepared_at=now, error=_GAP, settled_at=now)
+        row = _load(db_path, report_id, event["id"])
+    if row is not None and row.get("state") == "prepared":
+        _settle(db_path, report_id=report_id, event_id=event["id"], state="gap", settled_at=now, error=_GAP)
 
 
 def _finish_stats(stats: dict, rows: Sequence[Mapping], *, eval_hits: Sequence[Mapping], overflow: int,
@@ -912,6 +931,11 @@ def _concepts(db_path: Path, pool: CompanyPool, rules: Mapping) -> tuple[list[di
     return list(listed["concepts"]), note
 
 
+def _stored_concept_note(db_path: Path) -> str | None:
+    with db.read(db_path) as conn:
+        return _concept_reuse_note(db.read_sector_concepts(conn))
+
+
 def _concept_reuse_note(stored: Mapping | None) -> str | None:
     """刷新失败且还留着上一份清单时，晨报缺口里写明沿用哪一天的。"""
     if not isinstance(stored, Mapping):
@@ -939,8 +963,49 @@ def _beijing_day(value: object) -> str:
     return parsed.astimezone(CST).date().isoformat()
 
 
+class _StillOpen(Exception):
+    """收口时刻到了，这次外呼还没回来。调用方按没评完处理，不再读它的结果。"""
+
+
+class _CutoffReceipts:
+    """过了收口时刻才落到的成功或失败，改记 unknown。续跑看到 started / unknown 都不重发。"""
+
+    def __init__(self, inner: Any, cutoff: str, clock: Callable[[], datetime]) -> None:
+        self._inner = inner
+        self._cutoff = cutoff
+        self._clock = clock
+
+    def lookup(self, digest: str):
+        return self._inner.lookup(digest)
+
+    def begin(self, digest: str) -> None:
+        self._inner.begin(digest)
+
+    def succeed(self, digest: str, response: Mapping[str, Any], seconds: float) -> None:
+        if _cutoff_reached(self._clock(), self._cutoff):
+            self._inner.unknown(digest, "cutoff")
+            return
+        self._inner.succeed(digest, response, seconds)
+
+    def fail(self, digest: str, code: str) -> None:
+        if _cutoff_reached(self._clock(), self._cutoff):
+            self._inner.unknown(digest, "cutoff")
+            return
+        self._inner.fail(digest, code)
+
+    def unknown(self, digest: str, code: str) -> None:
+        self._inner.unknown(digest, code)
+
+
 class _Budgeted:
-    """每次调用前把等待时间收到收口时刻，不改共享客户端。"""
+    """每次调用前收紧读超时，并且只等到收口时刻。
+
+    读超时是两段数据之间的空闲时间，对方每隔一小段回一个字节就不会触发。
+    所以真正的期限是业务时钟：到点主线程不再等。在途线程不是守护线程，
+    进程退出时解释器仍会等它们结束，但晨报记录和推送已经写完。
+    httpx 没有「整次请求」的总超时；要让这些线程在收口时断开，得从另一侧
+    关掉这次连接。连接建在 post_json 里面，这里拿不到，所以只停止等待。
+    """
 
     def __init__(self, inner: Any, cutoff: str, clock: Callable[[], datetime]) -> None:
         self._inner = inner
@@ -948,10 +1013,42 @@ class _Budgeted:
         self._clock = clock
 
     def complete(self, messages, options):
-        return _tighten(self._inner, self._cutoff, self._clock).complete(messages, options)
+        inner = self._bound()
+        return self._wait(lambda: inner.complete(messages, options))
 
     def search(self, **kwargs):
-        return _tighten(self._inner, self._cutoff, self._clock).search(**kwargs)
+        inner = self._bound()
+        return self._wait(lambda: inner.search(**kwargs))
+
+    def _bound(self) -> Any:
+        inner = _tighten(self._inner, self._cutoff, self._clock)
+        receipts = getattr(self._inner, "receipts", None)
+        if receipts is None:
+            return inner
+        if inner is self._inner:
+            inner = copy.copy(self._inner)
+        inner.receipts = _CutoffReceipts(receipts, self._cutoff, self._clock)
+        return inner
+
+    def _wait(self, fn: Callable[[], Any]) -> Any:
+        if _cutoff_reached(self._clock(), self._cutoff):
+            raise _StillOpen()
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(fn)
+        try:
+            while not future.done():
+                if _cutoff_reached(self._clock(), self._cutoff):
+                    raise _StillOpen()
+                remaining = _seconds_until(self._clock(), self._cutoff)
+                if remaining <= 0:
+                    raise _StillOpen()
+                wait((future,), timeout=min(_WAIT_SLICE, remaining))
+            if _cutoff_reached(self._clock(), self._cutoff):
+                raise _StillOpen()
+            return future.result()
+        finally:
+            # 不等在途的 HTTP。进程退出时这些非守护线程仍会被解释器 join。
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _budget(client: Any, cutoff: str, clock: Callable[[], datetime]) -> Any:
@@ -981,17 +1078,40 @@ def _seconds_until(now: datetime, cutoff: str) -> float:
     return (mark - current).total_seconds()
 
 
-def _run_calls(jobs: Sequence[Any], workers: int, fn: Callable[[Any], Any]) -> list[Any]:
+def _abandoned_hit(**extra: Any) -> dict:
+    hit = {"cutoff": True, "calls": 0, "fromReceipt": 0, "usage": _zero_usage(), "seconds": 0.0}
+    hit.update(extra)
+    return hit
+
+
+def _open_hit(hit: Any) -> bool:
+    return hit is None or (isinstance(hit, dict) and bool(hit.get("cutoff")))
+
+
+def _run_calls(jobs: Sequence[Any], workers: int, fn: Callable[[Any], Any], *,
+               cutoff: str, clock: Callable[[], datetime]) -> list[Any]:
+    """并行或单条都只等到收口时刻。到点还没结束的位置留 None，调用方按没评完处理。
+
+    单条以前在主线程里直等 HTTP，分块保活会把整期晨报拖过截止。现在一律丢进线程池，
+    到点 shutdown(wait=False)：写晨报、发推送不再等它们。线程不是守护线程，
+    解释器退出时仍会等它们跑完。
+    """
     if not jobs:
         return []
-    if len(jobs) == 1 or workers <= 1:
-        return [fn(job) for job in jobs]
     results: list[Any] = [None] * len(jobs)
-    executor = ThreadPoolExecutor(max_workers=min(workers, len(jobs)))
+    executor = ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs))))
     futures = {executor.submit(fn, job): index for index, job in enumerate(jobs)}
+    pending = set(futures)
     try:
-        for fut in as_completed(futures):
-            results[futures[fut]] = fut.result()
+        while pending:
+            if _cutoff_reached(clock(), cutoff):
+                break
+            remaining = _seconds_until(clock(), cutoff)
+            if remaining <= 0:
+                break
+            done, pending = wait(pending, timeout=min(_WAIT_SLICE, remaining), return_when=FIRST_COMPLETED)
+            for fut in done:
+                results[futures[fut]] = fut.result()
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
     return results
@@ -1001,6 +1121,8 @@ def _call_model(client: Any, messages: list[dict], options: Mapping) -> dict:
     """一次调用的计数。ChatRejected 带 fatal，调用方停掉这一段。"""
     try:
         result = client.complete(messages, options)
+    except _StillOpen:
+        return _abandoned_hit()
     except ChatRejected as exc:
         return {"fatal": str(exc), "error": str(exc), "calls": 0, "fromReceipt": 0,
                 "usage": _zero_usage(), "seconds": 0.0}
@@ -1037,12 +1159,18 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
          search_client: Any, sector_live: bool) -> SectorOutcome:
     rules = config.rules
     sectors = rules["sectors"]
+    concept_note = _stored_concept_note(db_path)
     if not messages:
-        return SectorOutcome(None, _content(0, 0, 0, []), _blank_stats(0))
+        stats = _blank_stats(0)
+        if concept_note:
+            stats["conceptNote"] = concept_note
+        return _done(stats, _content(0, 0, 0, []), None, [])
     kept, dropped = apply_prefilter(messages, sectors["prefilter"])
     stats = _blank_stats(len(messages), dropped, len(kept))
+    if concept_note:
+        stats["conceptNote"] = concept_note
     if not kept:
-        return SectorOutcome(None, _content(0, 0, 0, []), stats)
+        return _done(stats, _content(0, 0, 0, []), None, [])
     # 没有可选的板块就不必花钱挑候选
     concepts, concept_note = _concepts(db_path, pool, sectors["concepts"])
     if concept_note:
@@ -1150,7 +1278,12 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
                 package_settings=sectors["evaluation"]["package"], client=client,
                 options=sectors["evaluation"]["modelOptions"], cutoff=cutoff, clock=clock)
 
-        eval_hits = _run_calls(pending, workers, evaluate)
+        eval_hits = _run_calls(pending, workers, evaluate, cutoff=cutoff, clock=clock)
+        if any(_open_hit(hit) for hit in eval_hits):
+            now = clock()
+            for event in pending:
+                _seal_gap(db_path, report_id, event, now)
+        eval_hits = [hit for hit in eval_hits if isinstance(hit, dict)]
     seconds = time.monotonic() - started
     rows = _rows(db_path, report_id, events)
     shown, overflow = select_pushed(rows, int(sectors["delivery"]["maxEvents"]))
@@ -1313,6 +1446,9 @@ def _split_length_batch(batch: Sequence[tuple[str, Message]], hit: Mapping, *, c
         from_receipt += int(second.get("fromReceipt") or 0)
         usage = _add_usage(usage, second.get("usage") or {})
         seconds = round(seconds + float(second.get("seconds") or 0), 3)
+        if second.get("cutoff") or _cutoff_reached(clock(), cutoff):
+            return {"ids": set(), "cutoff": True, "calls": calls, "fromReceipt": from_receipt,
+                    "usage": usage, "seconds": seconds, "split": True}
         if second.get("fatal"):
             second = dict(second)
             second.update(calls=calls, fromReceipt=from_receipt, usage=usage, seconds=seconds, split=True)
@@ -1342,11 +1478,11 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
                                                                for number, message in batch])},
         ]
         hit = _call_model(client, messages, options)
-        if hit.get("fatal") or hit.get("error"):
-            return hit
-        if _cutoff_reached(clock(), cutoff):
+        if hit.get("cutoff") or _cutoff_reached(clock(), cutoff):
             hit["cutoff"] = True
             hit["ids"] = set()
+            return hit
+        if hit.get("fatal") or hit.get("error"):
             return hit
         if hit.get("finish") == "length" and len(batch) >= 2:
             return _split_length_batch(batch, hit, client=client, options=options, head_chars=head_chars,
@@ -1361,7 +1497,9 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
         hit["ids"] = parsed
         return hit
 
-    hits = _run_calls(list(batches), workers, work)
+    hits = _run_calls(list(batches), workers, work, cutoff=cutoff, clock=clock)
+    if _cutoff_reached(clock(), cutoff) and any(_open_hit(hit) for hit in hits):
+        return set(), _CUTOFF_GAP
     selected: set[str] = set()
     failed = 0
     for hit in hits:
@@ -1374,10 +1512,10 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
         stats["candidates"]["fromReceipt"] += int(hit.get("fromReceipt") or 0)
         stats["candidates"]["usage"] = _add_usage(stats["candidates"]["usage"], hit.get("usage") or {})
         stats["candidates"]["seconds"] = round(stats["candidates"]["seconds"] + float(hit.get("seconds") or 0), 3)
+        if hit.get("cutoff"):
+            return set(), _CUTOFF_GAP
         if hit.get("fatal"):
             return set(), "板块线没有完成：挑候选没有完成"
-        if hit.get("cutoff"):
-            return set(), "板块线没有完成：收口时刻前没评完"
         if hit.get("error"):
             failed += 1
             continue
@@ -1491,6 +1629,8 @@ def _split_mapping_length(ordered: Sequence[str], items: Sequence[Mapping], *, c
             return [], "板块线没有完成：收口时刻前没评完"
         hit = _call_model(client, _mapping_request(part_items, concepts, previous), options)
         _add_mapping_hit(stats, hit)
+        if hit.get("cutoff") or _cutoff_reached(clock(), cutoff):
+            return [], _CUTOFF_GAP
         if hit.get("fatal") or hit.get("error"):
             parsed.append(None)
             continue
@@ -1537,10 +1677,10 @@ def _map_candidates(selected: set[str], *, by_number: Mapping[str, Message], nam
     previous = _previous_events(db_path, day)
     hit = _call_model(client, _mapping_request(items, concepts, previous), settings["modelOptions"])
     _add_mapping_hit(stats, hit)
+    if hit.get("cutoff") or _cutoff_reached(clock(), cutoff):
+        return [], _CUTOFF_GAP
     if hit.get("fatal") or hit.get("error"):
         return [], _MAPPING_GAP
-    if _cutoff_reached(clock(), cutoff):
-        return [], "板块线没有完成：收口时刻前没评完"
     if hit.get("finish") == "length" and len(ordered) >= 2:
         return _split_mapping_length(
             ordered, items, concepts=concepts, previous=previous, names=names, client=client,
@@ -1564,14 +1704,17 @@ def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date,
     now = clock()
     if row is None:
         if _cutoff_reached(now, cutoff):
-            _insert(db_path, report_id=report_id, event_id=event["id"], title=event["title"],
-                    sector=event["sector"], reason=event["reason"], repeat=False, state="gap",
-                    package=_skipped_package(event), prepared_at=now, error=_GAP, settled_at=now)
-            return {"calls": 0, "fromReceipt": 0, "usage": _zero_usage(), "seconds": 0.0, "repairs": 0, "repaired": 0}
-        package = build_event_package(
-            event=event, day=day, window=window, pool=pool, daily_rows=daily_rows, as_of=as_of, market=market,
-            carriers=carriers, skip=skip, profiles=profiles, pool_rows=pool_rows,
-            search_client=search_client, search_settings=search_settings, package_settings=package_settings)
+            _seal_gap(db_path, report_id, event, now)
+            return _abandoned_hit(repairs=0, repaired=0)
+        try:
+            package = build_event_package(
+                event=event, day=day, window=window, pool=pool, daily_rows=daily_rows, as_of=as_of,
+                market=market, carriers=carriers, skip=skip, profiles=profiles, pool_rows=pool_rows,
+                search_client=search_client, search_settings=search_settings,
+                package_settings=package_settings)
+        except _StillOpen:
+            _seal_gap(db_path, report_id, event, clock())
+            return _abandoned_hit(repairs=0, repaired=0)
         now = clock()
         _insert(db_path, report_id=report_id, event_id=event["id"], title=event["title"], sector=event["sector"],
                 reason=event["reason"], repeat=False, state="prepared", package=package, prepared_at=now)
@@ -1587,6 +1730,9 @@ def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date,
         {"role": "user", "content": evaluation_user_prompt(package)},
     ]
     hit = _call_model(client, messages, options)
+    if hit.get("cutoff"):
+        _settle(db_path, report_id=report_id, event_id=event["id"], state="gap", settled_at=clock(), error=_GAP)
+        return hit
     if hit.get("fatal"):
         _settle(db_path, report_id=report_id, event_id=event["id"], state="gap", settled_at=clock(),
                 error=hit["fatal"])
@@ -1628,14 +1774,15 @@ def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date,
     hit["usage"] = _add_usage(usage, repaired.get("usage") or {})
     total_seconds = seconds + float(repaired.get("seconds") or 0)
     hit["seconds"] = total_seconds
+    if repaired.get("cutoff") or _cutoff_reached(clock(), cutoff):
+        hit["cutoff"] = True
+        _settle(db_path, report_id=report_id, event_id=event["id"], state="gap", settled_at=clock(), error=_GAP,
+               output=repaired.get("content"), usage=hit["usage"], seconds=total_seconds)
+        return hit
     if repaired.get("fatal") or (repaired.get("error") and not repaired.get("content")):
         error = f"{parsed}；修正调用结果不明" if repaired.get("unknown") else f"{parsed}；修正调用失败：{repaired.get('error')}"
         _settle(db_path, report_id=report_id, event_id=event["id"], state="invalid", settled_at=clock(),
                 error=error, output=hit.get("content"), usage=hit["usage"], seconds=total_seconds)
-        return hit
-    if _cutoff_reached(clock(), cutoff):
-        _settle(db_path, report_id=report_id, event_id=event["id"], state="gap", settled_at=clock(), error=_GAP,
-                output=repaired.get("content"), usage=hit["usage"], seconds=total_seconds)
         return hit
     if repaired.get("finish") != "stop":
         reason = f"finish:{repaired.get('finish')}"

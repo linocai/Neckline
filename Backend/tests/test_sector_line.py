@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1557,6 +1559,113 @@ def test_sector_daily_fill_stops_at_cutoff_and_the_main_list_still_publishes(tmp
     assert [entry["companyName"] for entry in stored["content"]["entries"]] == ["海特生物", "震裕科技"]
 
 
+def test_chunked_keepalive_stops_at_cutoff_without_holding_the_main_list(tmp_path, monkeypatch):
+    """08:55 发起板块挑候选。传输每块把业务时钟拨快 500 秒，600 秒读超时不会响。
+
+    09:05 后不再等。主线照常交付。迟到的正文不改名单，回执停在 started 再改成 unknown，续跑不重发。
+    """
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path)
+    _with_device(path)
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    start = at("2026-10-13", "08:55")
+    clock = _MorningClock(start)
+    cutoff = at("2026-10-13", "09:05")
+    deadline = at("2026-10-13", "09:15")
+    release = threading.Event()
+    sector_calls: list[int] = []
+    model = FakeModel()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        system = body["messages"][0]["content"]
+        if "初筛员" in system:
+            sector_calls.append(1)
+            if len(sector_calls) == 1:
+                # 两块各 500 秒：08:55 → 09:03:20 → 09:11:40。读超时按块重置，这里壁钟不睡。
+                clock.advance(500)
+                clock.advance(500)
+                if not release.wait(timeout=30):
+                    raise AssertionError("板块调用没有在时限内被放行")
+                clock.advance(500)
+            user = body["messages"][1]["content"]
+            return _http({"events": [{"ids": _ids(user), "event": "迟到的事"}]})
+        return _sector_handler(model)(request)
+
+    def factory(rid):
+        return DeepSeekClient(
+            endpoint="https://example.invalid/chat/completions", model="m", api_key="k",
+            receipts=db.DbReceipts(path, rid), timeout_seconds=600, max_attempts=2,
+            transport=httpx.MockTransport(handler))
+
+    def run():
+        return run_morning(
+            path, now=start, config=_config(), clock=clock, collector=lambda _at: {"status": "completed"},
+            client_factory=factory, pusher=Pusher(path, apns, clock))
+
+    def receipt_states() -> list[str]:
+        with db.read(path) as conn:
+            return [row["state"] for row in conn.execute("SELECT state FROM model_receipts ORDER BY rowid")]
+
+    def stored_report() -> dict:
+        with db.read(path) as conn:
+            return db.get_report(conn, "2026-10-13")
+
+    apns = FakeApns()
+    try:
+        started = time.monotonic()
+        result = run()
+        elapsed = time.monotonic() - started
+        assert elapsed < 15
+        assert cutoff <= clock() < deadline
+        assert result["state"] == "available" and result["entries"] == 2
+        assert "板块线没有完成：收口时刻前没评完" in result["gapSummary"]
+        assert "前没能出报" not in (result.get("reason") or "")
+        assert apns.sent and apns.sent[-1][1] == "晨报已出"
+        first = stored_report()
+        assert first["status"] == "available"
+        names = [entry["companyName"] for entry in first["content"]["entries"]]
+        assert names == ["海特生物", "震裕科技"]
+        assert first["content"]["sectors"]["entries"] == []
+        assert "started" in receipt_states()
+        sent = len(sector_calls)
+        with db.write(path) as conn:
+            conn.execute("UPDATE reports SET status='running' WHERE trade_date='2026-10-13'")
+        resumed = run()
+        assert len(sector_calls) == sent
+        assert resumed["state"] == "available" and resumed["entries"] == 2
+        after_resume = stored_report()
+        assert [entry["companyName"] for entry in after_resume["content"]["entries"]] == names
+        assert after_resume["content"]["sectors"]["entries"] == []
+        snapshot = json.dumps(after_resume["content"], ensure_ascii=False, sort_keys=True)
+        release.set()
+        limit = time.monotonic() + 5
+        while time.monotonic() < limit:
+            states = receipt_states()
+            if "unknown" in states and "started" not in states:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"迟到回执没有收成 unknown：{receipt_states()}")
+        late = stored_report()
+        assert json.dumps(late["content"], ensure_ascii=False, sort_keys=True) == snapshot
+        assert "迟到的事" not in snapshot
+        # 回执已经是 unknown。把时钟拨回收口之后、截止之前，再续跑一次，确认不会重发。
+        clock.current = at("2026-10-13", "09:11")
+        with db.write(path) as conn:
+            conn.execute("UPDATE reports SET status='running' WHERE trade_date='2026-10-13'")
+        again = run()
+        assert len(sector_calls) == sent
+        assert again["state"] == "available" and again["entries"] == 2
+        final = stored_report()
+        assert [entry["companyName"] for entry in final["content"]["entries"]] == names
+        assert final["content"]["sectors"]["entries"] == []
+        assert "迟到的事" not in json.dumps(final["content"], ensure_ascii=False)
+    finally:
+        release.set()
+
+
 def test_concept_refresh_failure_is_a_sector_gap_and_the_line_still_runs(tmp_path, monkeypatch):
     path = tmp_path / "v4.db"
     db.init_schema(path)
@@ -1576,6 +1685,34 @@ def test_concept_refresh_failure_is_a_sector_gap_and_the_line_still_runs(tmp_pat
         stored = db.get_report(conn, "2026-10-13")
     assert stored["content"]["sectors"]["entries"]
     assert stored["content"]["sectors"]["entries"][0]["sector"]["name"] == "人工智能"
+
+
+def _stale_concepts(path) -> None:
+    _concept(path)
+    with db.write(path) as conn:
+        db.set_sector_refresh_error(conn, "ths_index 返回异常")
+
+
+def test_concept_refresh_failure_is_reported_when_no_messages_remain(tmp_path):
+    path = _db(tmp_path)
+    _stale_concepts(path)
+    client = _script()
+    outcome = _run(path, [], client)
+    assert outcome.gap == "板块清单没刷新成功，沿用 2026-10-12 的"
+    assert outcome.content["entries"] == []
+    assert client.calls == []
+
+
+def test_concept_refresh_failure_is_reported_when_prefilter_drops_every_message(tmp_path):
+    path = _db(tmp_path)
+    _stale_concepts(path)
+    message = _msg("a", "关于召开行业座谈会", "邀请机构参加。", _at(16), "cninfo-announcement")
+    client = _script()
+    outcome = _run(path, [message], client)
+    assert outcome.gap == "板块清单没刷新成功，沿用 2026-10-12 的"
+    assert outcome.content["entries"] == []
+    assert client.calls == []
+    assert outcome.stats["kept"] == 0
 
 
 def test_search_unknown_is_a_sector_gap_and_the_same_report_is_published(tmp_path, monkeypatch):
