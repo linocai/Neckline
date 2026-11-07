@@ -190,13 +190,15 @@ struct MorningSector: Codable, Equatable {
 struct MorningSectorLeader: Codable, Equatable {
     let companyCode: String
     let companyName: String
+    let why: String
     let price: String
 }
 
 struct MorningSectorQuestions: Codable, Equatable {
-    let value: String
-    let priced: String
-    let money: String
+    let fresh: String
+    let weight: String
+    let position: String
+    let carriers: String
 }
 
 /// 板块原文。documentId 为空时只展示、不能点开。

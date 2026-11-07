@@ -1,4 +1,4 @@
-// 一条板块热点的详情。结构和个股详情一样；④是三只龙头的价格判断。
+// 一条板块热点的详情。①②③各一段；④是承接说明和承接股。
 
 import SwiftUI
 
@@ -72,22 +72,26 @@ struct SectorDetailView: View {
 
     private var textQuestions: [(String, String)] {
         [
-            (MorningCopy.questionValue, entry.questions.value),
-            (MorningCopy.questionPriced, entry.questions.priced),
-            (MorningCopy.sectorQuestionMoney, entry.questions.money),
+            (MorningCopy.sectorQuestionFresh, entry.questions.fresh),
+            (MorningCopy.sectorQuestionWeight, entry.questions.weight),
+            (MorningCopy.sectorQuestionPosition, entry.questions.position),
         ].compactMap { label, text in
             guard let text = trimmed(text) else { return nil }
             return (label, text)
         }
     }
 
+    private var showsCarrierBlock: Bool {
+        trimmed(entry.questions.carriers) != nil || !entry.leaders.isEmpty
+    }
+
     private var showsQuestions: Bool {
-        !textQuestions.isEmpty || !entry.leaders.isEmpty
+        !textQuestions.isEmpty || showsCarrierBlock
     }
 
     private var questionsCard: some View {
         let rows = textQuestions
-        let showPrice = !entry.leaders.isEmpty
+        let showCarriers = showsCarrierBlock
         return VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 VStack(alignment: .leading, spacing: 2) {
@@ -101,23 +105,29 @@ struct SectorDetailView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 9)
-                if index != rows.count - 1 || showPrice {
+                if index != rows.count - 1 || showCarriers {
                     Rectangle().fill(NKMorning.hairline).frame(height: 1)
                 }
             }
-            if showPrice {
-                priceBlock
+            if showCarriers {
+                carriersBlock
             }
         }
         .padding(.horizontal, NKMorningSpace.rowH)
         .morningCard()
     }
 
-    private var priceBlock: some View {
+    private var carriersBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(MorningCopy.sectorQuestionPrice)
+            Text(MorningCopy.sectorQuestionCarriers)
                 .font(NKMorningFont.caption.weight(.semibold))
                 .foregroundStyle(NKMorning.textSecondary)
+            if let carriers = trimmed(entry.questions.carriers) {
+                Text(carriers)
+                    .font(NKMorningFont.titleLine)
+                    .foregroundStyle(NKMorning.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(Array(entry.leaders.enumerated()), id: \.offset) { index, leader in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -132,10 +142,16 @@ struct SectorDetailView: View {
                             .lineLimit(1)
                             .layoutPriority(1)
                     }
-                    if let price = trimmed(leader.price) {
-                        Text(price)
+                    if let why = trimmed(leader.why) {
+                        Text(why)
                             .font(NKMorningFont.titleLine)
                             .foregroundStyle(NKMorning.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let price = trimmed(leader.price) {
+                        Text("价格：\(price)")
+                            .font(NKMorningFont.titleLine)
+                            .foregroundStyle(NKMorning.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
