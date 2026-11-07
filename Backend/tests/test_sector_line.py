@@ -39,9 +39,9 @@ from tests.test_morning import FakeApns, FakeModel, _client, _config, _seed_wind
 DAY = date(2026, 10, 13)
 _FROZEN_CANDIDATES = "dc7a543b7e4e059bdb23ab01d293a80b1d83f01d52365e2b65ba9758fd8ac804"
 _FROZEN_MAPPING = "bbcf745a45dc90cce7f9fa8fe4184082a931ad54df8e37032a6bd1f5218f1d8e"
-_FROZEN_EVALUATION = "acc742f77dbfc2412b1168ca7325c6819177077597dbf1457563fdcd52588bab"
+_FROZEN_EVALUATION = "fe272a6bd10c6f82e99a26e35d433f41330704e82405d4dc2ef387600895c6f5"
 _FROZEN_USER = "86a31227d6519a384ab67c9af878a41c715d6d8a510d990e69092fe08cff6dc9"
-_FROZEN_BODY = "72f6663c907be5b07b34b5b4edf7cd740ce0a89a52b3e5c59c926399d1dfb5c9"
+_FROZEN_BODY = "91fb33e0a66134cdbd015a29ec9c53ec4082c6f4bb79f8e9eb5791dc9c6bf6bc"
 _V6_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "report-v6-two-lines.json"
 
 
@@ -1411,6 +1411,8 @@ def test_sector_prompts_and_one_request_body_stay_frozen():
         "不算全市场的消息，要保留，对到金融行业的板块。"
     ) in MAPPING_SYSTEM
     assert hashlib.sha256(MAPPING_SYSTEM.encode()).hexdigest() == _FROZEN_MAPPING
+    # 11/07 用户：第四问放宽，按身份划分的板块（参股、持股、资格）不要求主营相关
+    assert "不要求主营相关" in EVALUATION_SYSTEM and "按身份划分的板块" in EVALUATION_SYSTEM
     assert hashlib.sha256(EVALUATION_SYSTEM.encode()).hexdigest() == _FROZEN_EVALUATION
     assert hashlib.sha256(_frozen_user().encode()).hexdigest() == _FROZEN_USER
     assert hashlib.sha256(canonical(_frozen_body()).encode()).hexdigest() == _FROZEN_BODY

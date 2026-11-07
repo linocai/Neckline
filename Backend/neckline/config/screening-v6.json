@@ -329,7 +329,7 @@
       "changeWindow": 5
     },
     "evaluation": {
-      "contract": "sector-evaluation-v2",
+      "contract": "sector-evaluation-v3",
       "concurrency": 6,
       "modelOptions": {
         "max_tokens": 16384,
