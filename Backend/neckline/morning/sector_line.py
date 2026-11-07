@@ -996,9 +996,10 @@ class _CutoffReceipts:
         return self._inner.lookup(digest)
 
     def begin(self, digest: str) -> None:
-        # 过了收口不再把回执改回 started。unknown 保持不动，调用方也不会再发下一次。
+        # 过了收口就拒绝这次尝试：抛出后 post_json 不会再 POST，也不留没有回执的请求。
+        # 已有的 unknown 不改动。
         if _cutoff_reached(self._clock(), self._cutoff):
-            return
+            raise _StillOpen()
         self._inner.begin(digest)
 
     def succeed(self, digest: str, response: Mapping[str, Any], seconds: float) -> None:

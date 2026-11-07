@@ -2021,3 +2021,30 @@ def test_search_does_not_retry_after_the_cutoff(tmp_path, monkeypatch):
     assert _wait_until_unknown(path) == ["unknown"]
     time.sleep(0.2)
     assert calls == ["2026-10-13T09:04:59+08:00"]
+
+
+def test_cutoff_between_the_attempt_check_and_begin_sends_nothing(tmp_path):
+    """may_attempt 刚放行就到了收口：begin 拒绝，不发请求，也不留没有回执的请求（复查 N1）。"""
+    from neckline.morning.sector_line import _CutoffReceipts, _StillOpen
+    from neckline.screening.deepseek import post_json
+
+    path = _db(tmp_path)
+    inner = db.DbReceipts(path, "morning-2026-10-13")
+    sent: list[int] = []
+
+    def handler(_request):
+        sent.append(1)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]})
+
+    late = _CutoffReceipts(inner, "09:05", lambda: at("2026-10-13", "09:05"))
+    with pytest.raises(_StillOpen):
+        post_json(endpoint="https://example.invalid/chat/completions", body={"a": 1}, digest="d" * 64,
+                  api_key="k", receipts=late, timeout=httpx.Timeout(5), max_attempts=2,
+                  transport=httpx.MockTransport(handler), may_attempt=lambda: True)
+    assert sent == [] and inner.lookup("d" * 64) is None
+    early = _CutoffReceipts(inner, "09:05", lambda: at("2026-10-13", "09:04"))
+    payload, from_receipt, _seconds = post_json(
+        endpoint="https://example.invalid/chat/completions", body={"a": 1}, digest="d" * 64, api_key="k",
+        receipts=early, timeout=httpx.Timeout(5), max_attempts=2, transport=httpx.MockTransport(handler),
+        may_attempt=lambda: True)
+    assert sent == [1] and not from_receipt and inner.lookup("d" * 64)["state"] == "succeeded"
