@@ -557,6 +557,39 @@ def test_file_receipts_persist_started_failed_and_unknown(tmp_path, monkeypatch)
                        transport=httpx.MockTransport(_status(401))).complete([{"role": "user", "content": "other"}], {})
 
 
+def test_a_200_null_body_is_unknown_and_never_resent(tmp_path):
+    # 11/07 回放：DeepSeek 短时返回 200 + null。不能记成成功，也不能再发一次
+    receipts = FileReceipts(tmp_path)
+    calls = []
+
+    def handler(_request):
+        calls.append(1)
+        return httpx.Response(200, content=b"null", headers={"Content-Type": "application/json"})
+
+    client = DeepSeekClient(endpoint="https://example.invalid/chat/completions", model="m", api_key="k",
+                            receipts=receipts, timeout_seconds=5, max_attempts=3,
+                            transport=httpx.MockTransport(handler))
+    prompt = [{"role": "user", "content": "n"}]
+    digest = hashlib.sha256(canonical(client.request_body(prompt, {})).encode()).hexdigest()
+    with pytest.raises(ChatUnknown):
+        client.complete(prompt, {})
+    assert calls == [1]
+    saved = receipts.lookup(digest)
+    assert saved["state"] == "unknown"
+    with pytest.raises(ChatUnknown):
+        client.complete(prompt, {})
+    assert calls == [1]
+    # 旧代码留下的「成功但响应是 null」的回执，同样按结果不明处理
+    legacy = tmp_path / f"{'c' * 64}.json"
+    legacy.write_text(json.dumps({"request_sha256": "c" * 64, "state": "succeeded", "response": None}), encoding="utf-8")
+    from neckline.screening.deepseek import post_json
+    with pytest.raises(ChatUnknown):
+        post_json(endpoint="https://example.invalid/chat/completions", body={}, digest="c" * 64, api_key="k",
+                  receipts=receipts, timeout=httpx.Timeout(5), max_attempts=1,
+                  transport=httpx.MockTransport(handler))
+    assert calls == [1]
+
+
 def test_calendar_gap_pushes_only_on_weekdays(path):
     _with_device(path)
     apns = FakeApns()

@@ -80,6 +80,9 @@ def post_json(*, endpoint: str, body: Mapping[str, Any], digest: str, api_key: s
     """
     saved = receipts.lookup(digest)
     if saved and saved["state"] == "succeeded":
+        if not isinstance(saved.get("response"), Mapping):
+            # 旧代码把 200 的 null 记成了成功；结果不明，不重发
+            raise ChatUnknown("上次调用结果不明，不重发")
         return saved["response"], True, float(saved.get("seconds") or 0)
     if saved and saved["state"] in ("started", "unknown"):
         raise ChatUnknown("上次调用结果不明，不重发")
@@ -106,6 +109,10 @@ def post_json(*, endpoint: str, body: Mapping[str, Any], digest: str, api_key: s
                 except ValueError:
                     receipts.unknown(digest, "body_invalid")
                     raise ChatUnknown("响应不是 JSON")
+                if not isinstance(payload, Mapping):
+                    # 11/07 实测 DeepSeek 短时返回 200 + null：送达了但没有结果，按结果不明处理
+                    receipts.unknown(digest, "body_invalid")
+                    raise ChatUnknown("响应不是 JSON 对象")
                 seconds = round(time.monotonic() - started, 2)
                 receipts.succeed(digest, payload, seconds)
                 return payload, False, seconds
