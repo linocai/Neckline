@@ -5,7 +5,6 @@ import os
 from dataclasses import dataclass
 
 from neckline.market.mairui import Mairui
-from neckline.market.pool_query import _load_pool
 from neckline.market.tushare_daily import TuShareDaily
 from neckline.market.util import shanghai_now
 from neckline.screening.pool import CompanyPool
@@ -17,6 +16,8 @@ class Services:
     tushare: TuShareDaily
     mairui: Mairui
     now: object
+    # 进程默认服务每次按库里的当前池子判断。测试注入的服务仍用构造时给的池子。
+    follow_database: bool = False
 
     async def aclose(self) -> None:
         await self.tushare.aclose()
@@ -31,10 +32,11 @@ def default_services() -> Services:
     global _default
     if _default is None:
         _default = Services(
-            pool=_load_pool(),
+            pool=CompanyPool(()),
             tushare=TuShareDaily(os.environ.get("TUSHARE_TOKEN"), now=shanghai_now),
             mairui=Mairui(os.environ.get("MAIRUI_LICENCE"), now=shanghai_now),
             now=shanghai_now,
+            follow_database=True,
         )
     return _default
 

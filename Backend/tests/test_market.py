@@ -12,8 +12,8 @@ import pytest
 from neckline.market.calendar import intraday_session_date
 from neckline.market.mairui import Mairui
 from neckline.market.overview import overview
-from neckline.market.pool_query import _load_pool, lookup
-from neckline.market.services import Services
+from neckline.market.pool_query import _load_pool, assess, lookup
+from neckline.market.services import Services, current
 from neckline.morning.report import load_config
 from neckline.morning.stock_pool import pool_from_rows, rows_from_seed, store_rows
 from neckline.market.tushare_daily import BASIS, TuShareDaily, cache_phase
@@ -476,3 +476,34 @@ def test_overview_carries_v5_title_conclusion_and_risk(tmp_path, monkeypatch):
     assert morning["title"] == "三季度扣非大增" and morning["conclusion"] == "主业驱动，明显高开不追"
     assert morning["risk"] == "订单持续性待验证" and morning["documentIds"] == ["doc_v5@1"]
     assert "rank" not in morning and "headline" not in morning
+
+
+def _pool_row(code: str, name: str) -> dict:
+    return {"code": code, "name": name, "fullname": f"{name}全称", "listDate": "2020-01-01",
+            "aliases": [name], "summary": None, "summarySource": "none"}
+
+
+def test_overview_and_check_pool_follow_the_current_pool(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+
+    def agree(query: str) -> tuple[bool, str | None]:
+        viewed = _run(overview(query))
+        checked = assess(query)
+        in_pool = bool(viewed.get("code")) and viewed.get("inPool") is not False
+        assert in_pool is checked["inPool"]
+        if in_pool:
+            assert viewed["code"] == checked["code"]
+        return checked["inPool"], checked.get("code")
+
+    assert agree("300001") == (False, None)
+    with db.write(path) as conn:
+        store_rows(conn, [_pool_row("300001.SZ", "甲公司")], now=datetime(2026, 11, 1, tzinfo=SHANGHAI), source="tushare")
+    assert agree("300001") == (True, "300001.SZ")
+    with db.write(path) as conn:
+        store_rows(conn, [_pool_row("300001.SZ", "甲公司"), _pool_row("300002.SZ", "乙公司")],
+                   now=datetime(2026, 11, 2, tzinfo=SHANGHAI), source="tushare")
+    assert agree("300002") == (True, "300002.SZ")
+    assert agree("300001") == (True, "300001.SZ")
+    assert current().follow_database is True

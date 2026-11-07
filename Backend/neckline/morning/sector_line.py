@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -16,6 +17,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+import httpx
+
 from neckline.evaluation.prepare import _present
 from neckline.evaluation.search import _failure, project_results, summarize_search
 from neckline.morning import db
@@ -26,7 +29,7 @@ from neckline.morning.sector_prompt import (
     published_label,
 )
 from neckline.morning.sectors import (
-    MEMBER_INTERVAL_SECONDS, board_material, concept_list, fill_market_daily, member_facts,
+    FETCH_CUTOFF, MEMBER_INTERVAL_SECONDS, board_material, concept_list, fill_market_daily, member_facts,
 )
 from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 from neckline.screening.pool import CompanyPool
@@ -897,15 +900,85 @@ def _previous_events(db_path: Path, day: date) -> list[tuple[str, str]]:
     return found
 
 
-def _concepts(db_path: Path, pool: CompanyPool, rules: Mapping) -> list[dict]:
+def _concepts(db_path: Path, pool: CompanyPool, rules: Mapping) -> tuple[list[dict], str | None]:
     with db.read(db_path) as conn:
         stored = db.read_sector_concepts(conn)
+    note = _concept_reuse_note(stored)
     if not stored or not stored.get("concepts"):
-        return []
+        return [], note
     concepts = stored["concepts"]
     members = [{"tsCode": item["tsCode"], "code": code} for item in concepts for code in item.get("members") or []]
     listed = concept_list(concepts, members, list(pool.companies), rules)
-    return list(listed["concepts"])
+    return list(listed["concepts"]), note
+
+
+def _concept_reuse_note(stored: Mapping | None) -> str | None:
+    """刷新失败且还留着上一份清单时，晨报缺口里写明沿用哪一天的。"""
+    if not isinstance(stored, Mapping):
+        return None
+    error = stored.get("error")
+    if not isinstance(error, str) or not error.strip():
+        return None
+    if not stored.get("concepts") or not stored.get("refreshedAt"):
+        return None
+    day = _beijing_day(stored.get("refreshedAt"))
+    if not day:
+        return None
+    return f"板块清单没刷新成功，沿用 {day} 的"
+
+
+def _beijing_day(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value[:10]
+    if parsed.tzinfo is None:
+        return parsed.date().isoformat()
+    return parsed.astimezone(CST).date().isoformat()
+
+
+class _Budgeted:
+    """每次调用前把等待时间收到收口时刻，不改共享客户端。"""
+
+    def __init__(self, inner: Any, cutoff: str, clock: Callable[[], datetime]) -> None:
+        self._inner = inner
+        self._cutoff = cutoff
+        self._clock = clock
+
+    def complete(self, messages, options):
+        return _tighten(self._inner, self._cutoff, self._clock).complete(messages, options)
+
+    def search(self, **kwargs):
+        return _tighten(self._inner, self._cutoff, self._clock).search(**kwargs)
+
+
+def _budget(client: Any, cutoff: str, clock: Callable[[], datetime]) -> Any:
+    if client is None or not hasattr(client, "timeout"):
+        return client
+    return _Budgeted(client, cutoff, clock)
+
+
+def _tighten(client: Any, cutoff: str, clock: Callable[[], datetime]) -> Any:
+    remaining = _seconds_until(clock(), cutoff)
+    read = getattr(client.timeout, "read", None)
+    cap = 600.0 if read is None else float(read)
+    if remaining >= cap:
+        return client
+    seconds = min(cap, max(1.0, remaining))
+    bounded = copy.copy(client)
+    bounded.timeout = httpx.Timeout(seconds, connect=min(15.0, seconds))
+    return bounded
+
+
+def _seconds_until(now: datetime, cutoff: str) -> float:
+    if now.tzinfo is None:
+        raise ValueError("时间必须带时区")
+    current = now.astimezone(CST)
+    hour, minute = cutoff.split(":")
+    mark = current.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+    return (mark - current).total_seconds()
 
 
 def _run_calls(jobs: Sequence[Any], workers: int, fn: Callable[[Any], Any]) -> list[Any]:
@@ -971,10 +1044,14 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     if not kept:
         return SectorOutcome(None, _content(0, 0, 0, []), stats)
     # 没有可选的板块就不必花钱挑候选
-    concepts = _concepts(db_path, pool, sectors["concepts"])
+    concepts, concept_note = _concepts(db_path, pool, sectors["concepts"])
+    if concept_note:
+        stats["conceptNote"] = concept_note
     if not concepts:
         return _done(stats, _content(0, 0, 0, []), "板块线没有完成：概念清单是空的", [])
     cutoff = rules["evaluation"]["cutoff"]
+    client = _budget(client, cutoff, clock)
+    search_client = _budget(search_client, cutoff, clock)
     numbered = assign_numbers(kept)
     by_number = {number: message for number, message in numbered}
     candidate_settings = sectors["candidates"]
@@ -1026,7 +1103,11 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
             with db.write(db_path) as conn:
                 filled = fill_market_daily(
                     conn, as_of=as_of, lookback_days=int(sectors["market"]["lookbackDays"]),
-                    prefixes=tuple(rules["companyPool"]["prefixes"]), interval_seconds=MEMBER_INTERVAL_SECONDS)
+                    prefixes=tuple(rules["companyPool"]["prefixes"]), interval_seconds=MEMBER_INTERVAL_SECONDS,
+                    before_call=lambda: _cutoff_reached(clock(), cutoff))
+            if filled.error == FETCH_CUTOFF:
+                return _done(stats, _content(0, 0, 0, []), "板块线没有完成：收口时刻前没备齐行情",
+                             _rows(db_path, report_id, events))
             if not filled.ok:
                 logger.error("板块线日线没取到：%s", filled.error)
                 for event in need_build:
@@ -1078,14 +1159,41 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     fatal = next((hit.get("fatal") for hit in eval_hits if hit.get("fatal")), None)
     if fatal and gap is None:
         gap = "板块线没有完成：模型拒绝了请求"
+    gap = _join(gap, _search_misses(rows))
     return SectorOutcome(_annotate(stats, gap),
                          _render(rows, pool, int(sectors["delivery"]["maxEvents"]), shown=shown, overflow=overflow),
                          stats)
 
 
+def _join(left: str | None, right: str | None) -> str | None:
+    if left and right:
+        return left if right in left else f"{left}；{right}"
+    return left or right
+
+
+def _search_misses(rows: Sequence[Mapping]) -> str | None:
+    """评估已经成功、但联网搜索失败或结果不明的事件，汇总成一行。没发搜索（no_key）不算。"""
+    missed = 0
+    for row in rows:
+        if row.get("state") != "succeeded":
+            continue
+        package = row.get("package") if isinstance(row.get("package"), Mapping) else {}
+        search = package.get("search") if isinstance(package.get("search"), Mapping) else {}
+        error = search.get("error")
+        if isinstance(error, str) and error and error != "no_key":
+            missed += 1
+    if not missed:
+        return None
+    return f"板块线有 {missed} 个事件联网搜索没成"
+
+
 def _annotate(stats: Mapping, gap: str | None) -> str | None:
     """有的批次没挑成、或归并只成了一半时，已经拿到的仍然往下走，并补上缺口。"""
     notes: list[str] = []
+    if isinstance(stats, dict):
+        concept = stats.pop("conceptNote", None)
+        if isinstance(concept, str) and concept:
+            notes.append(concept)
     missed = int(stats["candidates"].get("failedBatches") or 0)
     if stats["candidates"].get("incomplete") and missed:
         # 板块照常出，只是这几批消息没看过
@@ -1312,9 +1420,26 @@ def _earliest_index(ids: Sequence[str], position: Mapping[str, int]) -> int:
     return min(found) if found else len(position)
 
 
+def _mapping_usable(event: Mapping) -> bool:
+    """只有不重复、分量也够的事件才和同板块的其他有效事件合并。"""
+    return not bool(event.get("repeat")) and bool(event.get("weighty"))
+
+
+def _copied_mapping(event: Mapping) -> dict:
+    return {
+        "title": event["title"],
+        "ids": list(event["ids"]),
+        "sector": event.get("sector"),
+        "reason": event["reason"],
+        "repeat": bool(event["repeat"]),
+        "weighty": bool(event.get("weighty")),
+        "weight": event["weight"],
+    }
+
+
 def _merge_mapping_halves(left: Sequence[Mapping], right: Sequence[Mapping], ordered: Sequence[str],
                           left_dropped: Sequence, right_dropped: Sequence, names: set[str]) -> list[dict] | str:
-    """同名板块并成一个事件。null 各自保留。两半的 dropped 按前后顺序拼在一起。"""
+    """同名板块里，重复或分量不够的各自保留；有效事件才合并，代表取首条消息最早的那件。"""
     position = {number: index for index, number in enumerate(ordered)}
     grouped: dict[str, list[Mapping]] = {}
     loose: list[Mapping] = []
@@ -1327,17 +1452,21 @@ def _merge_mapping_halves(left: Sequence[Mapping], right: Sequence[Mapping], ord
     events: list[dict] = []
     for sector, bucket in grouped.items():
         bucket.sort(key=lambda event: _earliest_index(event["ids"], position))
-        head = bucket[0]
-        chosen = {item for event in bucket for item in event["ids"]}
-        events.append({
-            "title": head["title"],
-            "ids": [number for number in ordered if number in chosen],
-            "sector": sector,
-            "reason": head["reason"],
-            "repeat": bool(head["repeat"]),
-            "weighty": any(bool(event.get("weighty")) for event in bucket),
-            "weight": head["weight"],
-        })
+        valid = [event for event in bucket if _mapping_usable(event)]
+        valid_ids = {id(event) for event in valid}
+        for event in bucket:
+            if id(event) not in valid_ids:
+                events.append(_copied_mapping(event))
+        if not valid:
+            continue
+        head = valid[0]
+        chosen = {item for event in valid for item in event["ids"]}
+        merged = _copied_mapping(head)
+        merged["ids"] = [number for number in ordered if number in chosen]
+        merged["sector"] = sector
+        merged["repeat"] = False
+        merged["weighty"] = True
+        events.append(merged)
     for event in loose:
         events.append({
             "title": event["title"], "ids": list(event["ids"]), "sector": None,

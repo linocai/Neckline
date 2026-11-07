@@ -12,8 +12,9 @@ from neckline.morning.replay import main as replay_main
 from neckline.morning.replay import run_replay
 from neckline.morning.report import load_config
 from neckline.morning.sectors import (
-    MEMBER_INTERVAL_SECONDS, board_material, capture_sector_payload, concept_list, concepts_content_sha256,
-    concepts_refresh_due, fill_market_daily, member_facts, refresh_concepts, trading_days_ending,
+    FETCH_CUTOFF, MEMBER_INTERVAL_SECONDS, board_material, capture_sector_payload, concept_list,
+    concepts_content_sha256, concepts_refresh_due, fill_market_daily, member_facts, refresh_concepts,
+    trading_days_ending,
 )
 from neckline.morning.stock_pool import store_rows
 from neckline.evaluation.snapshot import main as snapshot_main
@@ -527,3 +528,64 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
                         "--market-snapshot", "m.json", "--receipts", "r", "--filings-cache", "f",
                         "--pool-seed-only", "--sector-snapshot", "sector.json"]) == 0
     assert seen_args["sector"].name == "sector.json"
+
+
+def test_daily_fill_stops_before_the_next_call_when_the_budget_is_gone(path):
+    _store_pool(path, ["300001.SZ"])
+    asked = []
+    budget = {"left": 1}
+
+    def before_call():
+        budget["left"] -= 1
+        return budget["left"] < 0
+
+    def post(_url, payload, _timeout):
+        api = payload["api_name"]
+        asked.append(api)
+        stamp = payload["params"]["trade_date"]
+        if api == "daily":
+            return _frame(
+                ["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "amount"],
+                [["300001.SZ", stamp, 10, 11, 9, 11, 10, 1, 1.5]])
+        if api == "limit_list_d":
+            return _frame(["ts_code", "trade_date"], [["300001.SZ", stamp]])
+        raise AssertionError(api)
+
+    with db.write(path) as conn:
+        result = fill_market_daily(
+            conn, as_of=AS_OF, lookback_days=2, prefixes=("300", "301", "302"), post=post,
+            environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None, interval_seconds=0,
+            before_call=before_call)
+    assert asked == ["daily"]
+    assert result.error == FETCH_CUTOFF and result.filled == ()
+
+
+def test_concept_refresh_stops_when_the_budget_is_gone(path):
+    first, _seen = _concept_post(
+        [{"ts_code": "885001.TI", "name": "人工智能", "count": 3}], {"885001.TI": ["300001.SZ"]})
+    with db.write(path) as conn:
+        done = refresh_concepts(conn, rules=_rules(), prefixes=("300", "301", "302"), now=NOW, post=first,
+                                environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None, interval_seconds=0)
+    assert done.replaced and done.error is None
+    budget = {"left": 1}
+    asked = []
+
+    def before_call():
+        budget["left"] -= 1
+        return budget["left"] < 0
+
+    def post(_url, payload, _timeout):
+        asked.append(payload["api_name"])
+        return first(_url, payload, _timeout)
+
+    with db.write(path) as conn:
+        stopped = refresh_concepts(
+            conn, rules=_rules(), prefixes=("300", "301", "302"), now=NOW, post=post,
+            environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None, interval_seconds=0,
+            before_call=before_call)
+    assert asked == ["ths_index"]
+    assert stopped.replaced is False and stopped.error
+    with db.read(path) as conn:
+        stored = db.read_sector_concepts(conn)
+    assert stored["concepts"][0]["name"] == "人工智能" and stored["error"]
+    assert stored["sha256"] == done.sha256

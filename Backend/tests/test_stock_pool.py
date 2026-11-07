@@ -17,7 +17,9 @@ from neckline.morning import cli, db
 from neckline.morning.api import create_router
 from neckline.morning.replay import ReplayError, run_replay
 from neckline.morning.report import Pusher, load_config, run_morning
-from neckline.morning.stock_pool import PoolFetchError, build_pool_rows, content_sha256, pool_from_rows
+from neckline.morning.stock_pool import (
+    PoolFetchError, build_pool_rows, content_sha256, pool_from_rows, store_rows,
+)
 from neckline.screening.deepseek import DeepSeekClient
 from neckline.screening.pool import Company, CompanyPool
 from neckline.news.model import SourceDocument
@@ -282,6 +284,59 @@ def test_an_empty_stock_basic_counts_as_a_failed_refresh(path):
 def _basic_row():
     return {"code": "300001.SZ", "name": "甲公司", "fullname": "甲公司全称", "listDate": "2020-01-01",
             "aliases": ["甲公司", "甲公司全称"], "summary": "原摘要", "summarySource": "stock_company"}
+
+
+def test_resume_refreshes_when_this_periods_pool_was_not_committed(path, monkeypatch):
+    previous_db = path.parent / "previous.db"
+    db.init_schema(previous_db)
+    with db.write(previous_db) as conn:
+        store_rows(conn, [_basic_row()], now=datetime(2026, 11, 1, tzinfo=timezone.utc), source="tushare")
+    with db.read(previous_db) as conn:
+        previous = db.read_stock_pool(conn)
+
+    real = db.replace_stock_pool
+    halt = {"on": True}
+
+    def stop_before_commit(conn, rows, **kwargs):
+        if halt["on"]:
+            halt["on"] = False
+            raise RuntimeError("halt before pool commit")
+        return real(conn, rows, **kwargs)
+
+    monkeypatch.setattr(db, "replace_stock_pool", stop_before_commit)
+    post, _seen = _post_from([_basic("302001", "新公司")])
+    with pytest.raises(RuntimeError, match="halt before pool commit"):
+        _run(path, post)
+    with db.read(path) as conn:
+        started = db.get_report(conn, "2026-10-13")
+        assert db.read_stock_pool(conn) is None
+    assert started["status"] == "running"
+    assert not (started["stats"].get("pool") or {}).get("sha256")
+
+    result, _sent = _run(path, post)
+    assert result["state"] == "available" and result["stats"]["pool"]["reused"] is False
+    assert "还没有股票池" not in (result.get("reason") or "")
+    with db.read(path) as conn:
+        stored = db.read_stock_pool(conn)
+    assert [row["code"] for row in stored["rows"]] == ["302001.SZ"]
+
+    halt["on"] = True
+    post, _seen = _post_from([_basic("302001", "新公司")])
+    with pytest.raises(RuntimeError, match="halt before pool commit"):
+        _run(previous_db, post)
+    with db.read(previous_db) as conn:
+        kept = db.read_stock_pool(conn)
+        running = db.get_report(conn, "2026-10-13")
+    assert kept["sha256"] == previous["sha256"]
+    assert running["status"] == "running"
+    assert not (running["stats"].get("pool") or {}).get("sha256")
+
+    resumed, _sent = _run(previous_db, post)
+    assert resumed["state"] == "available" and resumed["stats"]["pool"]["reused"] is False
+    assert resumed["stats"]["pool"]["sha256"] != previous["sha256"]
+    with db.read(previous_db) as conn:
+        refreshed = db.read_stock_pool(conn)
+    assert [row["code"] for row in refreshed["rows"]] == ["302001.SZ"]
 
 
 def test_resume_does_not_refresh_and_checks_the_pool_hash(path, monkeypatch):

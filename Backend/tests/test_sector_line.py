@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from neckline.evaluation.search import SearchOutcome
+from neckline.evaluation.search import SearchClient, SearchOutcome
 from neckline.mcp.server import _report as mcp_report
 from neckline.morning import cli, db
 from neckline.morning.api import create_router
@@ -22,7 +22,7 @@ from neckline.morning.report import LoadedConfig, Pusher, load_config, run_morni
 from neckline.morning.schedule import CST, previous_trading_day
 from neckline.morning.sector_line import (
     apply_prefilter, assign_numbers, event_id, opening_text, parse_candidate_output,
-    parse_evaluation_output, parse_mapping_output, run_sector_line, split_batches,
+    _merge_mapping_halves, parse_evaluation_output, parse_mapping_output, run_sector_line, split_batches,
 )
 from neckline.morning.sector_prompt import (
     CANDIDATE_SYSTEM, EVALUATION_SYSTEM, MAPPING_CONTRACT, MAPPING_SYSTEM, candidate_line,
@@ -646,7 +646,7 @@ def test_same_messages_keep_the_same_event_id():
 # ------------------------------------------------------------------ 晨报入口
 
 
-def _seed_sector_context(path):
+def _seed_sector_context(path, *, with_daily=True):
     _seed_window(path)
     with db.write(path) as conn:
         db.store_documents(conn, [
@@ -657,6 +657,8 @@ def _seed_sector_context(path):
             "tsCode": "885001.TI", "name": "人工智能", "memberCount": 3,
             "members": ["300953.SZ", "300683.SZ", "300082.SZ"],
         }], refreshed_at="2026-10-12T00:00:00+00:00", sha256="cd")
+        if not with_daily:
+            return
         as_of = previous_trading_day(DAY)
         for day in trading_days_ending(as_of, 40):
             db.write_market_day(conn, day.isoformat(), [{
@@ -1163,7 +1165,7 @@ def _assert_mapping_added(stats, *, prompts, completions, reasonings, seconds, c
     assert stats["mapping"]["fromReceipt"] == 0
 
 
-def test_mapping_length_splits_once_and_merges_the_same_sector(tmp_path):
+def test_mapping_length_split_keeps_light_and_repeat_events_apart(tmp_path):
     pool = _pool()
     path = _db(tmp_path)
     _concept(path)
@@ -1209,16 +1211,17 @@ def test_mapping_length_splits_once_and_merges_the_same_sector(tmp_path):
     assert "国家级项目开工" not in users[1]
     assert "部委印发行业补贴方案" not in users[2]
     by_title = {row["title"]: row for row in _rows(path)}
-    assert set(by_title) == {"早间方案", "说不清", "另一件"}
+    assert set(by_title) == {"早间方案", "说不清", "晚间方案", "另一件"}
     early = by_title["早间方案"]
-    assert early["state"] == "succeeded" and early["reason"] == "早的理由" and early["repeat"] is False
-    assert [item["title"] for item in early["package"]["messages"]] == [
-        "部委印发行业补贴方案", "国家级项目开工",
-    ]
+    assert early["state"] == "skipped" and early["reason"] == "早的分量" and early["repeat"] is False
+    assert early["package"]["ids"] == ["n1"]
+    late = by_title["晚间方案"]
+    assert late["state"] == "skipped" and late["reason"] == "晚的理由" and late["repeat"] is True
+    assert late["package"]["ids"] == ["n3"]
     assert by_title["说不清"]["state"] == "skipped" and by_title["说不清"]["sector"] is None
     assert by_title["说不清"]["package"]["ids"] == ["n2"]
     assert by_title["另一件"]["state"] == "skipped" and by_title["另一件"]["sector"] is None
-    assert [entry["sector"]["name"] for entry in outcome.content["entries"]] == ["人工智能"]
+    assert outcome.content["entries"] == []
 
 
 def test_mapping_length_keeps_the_other_half_and_records_the_gap(tmp_path):
@@ -1416,3 +1419,223 @@ def test_sector_prompts_and_one_request_body_stay_frozen():
     assert hashlib.sha256(EVALUATION_SYSTEM.encode()).hexdigest() == _FROZEN_EVALUATION
     assert hashlib.sha256(_frozen_user().encode()).hexdigest() == _FROZEN_USER
     assert hashlib.sha256(canonical(_frozen_body()).encode()).hexdigest() == _FROZEN_BODY
+
+
+def _mapped(title, ids, *, repeat=False, weighty=True, reason="理由", weight="分量"):
+    return {"title": title, "ids": list(ids), "sector": "人工智能", "reason": reason,
+            "repeat": repeat, "weighty": weighty, "weight": weight}
+
+
+def test_mapping_merge_does_not_fold_repeat_or_light_into_a_valid_event(tmp_path):
+    """重复、分量不够的不进合并；有效事件才合并，代表取首条消息最早的那件。"""
+    ordered = ["n1", "n2", "n3", "n4"]
+
+    def merged(left, right):
+        return _merge_mapping_halves([left], [right], ordered, [], [], {"人工智能"})
+
+    repeat_and_valid = merged(
+        _mapped("旧重复", ["n1"], repeat=True, reason="旧理由", weight="旧分量"),
+        _mapped("新事件", ["n3"], reason="新理由", weight="新分量"))
+    by_title = {item["title"]: item for item in repeat_and_valid}
+    assert set(by_title) == {"旧重复", "新事件"}
+    assert by_title["旧重复"]["repeat"] is True and by_title["旧重复"]["ids"] == ["n1"]
+    assert by_title["旧重复"]["weight"] == "旧分量" and by_title["旧重复"]["reason"] == "旧理由"
+    assert by_title["新事件"]["ids"] == ["n3"] and by_title["新事件"]["reason"] == "新理由"
+    assert by_title["新事件"]["weight"] == "新分量" and by_title["新事件"]["weighty"] is True
+    assert by_title["新事件"]["repeat"] is False
+
+    light_and_valid = merged(
+        _mapped("分量不够", ["n1"], weighty=False, reason="旧理由", weight="不够的分量"),
+        _mapped("有效事件", ["n3"], reason="有效理由", weight="有效分量"))
+    by_title = {item["title"]: item for item in light_and_valid}
+    assert by_title["分量不够"]["weighty"] is False and by_title["分量不够"]["ids"] == ["n1"]
+    assert by_title["分量不够"]["weight"] == "不够的分量"
+    assert by_title["有效事件"]["ids"] == ["n3"] and by_title["有效事件"]["title"] == "有效事件"
+    assert by_title["有效事件"]["weight"] == "有效分量" and by_title["有效事件"]["reason"] == "有效理由"
+
+    both_valid = merged(
+        _mapped("最早", ["n1"], reason="最早的理由", weight="最早的分量"),
+        _mapped("较晚", ["n3"], reason="较晚的理由", weight="较晚的分量"))
+    assert len(both_valid) == 1
+    assert both_valid[0]["title"] == "最早" and both_valid[0]["reason"] == "最早的理由"
+    assert both_valid[0]["weight"] == "最早的分量" and both_valid[0]["ids"] == ["n1", "n3"]
+    assert both_valid[0]["repeat"] is False and both_valid[0]["weighty"] is True
+
+    def archive(root, left, right):
+        path = _db(root)
+        _concept(path)
+        normal = _script()
+
+        def handler(messages, _options):
+            if "板块分析员" not in messages[0]["content"]:
+                return normal.handler(messages, _options)
+            ids = _ids(messages[1]["content"])
+            if ids == ["n1", "n2", "n3", "n4"]:
+                return _charged(None, prompt=1, completion=1, reasoning=1, seconds=1, finish="length")
+            if ids == ["n1", "n2"]:
+                return _charged({"events": [left], "dropped": []}, prompt=1, completion=1, reasoning=1, seconds=1)
+            if ids == ["n3", "n4"]:
+                return _charged({"events": [right], "dropped": []}, prompt=1, completion=1, reasoning=1, seconds=1)
+            raise AssertionError(ids)
+
+        outcome = _run(path, _sector_messages(), Scripted(handler), _pool())
+        return outcome, {row["title"]: row for row in _rows(path)}
+
+    _outcome, stored = archive(
+        tmp_path / "repeat",
+        _event(_mapped("旧重复", ["n1"], repeat=True, reason="旧理由", weight="旧分量")),
+        _event(_mapped("新事件", ["n3"], reason="新理由", weight="新分量")))
+    assert stored["旧重复"]["state"] == "skipped" and stored["旧重复"]["reason"] == "旧理由"
+    assert stored["新事件"]["state"] == "succeeded" and stored["新事件"]["title"] == "新事件"
+    assert [item["title"] for item in stored["新事件"]["package"]["messages"]] == ["国家级项目开工"]
+
+    _outcome, stored = archive(
+        tmp_path / "light",
+        _event(_mapped("分量不够", ["n1"], weighty=False, reason="旧理由", weight="不够的分量")),
+        _event(_mapped("有效事件", ["n3"], reason="有效理由", weight="有效分量")))
+    assert stored["分量不够"]["state"] == "skipped" and stored["分量不够"]["reason"] == "不够的分量"
+    assert stored["有效事件"]["state"] == "succeeded" and stored["有效事件"]["title"] == "有效事件"
+    assert [item["title"] for item in stored["有效事件"]["package"]["messages"]] == ["国家级项目开工"]
+
+
+class _MorningClock:
+    def __init__(self, start):
+        self.current = start
+
+    def __call__(self):
+        return self.current
+
+    def advance(self, seconds):
+        self.current = self.current + timedelta(seconds=seconds)
+
+
+def test_sector_daily_fill_stops_at_cutoff_and_the_main_list_still_publishes(tmp_path, monkeypatch):
+    """09:04 开始补 40 日日线，每次外呼 9 秒：到 09:05 停板块线，主线照常交付。"""
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path, with_daily=False)
+    _with_device(path)
+    start = at("2026-10-13", "09:04")
+    clock = _MorningClock(start)
+    cutoff = at("2026-10-13", "09:05")
+    deadline = at("2026-10-13", "09:15")
+    started = []
+    codes = ["300953.SZ", "300683.SZ", "300082.SZ"]
+
+    def slow_post(_url, payload, _timeout):
+        started.append(clock())
+        clock.advance(9)
+        stamp = payload["params"]["trade_date"]
+        api = payload["api_name"]
+        if api == "daily":
+            rows = [[code, stamp, 10, 11, 9, 11, 10, 1, 1.5] for code in codes]
+            return {"code": 0, "data": {
+                "fields": ["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "amount"],
+                "items": rows, "has_more": False}}
+        if api == "limit_list_d":
+            return {"code": 0, "data": {"fields": ["ts_code", "trade_date"], "items": [], "has_more": False}}
+        raise AssertionError(api)
+
+    monkeypatch.setattr("neckline.morning.sectors._sender", lambda _post, _environ: ("slow-token", slow_post))
+    monkeypatch.setattr("neckline.morning.sectors._pause", lambda pause, _sleep, _interval: pause.__setitem__("started", True))
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    apns = FakeApns()
+    result = run_morning(
+        path, now=start, config=_config(), clock=clock, collector=lambda _at: {"status": "completed"},
+        client_factory=lambda rid: _client(path, _sector_handler(FakeModel()), rid),
+        pusher=Pusher(path, apns, clock))
+    assert result["state"] == "available" and result["entries"] == 2
+    assert "板块线没有完成：收口时刻前没备齐行情" in result["gapSummary"]
+    assert "前没能出报" not in (result.get("reason") or "")
+    assert started and len(started) < 80 and len(started) == 7
+    assert all(moment < cutoff for moment in started)
+    assert cutoff <= clock() < deadline
+    assert apns.sent and apns.sent[-1][1] == "晨报已出"
+    with db.read(path) as conn:
+        stored = db.get_report(conn, "2026-10-13")
+    assert stored["status"] == "available"
+    assert [entry["companyName"] for entry in stored["content"]["entries"]] == ["海特生物", "震裕科技"]
+
+
+def test_concept_refresh_failure_is_a_sector_gap_and_the_line_still_runs(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path)
+    with db.write(path) as conn:
+        db.set_sector_refresh_error(conn, "ths_index 返回异常")
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    result = run_morning(
+        path, now=at("2026-10-13", "08:02"), config=_config(), clock=lambda: at("2026-10-13", "08:02"),
+        collector=lambda _at: {"status": "completed"},
+        client_factory=lambda rid: _client(path, _sector_handler(FakeModel()), rid),
+        pusher=Pusher(path, FakeApns(), lambda: at("2026-10-13", "08:02")))
+    assert result["state"] == "available" and result["entries"] == 2
+    assert "板块清单没刷新成功，沿用 2026-10-12 的" in result["gapSummary"]
+    assert "联网搜索没成" not in result["gapSummary"]
+    with db.read(path) as conn:
+        stored = db.get_report(conn, "2026-10-13")
+    assert stored["content"]["sectors"]["entries"]
+    assert stored["content"]["sectors"]["entries"][0]["sector"]["name"] == "人工智能"
+
+
+def test_search_unknown_is_a_sector_gap_and_the_same_report_is_published(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path)
+    _with_device(path)
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    hits = []
+
+    def search_handler(_request):
+        hits.append(1)
+        raise httpx.RemoteProtocolError("closed")
+
+    now = at("2026-10-13", "08:02")
+    apns = FakeApns()
+    model = FakeModel()
+
+    def search_factory(rid):
+        return SearchClient(
+            endpoint="https://example.invalid/tools/search", api_key="k",
+            receipts=db.DbReceipts(path, rid), timeout_seconds=30, max_attempts=2,
+            transport=httpx.MockTransport(search_handler))
+
+    from neckline.morning import report as morning_report
+    real = morning_report.run_sector_line
+    gate = {"halt": True}
+
+    class _Halt(BaseException):
+        pass
+
+    def wrapped(*args, **kwargs):
+        outcome = real(*args, **kwargs)
+        if gate["halt"]:
+            gate["halt"] = False
+            raise _Halt()
+        return outcome
+
+    monkeypatch.setattr(morning_report, "run_sector_line", wrapped)
+
+    def once():
+        return run_morning(
+            path, now=now, config=_config(), clock=lambda: now, collector=lambda _at: {"status": "completed"},
+            client_factory=lambda rid: _client(path, _sector_handler(model), rid),
+            pusher=Pusher(path, apns, lambda: now), search_factory=search_factory)
+
+    with pytest.raises(_Halt):
+        once()
+    with db.read(path) as conn:
+        assert db.get_report(conn, "2026-10-13")["status"] == "running"
+    sent = len(hits)
+    assert sent >= 1
+    result = once()
+    assert len(hits) == sent
+    assert result["state"] == "available"
+    assert "板块线有 1 个事件联网搜索没成" in result["gapSummary"]
+    app = FastAPI()
+    app.include_router(create_router(require_token_dependency=lambda: None))
+    latest = TestClient(app).get("/api/v4/reports/latest").json()
+    via_mcp = mcp_report("2026-10-13")
+    assert latest["gapSummary"] == via_mcp["gapSummary"] == result["gapSummary"]
+    assert apns.sent[-1][1] == "晨报已出" and "有缺口" in apns.sent[-1][2]

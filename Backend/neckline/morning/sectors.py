@@ -50,6 +50,14 @@ class ConceptRefresh:
     replaced: bool
 
 
+# 外呼前的预算用尽。调用方把它写成板块线缺口，不当成行情源故障。
+FETCH_CUTOFF = "cutoff"
+
+
+class _Stopped(Exception):
+    """收口时刻已到，这一次外呼不再发出。"""
+
+
 @dataclass(frozen=True)
 class DailyFill:
     """error 交给板块线记缺口。主线不看这个结果。"""
@@ -227,13 +235,25 @@ def member_facts(code: str, daily_rows: Sequence[Mapping], as_of: date, *, amoun
 def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: datetime,
                      post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
                      sleep: Callable[[float], None] = time.sleep,
-                     interval_seconds: float) -> ConceptRefresh:
-    """拉同花顺概念并在调用方的事务里整表替换。失败只写错误，概念行保持原样。"""
+                     interval_seconds: float, before_call: Callable[[], bool] | None = None) -> ConceptRefresh:
+    """拉同花顺概念并在调用方的事务里整表替换。失败只写错误，概念行保持原样。
+
+    before_call 在每次外呼前调用，返回真就停，不替换清单。
+    """
     _check_interval(interval_seconds)
     previous = db.read_sector_concepts(conn)
     try:
         concepts = _pull_concepts(prefixes=prefixes, post=post, environ=environ, sleep=sleep,
-                                  interval_seconds=interval_seconds)
+                                  interval_seconds=interval_seconds, before_call=before_call)
+    except _Stopped:
+        message = "收口时刻前没刷新完"
+        db.set_sector_refresh_error(conn, message)
+        logger.info("板块清单刷新停在收口时刻")
+        return ConceptRefresh(
+            count=0 if previous is None else previous["count"],
+            sha256=None if previous is None else previous["sha256"],
+            refreshed_at=None if previous is None else previous["refreshedAt"],
+            error=message, replaced=False)
     except SectorFetchError as exc:
         message = str(exc)
         db.set_sector_refresh_error(conn, message)
@@ -252,7 +272,7 @@ def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: date
 def fill_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequence[str],
                       post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
                       sleep: Callable[[float], None] = time.sleep,
-                      interval_seconds: float) -> DailyFill:
+                      interval_seconds: float, before_call: Callable[[], bool] | None = None) -> DailyFill:
     """补齐 as_of 往前 lookback_days 个交易日里还没有日线的日子，并删掉窗口外的行。
 
     只存当前池子或库里已经有过的创业板代码。失败返回 error，已经补上的日子保留；
@@ -278,7 +298,9 @@ def fill_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequen
         for day in missing:
             try:
                 bars = _pull_day(sender, token, day, known, prefixes, sleep=sleep,
-                                 interval_seconds=interval_seconds, pause=pause)
+                                 interval_seconds=interval_seconds, pause=pause, before_call=before_call)
+            except _Stopped:
+                return DailyFill(tuple(filled), 0, FETCH_CUTOFF)
             except SectorFetchError as exc:
                 logger.error("日线没能补齐：%s", exc)
                 return DailyFill(tuple(filled), 0, str(exc))
@@ -430,11 +452,12 @@ def market_rows_from_raw(daily_rows: Sequence[Mapping], limit_rows: Sequence[Map
 
 def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
                    environ: Mapping[str, str] | None, sleep: Callable[[float], None],
-                   interval_seconds: float) -> list[dict]:
+                   interval_seconds: float, before_call: Callable[[], bool] | None = None) -> list[dict]:
     token, sender = _sender(post, environ)
     pause = {"started": False}
     index_rows = _call(sender, token, "ths_index", {"exchange": "A", "type": "N", "limit": _PAGE_LIMIT},
-                       _INDEX_FIELDS, sleep=sleep, interval_seconds=interval_seconds, pause=pause)
+                       _INDEX_FIELDS, sleep=sleep, interval_seconds=interval_seconds, pause=pause,
+                       before_call=before_call)
     if not index_rows:
         raise SectorFetchError("ths_index 没有返回概念")
     members: list[dict] = []
@@ -443,7 +466,7 @@ def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
         if not ts_code:
             raise SectorFetchError("ths_index 返回异常")
         page = _call(sender, token, "ths_member", {"ts_code": ts_code, "limit": _PAGE_LIMIT}, _MEMBER_FIELDS,
-                     sleep=sleep, interval_seconds=interval_seconds, pause=pause)
+                     sleep=sleep, interval_seconds=interval_seconds, pause=pause, before_call=before_call)
         members.extend(page)
     concepts = concepts_from_raw(index_rows, members, prefixes)
     if not concepts:
@@ -452,16 +475,17 @@ def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
 
 
 def _pull_day(post: Callable[..., dict], token: str, day: date, codes: set[str], prefixes: Sequence[str], *,
-              sleep: Callable[[float], None], interval_seconds: float, pause: dict) -> list[dict]:
+              sleep: Callable[[float], None], interval_seconds: float, pause: dict,
+              before_call: Callable[[], bool] | None = None) -> list[dict]:
     stamp = day.strftime("%Y%m%d")
     daily_rows = _call(post, token, "daily", {"trade_date": stamp, "limit": _DAILY_LIMIT}, _DAILY_FIELDS,
-                       sleep=sleep, interval_seconds=interval_seconds, pause=pause)
+                       sleep=sleep, interval_seconds=interval_seconds, pause=pause, before_call=before_call)
     _require_same_day(daily_rows, day, "daily")
     if not daily_rows:
         raise SectorFetchError(f"{day.isoformat()} 没有返回日线")
     limit_rows = _call(post, token, "limit_list_d",
                        {"trade_date": stamp, "limit_type": "U", "limit": _PAGE_LIMIT}, _LIMIT_FIELDS,
-                       sleep=sleep, interval_seconds=interval_seconds, pause=pause)
+                       sleep=sleep, interval_seconds=interval_seconds, pause=pause, before_call=before_call)
     _require_same_day(limit_rows, day, "limit_list_d")
     bars = market_rows_from_raw(daily_rows, limit_rows, prefixes, codes)
     if not bars:
@@ -493,8 +517,11 @@ def _sender(post: Callable[..., dict] | None, environ: Mapping[str, str] | None)
 
 
 def _call(post: Callable[..., dict], token: str, api: str, params: Mapping, fields: str, *,
-          sleep: Callable[[float], None], interval_seconds: float, pause: dict) -> list[dict]:
+          sleep: Callable[[float], None], interval_seconds: float, pause: dict,
+          before_call: Callable[[], bool] | None = None) -> list[dict]:
     _pause(pause, sleep, interval_seconds)
+    if before_call is not None and before_call():
+        raise _Stopped()
     rows, more = _fetch_page(post, token, api, params, fields)
     if more:
         raise SectorFetchError(f"{api} 没有一次取全")
@@ -502,11 +529,14 @@ def _call(post: Callable[..., dict], token: str, api: str, params: Mapping, fiel
 
 
 def _call_paged(post: Callable[..., dict], token: str, api: str, params: Mapping, fields: str, *,
-                sleep: Callable[[float], None], interval_seconds: float, pause: dict) -> list[dict]:
+                sleep: Callable[[float], None], interval_seconds: float, pause: dict,
+                before_call: Callable[[], bool] | None = None) -> list[dict]:
     rows: list[dict] = []
     offset = 0
     while True:
         _pause(pause, sleep, interval_seconds)
+        if before_call is not None and before_call():
+            raise _Stopped()
         page, more = _fetch_page(post, token, api, {**params, "limit": _PAGE_LIMIT, "offset": offset}, fields)
         rows.extend(page)
         if not more:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from neckline.market.calendar import intraday_session_date
-from neckline.market.pool_query import lookup
+from neckline.market.pool_query import _load_pool, lookup
 from neckline.market.services import Services, current
 from neckline.market.util import MarketError
 from neckline.morning.api import v4_db_path
@@ -45,9 +45,17 @@ async def _intraday(services: Services, code: str, now):
     return await services.mairui.block(code, session)
 
 
+def _active_pool(services: Services, pool: CompanyPool | None) -> CompanyPool:
+    if pool is not None:
+        return pool
+    if services.follow_database:
+        return _load_pool()
+    return services.pool
+
+
 async def overview(stock: str, *, services: Services | None = None, pool: CompanyPool | None = None) -> dict:
     services = services or current()
-    found = lookup(stock, pool if pool is not None else services.pool)
+    found = lookup(stock, _active_pool(services, pool))
     if not found.get("inPool") or "candidates" in found:
         return found
     now = services.now()

@@ -840,37 +840,35 @@ def _view_pool(config: LoadedConfig, rows: Sequence[Mapping]) -> LoadedConfig:
 def _install_given(db_path: Path, config: LoadedConfig, report_id: str, clock: Callable[[], datetime]):
     with db.write(db_path) as conn:
         stored = store_rows(conn, rows_from_pool(config.pool, config.profiles), now=clock(), source="given")
-    record = _pool_stats(len(stored.rows), stored.sha256, stored.refreshed_at, False,
-                         excluded=stored.excluded, mv_date=stored.mv_date)
-    _remember_pool(db_path, report_id, record)
+        record = _pool_stats(len(stored.rows), stored.sha256, stored.refreshed_at, False,
+                             excluded=stored.excluded, mv_date=stored.mv_date)
+        db.merge_running_stats(conn, report_id, {"pool": record})
     return _view_pool(config, stored.rows), None, record
+
+
+def _frozen_pool(db_path: Path, config: LoadedConfig, report_id: str, saved: Mapping):
+    """本期池子已经和统计一起提交过：沿用这一份，不再刷新。"""
+    stored = _stored_pool(db_path)
+    if stored is None or stored["sha256"] != saved.get("sha256"):
+        raise _PoolBlocked("股票池与开工时不一致")
+    record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"],
+                         bool(saved.get("reused")), saved.get("gap"),
+                         excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
+    _remember_pool(db_path, report_id, record)
+    return _view_pool(config, stored["rows"]), saved.get("gap"), record
 
 
 def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: str, resuming: bool,
                  existing: Mapping | None, clock: Callable[[], datetime], pool_source: str | None,
                  post: Callable[..., dict] | None, environ: Mapping[str, str] | None):
-    """开工后定下本期池子。续跑不再刷新。注入的非空池子不打 TuShare。"""
-    if resuming:
-        saved = ((existing or {}).get("stats") or {}).get("pool") or {}
-        stored = _stored_pool(db_path)
-        saved_sha = saved.get("sha256")
-        if saved_sha:
-            current = stored["sha256"] if stored else None
-            if current != saved_sha:
-                raise _PoolBlocked("股票池与开工时不一致")
-            record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"],
-                                 bool(saved.get("reused")), saved.get("gap"),
-                                 excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
-            _remember_pool(db_path, report_id, record)
-            return _view_pool(config, stored["rows"]), saved.get("gap"), record
-        if stored is not None:
-            record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False,
-                                 excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
-            _remember_pool(db_path, report_id, record)
-            return _view_pool(config, stored["rows"]), None, record
-        if config.pool:
-            return _install_given(db_path, config, report_id, clock)
-        raise _PoolBlocked("还没有股票池")
+    """开工后定下本期池子。池子和池统计在同一事务里提交。
+
+    续跑时本期还没定池（统计里没有哈希）就照常刷新；已经冻结的沿用这一份。
+    注入的非空池子不打 TuShare。
+    """
+    saved = ((existing or {}).get("stats") or {}).get("pool") or {} if resuming else {}
+    if saved.get("sha256"):
+        return _frozen_pool(db_path, config, report_id, saved)
     if pool_source == "database":
         stored = _stored_pool(db_path)
         if stored is None:
@@ -886,6 +884,9 @@ def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: s
             refreshed = refresh_stock_pool(
                 conn, rules=config.rules["companyPool"], seed_rows=config.alias_seed, as_of=day, today=day,
                 now=clock(), post=post, environ=environ)
+            record = _pool_stats(len(refreshed.rows), refreshed.sha256, refreshed.refreshed_at, False,
+                                 excluded=refreshed.excluded, mv_date=refreshed.mv_date)
+            db.merge_running_stats(conn, report_id, {"pool": record})
     except PoolFetchError as exc:
         stored = _stored_pool(db_path)
         if stored is None:
@@ -896,9 +897,6 @@ def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: s
         _remember_pool(db_path, report_id, record)
         logger.info("%s", gap)
         return _view_pool(config, stored["rows"]), gap, record
-    record = _pool_stats(len(refreshed.rows), refreshed.sha256, refreshed.refreshed_at, False,
-                         excluded=refreshed.excluded, mv_date=refreshed.mv_date)
-    _remember_pool(db_path, report_id, record)
     return _view_pool(config, refreshed.rows), None, record
 
 

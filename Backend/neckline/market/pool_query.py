@@ -67,8 +67,16 @@ def _strict_names() -> tuple[str, ...]:
     return cached
 
 
+def _drop_cached(path: str, keep: tuple[str, str] | None = None) -> None:
+    for key in [key for key in _POOL_CACHE if key[0] == path and key != keep]:
+        _POOL_CACHE.pop(key, None)
+
+
 def _load_pool() -> CompanyPool:
-    """API 进程只读晨报库。没有库、库还没升级、或还没刷新过，都当作空池。"""
+    """API 进程只读晨报库。没有库、库还没升级、或还没刷新过，都当作空池。
+
+    按库里当前池子的内容哈希缓存。哈希变了就重读。空池不缓存。
+    """
     path = v4_db_path()
     if path is None or not path.is_file():
         return CompanyPool(())
@@ -77,11 +85,13 @@ def _load_pool() -> CompanyPool:
             stored = db.read_stock_pool(conn)
     except (db.NotReady, sqlite3.OperationalError):
         return CompanyPool(())
-    if stored is None:
+    location = str(path)
+    if stored is None or not stored.get("rows"):
+        _drop_cached(location)
         return CompanyPool(())
-    key = (str(path), stored["sha256"])
+    key = (location, stored["sha256"])
     cached = _POOL_CACHE.get(key)
-    if cached is not None:
+    if cached is not None and cached.companies:
         return cached
     pool, _profiles = pool_from_rows(stored["rows"], strict_names=_strict_names())
     excluded: dict[str, dict] = {}
@@ -91,6 +101,10 @@ def _load_pool() -> CompanyPool:
     pool.excluded = excluded  # type: ignore[attr-defined]
     pool.mv_date = stored.get("mvDate")  # type: ignore[attr-defined]
     pool.exclude_share = stored.get("excludeTopShare")  # type: ignore[attr-defined]
+    if not pool.companies:
+        _drop_cached(location)
+        return pool
+    _drop_cached(location, keep=key)
     _POOL_CACHE[key] = pool
     return pool
 
