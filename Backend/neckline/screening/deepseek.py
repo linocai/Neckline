@@ -72,11 +72,14 @@ def _status_retryable(status: int) -> bool:
 def post_json(*, endpoint: str, body: Mapping[str, Any], digest: str, api_key: str | None,
               receipts: Receipts, timeout: httpx.Timeout, max_attempts: int,
               transport: httpx.BaseTransport | None = None,
-              retryable: Callable[[int], bool] = _status_retryable) -> tuple[Any, bool, float]:
+              retryable: Callable[[int], bool] = _status_retryable,
+              may_attempt: Callable[[], bool] | None = None) -> tuple[Any, bool, float]:
     """带回执的 POST。聊天用默认的可重试状态；调用方要换一组状态时自己传入。
 
     成功时返回 (响应 JSON, 是否来自回执, 秒)。连接没建立记 failed 并可再试；
     其余传输错误和无法解析的 200 记 unknown，立刻停止，不改请求重发。
+    may_attempt 在每次尝试前调用；返回假就不再发新的请求，也不改已有回执。
+    不传时失败后仍按原来的次数重试。
     """
     saved = receipts.lookup(digest)
     if saved and saved["state"] == "succeeded":
@@ -90,6 +93,8 @@ def post_json(*, endpoint: str, body: Mapping[str, Any], digest: str, api_key: s
         raise ChatRejected("DeepSeek 凭据缺失")
     last = "unknown"
     for attempt in range(1, max_attempts + 1):
+        if may_attempt is not None and not may_attempt():
+            raise ChatError(last)
         receipts.begin(digest)
         started = time.monotonic()
         try:
@@ -192,7 +197,7 @@ class DeepSeekClient:
         payload, from_receipt, seconds = post_json(
             endpoint=self.endpoint, body=body, digest=digest, api_key=self._api_key,
             receipts=self.receipts, timeout=self.timeout, max_attempts=self.max_attempts,
-            transport=self._transport,
+            transport=self._transport, may_attempt=getattr(self, "may_attempt", None),
         )
         return self._result(payload, digest, from_receipt=from_receipt, seconds=seconds)
 

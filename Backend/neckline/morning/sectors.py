@@ -269,6 +269,76 @@ def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: date
     return ConceptRefresh(len(concepts), digest, refreshed_at, None, True)
 
 
+@dataclass(frozen=True)
+class MarketDailyPlan:
+    """缺哪些交易日。known 是取数时要留下的创业板代码，取数期间不再读库。"""
+
+    window: tuple[date, ...]
+    missing: tuple[date, ...]
+    known: frozenset[str]
+    prefixes: tuple[str, ...]
+    error: str | None = None
+
+
+def plan_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequence[str]) -> MarketDailyPlan:
+    """只读：算出还缺哪些交易日。不联网。"""
+    try:
+        window = tuple(trading_days_ending(as_of, lookback_days))
+    except (CalendarGap, ValueError) as exc:
+        logger.error("日线没能补齐：%s", exc)
+        return MarketDailyPlan((), (), frozenset(), tuple(prefixes), str(exc))
+    known = frozenset(_known_codes(conn, prefixes))
+    present = set(db.market_dates(conn))
+    missing = tuple(day for day in window if day.isoformat() not in present)
+    return MarketDailyPlan(window, missing, known, tuple(prefixes), None)
+
+
+def pull_market_days(plan: MarketDailyPlan, *, post: Callable[..., dict] | None = None,
+                     environ: Mapping[str, str] | None = None,
+                     sleep: Callable[[float], None] = time.sleep,
+                     interval_seconds: float,
+                     before_call: Callable[[], bool] | None = None,
+                     ) -> tuple[tuple[tuple[str, list[dict]], ...], str | None]:
+    """只取数，不写库。收口或失败时带回已经取全的交易日。"""
+    _check_interval(interval_seconds)
+    if plan.error:
+        return (), plan.error
+    if not plan.missing or not plan.known:
+        return (), None
+    try:
+        token, sender = _sender(post, environ)
+    except SectorFetchError as exc:
+        logger.error("日线没能补齐：%s", exc)
+        return (), str(exc)
+    pause = {"started": False}
+    rows: list[tuple[str, list[dict]]] = []
+    codes = set(plan.known)
+    for day in plan.missing:
+        try:
+            bars = _pull_day(sender, token, day, codes, plan.prefixes, sleep=sleep,
+                             interval_seconds=interval_seconds, pause=pause, before_call=before_call)
+        except _Stopped:
+            return tuple(rows), FETCH_CUTOFF
+        except SectorFetchError as exc:
+            logger.error("日线没能补齐：%s", exc)
+            return tuple(rows), str(exc)
+        rows.append((day.isoformat(), bars))
+    return tuple(rows), None
+
+
+def commit_market_daily(conn, plan: MarketDailyPlan, rows: Sequence[tuple[str, Sequence[Mapping]]], *,
+                        error: str | None) -> DailyFill:
+    """写入已经取到的交易日。失败时保留这些日子，不删窗口外的旧行。"""
+    filled: list[str] = []
+    for trade_date, bars in rows:
+        db.write_market_day(conn, trade_date, bars)
+        filled.append(trade_date)
+    if error or not plan.window:
+        return DailyFill(tuple(filled), 0, error)
+    deleted = db.delete_market_daily_outside(conn, plan.window[0].isoformat(), plan.window[-1].isoformat())
+    return DailyFill(tuple(filled), deleted, None)
+
+
 def fill_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequence[str],
                       post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
                       sleep: Callable[[float], None] = time.sleep,
@@ -276,38 +346,15 @@ def fill_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequen
     """补齐 as_of 往前 lookback_days 个交易日里还没有日线的日子，并删掉窗口外的行。
 
     只存当前池子或库里已经有过的创业板代码。失败返回 error，已经补上的日子保留；
-    这种失败不抛给主线。run_morning 的调用点由板块线接入。
+    这种失败不抛给主线。晨报里的板块线不走这里：它把取数放到事务外，只等到收口。
     """
     _check_interval(interval_seconds)
-    try:
-        window = trading_days_ending(as_of, lookback_days)
-    except (CalendarGap, ValueError) as exc:
-        logger.error("日线没能补齐：%s", exc)
-        return DailyFill((), 0, str(exc))
-    known = _known_codes(conn, prefixes)
-    present = set(db.market_dates(conn))
-    missing = [day for day in window if day.isoformat() not in present]
-    filled: list[str] = []
-    if missing and known:
-        try:
-            token, sender = _sender(post, environ)
-        except SectorFetchError as exc:
-            logger.error("日线没能补齐：%s", exc)
-            return DailyFill((), 0, str(exc))
-        pause = {"started": False}
-        for day in missing:
-            try:
-                bars = _pull_day(sender, token, day, known, prefixes, sleep=sleep,
-                                 interval_seconds=interval_seconds, pause=pause, before_call=before_call)
-            except _Stopped:
-                return DailyFill(tuple(filled), 0, FETCH_CUTOFF)
-            except SectorFetchError as exc:
-                logger.error("日线没能补齐：%s", exc)
-                return DailyFill(tuple(filled), 0, str(exc))
-            db.write_market_day(conn, day.isoformat(), bars)
-            filled.append(day.isoformat())
-    deleted = db.delete_market_daily_outside(conn, window[0].isoformat(), window[-1].isoformat())
-    return DailyFill(tuple(filled), deleted, None)
+    plan = plan_market_daily(conn, as_of=as_of, lookback_days=lookback_days, prefixes=prefixes)
+    if plan.error:
+        return DailyFill((), 0, plan.error)
+    rows, error = pull_market_days(
+        plan, post=post, environ=environ, sleep=sleep, interval_seconds=interval_seconds, before_call=before_call)
+    return commit_market_daily(conn, plan, rows, error=error)
 
 
 def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],

@@ -29,7 +29,8 @@ from neckline.morning.sector_prompt import (
     published_label,
 )
 from neckline.morning.sectors import (
-    FETCH_CUTOFF, MEMBER_INTERVAL_SECONDS, board_material, concept_list, fill_market_daily, member_facts,
+    FETCH_CUTOFF, MEMBER_INTERVAL_SECONDS, DailyFill, board_material, commit_market_daily, concept_list,
+    member_facts, plan_market_daily, pull_market_days,
 )
 from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 from neckline.screening.pool import CompanyPool
@@ -46,6 +47,7 @@ _PACKAGE_KEYS = (
 )
 _GAP = "收口时刻前没评完"
 _CUTOFF_GAP = "板块线没有完成：收口时刻前没评完"
+_CONCEPT_NEVER = "板块清单还没有成功刷新过"
 _MAPPING_GAP = "板块线没有完成：归并没有完成"
 _WAIT_SLICE = 1.0
 _MAPPING_HALF = "板块线有一半候选没归并成"
@@ -922,7 +924,7 @@ def _previous_events(db_path: Path, day: date) -> list[tuple[str, str]]:
 def _concepts(db_path: Path, pool: CompanyPool, rules: Mapping) -> tuple[list[dict], str | None]:
     with db.read(db_path) as conn:
         stored = db.read_sector_concepts(conn)
-    note = _concept_reuse_note(stored)
+    note = _concept_note(stored)
     if not stored or not stored.get("concepts"):
         return [], note
     concepts = stored["concepts"]
@@ -933,7 +935,7 @@ def _concepts(db_path: Path, pool: CompanyPool, rules: Mapping) -> tuple[list[di
 
 def _stored_concept_note(db_path: Path) -> str | None:
     with db.read(db_path) as conn:
-        return _concept_reuse_note(db.read_sector_concepts(conn))
+        return _concept_note(db.read_sector_concepts(conn))
 
 
 def _concept_reuse_note(stored: Mapping | None) -> str | None:
@@ -949,6 +951,21 @@ def _concept_reuse_note(stored: Mapping | None) -> str | None:
     if not day:
         return None
     return f"板块清单没刷新成功，沿用 {day} 的"
+
+
+def _concept_note(stored: Mapping | None) -> str | None:
+    """刷新失败时的缺口。有上一份就写明沿用哪一天；一份都没有就如实说还没成功过。"""
+    reuse = _concept_reuse_note(stored)
+    if reuse:
+        return reuse
+    if not isinstance(stored, Mapping):
+        return None
+    error = stored.get("error")
+    if not isinstance(error, str) or not error.strip():
+        return None
+    if stored.get("concepts"):
+        return None
+    return _CONCEPT_NEVER
 
 
 def _beijing_day(value: object) -> str:
@@ -979,6 +996,9 @@ class _CutoffReceipts:
         return self._inner.lookup(digest)
 
     def begin(self, digest: str) -> None:
+        # 过了收口不再把回执改回 started。unknown 保持不动，调用方也不会再发下一次。
+        if _cutoff_reached(self._clock(), self._cutoff):
+            return
         self._inner.begin(digest)
 
     def succeed(self, digest: str, response: Mapping[str, Any], seconds: float) -> None:
@@ -1005,6 +1025,7 @@ class _Budgeted:
     进程退出时解释器仍会等它们结束，但晨报记录和推送已经写完。
     httpx 没有「整次请求」的总超时；要让这些线程在收口时断开，得从另一侧
     关掉这次连接。连接建在 post_json 里面，这里拿不到，所以只停止等待。
+    同一次调用里的重试也看这个期限：post_json 每次尝试前问 may_attempt，过了就不再发。
     """
 
     def __init__(self, inner: Any, cutoff: str, clock: Callable[[], datetime]) -> None:
@@ -1022,12 +1043,12 @@ class _Budgeted:
 
     def _bound(self) -> Any:
         inner = _tighten(self._inner, self._cutoff, self._clock)
-        receipts = getattr(self._inner, "receipts", None)
-        if receipts is None:
-            return inner
         if inner is self._inner:
             inner = copy.copy(self._inner)
-        inner.receipts = _CutoffReceipts(receipts, self._cutoff, self._clock)
+        receipts = getattr(self._inner, "receipts", None)
+        if receipts is not None:
+            inner.receipts = _CutoffReceipts(receipts, self._cutoff, self._clock)
+        inner.may_attempt = lambda: not _cutoff_reached(self._clock(), self._cutoff)
         return inner
 
     def _wait(self, fn: Callable[[], Any]) -> Any:
@@ -1139,6 +1160,47 @@ def _call_model(client: Any, messages: list[dict], options: Mapping) -> dict:
     }
 
 
+def _await_market_daily(db_path: Path, *, as_of: date, lookback_days: int, prefixes: Sequence[str],
+                        cutoff: str, clock: Callable[[], datetime]) -> DailyFill:
+    """日线补齐以 evaluation.cutoff 为绝对期限。
+
+    先短读算出缺口，再在工作线程里取数，主流程只等到收口。取数不占写事务。
+    到点还没回来的这次结果整段丢掉，不写入 market_daily，晚到的行不能改已交付的名单。
+    """
+    if _cutoff_reached(clock(), cutoff):
+        return DailyFill((), 0, FETCH_CUTOFF)
+    with db.read(db_path) as conn:
+        plan = plan_market_daily(conn, as_of=as_of, lookback_days=lookback_days, prefixes=prefixes)
+    if plan.error:
+        return DailyFill((), 0, plan.error)
+    if not plan.missing or not plan.known:
+        with db.write(db_path) as conn:
+            return commit_market_daily(conn, plan, (), error=None)
+
+    def work() -> tuple[tuple[tuple[str, list[dict]], ...], str | None]:
+        return pull_market_days(
+            plan, interval_seconds=MEMBER_INTERVAL_SECONDS,
+            before_call=lambda: _cutoff_reached(clock(), cutoff))
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(work)
+    try:
+        while not future.done():
+            if _cutoff_reached(clock(), cutoff):
+                return DailyFill((), 0, FETCH_CUTOFF)
+            remaining = _seconds_until(clock(), cutoff)
+            if remaining <= 0:
+                return DailyFill((), 0, FETCH_CUTOFF)
+            wait((future,), timeout=min(_WAIT_SLICE, remaining))
+        rows, error = future.result()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    if _cutoff_reached(clock(), cutoff) or error == FETCH_CUTOFF:
+        return DailyFill((), 0, FETCH_CUTOFF)
+    with db.write(db_path) as conn:
+        return commit_market_daily(conn, plan, rows, error=error)
+
+
 def run_sector_line(db_path: Path, *, report_id: str, day: date, window: Window, messages: Sequence[Message],
                     config: Any, pool: CompanyPool, skip: Sequence[str], client: Any,
                     clock: Callable[[], datetime], search_client: Any = None, sector_live: bool = True,
@@ -1176,7 +1238,9 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     if concept_note:
         stats["conceptNote"] = concept_note
     if not concepts:
-        return _done(stats, _content(0, 0, 0, []), "板块线没有完成：概念清单是空的", [])
+        # 刷新失败且没有旧清单时，缺口就是这件事，不再另写「清单是空的」。
+        gap = None if concept_note == _CONCEPT_NEVER else "板块线没有完成：概念清单是空的"
+        return _done(stats, _content(0, 0, 0, []), gap, [])
     cutoff = rules["evaluation"]["cutoff"]
     client = _budget(client, cutoff, clock)
     search_client = _budget(search_client, cutoff, clock)
@@ -1228,11 +1292,9 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
         except CalendarGap as exc:
             return _done(stats, _content(0, 0, 0, []), f"板块线没有完成：{exc}", _rows(db_path, report_id, events))
         if sector_live:
-            with db.write(db_path) as conn:
-                filled = fill_market_daily(
-                    conn, as_of=as_of, lookback_days=int(sectors["market"]["lookbackDays"]),
-                    prefixes=tuple(rules["companyPool"]["prefixes"]), interval_seconds=MEMBER_INTERVAL_SECONDS,
-                    before_call=lambda: _cutoff_reached(clock(), cutoff))
+            filled = _await_market_daily(
+                db_path, as_of=as_of, lookback_days=int(sectors["market"]["lookbackDays"]),
+                prefixes=tuple(rules["companyPool"]["prefixes"]), cutoff=cutoff, clock=clock)
             if filled.error == FETCH_CUTOFF:
                 return _done(stats, _content(0, 0, 0, []), "板块线没有完成：收口时刻前没备齐行情",
                              _rows(db_path, report_id, events))

@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -523,12 +524,12 @@ def test_cutoff_before_the_call_and_before_the_repair(tmp_path):
     def clock():
         return _at(9, 6, day=13) if stage["late"] else _at(8, day=13)
 
-    def fill(_conn, **_kwargs):
+    def fill(*_args, **_kwargs):
         stage["late"] = True
         return DailyFill((), 0, None)
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr("neckline.morning.sector_line.fill_market_daily", fill)
+    monkey.setattr("neckline.morning.sector_line._await_market_daily", fill)
     try:
         client = _script()
         outcome = _run(path, [message], client, pool, clock=clock, live=True)
@@ -721,7 +722,7 @@ def test_sector_failure_does_not_block_the_main_list(tmp_path, monkeypatch):
     db.init_schema(path)
     _seed_sector_context(path)
     _with_device(path)
-    monkeypatch.setattr("neckline.morning.sector_line.fill_market_daily",
+    monkeypatch.setattr("neckline.morning.sector_line._await_market_daily",
                         lambda *_args, **_kwargs: DailyFill((), 0, "没取到"))
     monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
     model = FakeModel()
@@ -1776,3 +1777,247 @@ def test_search_unknown_is_a_sector_gap_and_the_same_report_is_published(tmp_pat
     via_mcp = mcp_report("2026-10-13")
     assert latest["gapSummary"] == via_mcp["gapSummary"] == result["gapSummary"]
     assert apns.sent[-1][1] == "晨报已出" and "有缺口" in apns.sent[-1][2]
+
+
+def _never_refreshed(path) -> None:
+    with db.write(path) as conn:
+        conn.execute("DELETE FROM sector_members")
+        conn.execute("DELETE FROM sector_concepts")
+        conn.execute("DELETE FROM sector_concepts_meta")
+        db.set_sector_refresh_error(conn, "ths_index 返回异常")
+
+
+def test_first_refresh_failure_without_a_previous_list_when_there_are_no_messages(tmp_path):
+    path = _db(tmp_path)
+    _never_refreshed(path)
+    client = _script()
+    outcome = _run(path, [], client)
+    assert outcome.gap == "板块清单还没有成功刷新过"
+    assert outcome.content["entries"] == []
+    assert client.calls == []
+
+
+def test_first_refresh_failure_without_a_previous_list_when_prefilter_drops_everything(tmp_path):
+    path = _db(tmp_path)
+    _never_refreshed(path)
+    message = _msg("a", "关于召开行业座谈会", "邀请机构参加。", _at(16), "cninfo-announcement")
+    client = _script()
+    outcome = _run(path, [message], client)
+    assert outcome.gap == "板块清单还没有成功刷新过"
+    assert outcome.content["entries"] == []
+    assert outcome.stats["kept"] == 0
+    assert client.calls == []
+
+
+def test_first_refresh_failure_without_a_previous_list_still_publishes_the_main_line(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path)
+    _never_refreshed(path)
+    _with_device(path)
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    now = at("2026-10-13", "08:02")
+    apns = FakeApns()
+    result = run_morning(
+        path, now=now, config=_config(), clock=lambda: now, collector=lambda _at: {"status": "completed"},
+        client_factory=lambda rid: _client(path, _sector_handler(FakeModel()), rid),
+        pusher=Pusher(path, apns, lambda: now))
+    assert result["state"] == "available" and result["entries"] == 2
+    assert "板块清单还没有成功刷新过" in result["gapSummary"]
+    assert "概念清单是空的" not in result["gapSummary"]
+    assert "前没能出报" not in (result.get("reason") or "")
+    assert apns.sent and apns.sent[-1][1] == "晨报已出"
+    with db.read(path) as conn:
+        stored = db.get_report(conn, "2026-10-13")
+    assert [entry["companyName"] for entry in stored["content"]["entries"]] == ["海特生物", "震裕科技"]
+    assert stored["content"]["sectors"]["entries"] == []
+
+
+def test_chunked_daily_request_stops_at_cutoff_without_holding_a_write(tmp_path, monkeypatch):
+    """09:04 发起日线，分块把业务时钟拖到 09:20。主线在收口时交付，写事务不罩着这次外呼。
+
+    晚到的行不写入 market_daily，已经交付的名单保持不动。
+    """
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path, with_daily=False)
+    _with_device(path)
+    monkeypatch.setattr("neckline.morning.sector_line._WAIT_SLICE", 0.05)
+    monkeypatch.setattr("neckline.morning.sectors._pause", lambda pause, _sleep, _interval: pause.__setitem__("started", True))
+    start = at("2026-10-13", "09:04")
+    clock = _MorningClock(start)
+    cutoff = at("2026-10-13", "09:05")
+    deadline = at("2026-10-13", "09:15")
+    proceed = threading.Event()
+    inflight = threading.Event()
+    finished = threading.Event()
+    started: list[str] = []
+    depth = {"n": 0, "max": 0}
+    real_write = db.write
+
+    @contextmanager
+    def watching(target):
+        depth["n"] += 1
+        try:
+            with real_write(target) as conn:
+                yield conn
+        finally:
+            depth["n"] -= 1
+
+    monkeypatch.setattr(db, "write", watching)
+    codes = ["300953.SZ", "300683.SZ", "300082.SZ"]
+
+    def slow_post(_url, payload, _timeout):
+        api = payload["api_name"]
+        started.append(api)
+        passed = at("2026-10-13", "09:05:01")
+        while clock() < passed:
+            depth["max"] = max(depth["max"], depth["n"])
+            if depth["n"] != 0:
+                raise AssertionError("日线请求还在飞，写事务不该开着")
+            clock.advance(1)
+            time.sleep(0.001)
+        inflight.set()
+        if not proceed.wait(timeout=15):
+            raise AssertionError("主流程没有在时限内离开在途日线")
+        while clock() < at("2026-10-13", "09:20"):
+            clock.advance(30)
+            time.sleep(0.001)
+        stamp = payload["params"]["trade_date"]
+        finished.set()
+        if api == "daily":
+            rows = [[code, stamp, 10, 11, 9, 11, 10, 1, 1.5] for code in codes]
+            return {"code": 0, "data": {
+                "fields": ["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "amount"],
+                "items": rows, "has_more": False}}
+        if api == "limit_list_d":
+            return {"code": 0, "data": {"fields": ["ts_code", "trade_date"], "items": [], "has_more": False}}
+        raise AssertionError(api)
+
+    monkeypatch.setattr("neckline.morning.sectors._sender", lambda _post, _environ: ("slow-token", slow_post))
+    box: dict = {}
+
+    def run():
+        try:
+            box["result"] = run_morning(
+                path, now=start, config=_config(), clock=clock, collector=lambda _at: {"status": "completed"},
+                client_factory=lambda rid: _client(path, _sector_handler(FakeModel()), rid),
+                pusher=Pusher(path, apns, clock))
+        except Exception as exc:
+            box["error"] = exc
+
+    apns = FakeApns()
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert inflight.wait(timeout=10)
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert "error" not in box
+        when = clock()
+        result = box["result"]
+        assert cutoff <= when < deadline
+        assert result["state"] == "available" and result["entries"] == 2
+        assert "板块线没有完成：收口时刻前没备齐行情" in result["gapSummary"]
+        assert "前没能出报" not in (result.get("reason") or "")
+        assert apns.sent and apns.sent[-1][1] == "晨报已出"
+        assert depth["max"] == 0
+        with db.read(path) as conn:
+            stored = db.get_report(conn, "2026-10-13")
+            assert db.market_dates(conn) == []
+        snapshot = json.dumps(stored["content"], ensure_ascii=False, sort_keys=True)
+        assert [entry["companyName"] for entry in stored["content"]["entries"]] == ["海特生物", "震裕科技"]
+        assert stored["content"]["sectors"]["entries"] == []
+    finally:
+        proceed.set()
+    thread.join(timeout=5)
+    assert finished.wait(timeout=5)
+    time.sleep(0.3)
+    assert started == ["daily"]
+    with db.read(path) as conn:
+        assert db.market_dates(conn) == []
+        late = db.get_report(conn, "2026-10-13")
+    assert json.dumps(late["content"], ensure_ascii=False, sort_keys=True) == snapshot
+
+
+def _wait_until_unknown(path) -> list[str]:
+    limit = time.monotonic() + 5
+
+    def states() -> list[str]:
+        with db.read(path) as conn:
+            return [row["state"] for row in conn.execute("SELECT state FROM model_receipts ORDER BY rowid")]
+
+    while time.monotonic() < limit:
+        found = states()
+        if found and "unknown" in found and "started" not in found:
+            return found
+        time.sleep(0.05)
+    raise AssertionError(f"回执没有停在 unknown：{states()}")
+
+
+def test_model_does_not_retry_after_the_cutoff(tmp_path, monkeypatch):
+    """09:04:59 发起模型调用，09:06 才返回 500。调用方已经不再等，后台不再发第二次。"""
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("neckline.morning.sector_line._WAIT_SLICE", 0.05)
+    monkeypatch.setattr("neckline.morning.sector_line._tighten", lambda client, _cutoff, _clock: client)
+    path = _db(tmp_path)
+    _concept(path)
+    clock = _MorningClock(datetime(2026, 10, 13, 9, 4, 59, tzinfo=CST))
+    release = threading.Event()
+    calls: list[str] = []
+
+    def handler(_request):
+        calls.append(clock().isoformat())
+        clock.current = at("2026-10-13", "09:06")
+        if not release.wait(timeout=10):
+            raise AssertionError("模型调用没有在时限内被放行")
+        return httpx.Response(500, json={"error": "down"})
+
+    client = DeepSeekClient(
+        endpoint="https://example.invalid/chat/completions", model="m", api_key="k",
+        receipts=db.DbReceipts(path, "morning-2026-10-13"), timeout_seconds=30, max_attempts=2,
+        transport=httpx.MockTransport(handler))
+    try:
+        outcome = _run(path, [_msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))], client, clock=clock)
+        assert calls == ["2026-10-13T09:04:59+08:00"]
+        assert "收口时刻前没评完" in (outcome.gap or "")
+    finally:
+        release.set()
+    assert _wait_until_unknown(path) == ["unknown"]
+    time.sleep(0.2)
+    assert calls == ["2026-10-13T09:04:59+08:00"]
+
+
+def test_search_does_not_retry_after_the_cutoff(tmp_path, monkeypatch):
+    """09:04:59 发起搜索，09:06 返回 500。调用方已经不再等，回执停在 unknown，没有第二次请求。"""
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("neckline.morning.sector_line._WAIT_SLICE", 0.05)
+    monkeypatch.setattr("neckline.morning.sector_line._tighten", lambda client, _cutoff, _clock: client)
+    path = _db(tmp_path)
+    _concept(path)
+    clock = _MorningClock(datetime(2026, 10, 13, 9, 4, 59, tzinfo=CST))
+    release = threading.Event()
+    calls: list[str] = []
+
+    def handler(_request):
+        calls.append(clock().isoformat())
+        clock.current = at("2026-10-13", "09:06")
+        if not release.wait(timeout=10):
+            raise AssertionError("搜索没有在时限内被放行")
+        return httpx.Response(500, json={"error": "down"})
+
+    search = SearchClient(
+        endpoint="https://example.invalid/tools/search", api_key="k",
+        receipts=db.DbReceipts(path, "morning-2026-10-13"), timeout_seconds=30, max_attempts=2,
+        transport=httpx.MockTransport(handler))
+    try:
+        outcome = _run(
+            path, [_msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))], _script(),
+            clock=clock, search=search)
+        assert calls == ["2026-10-13T09:04:59+08:00"]
+        assert "收口时刻前没评完" in (outcome.gap or "")
+    finally:
+        release.set()
+    assert _wait_until_unknown(path) == ["unknown"]
+    time.sleep(0.2)
+    assert calls == ["2026-10-13T09:04:59+08:00"]

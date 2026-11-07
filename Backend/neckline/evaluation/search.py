@@ -225,6 +225,7 @@ class SearchClient:
                 endpoint=self.endpoint, body=body, digest=digest, api_key=self._api_key,
                 receipts=self.receipts, timeout=self.timeout, max_attempts=self.max_attempts,
                 transport=self._transport, retryable=_search_retryable,
+                may_attempt=getattr(self, "may_attempt", None),
             )
         except ChatRejected as exc:
             code = _failure_code(exc)
