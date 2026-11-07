@@ -1,4 +1,4 @@
-"""板块清单、日线和龙头材料。"""
+"""板块清单、日线和成分股材料。"""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,7 @@ from neckline.morning.replay import run_replay
 from neckline.morning.report import load_config
 from neckline.morning.sectors import (
     MEMBER_INTERVAL_SECONDS, board_material, capture_sector_payload, concept_list, concepts_content_sha256,
-    concepts_refresh_due, fill_market_daily, leader_material, rank_leaders, refresh_concepts, trading_days_ending,
+    concepts_refresh_due, fill_market_daily, member_facts, refresh_concepts, trading_days_ending,
 )
 from neckline.morning.stock_pool import store_rows
 from neckline.evaluation.snapshot import main as snapshot_main
@@ -148,7 +148,7 @@ def test_sector_config_is_required_and_has_no_defaults(tmp_path):
     ]
     assert concepts["maxMembers"] == 150 and concepts["minMembers"] == 3 and concepts["refreshDays"] == 7
     assert rules["sectors"]["market"] == {
-        "lookbackDays": 40, "leaderCount": 3, "leaderWindow": 20, "boardWindows": [1, 5, 20], "limitWindow": 5}
+        "lookbackDays": 40, "boardWindows": [1, 5, 20], "limitWindow": 5}
     assert MEMBER_INTERVAL_SECONDS == 0.35
 
     def rejected(mutate, message):
@@ -421,58 +421,24 @@ def test_board_material_compounds_returns_and_stops_at_as_of():
         board_material(POOL3, [], date(2026, 11, 7), [1], 1, POOL3)
 
 
-def test_rank_leaders_orders_ties_skips_and_reports_a_short_list():
-    days = trading_days_ending(AS_OF, 2)
-    rows = [
-        _material_row("300001.SZ", days[0], 1, amount=5),
-        _material_row("300001.SZ", days[1], 1, amount=5),
-        _material_row("300002.SZ", days[0], 1, amount=4, limit_up=True),
-        _material_row("300002.SZ", days[1], 1, amount=4, limit_up=True),
-        _material_row("300003.SZ", days[0], 1, amount=5, limit_up=True),
-        _material_row("300003.SZ", days[1], 1, amount=5),
-        _material_row("300004.SZ", days[0], 1, amount=1, limit_up=True),
-        _material_row("300004.SZ", days[1], 1, amount=0, limit_up=True),
-        _material_row("300002.SZ", date(2026, 11, 5), 1, amount=1000, limit_up=True),
-    ]
-    members = ["300001.SZ", "300002.SZ", "300003.SZ", "300004.SZ"]
-    by_amount = rank_leaders(members, rows, AS_OF, 2, 3, [], "amount")
-    assert [item["code"] for item in by_amount["leaders"]] == ["300001.SZ", "300003.SZ", "300002.SZ"]
-    assert by_amount["short"] is False
-    assert by_amount["leaders"][0]["amount"] == by_amount["leaders"][1]["amount"] == 10
-    by_limits = rank_leaders(members, rows, AS_OF, 2, 2, [], "limitups")
-    assert [item["code"] for item in by_limits["leaders"]] == ["300002.SZ", "300004.SZ"]
-    assert by_limits["leaders"][0]["limitUps"] == by_limits["leaders"][1]["limitUps"] == 2
-    assert by_limits["leaders"][0]["amount"] > by_limits["leaders"][1]["amount"]
-    skipped = rank_leaders(members, rows, AS_OF, 2, 2, ["300002", "300004.SZ"], "limitups")
-    assert [item["code"] for item in skipped["leaders"]] == ["300003.SZ", "300001.SZ"]
-    short = rank_leaders(["300001.SZ", "300009.SZ"], rows, AS_OF, 2, 3, ["300001.SZ"], "amount")
-    assert short["short"] is True and [item["code"] for item in short["leaders"]] == ["300009.SZ"]
-    assert short["leaders"][0]["amount"] == 0 and short["leaders"][0]["limitUps"] == 0
-
-
-def test_leader_material_uses_the_mainline_moving_average_rule():
+def test_member_facts_keep_each_window_and_ignore_later_bars():
     days = trading_days_ending(AS_OF, 20)
-    closes = [12] * 10 + [11, 11, 10, 10, 10, 8, 10, 10, 10, 10]
     pcts = [0] * 20
     pcts[0] = 50
-    pcts[-1] = 50
+    pcts[-1] = 10
     limits = [False] * 20
-    limits[1] = limits[2] = limits[3] = True
-    rows = [_material_row("300001.SZ", day, pct, close=close, amount=1000, limit_up=limit_up)
-            for day, close, pct, limit_up in zip(days, closes, pcts, limits)]
+    limits[1] = limits[2] = True
+    rows = [_material_row("300001.SZ", day, pct, close=10, amount=1000, limit_up=limit_up)
+            for day, pct, limit_up in zip(days, pcts, limits)]
     rows.append(_material_row("300001.SZ", date(2026, 11, 5), 50, close=1, amount=9, limit_up=True))
-    result = leader_material("300001.SZ", rows, AS_OF)
-    assert result["ma5"] == "上方" and result["ma10"] == "持平" and result["ma20"] == "下方"
-    assert result["maNote"] is None
-    assert result["changePercent"] == 50 and result["change20Percent"] == 125
-    assert result["limitUps20"] == 3 and result["averageAmountYuan"] == 1000 and result["missingDays"] == 0
+    result = member_facts("300001.SZ", rows, AS_OF, amount_window=20, limit_window=20, change_window=5)
+    assert result["averageAmountYuan"] == 1000
+    assert result["limitUps"] == 2
+    assert result["changePercent"] == pytest.approx(10)
     gap = [row for row in rows if row["tradeDate"] != days[0].isoformat()]
-    missing = leader_material("300001.SZ", gap, AS_OF)
-    assert missing["missingDays"] == 1
-    assert missing["change20Percent"] is None and missing["averageAmountYuan"] is None
-    assert missing["limitUps20"] is None and missing["ma20"] is None
-    assert missing["ma5"] == "上方" and missing["ma10"] == "持平"
-    assert missing["maNote"] and "20日" in missing["maNote"] and "现有19个收盘价" in missing["maNote"]
+    missing = member_facts("300001.SZ", gap, AS_OF, amount_window=20, limit_window=20, change_window=5)
+    assert missing["averageAmountYuan"] is None and missing["limitUps"] is None
+    assert missing["changePercent"] == pytest.approx(10)
 
 
 def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monkeypatch):
@@ -494,6 +460,9 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
                  ["600000.SH", "20261104", 10, 11, 9, 11, 10, 1, 9]])
         if api == "limit_list_d":
             return _frame(["ts_code", "trade_date"], [["300001.SZ", "20261104"], ["600000.SH", "20261104"]])
+        if api == "daily_basic":
+            return _frame(["ts_code", "trade_date", "circ_mv", "total_mv"],
+                          [["300001.SZ", "20261104", 100000, 200000], ["600000.SH", "20261104", 1, 1]])
         if api == "stock_basic":
             return _frame(["ts_code", "name", "fullname", "list_date", "list_status"],
                           [["300001.SZ", "甲", "甲公司", "20200101", "L"]])
@@ -515,6 +484,7 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
     assert SECRET not in json.dumps(payload, ensure_ascii=False) and SECRET not in "".join(progress)
     assert [row["ts_code"] for row in payload["daily"]] == ["300001.SZ"]
     assert [row["ts_code"] for row in payload["limit_list_d"]] == ["300001.SZ"]
+    assert [row["ts_code"] for row in payload["daily_basic"]] == ["300001.SZ"]
     assert len(payload["ths_member"]) == 2 and len(payload["namechange"]) == 2
     assert payload["stock_basic"] and payload["stock_company"]
     monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
@@ -529,7 +499,7 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
         db.begin_report(conn, report_id="morning-2026-11-04", trade_date="2026-11-04",
                         window_start=datetime(2026, 11, 3, 7, tzinfo=timezone.utc),
                         window_end=datetime(2026, 11, 4, 0, tzinfo=timezone.utc),
-                        config_version="screening-v5", config_sha256="0" * 64,
+                        config_version="screening-v6", config_sha256="0" * 64,
                         started_at=datetime(2026, 11, 3, 16, 2, tzinfo=timezone.utc))
     market = tmp_path / "market.json"
     market.write_text("{}", encoding="utf-8")

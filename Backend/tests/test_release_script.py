@@ -1889,11 +1889,11 @@ def test_downgrade_from_v6_to_v5_keeps_the_pool_rows(tmp_path, monkeypatch):
     driven = _drive_schema(tmp_path, monkeypatch, db_version=6, target_schema=5, previous_schema=6,
                            previous_kx=True, target_kx=True)
     with closing(sqlite3.connect(driven.db)) as con:
-        con.execute("INSERT INTO stock_pool VALUES (?,?,?,?,?,?,?,?)",
+        con.execute("INSERT INTO stock_pool VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     ("302001.SZ", "甲公司", "甲公司全称", "2020-01-01", "[]", None, "tushare",
-                     "2026-11-05T00:00:00+00:00"))
-        con.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?)",
-                    ("2026-11-05T00:00:00+00:00", 1, "ab", "tushare"))
+                     "2026-11-05T00:00:00+00:00", 100000, 200000, "2026-11-04"))
+        con.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?,?,?,?)",
+                    ("2026-11-05T00:00:00+00:00", 1, "ab", "tushare", "[]", "2026-11-04", 0.1))
         con.execute("INSERT INTO sector_concepts VALUES (?,?,?,?)",
                     ("885001.TI", "人工智能", 3, "2026-11-05T00:00:00+00:00"))
         con.execute("INSERT INTO sector_members VALUES (?,?)", ("885001.TI", "300001.SZ"))

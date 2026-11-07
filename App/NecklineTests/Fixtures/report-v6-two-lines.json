@@ -1,9 +1,9 @@
 {
   "availableAt": "2026-10-13T00:02:00+00:00",
-  "configVersion": "screening-v5",
+  "configVersion": "screening-v6",
   "content": {
     "candidates": 2,
-    "configVersion": "screening-v5",
+    "configVersion": "screening-v6",
     "entries": [
       {
         "companyCode": "300683",
@@ -87,13 +87,15 @@
             {
               "companyCode": "300082",
               "companyName": "奥克股份",
-              "price": "明显高开不追"
+              "price": "明显高开不追",
+              "why": "消息点到它"
             }
           ],
           "questions": {
-            "money": "可能接力",
-            "priced": "还没涨透",
-            "value": "有政策"
+            "carriers": "有人接",
+            "fresh": "是新消息",
+            "position": "位置不高",
+            "weight": "分量够"
           },
           "risk": "可能落空",
           "sector": {
@@ -150,7 +152,7 @@
         "invalid": 0,
         "repaired": 0,
         "repairs": 0,
-        "seconds": 0.006,
+        "seconds": 0.01,
         "usage": {
           "completion_tokens": 10,
           "prompt_cache_hit_tokens": 2,
@@ -177,12 +179,14 @@
       "overflow": 0,
       "pool": {
         "count": 3,
+        "excluded": 0,
+        "mvDate": null,
         "refreshedAt": "2026-10-12T04:00:00+00:00",
         "reused": true,
-        "sha256": "c4958820c65bb1cd8d2f82ab00bb1d2957c441e24e614637873254f8e7fd52d7"
+        "sha256": "fc629fb168dd77a92eeb05dfb1e18df34f37474e12a38de1c158229816e9fd95"
       },
       "prepare": {
-        "seconds": 0.004
+        "seconds": 0.008
       },
       "pushed": 2,
       "search": {
@@ -208,6 +212,7 @@
           "fromReceipt": 0,
           "messages": 1,
           "seconds": 0.0,
+          "splits": 0,
           "usage": {
             "completion_tokens": 3,
             "prompt_cache_hit_tokens": 1,
@@ -222,6 +227,7 @@
           "overseas": 0,
           "periodic": 0,
           "research": 0,
+          "roundup": 0,
           "tape": 0
         },
         "evaluation": {
@@ -251,6 +257,7 @@
           "calls": 1,
           "events": 1,
           "fromReceipt": 0,
+          "light": 0,
           "null": 0,
           "repeat": 0,
           "seconds": 0.0,

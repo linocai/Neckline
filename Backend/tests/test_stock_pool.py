@@ -24,10 +24,9 @@ from neckline.news.model import SourceDocument
 
 from tests.test_morning import FakeModel, at
 
-# screening-v4.json 去掉 configVersion、approvedAt、note、companyPool、matching、sectors 之后，
-# json.dumps(ensure_ascii=False, sort_keys=True, separators=(",", ":")) 的 sha256。
-# v5 做同样处理后必须相等，用来证明除股票池以外的规则没有改。
-MAINLINE_SHA256 = "31ec6c4d09783812a290f57658a20cf7897b0064ce7d0dfa1c2f84aa329bcae1"
+# screening-v6 去掉 configVersion、approvedAt、note、companyPool、matching、sectors 之后的 sha256。
+# 主线评估合同改成 evaluation-v3 之后，这个值不再等于 v4。
+MAINLINE_SHA256 = "a654dfe5a7d71e1cd4979572b75fe0c1090d3044772ea26032fb03cf1741b2f5"
 DAY = date(2026, 11, 5)
 SECRET = "pool-token-do-not-print"
 
@@ -67,6 +66,10 @@ def _post_from(basic, company=()):
                            for row in basic])
         if payload["api_name"] == "stock_company":
             return _frame(["ts_code", "main_business"], [[row["ts_code"], row["main_business"]] for row in company])
+        if payload["api_name"] == "daily_basic":
+            stamp = payload["params"]["trade_date"]
+            return _frame(["ts_code", "trade_date", "circ_mv", "total_mv"],
+                          [[row["ts_code"], stamp, 100000, 200000] for row in basic])
         raise AssertionError(payload["api_name"])
 
     return post, seen
@@ -125,6 +128,44 @@ def test_pool_rows_follow_listing_st_prefix_and_summary_rules():
     assert kept[0]["summary"] == "库里的摘要"
 
 
+def test_circ_mv_drops_the_largest_share_and_keeps_a_missing_value():
+    basics = [_basic(f"300{index:03d}", f"公司{index}") for index in range(1, 11)]
+    basics.append(_basic("300011", "刚上市"))
+    mv = [{"ts_code": f"300{index:03d}.SZ", "trade_date": "20261012", "circ_mv": 1000 - index, "total_mv": 2000}
+          for index in range(1, 11)]
+    # 300001 与 300002 流通市值并列最大，代码小的先去掉。
+    mv[0]["circ_mv"] = 5000
+    mv[1]["circ_mv"] = 5000
+    dropped: list[dict] = []
+    rows = build_pool_rows(
+        basics, [], as_of=DAY, today=DAY, prefixes=("300", "301", "302"), exclude_name_contains="ST",
+        summary_max_chars=40, mv_rows=mv, exclude_top_share=0.1, mv_date=date(2026, 10, 12), excluded=dropped)
+    # N = 11，k = floor(11 × 0.1) = 1。并列时去掉代码较小的 300001，没有市值的 300011 留下。
+    assert [item["code"] for item in dropped] == ["300001.SZ"]
+    assert "300001.SZ" not in {row["code"] for row in rows}
+    assert "300011.SZ" in {row["code"] for row in rows}
+    assert next(row for row in rows if row["code"] == "300011.SZ")["circMv"] is None
+    assert next(row for row in rows if row["code"] == "300002.SZ")["circMv"] == 5000
+    assert next(row for row in rows if row["code"] == "300002.SZ")["mvDate"] == "2026-10-12"
+
+
+def test_daily_basic_failure_reuses_the_previous_pool(path):
+    from neckline.morning.stock_pool import store_rows
+    with db.write(path) as conn:
+        store_rows(conn, [_basic_row()], now=datetime(2026, 11, 1, tzinfo=timezone.utc), source="tushare")
+    seed = load_config().alias_seed[0]
+
+    def post(_url, payload, _timeout):
+        if payload["api_name"] == "daily_basic":
+            raise PoolFetchError("daily_basic 请求失败")
+        return _post_from([_basic(seed["code"], seed["name"])])[0](_url, payload, _timeout)
+
+    result, _sent = _run(path, post)
+    assert result["state"] == "available"
+    assert "daily_basic" in result["gapSummary"] and "沿用上一份" in result["gapSummary"]
+    assert result["stats"]["pool"]["reused"] is True
+
+
 def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     rules = load_config().rules
     body = {key: value for key, value in rules.items()
@@ -135,7 +176,7 @@ def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     assert rules["matching"]["strictShortNames"] == ["值得买", "线上线下", "向日葵", "新天地", "探路者", "新城市", "杭州高新",
                                                     "机器人", "同花顺", "新产业", "指南针", "创世纪", "东方财富"]
     assert set(rules["matching"]) == {"note", "strictShortNames"}
-    assert rules["configVersion"] == "screening-v5" and rules["approvedAt"] == "2026-11-05"
+    assert rules["configVersion"] == "screening-v6" and rules["approvedAt"] == "2026-11-05"
     assert len(load_config().alias_seed) == 1089 and len(load_config().pool) == 0
 
     def rejected(mutate, message):
@@ -155,6 +196,10 @@ def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     rejected(lambda item: item["companyPool"].pop("aliasSeed"), "companyPool.aliasSeed")
     rejected(lambda item: item["companyPool"]["aliasSeed"].pop("file"), "companyPool.aliasSeed.file")
     rejected(lambda item: item["companyPool"]["aliasSeed"].__setitem__("sha256", "0" * 64), "哈希不符")
+    rejected(lambda item: item["companyPool"].pop("circMv"), "companyPool.circMv")
+    rejected(lambda item: item["companyPool"]["circMv"].__setitem__("excludeTopShare", 0), "excludeTopShare")
+    rejected(lambda item: item["companyPool"]["circMv"].__setitem__("excludeTopShare", 1), "excludeTopShare")
+    rejected(lambda item: item["companyPool"]["circMv"].__setitem__("excludeTopShare", True), "excludeTopShare")
 
 
 def test_refresh_writes_the_pool_and_calls_stock_company_only_for_a_new_code(path):
@@ -163,7 +208,7 @@ def test_refresh_writes_the_pool_and_calls_stock_company_only_for_a_new_code(pat
     post, seen = _post_from([known])
     result, _sent = _run(path, post)
     assert result["state"] == "available"
-    assert seen == ["stock_basic"]
+    assert seen == ["stock_basic", "daily_basic"]
     assert result["stats"]["pool"]["reused"] is False
     assert result["stats"]["pool"]["count"] == 1
     with db.read(path) as conn:
@@ -176,7 +221,7 @@ def test_refresh_writes_the_pool_and_calls_stock_company_only_for_a_new_code(pat
     newbie = _basic("302001", "甲公司")
     post, seen = _post_from([newbie], [{"ts_code": "302001.SZ", "main_business": "新公司主营"}])
     result, _sent = _run(fresh, post)
-    assert seen == ["stock_basic", "stock_company"]
+    assert seen == ["stock_basic", "stock_company", "daily_basic"]
     assert result["stats"]["pool"]["count"] == 1
     with db.read(fresh) as conn:
         row = db.read_stock_pool(conn)["rows"][0]
@@ -245,7 +290,7 @@ def test_resume_does_not_refresh_and_checks_the_pool_hash(path, monkeypatch):
     monkeypatch.setattr("neckline.morning.report.classify", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
     with pytest.raises(RuntimeError, match="boom"):
         _run(path, post)
-    assert seen == ["stock_basic"]
+    assert seen == ["stock_basic", "daily_basic"]
     with db.read(path) as conn:
         started = db.get_report(conn, "2026-10-13")
     assert started["status"] == "running"
@@ -253,7 +298,7 @@ def test_resume_does_not_refresh_and_checks_the_pool_hash(path, monkeypatch):
 
     monkeypatch.setattr("neckline.morning.report.classify", _empty_classify())
     result, _sent = _run(path, post)
-    assert seen == ["stock_basic"]
+    assert seen == ["stock_basic", "daily_basic"]
     assert result["state"] == "available" and result["stats"]["collection"] == "skipped_resume"
     assert result["stats"]["pool"]["sha256"] == digest
 
@@ -265,7 +310,7 @@ def test_resume_does_not_refresh_and_checks_the_pool_hash(path, monkeypatch):
     again, sent = _run(path, post)
     assert again["state"] == "failed" and again["reason"] == "股票池与开工时不一致"
     assert sent == [("晨报出问题了", "股票池与开工时不一致")]
-    assert seen == ["stock_basic"]
+    assert seen == ["stock_basic", "daily_basic"]
 
 
 def _empty_classify():
@@ -320,6 +365,7 @@ def test_replay_refuses_to_fetch_and_can_use_a_snapshot_or_the_seed(tmp_path, mo
         "stock_basic": [_basic("302001", "甲公司")],
         "stock_company": [],
         "namechange": [{"ts_code": "302001.SZ", "name": "甲旧名", "start_date": "20200101", "end_date": "20261001"}],
+        "daily_basic": [{"ts_code": "302001.SZ", "trade_date": "20260529", "circ_mv": 100000, "total_mv": 200000}],
     }
     pool_file = tmp_path / "pool.json"
     pool_file.write_text(json.dumps(payload), encoding="utf-8")
@@ -330,6 +376,15 @@ def test_replay_refuses_to_fetch_and_can_use_a_snapshot_or_the_seed(tmp_path, mo
     with db.read(tmp_path / "snap-work" / "2026-06-01.db") as conn:
         row = db.read_stock_pool(conn)["rows"][0]
     assert row["code"] == "302001.SZ" and row["name"] == "甲旧名"
+    assert row["circMv"] == 100000 and row["mvDate"] == "2026-05-29"
+    other = dict(payload)
+    other["daily_basic"] = [{"ts_code": "302001.SZ", "trade_date": "20260528", "circ_mv": 1, "total_mv": 1}]
+    missing = tmp_path / "missing-mv.json"
+    missing.write_text(json.dumps(other), encoding="utf-8")
+    with pytest.raises(ReplayError, match="2026-05-29 的 daily_basic"):
+        run_replay(snapshot=snap, trade_date="2026-06-01", work=tmp_path / "missing-work", market_snapshot=market,
+                   receipts=tmp_path / "receipts3", filings_cache=tmp_path / "filings3", pool_snapshot=missing,
+                   today=date(2026, 11, 5))
 
 
 def _snapshot(path, trade_date: str):
@@ -338,7 +393,7 @@ def _snapshot(path, trade_date: str):
         db.begin_report(conn, report_id=f"morning-{trade_date}", trade_date=trade_date,
                         window_start=datetime(2026, 6, 1, 7, tzinfo=timezone.utc),
                         window_end=datetime(2026, 6, 1, 0, tzinfo=timezone.utc),
-                        config_version="screening-v5", config_sha256="0" * 64,
+                        config_version="screening-v6", config_sha256="0" * 64,
                         started_at=datetime(2026, 6, 1, 0, 2, tzinfo=timezone.utc))
     return path
 
@@ -397,7 +452,7 @@ def test_morning_entry_uses_the_database_pool_for_a_302_company(path, monkeypatc
     monkeypatch.setattr(cli, "DeepSeekClient", Wrapped)
     assert cli.main(["--db", str(path), "morning", "--now", "2026-10-13T00:02:00+00:00"]) == 0
     printed = json.loads(capsys.readouterr().out)
-    assert printed["state"] == "available" and seen == ["stock_basic", "stock_company"]
+    assert printed["state"] == "available" and seen == ["stock_basic", "stock_company", "daily_basic"]
     pool_stats = printed["stats"]["pool"]
     assert pool_stats["count"] == 1 and pool_stats["reused"] is False and pool_stats["sha256"] and pool_stats["refreshedAt"]
     assert model.companies == ["302001"]
@@ -448,7 +503,7 @@ def test_replay_clears_the_day_so_live_evaluations_are_not_reused(tmp_path):
     with db.write(path) as conn:
         for day in ("2026-10-29", "2026-10-30"):
             db.begin_report(conn, report_id=f"morning-{day}", trade_date=day, window_start=when, window_end=when,
-                            config_version="screening-v5", config_sha256="0" * 64, started_at=when)
+                            config_version="screening-v6", config_sha256="0" * 64, started_at=when)
             db.insert_prepared(conn, report_id=f"morning-{day}", company="300001", contract="evaluation-v2",
                                package={}, prepared_at=when)
         _clear_day(conn, "2026-10-30")

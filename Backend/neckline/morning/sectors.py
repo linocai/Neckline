@@ -1,4 +1,4 @@
-"""板块清单、日线和龙头材料。
+"""板块清单、日线和成分股材料。
 
 概念每周从 TuShare 整份替换；日线按交易日补缺。纯函数只吃行和日期，不读库、不联网。
 多日涨跌用涨跌幅连乘。均线上下用主线价格背景的同一条判定（差额四舍五入到四位小数后看符号）。
@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Callable, Mapping, Sequence
 
-from neckline.market.tushare_daily import _position
 from neckline.morning import db, stock_pool
 from neckline.morning.schedule import CST, CalendarGap, is_trading_day
 
@@ -35,7 +34,7 @@ _LIMIT_FIELDS = "ts_code,trade_date"
 _BASIC_FIELDS = "ts_code,name,fullname,list_date,list_status"
 _COMPANY_FIELDS = "ts_code,main_business"
 _NAMECHANGE_FIELDS = "ts_code,name,start_date,end_date,ann_date,change_reason"
-_METHODS = ("amount", "limitups")
+_MV_FIELDS = "ts_code,trade_date,circ_mv,total_mv"
 
 
 class SectorFetchError(RuntimeError):
@@ -192,94 +191,37 @@ def board_material(member_codes: Sequence[str], daily_rows: Sequence[Mapping], a
     }
 
 
-def rank_leaders(member_codes: Sequence[str], daily_rows: Sequence[Mapping], as_of: date, window: int,
-                 count: int, skip: Sequence[str], method: str) -> dict:
-    """近 window 个交易日排序，跳过 skip 后取 count 只。不够就有几只给几只，并标明不足。
+def member_facts(code: str, daily_rows: Sequence[Mapping], as_of: date, *, amount_window: int,
+                 limit_window: int, change_window: int) -> dict:
+    """近 amount_window 日日均成交额、近 limit_window 日涨停次数、前 change_window 日涨跌。
 
-    amount：成交额之和降序。limitups：涨停次数降序，相同再比成交额之和。并列时代码升序。
-    窗口里没有的交易日按没有成交、没有涨停计，不把这只从排序里拿掉。不用 as_of 之后的行。
-    """
-    if method not in _METHODS:
-        raise ValueError("排序方法无效")
-    if isinstance(window, bool) or not isinstance(window, int) or window < 1:
-        raise ValueError("窗口无效")
-    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-        raise ValueError("只数无效")
-    dates = set(trading_days_ending(as_of, window))
-    indexed = _index_rows(daily_rows, as_of)
-    skipped = {_symbol(code) for code in skip}
-    skipped.discard(None)
-    ranked = []
-    for symbol, shown in _unique_pairs(member_codes):
-        if symbol in skipped:
-            continue
-        amount = 0.0
-        limits = 0
-        for day, row in indexed.get(symbol, {}).items():
-            if day not in dates:
-                continue
-            number = _num(row.get("amount"))
-            if number is not None:
-                amount += number
-            if row.get("limitUp"):
-                limits += 1
-        ranked.append({"code": shown, "amount": amount, "limitUps": limits})
-    if method == "amount":
-        ranked.sort(key=lambda item: (-item["amount"], item["code"]))
-    else:
-        ranked.sort(key=lambda item: (-item["limitUps"], -item["amount"], item["code"]))
-    return {"method": method, "leaders": ranked[:count], "short": len(ranked) < count}
-
-
-def leader_material(code: str, daily_rows: Sequence[Mapping], as_of: date) -> dict:
-    """前一日涨跌、20 日涨跌、相对 5/10/20 日均线、20 日涨停次数、20 日日均成交额。
-
-    20 日涨跌用涨跌幅连乘。均线位置沿用主线：差额四舍五入到四位小数，0 为持平。
-    窗口里缺数据时，依赖完整窗口的数字留空。不用 as_of 之后的行。
+    口径与原来的龙头材料一致：窗口里缺任何一天，这一项留空。涨跌用涨跌幅连乘。
+    不用 as_of 之后的行。成交额沿用库里的元。
     """
     symbol = _symbol(code)
     if symbol is None:
         raise ValueError("代码无效")
-    days = trading_days_ending(as_of, 20)
+    for label, window in (("amountWindow", amount_window), ("limitWindow", limit_window),
+                          ("changeWindow", change_window)):
+        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+            raise ValueError(f"{label} 无效")
+    days = trading_days_ending(as_of, max(amount_window, limit_window, change_window))
     series = _index_rows(daily_rows, as_of).get(symbol, {})
-    complete = [day for day in days if _complete_bar(series.get(day))]
-    missing = [day for day in days if day not in complete]
-    last = series.get(as_of) if as_of in complete else None
-    change20 = None
-    average = None
-    limit_ups = None
-    if not missing:
-        change20 = _compound([_num(series[day]["pctChg"]) for day in days])  # type: ignore[arg-type]
-        average = sum(_num(series[day]["amount"]) for day in days) / 20  # type: ignore[arg-type]
-        limit_ups = sum(1 for day in days if series[day].get("limitUp"))
-    positions: dict[int, str | None] = {}
-    missing_ma = []
-    for width in (5, 10, 20):
-        tail = days[-width:]
-        if all(day in complete for day in tail):
-            closes = [_num(series[day]["close"]) for day in tail]
-            positions[width] = _position(closes[-1], sum(closes) / width)  # type: ignore[arg-type]
-        else:
-            positions[width] = None
-            missing_ma.append(width)
-    note = None
-    if missing_ma:
-        label = "、".join(f"{width}日" for width in missing_ma)
-        note = f"{label}均线天数不够（现有{len(complete)}个收盘价），没有计算。"
-    shown = next((pair[1] for pair in _unique_pairs([code])), str(code).strip())
-    return {
-        "code": shown,
-        "asOf": as_of.isoformat(),
-        "changePercent": None if last is None else _num(last.get("pctChg")),
-        "change20Percent": change20,
-        "ma5": positions[5],
-        "ma10": positions[10],
-        "ma20": positions[20],
-        "maNote": note,
-        "limitUps20": limit_ups,
-        "averageAmountYuan": average,
-        "missingDays": len(missing),
-    }
+    complete = {day for day in days if _complete_bar(series.get(day))}
+
+    def ready(width: int) -> list[date] | None:
+        chosen = days[-width:]
+        if all(day in complete for day in chosen):
+            return chosen
+        return None
+
+    amount_days = ready(amount_window)
+    limit_days = ready(limit_window)
+    change_days = ready(change_window)
+    average = None if amount_days is None else sum(_num(series[day]["amount"]) for day in amount_days) / amount_window
+    limits = None if limit_days is None else sum(1 for day in limit_days if series[day].get("limitUp"))
+    change = None if change_days is None else _compound([_num(series[day]["pctChg"]) for day in change_days])  # type: ignore[misc]
+    return {"averageAmountYuan": average, "limitUps": limits, "changePercent": change}
 
 
 def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: datetime,
@@ -350,7 +292,7 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
                            post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
                            sleep: Callable[[float], None] = time.sleep, interval_seconds: float,
                            progress: Callable[[str], None] | None = None) -> dict:
-    """给 NB 用的回放快照：概念、成分、区间日线（只留创业板）和股票池回放要的三张表。"""
+    """给 NB 用的回放快照：概念、成分、区间日线（只留创业板）、流通市值和股票池回放要的表。"""
     _check_interval(interval_seconds)
     token, sender = _sender(post, environ)
     pause = {"started": False}
@@ -372,6 +314,7 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
             progress(f"concepts {index}/{total}")
     daily: list[dict] = []
     limits: list[dict] = []
+    basic_mv: list[dict] = []
     for index, day in enumerate(days, start=1):
         stamp = day.strftime("%Y%m%d")
         bars = _call(sender, token, "daily", {"trade_date": stamp, "limit": _DAILY_LIMIT}, _DAILY_FIELDS,
@@ -383,6 +326,10 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
                     sleep=sleep, interval_seconds=interval_seconds, pause=pause)
         _require_same_day(ups, day, "limit_list_d")
         limits.extend(row for row in ups if _normalize(row.get("ts_code"), prefixes))
+        mv = _call(sender, token, "daily_basic", {"trade_date": stamp, "limit": _DAILY_LIMIT}, _MV_FIELDS,
+                   sleep=sleep, interval_seconds=interval_seconds, pause=pause)
+        _require_same_day(mv, day, "daily_basic")
+        basic_mv.extend(row for row in mv if _normalize(row.get("ts_code"), prefixes))
         if progress is not None:
             progress(f"days {index}/{len(days)}")
     basic = _call(sender, token, "stock_basic",
@@ -397,6 +344,7 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
         "ths_member": members,
         "daily": daily,
         "limit_list_d": limits,
+        "daily_basic": basic_mv,
         "stock_basic": basic,
         "stock_company": company,
         "namechange": namechange,

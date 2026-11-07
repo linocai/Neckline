@@ -4,9 +4,10 @@
 库结构版本 2 在版本 1 的基础上只加三张 KX 表；版本 3 只给 kx_pool 加三列（题材、首次入选日、能否买入）。
 版本 4 只加 filing_reads 与 evaluations 两张表。
 版本 5 删掉 kx_pool、kx_picks、kx_daily_stats（KX 看板改为只读 KX，不再落库）。
-版本 6 只加表：stock_pool、stock_pool_meta（当前股票池和最近一次刷新），
+版本 6 只加表：stock_pool、stock_pool_meta（当前股票池、流通市值和最近一次刷新），
 sector_concepts、sector_members、sector_concepts_meta（同花顺概念和最近一次刷新），
-market_daily（创业板日线）、sector_events（板块线事件）。这一版还没上线，没有半套 v6 要再迁一次。
+market_daily（创业板日线）、sector_events（板块线事件）。这一版还没上线，表结构直接改在这一版上，
+没有半套 v6 要再迁一次。
 init_schema 把版本 1～5 的库在同一个事务里升到版本 6，升级失败整体回滚。
 """
 from __future__ import annotations
@@ -148,14 +149,20 @@ CREATE TABLE IF NOT EXISTS stock_pool (
   aliases_json TEXT NOT NULL,
   summary TEXT,
   source TEXT NOT NULL,
-  refreshed_at TEXT NOT NULL
+  refreshed_at TEXT NOT NULL,
+  circ_mv REAL,
+  total_mv REAL,
+  mv_date TEXT
 );
 CREATE TABLE IF NOT EXISTS stock_pool_meta (
   id INTEGER PRIMARY KEY CHECK(id = 1),
   refreshed_at TEXT NOT NULL,
   count INTEGER NOT NULL CHECK(count >= 0),
   content_sha256 TEXT NOT NULL,
-  source TEXT NOT NULL
+  source TEXT NOT NULL,
+  excluded_json TEXT NOT NULL,
+  mv_date TEXT,
+  exclude_top_share REAL
 );
 CREATE TABLE IF NOT EXISTS sector_concepts (
   ts_code TEXT PRIMARY KEY,
@@ -690,33 +697,41 @@ def log_push(conn: sqlite3.Connection, *, report_id: str, kind: str, token: str,
 
 def read_stock_pool(conn: sqlite3.Connection) -> dict | None:
     """当前股票池。还没有刷新过返回 None。不建表。"""
-    meta = conn.execute("SELECT refreshed_at, count, content_sha256, source FROM stock_pool_meta WHERE id=1").fetchone()
+    meta = conn.execute(
+        "SELECT refreshed_at, count, content_sha256, source, excluded_json, mv_date, exclude_top_share "
+        "FROM stock_pool_meta WHERE id=1").fetchone()
     if meta is None:
         return None
     rows = []
-    for row in conn.execute("SELECT code, name, fullname, list_date, aliases_json, summary, source, refreshed_at "
-                            "FROM stock_pool ORDER BY code"):
+    for row in conn.execute(
+            "SELECT code, name, fullname, list_date, aliases_json, summary, source, refreshed_at, "
+            "circ_mv, total_mv, mv_date FROM stock_pool ORDER BY code"):
         rows.append({
             "code": row["code"], "name": row["name"], "fullname": row["fullname"] or "",
             "listDate": row["list_date"] or "", "aliases": json.loads(row["aliases_json"]),
             "summary": row["summary"], "summarySource": row["source"], "refreshedAt": row["refreshed_at"],
+            "circMv": row["circ_mv"], "totalMv": row["total_mv"], "mvDate": row["mv_date"],
         })
+    excluded = json.loads(meta["excluded_json"]) if meta["excluded_json"] else []
     return {"refreshedAt": meta["refreshed_at"], "count": meta["count"], "sha256": meta["content_sha256"],
-            "source": meta["source"], "rows": rows}
+            "source": meta["source"], "rows": rows, "excluded": excluded,
+            "mvDate": meta["mv_date"], "excludeTopShare": meta["exclude_top_share"]}
 
 
 def replace_stock_pool(conn: sqlite3.Connection, rows: Sequence[Mapping], *, refreshed_at: str, sha256: str,
-                       source: str) -> None:
+                       source: str, excluded: Sequence[Mapping] = (), mv_date: str | None = None,
+                       exclude_top_share: float | None = None) -> None:
     """整表替换当前池子和元信息。调用方负责把这一次放进同一个事务。"""
     rows = list(rows)
     conn.execute("DELETE FROM stock_pool")
     conn.execute("DELETE FROM stock_pool_meta")
     for row in rows:
-        conn.execute("INSERT INTO stock_pool VALUES (?,?,?,?,?,?,?,?)", (
+        conn.execute("INSERT INTO stock_pool VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
             row["code"], row["name"], row.get("fullname") or "", row.get("listDate") or "",
             _dumps(list(row.get("aliases") or ())), row.get("summary"), row.get("summarySource") or source,
-            refreshed_at))
-    conn.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?)", (refreshed_at, len(rows), sha256, source))
+            refreshed_at, row.get("circMv"), row.get("totalMv"), row.get("mvDate")))
+    conn.execute("INSERT INTO stock_pool_meta VALUES (1,?,?,?,?,?,?,?)", (
+        refreshed_at, len(rows), sha256, source, _dumps(list(excluded)), mv_date, exclude_top_share))
 
 
 def read_sector_concepts(conn: sqlite3.Connection) -> dict | None:

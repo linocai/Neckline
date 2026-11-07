@@ -6,7 +6,7 @@
     --receipts .work/replay-4.2.0/receipts --filings-cache .work/replay-4.2.0/filings \
     --out .work/replay-4.2.0/out-1022
 不给 --collected-by 时，用快照 reports 表里该日的 started_at。
-默认配置是 neckline/config/screening-v5.json。凭据只从环境变量读取，不打印。
+默认配置是 neckline/config/screening-v6.json。凭据只从环境变量读取，不打印。
 股票池只读快照库里的 stock_pool，不联网、不建表。
 快照以只读方式打开，PDF 读数写在内存里，不写回快照。
 """
@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--db", type=Path, required=True)
     ap.add_argument("--trade-date", required=True)
     ap.add_argument("--collected-by", default=None)
-    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v5.json")
+    ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / "config" / "screening-v6.json")
     ap.add_argument("--receipts", type=Path, required=True)
     ap.add_argument("--filings-cache", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)

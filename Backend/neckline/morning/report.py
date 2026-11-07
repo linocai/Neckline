@@ -197,7 +197,7 @@ def _validate_screening_rules(rules: object) -> dict:
     _validate_search(evaluation)
     contract = _require_str(evaluation, "contract", "evaluation.contract")
     if contract != EVALUATION_CONTRACT:
-        raise ValueError("evaluation.contract 须为 evaluation-v2")
+        raise ValueError(f"evaluation.contract 须为 {EVALUATION_CONTRACT}")
     cutoff = _require_hhmm(evaluation, "cutoff", "evaluation.cutoff")
     if _minutes(cutoff) >= _minutes(schedule["deadline"]):
         raise ValueError("evaluation.cutoff 须早于 schedule.deadline")
@@ -239,8 +239,6 @@ def _validate_sectors(rules: dict) -> None:
     _require_min_int(concepts, "refreshDays", "sectors.concepts.refreshDays", 1)
     market = _require_dict(sectors, "market", "sectors.market")
     _require_min_int(market, "lookbackDays", "sectors.market.lookbackDays", 1)
-    _require_min_int(market, "leaderCount", "sectors.market.leaderCount", 1)
-    _require_min_int(market, "leaderWindow", "sectors.market.leaderWindow", 1)
     _require_min_int(market, "limitWindow", "sectors.market.limitWindow", 1)
     windows = _require(market, "boardWindows", "sectors.market.boardWindows")
     if (not isinstance(windows, list) or not windows
@@ -258,6 +256,10 @@ def _validate_company_pool(pool: dict) -> None:
     if not marker:
         raise ValueError("companyPool.excludeNameContains 类型不对")
     _require_min_int(pool, "summaryMaxChars", "companyPool.summaryMaxChars", 1)
+    circ = _require_dict(pool, "circMv", "companyPool.circMv")
+    share = _require(circ, "excludeTopShare", "companyPool.circMv.excludeTopShare")
+    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < float(share) < 1:
+        raise ValueError("companyPool.circMv.excludeTopShare 类型不对")
     seed = _require_dict(pool, "aliasSeed", "companyPool.aliasSeed")
     file_name = _require_str(seed, "file", "companyPool.aliasSeed.file")
     digest = _require_str(seed, "sha256", "companyPool.aliasSeed.sha256")
@@ -265,7 +267,7 @@ def _validate_company_pool(pool: dict) -> None:
         raise ValueError("companyPool.aliasSeed 类型不对")
 
 
-def load_config(name: str = "screening-v5.json", *, path: Path | None = None) -> LoadedConfig:
+def load_config(name: str = "screening-v6.json", *, path: Path | None = None) -> LoadedConfig:
     """规则和别名种子。运行时的股票池在库里，这里的 pool 是空的。"""
     package = resources.files("neckline.config")
     raw = path.read_bytes() if path is not None else (package / name).read_bytes()
@@ -578,17 +580,8 @@ class Delivered:
     unevaluated: list[str]
 
 
-def _logic_rank(row: Mapping) -> int:
-    """「强」优先。没有 moneyLogic，或值不是「强」，都按「一般」。"""
-    output = row.get("output")
-    logic = output.get("moneyLogic") if isinstance(output, dict) else None
-    return 0 if logic == "强" else 1
-
-
 def assemble(selection: Selection, evaluations: list[dict], pool: CompanyPool, *, max_items: int) -> Delivered:
-    """判「推」且评估成功的，超过上限时「强」优先，同档再按首次公开时间、代码，取前 max_items 条。
-
-    没有 moneyLogic 或值不认识的按「一般」。入选后按首次公开时间、代码渲染。
+    """判「推」且评估成功的，超过上限时按首次公开时间、代码取前 max_items 条，并按这个顺序渲染。
     """
     by_code: dict[str, dict] = {}
     for row in evaluations:
@@ -613,10 +606,9 @@ def assemble(selection: Selection, evaluations: list[dict], pool: CompanyPool, *
             chosen.append((entry, row))
         else:
             unevaluated.append(code)
-    chosen.sort(key=lambda pair: (_logic_rank(pair[1]), _first_published(pair[0]), pair[0].company))
+    chosen.sort(key=lambda pair: (_first_published(pair[0]), pair[0].company))
     overflow = max(0, len(chosen) - max_items)
     kept = chosen[:max_items]
-    kept.sort(key=lambda pair: (_first_published(pair[0]), pair[0].company))
     return Delivered(
         entries=[_render_entry(entry, row, pool) for entry, row in kept],
         evaluated=evaluated,
@@ -820,8 +812,10 @@ class _PoolBlocked(RuntimeError):
     """本期没有可用的股票池。"""
 
 
-def _pool_stats(count: int, digest: str, refreshed_at: str, reused: bool, gap: str | None = None) -> dict:
-    stats = {"count": count, "sha256": digest, "refreshedAt": refreshed_at, "reused": reused}
+def _pool_stats(count: int, digest: str, refreshed_at: str, reused: bool, gap: str | None = None,
+                excluded: int = 0, mv_date: str | None = None) -> dict:
+    stats = {"count": count, "sha256": digest, "refreshedAt": refreshed_at, "reused": reused,
+             "excluded": excluded, "mvDate": mv_date}
     if gap:
         stats["gap"] = gap
     return stats
@@ -846,7 +840,8 @@ def _view_pool(config: LoadedConfig, rows: Sequence[Mapping]) -> LoadedConfig:
 def _install_given(db_path: Path, config: LoadedConfig, report_id: str, clock: Callable[[], datetime]):
     with db.write(db_path) as conn:
         stored = store_rows(conn, rows_from_pool(config.pool, config.profiles), now=clock(), source="given")
-    record = _pool_stats(len(stored.rows), stored.sha256, stored.refreshed_at, False)
+    record = _pool_stats(len(stored.rows), stored.sha256, stored.refreshed_at, False,
+                         excluded=stored.excluded, mv_date=stored.mv_date)
     _remember_pool(db_path, report_id, record)
     return _view_pool(config, stored.rows), None, record
 
@@ -864,11 +859,13 @@ def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: s
             if current != saved_sha:
                 raise _PoolBlocked("股票池与开工时不一致")
             record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"],
-                                 bool(saved.get("reused")), saved.get("gap"))
+                                 bool(saved.get("reused")), saved.get("gap"),
+                                 excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
             _remember_pool(db_path, report_id, record)
             return _view_pool(config, stored["rows"]), saved.get("gap"), record
         if stored is not None:
-            record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False)
+            record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False,
+                                 excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
             _remember_pool(db_path, report_id, record)
             return _view_pool(config, stored["rows"]), None, record
         if config.pool:
@@ -878,7 +875,8 @@ def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: s
         stored = _stored_pool(db_path)
         if stored is None:
             raise _PoolBlocked("还没有股票池")
-        record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False)
+        record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], False,
+                             excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
         _remember_pool(db_path, report_id, record)
         return _view_pool(config, stored["rows"]), None, record
     if config.pool:
@@ -893,11 +891,13 @@ def _ensure_pool(db_path: Path, *, config: LoadedConfig, day: date, report_id: s
         if stored is None:
             raise _PoolBlocked(f"股票池没能刷新（{exc}）") from None
         gap = f"股票池没能刷新（{exc}），沿用上一份"
-        record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], True, gap)
+        record = _pool_stats(stored["count"], stored["sha256"], stored["refreshedAt"], True, gap,
+                             excluded=len(stored.get("excluded") or []), mv_date=stored.get("mvDate"))
         _remember_pool(db_path, report_id, record)
         logger.info("%s", gap)
         return _view_pool(config, stored["rows"]), gap, record
-    record = _pool_stats(len(refreshed.rows), refreshed.sha256, refreshed.refreshed_at, False)
+    record = _pool_stats(len(refreshed.rows), refreshed.sha256, refreshed.refreshed_at, False,
+                         excluded=refreshed.excluded, mv_date=refreshed.mv_date)
     _remember_pool(db_path, report_id, record)
     return _view_pool(config, refreshed.rows), None, record
 
@@ -1040,7 +1040,8 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
              "candidates": len(selection.candidates), "pushed": len(delivered.entries), "overflow": delivered.overflow,
              "gaps": [{"company": g.company, "error": g.error} for g in selection.gaps],
              "collectionGaps": gaps, "collection": collection["status"],
-             "pool": {key: pool_record[key] for key in ("count", "sha256", "refreshedAt", "reused")},
+             "pool": {key: pool_record[key] for key in
+                      ("count", "sha256", "refreshedAt", "reused", "excluded", "mvDate")},
              "sectors": sector.stats}
     if finished > deadline(day, schedule):
         return _fail(db_path, day=day, report_id=report_id, window=(start, end), config=config,

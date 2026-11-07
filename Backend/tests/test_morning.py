@@ -702,5 +702,5 @@ def test_old_report_output_drops_importance_and_review_without_rewriting_the_row
 
 def test_shipped_config_is_approved_and_pool_verified():
     config = load_config()
-    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v5"
+    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v6"
     assert len(config.pool) == 0 and len(config.alias_seed) == 1089 and config.rules["schedule"] == SCHEDULE

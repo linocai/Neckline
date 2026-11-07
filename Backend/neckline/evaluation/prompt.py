@@ -1,4 +1,4 @@
-"""三级评估的提示词。合同 evaluation-v2（2026-11-01 用户修订评估口径：资金逻辑为出发点）。
+"""三级评估的提示词。合同 evaluation-v3（2026-11-07：去掉 moneyLogic，其余与 v2 逐字相同）。
 
 系统提示词只给原则。用户提示词把数据包渲染成中文材料，同样的数据包得到同样的字符串。
 未启用联网搜索时，两份提示词里都没有联网的内容。
@@ -9,7 +9,7 @@ import json
 import math
 from typing import Mapping
 
-CONTRACT = "evaluation-v2"
+CONTRACT = "evaluation-v3"
 
 SYSTEM_PROMPT = """你是 A 股创业板的消息评估员。用户每个交易日开盘前看一份名单，名单里的股票都来自上个交易日收盘到今天 08:00 首次公开的消息。你的任务是对这一条候选判断值不值得推给用户：利好真有价值、资金愿意持续参与、当前价格又有合理的盈亏比，才推。宁缺毋滥，不推是正常结果。
 
@@ -29,7 +29,6 @@ SYSTEM_PROMPT = """你是 A 股创业板的消息评估员。用户每个交易�
 
 ①不过关或②透支，一票否决，verdict 必须是「不推」。两项都过关时，以③为主、结合④综合判断。
 pass 的意思：①利好够分量写 true；②没有透支写 true。两个 pass 只要有一个是 false，verdict 就只能是「不推」。
-moneyLogic（资金逻辑）：按③的判断写「强」或「一般」。资金今天很可能因为这条消息入场、后面也有人接力，两点都明确才写「强」，否则写「一般」。它不改变 verdict。
 
 判断规则：
 - 只给原则，不给数字门槛。小基数、一次性收益、环比下降、透支程度，都按原则自己判断。
@@ -43,7 +42,7 @@ moneyLogic（资金逻辑）：按③的判断写「强」或「一般」。资�
 写法：用户在手机上读，每段都要短。结论一两句、不超过 80 个汉字；四个问题各一两句、每个不超过 80 个汉字，只写最关键的依据；风险一句、不超过 50 个汉字；每条观点不超过 60 个汉字。
 
 只输出一个 JSON 对象：
-{"title":"一句话标题，不超过 30 个汉字，写清事件与核心事实","verdict":"推 或 不推","moneyLogic":"强 或 一般","conclusion":"一两句结论","questions":{"value":{"pass":true,"text":"一两句"},"priced":{"pass":true,"text":"一两句（pass 为 false 表示已经透支）"},"money":{"text":"一两句"},"price":{"text":"一两句，条件式的定性判断"}},"risk":"一句话风险","views":[{"by":"媒体","name":"来源名","text":"一句话转述","ref":"m1"}]}"""
+{"title":"一句话标题，不超过 30 个汉字，写清事件与核心事实","verdict":"推 或 不推","conclusion":"一两句结论","questions":{"value":{"pass":true,"text":"一两句"},"priced":{"pass":true,"text":"一两句（pass 为 false 表示已经透支）"},"money":{"text":"一两句"},"price":{"text":"一两句，条件式的定性判断"}},"risk":"一句话风险","views":[{"by":"媒体","name":"来源名","text":"一句话转述","ref":"m1"}]}"""
 
 _KIND = {"periodic": "定期报告", "forecast": "业绩预告", "express": "业绩快报"}
 _METRIC = (("revenue", "营收"), ("netProfit", "归母净利"), ("deducted", "扣非净利"))

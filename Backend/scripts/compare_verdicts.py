@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--replay", type=Path, required=True)
     parser.add_argument("--verdicts", type=Path,
                         default=_BACKEND / ".work" / "p1-offline" / "verdicts-20261018.json")
-    parser.add_argument("--config", type=Path, default=_BACKEND / "neckline" / "config" / "screening-v5.json")
+    parser.add_argument("--config", type=Path, default=_BACKEND / "neckline" / "config" / "screening-v6.json")
     args = parser.parse_args(argv)
     if not args.replay.is_dir():
         raise SystemExit(f"找不到回放目录：{args.replay}")

@@ -2,7 +2,7 @@
 
   python -m neckline.morning.replay --snapshot <只读快照库> --trade-date YYYY-MM-DD \\
       --work <目录> --market-snapshot <json> --receipts <回执目录> --filings-cache <目录> \\
-      [--config screening-v5.json] (--pool-snapshot <json> | --pool-seed-only) \\
+      [--config screening-v6.json] (--pool-snapshot <json> | --pool-seed-only) \\
       [--sector-snapshot <json>]
 
 业务时钟从快照里该日晨报的 started_at 起步，按真实流逝时间前进。
@@ -31,7 +31,7 @@ from neckline.evaluation.market import SnapshotSource
 from neckline.evaluation.search import SearchClient
 from neckline.morning import db
 from neckline.morning.report import Pusher, load_config, run_morning
-from neckline.morning.schedule import CST
+from neckline.morning.schedule import CST, CalendarGap, previous_trading_day
 from neckline.morning.sectors import SectorFetchError, install_sector_snapshot
 from neckline.morning.stock_pool import build_pool_rows, rows_from_seed, store_rows
 from neckline.screening.deepseek import DeepSeekClient, FileReceipts
@@ -224,22 +224,25 @@ def _tokens(stats: dict) -> dict[str, int]:
     return {label: totals[key] for key, label in _TOKEN_KEYS}
 
 
-def _leader_codes(block: object) -> list[str]:
-    if not isinstance(block, dict):
-        return []
-    codes = []
-    for item in block.get("leaders") or []:
-        if isinstance(item, dict):
-            codes.append(str(item.get("code") or "").split(".")[0])
-    return codes
+def _output_leaders(row: dict) -> list[dict]:
+    output = row.get("output") if isinstance(row.get("output"), dict) else {}
+    leaders = []
+    for item in output.get("leaders") or []:
+        if not isinstance(item, dict):
+            continue
+        leaders.append({
+            "code": str(item.get("code") or "").split(".")[0],
+            "why": item.get("why") if isinstance(item.get("why"), str) else "",
+            "price": item.get("price") if isinstance(item.get("price"), str) else "",
+        })
+    return leaders
 
 
 def _sector_summary(rows: list[dict] | None) -> list[dict]:
-    """每个事件的标题、板块、状态、verdict，以及成交额和涨停两种龙头。"""
+    """每个事件的标题、板块、状态、verdict，以及评估点名的承接股。"""
     items = []
     for row in rows or []:
         package = row.get("package") if isinstance(row.get("package"), dict) else {}
-        rankings = package.get("leaderRankings") if isinstance(package.get("leaderRankings"), dict) else {}
         event = package.get("event") if isinstance(package.get("event"), dict) else {}
         published = event.get("firstPublished") if isinstance(event.get("firstPublished"), str) else ""
         items.append((published, str(row.get("event_id") or ""), {
@@ -247,10 +250,7 @@ def _sector_summary(rows: list[dict] | None) -> list[dict]:
             "sector": row.get("sector"),
             "state": row.get("state"),
             "verdict": row.get("verdict"),
-            "leaders": {
-                "amount": _leader_codes(rankings.get("amount")),
-                "limitups": _leader_codes(rankings.get("limitups")),
-            },
+            "leaders": _output_leaders(row),
         }))
     items.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in items]
@@ -283,22 +283,44 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
 
 
+def _snapshot_market_caps(payload: dict, trade_date: str) -> tuple[list[dict], date]:
+    try:
+        day = previous_trading_day(date.fromisoformat(trade_date))
+    except CalendarGap as exc:
+        raise ReplayError(str(exc)) from None
+    rows = payload.get("daily_basic")
+    if not isinstance(rows, list):
+        raise ReplayError(f"股票池快照没有 {day.isoformat()} 的 daily_basic")
+    stamps = {day.strftime("%Y%m%d"), day.isoformat()}
+    matched = [
+        row for row in rows
+        if isinstance(row, dict) and str(row.get("trade_date") or row.get("tradeDate") or "") in stamps
+    ]
+    if not matched:
+        raise ReplayError(f"股票池快照没有 {day.isoformat()} 的 daily_basic")
+    return matched, day
+
+
 def _replay_rows(config, trade_date: str, *, pool_snapshot: Path | None, pool_seed_only: bool,
-                 today: date | None) -> tuple[list[dict], str]:
+                 today: date | None) -> tuple[list[dict], str, list[dict], str | None, float | None]:
     rules = config.rules["companyPool"]
     if pool_seed_only:
-        return rows_from_seed(config.alias_seed, summary_max_chars=int(rules["summaryMaxChars"])), "seed"
+        return rows_from_seed(config.alias_seed, summary_max_chars=int(rules["summaryMaxChars"])), "seed", [], None, None
     payload = json.loads(pool_snapshot.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ReplayError("股票池快照不是对象")
     as_of = date.fromisoformat(trade_date)
     current = today or datetime.now(CST).date()
+    mv_rows, mv_day = _snapshot_market_caps(payload, trade_date)
+    share = float(rules["circMv"]["excludeTopShare"])
+    dropped: list[dict] = []
     rows = build_pool_rows(
         payload.get("stock_basic") or [], payload.get("stock_company") or [],
         namechange_rows=payload.get("namechange") or [], seed_rows=config.alias_seed, as_of=as_of, today=current,
         prefixes=tuple(rules["prefixes"]), exclude_name_contains=rules["excludeNameContains"],
-        summary_max_chars=int(rules["summaryMaxChars"]))
-    return rows, "snapshot"
+        summary_max_chars=int(rules["summaryMaxChars"]), mv_rows=mv_rows, exclude_top_share=share,
+        mv_date=mv_day, excluded=dropped)
+    return rows, "snapshot", dropped, mv_day.isoformat(), share
 
 
 def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: Path, receipts: Path,
@@ -326,11 +348,12 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
     db.init_schema(dest)
     started = _started_at(dest, trade_date)
     config = load_config(path=config_path) if config_path is not None else load_config()
-    pool_rows, pool_kind = _replay_rows(config, trade_date, pool_snapshot=pool_snapshot,
-                                       pool_seed_only=pool_seed_only, today=today)
+    pool_rows, pool_kind, excluded, mv_date, share = _replay_rows(
+        config, trade_date, pool_snapshot=pool_snapshot, pool_seed_only=pool_seed_only, today=today)
     with db.write(dest) as conn:
         _clear_day(conn, trade_date)
-        store_rows(conn, pool_rows, now=started, source=pool_kind)
+        store_rows(conn, pool_rows, now=started, source=pool_kind, excluded=excluded, mv_date=mv_date,
+                   exclude_top_share=share)
         if sector_snapshot is not None:
             try:
                 payload = json.loads(sector_snapshot.read_text(encoding="utf-8"))

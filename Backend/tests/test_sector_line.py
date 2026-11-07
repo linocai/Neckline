@@ -1,4 +1,4 @@
-"""板块线：粗筛、挑候选、归并、龙头、评估、收口，以及接到晨报后的真实入口。"""
+"""板块线：粗筛、挑候选、归并、成分股、评估、收口，以及接到晨报后的真实入口。"""
 from __future__ import annotations
 
 import hashlib
@@ -21,8 +21,8 @@ from neckline.morning.replay import _summary, run_replay
 from neckline.morning.report import LoadedConfig, Pusher, load_config, run_morning
 from neckline.morning.schedule import CST, previous_trading_day
 from neckline.morning.sector_line import (
-    apply_prefilter, assign_numbers, event_id, opening_text, parse_candidate_output, parse_mapping_output,
-    run_sector_line, split_batches,
+    apply_prefilter, assign_numbers, event_id, opening_text, parse_candidate_output,
+    parse_evaluation_output, parse_mapping_output, run_sector_line, split_batches,
 )
 from neckline.morning.sector_prompt import (
     CANDIDATE_SYSTEM, EVALUATION_SYSTEM, MAPPING_SYSTEM, candidate_line, evaluation_user_prompt,
@@ -36,11 +36,11 @@ from neckline.screening.prefilter import Message, Window, to_message
 from tests.test_morning import FakeApns, FakeModel, _client, _config, _seed_window, _with_device, at, doc
 
 DAY = date(2026, 10, 13)
-_FROZEN_CANDIDATES = "0d9e4d935685f47bcb3d877e1efef1b8230c755d6dabbb6678bb61748c15985a"
-_FROZEN_MAPPING = "69444b1f553b23434ad4b99df82df354f978c58a57a2f927342f0222388179ef"
-_FROZEN_EVALUATION = "cb5a4e4cc300b3bda2ff49aedc92249c69a3943ff3655e24ca8e8a79fc9b86eb"
-_FROZEN_USER = "288abcf9436803775f6f38c317265487aeff08fff31633a0d108a4c443db7d32"
-_FROZEN_BODY = "41d71b51510ca1c5a0260b417358d84575eb37bff34627f4e1d493c9da1337ce"
+_FROZEN_CANDIDATES = "dc7a543b7e4e059bdb23ab01d293a80b1d83f01d52365e2b65ba9758fd8ac804"
+_FROZEN_MAPPING = "7312bd3a7368155e23fa75aaabf67dab41823f338924375250687f731145624f"
+_FROZEN_EVALUATION = "acc742f77dbfc2412b1168ca7325c6819177077597dbf1457563fdcd52588bab"
+_FROZEN_USER = "86a31227d6519a384ab67c9af878a41c715d6d8a510d990e69092fe08cff6dc9"
+_FROZEN_BODY = "72f6663c907be5b07b34b5b4edf7cd740ce0a89a52b3e5c59c926399d1dfb5c9"
 _V6_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "report-v6-two-lines.json"
 
 
@@ -100,15 +100,17 @@ def _concept(path, codes=("300001.SZ", "300002.SZ", "300003.SZ"), name="人工�
         }], refreshed_at="2026-10-12T00:00:00+00:00", sha256="ab")
 
 
-def _answer(codes, *, verdict="推", value_pass=True, priced_pass=True, views=None) -> dict:
+def _answer(codes, *, verdict="推", fresh_pass=True, weight_pass=True, position_pass=True,
+           carriers_pass=True, views=None) -> dict:
     return {
         "title": "值得看的板块", "verdict": verdict, "conclusion": "资金会看一眼",
         "questions": {
-            "value": {"pass": value_pass, "text": "有政策"},
-            "priced": {"pass": priced_pass, "text": "还没涨透"},
-            "money": {"text": "可能接力"},
+            "fresh": {"pass": fresh_pass, "text": "是新消息"},
+            "weight": {"pass": weight_pass, "text": "分量够"},
+            "position": {"pass": position_pass, "text": "位置不高"},
+            "carriers": {"pass": carriers_pass, "text": "有人接"},
         },
-        "leaders": [{"code": code, "text": "明显高开不追"} for code in codes],
+        "leaders": [{"code": code, "why": "消息点到它", "price": "明显高开不追"} for code in codes],
         "risk": "可能落空",
         "views": views if views is not None else [{"by": "媒体", "name": "来源", "text": "转述", "ref": "m1"}],
     }
@@ -137,8 +139,14 @@ class Scripted:
 
 
 def _leader_codes(prompt: str) -> list[str]:
-    chunk = prompt.split("龙头：", 1)[-1]
+    chunk = prompt.split("成分股名单", 1)[-1]
     return re.findall(r"(?m)^(\d{6}) ", chunk)
+
+
+def _event(payload: dict) -> dict:
+    payload.setdefault("weighty", True)
+    payload.setdefault("weight", "分量够，能带动板块")
+    return payload
 
 
 def _ids(prompt: str) -> list[str]:
@@ -158,9 +166,9 @@ def _script(mapping=None, *, candidate_ids=None, evaluate=None):
             if mapping is not None:
                 return mapping(user)
             ids = _ids(user)
-            return _ok({"events": [{
+            return _ok({"events": [_event({
                 "title": "行业座谈会", "ids": ids, "sector": "人工智能", "reason": "直接受益", "repeat": False,
-            }], "dropped": []})
+            })], "dropped": []})
         codes = _leader_codes(user)
         if len(messages) > 2:
             shown = codes
@@ -222,6 +230,11 @@ def test_prefilter_drops_the_first_matching_rule_and_keeps_the_symposium_flashes
         ("research-keep", _raw("jin10-flash", "【部委】印发行业方案", "方案列出了试点。"), False),
         ("periodic", _raw("cninfo-announcement", "2024年第三季度报告", "详见附件。"), True),
         ("periodic-keep", _msg("p2", "第三季度经营情况通报", "会议传达了要求。", _at(16)), False),
+        ("roundup-jin10", _raw("jin10-flash", "金十数据整理：昨日今晨重要新闻汇总（11月1日）", "汇总。"), True),
+        ("roundup-breakfast", _raw("jin10-flash", "金十数据全球财经早餐 | 2026年11月2日", "早餐。"), True),
+        ("roundup-events", _raw("jin10-flash", "影响市场重大事件：中国首次载人月球探测任务乘组……", "任务。"), True),
+        ("roundup-review", _raw("jin10-flash", "A股每日市场要闻回顾（2026-10-30）", "回顾。"), True),
+        ("roundup-mysteel", _raw("jin10-flash", "Mysteel日报：全国生铁价格弱稳观望", "价格。"), True),
         ("symposium-1", _raw("jin10-flash", "央行、证监会将于明天召开座谈会", "邀请金融机构参加。"), False),
         ("symposium-2", to_message({
             "documentId": "doc-s2", "revision": 1, "sourceKey": "jin10-flash",
@@ -248,6 +261,7 @@ def test_prefilter_drops_the_first_matching_rule_and_keeps_the_symposium_flashes
     assert dropped["tape"] == 1
     assert dropped["research"] == 1
     assert dropped["periodic"] == 1
+    assert dropped["roundup"] == 5
     assert opening_text(_msg("x", "", "正文开头", _at(16)), 80) == "正文开头"
     assert opening_text(_msg("y", "有标题", "正文", _at(16)), 80) == "有标题"
 
@@ -314,9 +328,9 @@ def test_mapping_checks_names_duplicates_repeats_and_skips_the_call_without_cand
     message = _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))
 
     def unknown(user):
-        return _ok({"events": [{
+        return _ok({"events": [_event({
             "title": "补贴", "ids": _ids(user), "sector": "不存在的板块", "reason": "清单里没有", "repeat": False,
-        }], "dropped": []})
+        })], "dropped": []})
 
     client = _script(mapping=unknown)
     outcome = _run(path, [message], client, pool)
@@ -328,8 +342,8 @@ def test_mapping_checks_names_duplicates_repeats_and_skips_the_call_without_cand
     def duplicated(user):
         ids = _ids(user)
         return _ok({"events": [
-            {"title": "第一件", "ids": ids[:2], "sector": "人工智能", "reason": "直接", "repeat": False},
-            {"title": "第二件", "ids": [ids[1], ids[2]], "sector": "人工智能", "reason": "另一件", "repeat": False},
+            _event({"title": "第一件", "ids": ids[:2], "sector": "人工智能", "reason": "直接", "repeat": False}),
+            _event({"title": "第二件", "ids": [ids[1], ids[2]], "sector": "人工智能", "reason": "另一件", "repeat": False}),
         ], "dropped": []})
 
     three = [
@@ -348,9 +362,9 @@ def test_mapping_checks_names_duplicates_repeats_and_skips_the_call_without_cand
     assert [item["title"] for item in packages["第二件"]["messages"]] == ["国家级项目开工"]
 
     def repeated(user):
-        return _ok({"events": [{
+        return _ok({"events": [_event({
             "title": "旧座谈会", "ids": _ids(user), "sector": "人工智能", "reason": "昨天推过", "repeat": True,
-        }], "dropped": []})
+        })], "dropped": []})
 
     again = _db(tmp_path / "repeat")
     _concept(again)
@@ -368,7 +382,7 @@ def test_mapping_checks_names_duplicates_repeats_and_skips_the_call_without_cand
     assert empty.gap is None and empty.content["candidates"] == 0
 
 
-def test_leaders_skip_the_main_list_and_keep_the_other_ranking_out_of_the_prompt(tmp_path):
+def test_members_skip_the_main_list_and_render_one_line_each(tmp_path):
     pool = _pool()
     path = _db(tmp_path)
     _concept(path, ("300008.SZ", "300001.SZ", "300002.SZ"))
@@ -384,22 +398,27 @@ def test_leaders_skip_the_main_list_and_keep_the_other_ranking_out_of_the_prompt
                 {"code": "300002.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
                  "pctChg": 10, "amount": 1_000, "limitUp": True},
             ])
-    rules = json.loads(json.dumps(load_config().rules))
-    rules["sectors"]["market"]["leaderCount"] = 1
-    rules["sectors"]["candidates"]["concurrency"] = 1
-    rules["sectors"]["evaluation"]["concurrency"] = 1
-    config = LoadedConfig(rules=rules, sha256="0" * 64, pool=pool, profiles={})
+        db.replace_stock_pool(conn, [
+            {"code": "300001.SZ", "name": "甲公司", "summary": "做充电", "summarySource": "tushare",
+             "circMv": 1_234_000, "totalMv": 2_000_000, "mvDate": "2026-10-12"},
+            {"code": "300002.SZ", "name": "乙公司", "summary": "做材料", "summarySource": "tushare",
+             "circMv": 1000, "totalMv": 2000, "mvDate": "2026-10-12"},
+        ], refreshed_at="2026-10-12T00:00:00+00:00", sha256="ab", source="tushare")
     client = _script()
-    outcome = _run(path, [_msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))], client, pool,
-                   skip=["300008"], config=config)
+    outcome = _run(path, [_msg("a", "部委印发行业补贴方案", "正文里没有简称。", _at(16))], client, pool,
+                   skip=["300008"])
     prompt = client.calls[-1][1]["content"]
-    assert "300001" in prompt and "300002" not in prompt and "300008" not in prompt
+    assert "成分股名单（池内、已去掉今天个股名单里的，共 2 只）：" in prompt
+    assert "300001 甲公司｜主营：做充电｜流通市值 123.4 亿元" in prompt
+    assert "300002" in prompt and "300008" not in prompt and "龙头" not in prompt
     package = _rows(path)[0]["package"]
-    assert package["leaderRankings"]["limitups"]["leaders"][0]["code"].startswith("300002")
-    assert package["leaderRankings"]["amount"]["leaders"][0]["code"].startswith("300001")
-    assert "limitups" not in prompt
+    assert [item["code"] for item in package["members"]] == ["300001", "300002"]
+    assert "leaderRankings" not in package and "leaders" not in package
+    assert package["members"][0]["named"] is False
     assert outcome.content["entries"][0]["leaders"][0]["companyCode"] == "300001"
     assert outcome.content["entries"][0]["leaders"][0]["companyName"] == "甲公司"
+    assert outcome.content["entries"][0]["leaders"][0]["why"] == "消息点到它"
+    assert outcome.content["entries"][0]["leaders"][0]["price"] == "明显高开不追"
 
 
 # ------------------------------------------------------------------ 评估、收口
@@ -422,7 +441,7 @@ def test_evaluation_repairs_format_vetoes_and_publishes_views(tmp_path):
     path = _db(tmp_path)
     _concept(path)
     message = _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16, 30))
-    client = _script(evaluate=lambda codes: list(reversed(codes)))
+    client = _script(evaluate=lambda codes: ["300099"])
     outcome = _run(path, [message], client, pool)
     assert len(client.calls) == 4  # 候选、归并、评估、修正
     row = _rows(path)[0]
@@ -440,7 +459,7 @@ def test_evaluation_repairs_format_vetoes_and_publishes_views(tmp_path):
         if "评估员" in messages[0]["content"] and len(messages) == 2:
             payload = json.loads(result.content)
             payload["verdict"] = "推"
-            payload["questions"]["value"]["pass"] = False
+            payload["questions"]["fresh"]["pass"] = False
             result = _ok(payload)
         return result
 
@@ -473,7 +492,9 @@ def test_evaluation_repairs_format_vetoes_and_publishes_views(tmp_path):
     entry = published.content["entries"][0]
     assert entry["title"] == "补贴落地"
     assert entry["sector"] == {"name": "人工智能", "code": "885001.TI", "memberCount": 3}
-    assert entry["questions"] == {"value": "有政策", "priced": "还没涨透", "money": "可能接力"}
+    assert entry["questions"] == {
+        "fresh": "是新消息", "weight": "分量够", "position": "位置不高", "carriers": "有人接",
+    }
     assert entry["firstPublished"] == "2026-10-12T16:30+08:00"
     assert entry["sources"][0]["title"] == "部委印发行业补贴方案"
     assert entry["sources"][0]["sourceLabel"] == "金十快讯"
@@ -551,9 +572,9 @@ def test_unknown_evaluation_is_not_sent_again(tmp_path, monkeypatch):
         if "初筛员" in system:
             return _http({"events": [{"ids": _ids(user), "event": "事"}]})
         if "板块分析员" in system:
-            return _http({"events": [{
+            return _http({"events": [_event({
                 "title": "补贴", "ids": _ids(user), "sector": "人工智能", "reason": "直接", "repeat": False,
-            }], "dropped": []})
+            })], "dropped": []})
         raise httpx.ReadTimeout("no answer")
 
     def client():
@@ -583,9 +604,9 @@ def test_delivery_keeps_the_three_earliest_and_zero_is_legal(tmp_path):
         ids = _ids(user)
         events = []
         for number in reversed(ids):
-            events.append({
+            events.append(_event({
                 "title": f"事件{number}", "ids": [number], "sector": "人工智能", "reason": "直接", "repeat": False,
-            })
+            }))
         return _ok({"events": events, "dropped": []})
 
     def titles(messages, options):
@@ -658,9 +679,9 @@ def _sector_handler(model: FakeModel, *, mapping_status: int = 200, kill: BaseEx
         if "板块分析员" in system:
             if mapping_status != 200:
                 return httpx.Response(mapping_status, json={"error": "down"})
-            return _http({"events": [{
+            return _http({"events": [_event({
                 "title": "金融座谈会", "ids": _ids(user), "sector": "人工智能", "reason": "直接受益", "repeat": False,
-            }], "dropped": []})
+            })], "dropped": []})
         if "板块消息评估员" in system:
             if kill is not None and len(body["messages"]) == 2:
                 raise kill
@@ -835,7 +856,9 @@ def test_cli_success_publishes_the_sector_entry(tmp_path, monkeypatch):
     page = client.get("/read/" + "r" * 32)
     assert "<h2>板块热点</h2>" in page.text and entry["title"] in page.text
     assert f"创业板 {entry['sector']['memberCount']} 只" in page.text
-    assert "①" in page.text and "②" in page.text and "③" in page.text
+    assert "① 是不是新消息" in page.text and "② 分量够不够" in page.text
+    assert "③ 板块在什么位置" in page.text and "④ 谁来承接" in page.text
+    assert "为什么" in page.text and "价格" in page.text
     assert client.get("/read/" + "r" * 32, params={"format": "json"}).json()["content"]["sectors"] == sectors
     blob = json.dumps(latest, ensure_ascii=False)
     assert "test-key" not in blob and "r" * 32 not in blob
@@ -846,14 +869,14 @@ def test_cli_success_publishes_the_sector_entry(tmp_path, monkeypatch):
     assert saved["content"]["entries"] and saved["content"]["sectors"]["entries"]
 
 
-def test_replay_summary_lists_both_leader_rankings(tmp_path, monkeypatch):
+def test_replay_summary_lists_the_named_carriers(tmp_path, monkeypatch):
     snapshot = tmp_path / "snap.db"
     db.init_schema(snapshot)
     with db.write(snapshot) as conn:
         db.begin_report(conn, report_id="morning-2026-10-13", trade_date="2026-10-13",
                         window_start=datetime(2026, 10, 12, 7, tzinfo=timezone.utc),
                         window_end=datetime(2026, 10, 13, 0, tzinfo=timezone.utc),
-                        config_version="screening-v5", config_sha256="0" * 64,
+                        config_version="screening-v6", config_sha256="0" * 64,
                         started_at=datetime(2026, 10, 13, 0, 2, tzinfo=timezone.utc))
     market = tmp_path / "market.json"
     market.write_text("{}", encoding="utf-8")
@@ -866,11 +889,11 @@ def test_replay_summary_lists_both_leader_rankings(tmp_path, monkeypatch):
             db.insert_sector_event(
                 conn, report_id="morning-2026-10-13", event_id="0123456789abcdef", title="金融座谈会",
                 sector="人工智能", reason="直接", repeat=False, state="succeeded", verdict="推",
-                package={"event": {"firstPublished": "2026-10-12T17:30+08:00"}, "leaderRankings": {
-                    "amount": {"leaders": [{"code": "300001.SZ"}]},
-                    "limitups": {"leaders": [{"code": "300002.SZ"}]},
-                }}, prepared_at=datetime(2026, 10, 13, 0, 2, tzinfo=timezone.utc),
-                output={"title": "金融座谈会"}, settled_at=datetime(2026, 10, 13, 0, 3, tzinfo=timezone.utc))
+                package={"event": {"firstPublished": "2026-10-12T17:30+08:00"}},
+                prepared_at=datetime(2026, 10, 13, 0, 2, tzinfo=timezone.utc),
+                output={"title": "金融座谈会", "leaders": [
+                    {"code": "300082", "why": "消息点到它", "price": "明显高开不追"},
+                ]}, settled_at=datetime(2026, 10, 13, 0, 3, tzinfo=timezone.utc))
         return {"state": "available", "entries": 0, "stats": {}}
 
     monkeypatch.setattr("neckline.morning.replay.run_morning", fake_run)
@@ -879,14 +902,14 @@ def test_replay_summary_lists_both_leader_rankings(tmp_path, monkeypatch):
     summary = json.loads((tmp_path / "work" / "2026-10-13" / "summary.json").read_text(encoding="utf-8"))
     assert summary["sectors"] == [{
         "title": "金融座谈会", "sector": "人工智能", "state": "succeeded", "verdict": "推",
-        "leaders": {"amount": ["300001"], "limitups": ["300002"]},
+        "leaders": [{"code": "300082", "why": "消息点到它", "price": "明显高开不追"}],
     }]
     assert _summary({"stats": {}}, None)["sectors"] == []
 
 
 def test_missing_sector_settings_are_rejected(tmp_path):
     raw = json.loads((load_config().rules and _config_path()).read_text(encoding="utf-8"))
-    for key in ("prefilter", "candidates", "mapping", "leaders", "evaluation", "delivery"):
+    for key in ("prefilter", "candidates", "mapping", "carriers", "evaluation", "delivery"):
         broken = json.loads(json.dumps(raw))
         broken["sectors"].pop(key)
         target = tmp_path / f"{key}.json"
@@ -897,12 +920,21 @@ def test_missing_sector_settings_are_rejected(tmp_path):
     assert loaded.rules["sectors"]["candidates"]["modelOptions"] == loaded.rules["classification"]["modelOptions"]
     assert loaded.rules["sectors"]["evaluation"]["modelOptions"] == loaded.rules["evaluation"]["modelOptions"]
     assert loaded.rules["sectors"]["delivery"]["maxEvents"] == 3
-    assert loaded.rules["sectors"]["leaders"]["rankBy"] == "amount"
+    assert "leaders" not in loaded.rules["sectors"]
+    assert loaded.rules["sectors"]["carriers"]["max"] == 3
+    retired = json.loads(json.dumps(raw))
+    retired["sectors"]["leaders"] = {"rankBy": "amount"}
+    retired["sectors"]["market"]["leaderCount"] = 3
+    retired["sectors"]["market"]["leaderWindow"] = 20
+    target = tmp_path / "retired.json"
+    target.write_text(json.dumps(retired), encoding="utf-8")
+    with pytest.raises(ValueError, match="已停用"):
+        load_config(path=target)
 
 
 def _config_path():
     from importlib import resources
-    return resources.files("neckline.config").joinpath("screening-v5.json")
+    return resources.files("neckline.config").joinpath("screening-v6.json")
 
 
 def _frozen_package() -> dict:
@@ -917,10 +949,10 @@ def _frozen_package() -> dict:
         }], "media": []},
         "board": {"asOf": "2026-10-12", "memberCount": 3, "windows": [], "limitWindow": 5,
                   "limitUps": 1, "limitMissing": 0, "baselineLimitUps": 2, "baselineLimitMissing": 0},
-        "leaders": [{
-            "code": "300001.SZ", "name": "甲公司", "changePercent": 1.5, "change20Percent": None,
-            "ma5": "上方", "ma10": None, "ma20": None, "maNote": None, "limitUps20": 0,
-            "averageAmountYuan": 1000,
+        "carriers": {"max": 3, "amountWindow": 20, "limitWindow": 20, "changeWindow": 5},
+        "members": [{
+            "code": "300001", "name": "特锐德", "summary": "做充电", "circMv": 1_234_000,
+            "averageAmountYuan": 560_000_000, "limitUps20": 0, "change5Percent": -2.3, "named": False,
         }],
         "search": {"enabled": True, "error": None, "results": []},
         "gaps": [],
@@ -938,6 +970,144 @@ def _frozen_body() -> dict:
     return client.request_body(
         [{"role": "system", "content": EVALUATION_SYSTEM}, {"role": "user", "content": _frozen_user()}],
         rules["sectors"]["evaluation"]["modelOptions"])
+
+
+def _eval_package(members=("300001",)) -> dict:
+    return {
+        "carriers": {"max": 3, "amountWindow": 20, "limitWindow": 20, "changeWindow": 5},
+        "members": [{"code": code, "name": code} for code in members],
+        "original": {"documents": [{"id": "m1"}], "media": []},
+        "search": {"results": []},
+    }
+
+
+def test_sector_evaluation_rejects_a_bad_carrier_list_and_vetoes():
+    package = _eval_package(("300001", "300002"))
+    missing = _answer(["300001"])
+    del missing["questions"]["position"]
+    assert parse_evaluation_output(json.dumps(missing), package) == "questions 缺少 position"
+    bad_pass = _answer(["300001"])
+    bad_pass["questions"]["fresh"]["pass"] = 1
+    assert parse_evaluation_output(json.dumps(bad_pass), package) == "fresh.pass 不是布尔"
+    assert parse_evaluation_output(json.dumps(_answer(["300099"])), package) == "leaders 不在成分股名单"
+    assert parse_evaluation_output(json.dumps(_answer(["300001", "300001"])), package) == "leaders 重复"
+    wide = _eval_package(("300001", "300002", "300003", "300004"))
+    assert parse_evaluation_output(
+        json.dumps(_answer(["300001", "300002", "300003", "300004"])), wide) == "leaders 数量不对"
+    ignored = _answer(["300099"], carriers_pass=False)
+    parsed = parse_evaluation_output(json.dumps(ignored), package)
+    assert parsed["leaders"] == [] and parsed["verdict"] == "不推" and parsed["vetoed"] is True
+    kept = parse_evaluation_output(json.dumps(_answer(["300002"])), package)
+    assert kept["verdict"] == "推" and kept["leaders"] == [{"code": "300002", "why": "消息点到它", "price": "明显高开不追"}]
+
+
+def test_a_light_event_is_stored_and_not_evaluated(tmp_path):
+    path = _db(tmp_path)
+    _concept(path)
+    message = _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))
+
+    def light(user):
+        return _ok({"events": [_event({
+            "title": "分量不够的会", "ids": _ids(user), "sector": "人工智能", "reason": "对得上",
+            "repeat": False, "weighty": False, "weight": "只是表态，带不动板块",
+        })], "dropped": []})
+
+    client = _script(mapping=light)
+    outcome = _run(path, [message], client)
+    assert len(client.calls) == 2
+    row = _rows(path)[0]
+    assert row["state"] == "skipped" and row["reason"] == "只是表态，带不动板块"
+    assert outcome.content["entries"] == [] and outcome.stats["mapping"]["light"] == 1
+
+
+def test_length_splits_once_and_a_failed_half_is_the_original_batch(tmp_path):
+    pool = _pool()
+    path = _db(tmp_path)
+    _concept(path)
+    first = _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))
+    second = _msg("b", "监管放开行业准入", "试点扩大到三个省。", _at(17))
+    normal = _script()
+
+    def both(messages, options):
+        if "初筛员" in messages[0]["content"] and _ids(messages[1]["content"]) == ["n1", "n2"]:
+            return ChatResult("", {"prompt_tokens": 4, "completion_tokens": 9}, "digest", False, 0.1, "length")
+        return normal.handler(messages, options)
+
+    client = Scripted(both)
+    outcome = _run(path, [first, second], client, pool)
+    assert outcome.gap is None and outcome.stats["candidates"]["splits"] == 1
+    assert "failedBatches" not in outcome.stats["candidates"]
+    assert len(outcome.content["entries"]) == 1
+    candidate_calls = [call for call in client.calls if "初筛员" in call[0]["content"]]
+    assert len(candidate_calls) == 3
+
+    line = len(candidate_line("n1", first, 80)) + len(candidate_line("n2", second, 80))
+    rules = _rules(pool, candidates=dict(_rules(pool).rules["sectors"]["candidates"], batchChars=line))
+    failed = {"half": 0}
+
+    def one_half(messages, options):
+        system = messages[0]["content"]
+        ids = _ids(messages[1]["content"]) if len(messages) > 1 else []
+        if "初筛员" in system and ids == ["n1", "n2"]:
+            return ChatResult("", {"prompt_tokens": 1, "completion_tokens": 1}, "digest", False, 0.1, "length")
+        if "初筛员" in system:
+            failed["half"] += 1
+            if ids == ["n2"]:
+                return ChatResult("", {"prompt_tokens": 1, "completion_tokens": 1}, "digest", False, 0.1, "length")
+            return _ok({"events": [{"ids": ids, "event": "事"}]})
+        return normal.handler(messages, options)
+
+    third = _msg("c", "国家级项目开工", "第三个省也纳入。", _at(18))
+    again = _db(tmp_path / "half")
+    _concept(again)
+    half = Scripted(one_half)
+    missed = _run(again, [first, second, third], half, pool, config=rules)
+    assert missed.stats["candidates"]["batches"] == 2
+    assert missed.stats["candidates"]["splits"] == 1
+    assert missed.stats["candidates"]["failedBatches"] == 1
+    assert missed.gap == "板块线有 1 批消息没挑成（共 2 批）"
+    candidate_calls = [call for call in half.calls if "初筛员" in call[0]["content"]]
+    assert len(candidate_calls) == 4
+
+
+def test_a_split_resume_does_not_bill_the_same_request_twice(tmp_path, monkeypatch):
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    path = _db(tmp_path)
+    _concept(path)
+    first = _msg("a", "部委印发行业补贴方案", "明确了范围。", _at(16))
+    second = _msg("b", "监管放开行业准入", "试点扩大到三个省。", _at(17))
+    hits = []
+
+    def handler(request):
+        hits.append(1)
+        body = json.loads(request.content)
+        system = body["messages"][0]["content"]
+        user = body["messages"][1]["content"] if len(body["messages"]) > 1 else ""
+        if "初筛员" in system:
+            ids = _ids(user)
+            if ids == ["n1", "n2"]:
+                return httpx.Response(200, json={
+                    "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 9},
+                })
+            return _http({"events": [{"ids": ids, "event": "事"}]})
+        if "板块分析员" in system:
+            return _http({"events": [_event({
+                "title": "行业座谈会", "ids": _ids(user), "sector": "人工智能", "reason": "直接受益", "repeat": False,
+            })], "dropped": []})
+        return _http(_answer(_leader_codes(user)))
+
+    def client():
+        return DeepSeekClient(endpoint="https://example.invalid/chat/completions", model="m", api_key="k",
+                              receipts=db.DbReceipts(path, "morning-2026-10-13"), timeout_seconds=5, max_attempts=1,
+                              transport=httpx.MockTransport(handler))
+
+    first_run = _run(path, [first, second], client())
+    assert first_run.gap is None and first_run.stats["candidates"]["splits"] == 1
+    sent = len(hits)
+    second_run = _run(path, [first, second], client())
+    assert len(hits) == sent and second_run.stats["candidates"]["calls"] == 0
+    assert second_run.stats["candidates"]["fromReceipt"] >= 3
 
 
 def test_sector_prompts_and_one_request_body_stay_frozen():

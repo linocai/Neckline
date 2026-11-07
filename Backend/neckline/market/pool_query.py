@@ -37,7 +37,8 @@ class PoolIndex:
             markets = {item.upper() for item in (matched.group(1), matched.group(3)) if item}
             company = self.by_short.get(matched.group(2)) if markets <= {"SZ"} else None
             if company is None:
-                return {"inPool": False, "message": _NOT_IN_POOL}
+                return {"inPool": False, "message": _NOT_IN_POOL, "_short": matched.group(2),
+                        "_marketOk": markets <= {"SZ"}}
             return {"inPool": True, "code": company.code, "name": company.name}
         found = self.by_name.get(text) or []
         if not found:
@@ -83,13 +84,61 @@ def _load_pool() -> CompanyPool:
     if cached is not None:
         return cached
     pool, _profiles = pool_from_rows(stored["rows"], strict_names=_strict_names())
+    excluded: dict[str, dict] = {}
+    for item in stored.get("excluded") or []:
+        if isinstance(item, dict) and isinstance(item.get("code"), str):
+            excluded[item["code"].split(".", 1)[0]] = item
+    pool.excluded = excluded  # type: ignore[attr-defined]
+    pool.mv_date = stored.get("mvDate")  # type: ignore[attr-defined]
+    pool.exclude_share = stored.get("excludeTopShare")  # type: ignore[attr-defined]
     _POOL_CACHE[key] = pool
     return pool
 
 
+def _percent(share: object) -> str:
+    if isinstance(share, bool) or not isinstance(share, (int, float)):
+        return ""
+    value = float(share) * 100
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _exclusion_message(pool: CompanyPool, *, short: str | None = None, name: str | None = None) -> str | None:
+    excluded = getattr(pool, "excluded", None) or {}
+    item = excluded.get(short) if short else None
+    if item is None and name:
+        item = next((row for row in excluded.values() if row.get("name") == name), None)
+    if not item:
+        return None
+    percent = _percent(getattr(pool, "exclude_share", None))
+    day = getattr(pool, "mv_date", None) or ""
+    if not percent or not day:
+        return _NOT_IN_POOL
+    return f"{_NOT_IN_POOL}：流通市值在创业板前 {percent}%（按 {day} 收盘）"
+
+
 def lookup(query: str, pool: CompanyPool | None = None) -> dict:
-    index = PoolIndex(pool) if pool is not None else PoolIndex(_load_pool())
-    return index.lookup(query)
+    pool = pool if pool is not None else _load_pool()
+    found = PoolIndex(pool).lookup(query)
+    if found.get("inPool"):
+        return found
+    text = (query or "").strip()
+    matched = _CODE.fullmatch(text)
+    if matched:
+        if found.pop("_marketOk", False):
+            note = _exclusion_message(pool, short=found.pop("_short", None))
+            if note:
+                return {"inPool": False, "message": note}
+        found.pop("_short", None)
+        found.pop("_marketOk", None)
+        return found
+    found.pop("_short", None)
+    found.pop("_marketOk", None)
+    note = _exclusion_message(pool, name=text)
+    if note:
+        return {"inPool": False, "message": note}
+    return found
 
 
 def _from_match(pool: CompanyPool, found: dict[str, list[str]]) -> dict:

@@ -458,7 +458,7 @@ def _timed(specs: list[tuple[str, int, str | None]], *, max_items: int) -> dict:
     return _content(pool, entries, evaluations, max_items=max_items)
 
 
-def test_overflow_prefers_strong_money_logic_and_renders_by_time():
+def test_overflow_keeps_the_earliest_and_renders_by_time():
     specs = []
     for index in range(1, 13):
         code = f"300{index:03d}"
@@ -466,7 +466,7 @@ def test_overflow_prefers_strong_money_logic_and_renders_by_time():
         specs.append((code, 7 + index, logic))
     content = _timed(specs, max_items=10)
     shown = [entry["companyCode"] for entry in content["entries"]]
-    assert shown == ["300001", "300002", "300003", "300004", "300005", "300006", "300007", "300010", "300011", "300012"]
+    assert shown == ["300001", "300002", "300003", "300004", "300005", "300006", "300007", "300008", "300009", "300010"]
     assert content["stats"]["overflow"] == 2 and content["evaluated"] == 12
     assert all("moneyLogic" not in entry for entry in content["entries"])
     assert "moneyLogic" not in json.dumps(content["entries"], ensure_ascii=False)
@@ -481,7 +481,7 @@ def test_under_the_cap_money_logic_does_not_change_the_list():
 
 def test_old_output_without_money_logic_counts_as_ordinary():
     late_strong = _timed([("300001", 9, None), ("300002", 10, "强")], max_items=1)
-    assert [entry["companyCode"] for entry in late_strong["entries"]] == ["300002"]
+    assert [entry["companyCode"] for entry in late_strong["entries"]] == ["300001"]
     assert late_strong["stats"]["overflow"] == 1
     both_old = _timed([("300002", 10, None), ("300001", 9, "很强")], max_items=1)
     assert [entry["companyCode"] for entry in both_old["entries"]] == ["300001"]
@@ -491,7 +491,7 @@ def test_old_output_without_money_logic_counts_as_ordinary():
 def _shell(entries: list, sectors: dict | None = None) -> dict:
     content = {
         "window": {"start": "2026-10-12T15:00+08:00", "end": "2026-10-13T08:00+08:00"},
-        "generatedAt": "2026-10-13T08:02+08:00", "configVersion": "screening-v5", "entries": entries,
+        "generatedAt": "2026-10-13T08:02+08:00", "configVersion": "screening-v6", "entries": entries,
     }
     if sectors is not None:
         content["sectors"] = sectors
@@ -503,7 +503,7 @@ def _store_available(path: Path, day: str, content: dict, gap: str | None) -> No
     start, end = morning_window(date.fromisoformat(day), SCHEDULE)
     with db.write(path) as conn:
         db.begin_report(conn, report_id=f"morning-{day}", trade_date=day, window_start=start, window_end=end,
-                        config_version="screening-v5", config_sha256="0" * 64, started_at=now)
+                        config_version="screening-v6", config_sha256="0" * 64, started_at=now)
         db.complete_report(conn, report_id=f"morning-{day}", content=content, stats={}, gap_summary=gap,
                            available_at=now)
 
@@ -525,11 +525,11 @@ _SECTOR = {
     "title": "金融座谈会",
     "sector": {"name": "人工智能", "code": "885001.TI", "memberCount": 12},
     "conclusion": "资金会看一眼",
-    "questions": {"value": "有政策", "priced": "还没涨透", "money": "可能接力"},
+    "questions": {"fresh": "是新消息", "weight": "分量够", "position": "位置不高", "carriers": "有人接"},
     "leaders": [
-        {"companyCode": "300082", "companyName": "奥克股份", "price": "明显高开不追"},
-        {"companyCode": "300001", "companyName": "甲公司", "price": "回落再看"},
-        {"companyCode": "300002", "companyName": "乙公司", "price": "不追高"},
+        {"companyCode": "300082", "companyName": "奥克股份", "why": "消息点到它", "price": "明显高开不追"},
+        {"companyCode": "300001", "companyName": "甲公司", "why": "成交够", "price": "回落再看"},
+        {"companyCode": "300002", "companyName": "乙公司", "why": "位置低", "price": "不追高"},
     ],
     "risk": "可能落空",
     "views": [{"by": "媒体", "name": "财联社", "text": "认为有催化", "sourceTitle": "媒体标题",
@@ -549,11 +549,13 @@ def test_web_sector_section_shows_the_event_leaders_and_plain_empty_states():
     assert "今天没有板块热点" not in page
     assert "金融座谈会" in page and "人工智能" in page and "创业板 12 只" in page
     assert "资金会看一眼" in page
-    assert "① 利好值多少" in page and "有政策" in page
-    assert "② 市场已反映多少" in page and "还没涨透" in page
-    assert "③ 资金会不会借题发挥" in page and "可能接力" in page
-    assert "300082 奥克股份：明显高开不追" in page
-    assert "300001 甲公司：回落再看" in page and "300002 乙公司：不追高" in page
+    assert "① 是不是新消息" in page and "是新消息" in page
+    assert "② 分量够不够" in page and "分量够" in page
+    assert "③ 板块在什么位置" in page and "位置不高" in page
+    assert "④ 谁来承接" in page and "有人接" in page
+    assert "奥克股份 300082" in page and "为什么：消息点到它" in page and "价格：明显高开不追" in page
+    assert "甲公司 300001" in page and "价格：回落再看" in page
+    assert "乙公司 300002" in page and "价格：不追高" in page
     assert "风险：可能落空" in page and "各方怎么看" in page and "财联社" in page
     assert "https://news.example/a" in page and "10-12 17:30" in page
     assert 'href="/read/k/doc/doc_forum"' in page

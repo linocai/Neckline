@@ -1,4 +1,4 @@
-"""板块线：粗筛、挑候选、归并、龙头、备料、评估、收口。
+"""板块线：粗筛、挑候选、归并、成分股、备料、评估、收口。
 
 主线名单定了之后才跑。任一步出错只记在板块线上，不往外抛（BaseException 除外，留给进程被杀后续跑）。
 模型调用走同一张回执；已有终态的事件不再调用。unknown 的回执不重发。
@@ -26,7 +26,7 @@ from neckline.morning.sector_prompt import (
     published_label,
 )
 from neckline.morning.sectors import (
-    MEMBER_INTERVAL_SECONDS, board_material, concept_list, fill_market_daily, leader_material, rank_leaders,
+    MEMBER_INTERVAL_SECONDS, board_material, concept_list, fill_market_daily, member_facts,
 )
 from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 from neckline.screening.pool import CompanyPool
@@ -151,9 +151,20 @@ def validate_sector_settings(sectors: Mapping) -> None:
         if "absentPattern" in rule:
             _compile(_require_str(rule, "absentPattern", f"{label}.absentPattern"), f"{label}.absentPattern")
             _require_int(rule, "absentChars", f"{label}.absentChars")
+    if "leaders" in sectors:
+        raise ValueError("sectors.leaders 已停用")
+    market = sectors.get("market")
+    if isinstance(market, Mapping):
+        if "leaderCount" in market:
+            raise ValueError("sectors.market.leaderCount 已停用")
+        if "leaderWindow" in market:
+            raise ValueError("sectors.market.leaderWindow 已停用")
+    carriers = _require_dict(sectors, "carriers", "sectors.carriers")
+    for key in ("max", "amountWindow", "limitWindow", "changeWindow"):
+        _require_int(carriers, key, f"sectors.carriers.{key}")
     candidates = _require_dict(sectors, "candidates", "sectors.candidates")
     if _require_str(candidates, "contract", "sectors.candidates.contract") != CANDIDATES_CONTRACT:
-        raise ValueError("sectors.candidates.contract 须为 sector-candidates-v1")
+        raise ValueError(f"sectors.candidates.contract 须为 {CANDIDATES_CONTRACT}")
     _require_int(candidates, "batchChars", "sectors.candidates.batchChars")
     _require_int(candidates, "headChars", "sectors.candidates.headChars")
     _require_int(candidates, "concurrency", "sectors.candidates.concurrency")
@@ -161,16 +172,13 @@ def validate_sector_settings(sectors: Mapping) -> None:
         raise ValueError("sectors.candidates.modelOptions 类型不对")
     mapping = _require_dict(sectors, "mapping", "sectors.mapping")
     if _require_str(mapping, "contract", "sectors.mapping.contract") != MAPPING_CONTRACT:
-        raise ValueError("sectors.mapping.contract 须为 sector-mapping-v1")
+        raise ValueError(f"sectors.mapping.contract 须为 {MAPPING_CONTRACT}")
     _require_int(mapping, "excerptChars", "sectors.mapping.excerptChars")
     if not isinstance(_require(mapping, "modelOptions", "sectors.mapping.modelOptions"), dict):
         raise ValueError("sectors.mapping.modelOptions 类型不对")
-    leaders = _require_dict(sectors, "leaders", "sectors.leaders")
-    if _require_str(leaders, "rankBy", "sectors.leaders.rankBy") not in ("amount", "limitups"):
-        raise ValueError("sectors.leaders.rankBy 类型不对")
     evaluation = _require_dict(sectors, "evaluation", "sectors.evaluation")
     if _require_str(evaluation, "contract", "sectors.evaluation.contract") != EVALUATION_CONTRACT:
-        raise ValueError("sectors.evaluation.contract 须为 sector-evaluation-v1")
+        raise ValueError(f"sectors.evaluation.contract 须为 {EVALUATION_CONTRACT}")
     _require_int(evaluation, "concurrency", "sectors.evaluation.concurrency")
     if not isinstance(_require(evaluation, "modelOptions", "sectors.evaluation.modelOptions"), dict):
         raise ValueError("sectors.evaluation.modelOptions 类型不对")
@@ -337,8 +345,15 @@ def parse_mapping_output(content: str, allowed: set[str], names: set[str]) -> li
         if not isinstance(sector, str) or sector not in names:
             sector = None
         reason = raw.get("reason") if isinstance(raw.get("reason"), str) else ""
+        weighty = raw.get("weighty")
+        if not isinstance(weighty, bool):
+            return "weighty 无效"
+        weight = raw.get("weight")
+        if not isinstance(weight, str) or not weight.strip():
+            return "weight 无效"
         events.append({
             "title": title.strip(), "ids": ids, "sector": sector, "reason": reason, "repeat": raw["repeat"],
+            "weighty": weighty, "weight": weight.strip(),
         })
     return events
 
@@ -405,7 +420,7 @@ def _known_refs(package: Mapping) -> set[str]:
 
 
 def parse_evaluation_output(content: str, package: Mapping) -> dict | str:
-    """格式不合格时返回原因。①或②为 false 却判推的，改记不推。对不上的观点删掉并计数。"""
+    """格式不合格时返回原因。四个 pass 里有 false 却判推的，改记不推。对不上的观点删掉并计数。"""
     try:
         data = json.loads(content)
     except ValueError:
@@ -427,14 +442,14 @@ def parse_evaluation_output(content: str, package: Mapping) -> dict | str:
     questions = _questions(data.get("questions"))
     if isinstance(questions, str):
         return questions
-    leaders = _leaders(data.get("leaders"), package)
+    leaders = _leaders(data.get("leaders"), package, carriers_pass=questions["carriers"]["pass"])
     if isinstance(leaders, str):
         return leaders
     views = _views(data.get("views"), _known_refs(package))
     if isinstance(views, str):
         return views
     kept, dropped = views
-    vetoed = verdict == "推" and (not questions["value"]["pass"] or not questions["priced"]["pass"])
+    vetoed = verdict == "推" and any(not questions[key]["pass"] for key in ("fresh", "weight", "position", "carriers"))
     if vetoed:
         verdict = "不推"
     output = {
@@ -450,7 +465,7 @@ def _questions(raw: object) -> dict | str:
     if not isinstance(raw, Mapping):
         return "questions 不是对象"
     parsed: dict[str, Any] = {}
-    for key in ("value", "priced"):
+    for key in ("fresh", "weight", "position", "carriers"):
         block = raw.get(key)
         if not isinstance(block, Mapping):
             return f"questions 缺少 {key}"
@@ -460,35 +475,56 @@ def _questions(raw: object) -> dict | str:
         if not text:
             return f"{key}.text 为空"
         parsed[key] = {"pass": block["pass"], "text": text}
-    money = raw.get("money")
-    if not isinstance(money, Mapping):
-        return "questions 缺少 money"
-    text = _text(money.get("text"))
-    if not text:
-        return "money.text 为空"
-    parsed["money"] = {"text": text}
     return parsed
 
 
-def _leaders(raw: object, package: Mapping) -> list[dict] | str:
-    expected = []
-    for item in package.get("leaders") or []:
+def _carrier_max(package: Mapping) -> int | str:
+    carriers = package.get("carriers")
+    if not isinstance(carriers, Mapping):
+        return "承接股上限缺失"
+    maximum = carriers.get("max")
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+        return "承接股上限缺失"
+    return maximum
+
+
+def _member_codes(package: Mapping) -> set[str]:
+    found: set[str] = set()
+    for item in package.get("members") or []:
         if isinstance(item, Mapping):
-            expected.append(_short(item.get("code")))
+            code = _short(item.get("code"))
+            if code:
+                found.add(code)
+    return found
+
+
+def _leaders(raw: object, package: Mapping, *, carriers_pass: bool) -> list[dict] | str:
     if not isinstance(raw, list):
         return "leaders 不是列表"
-    if len(raw) != len(expected):
+    if not carriers_pass:
+        return []
+    maximum = _carrier_max(package)
+    if isinstance(maximum, str):
+        return maximum
+    if not 1 <= len(raw) <= maximum:
         return "leaders 数量不对"
+    allowed = _member_codes(package)
+    seen: set[str] = set()
     parsed = []
-    for item, code in zip(raw, expected):
+    for item in raw:
         if not isinstance(item, Mapping):
-            return "leaders 顺序不对"
-        if _short(item.get("code")) != code:
-            return "leaders 顺序不对"
-        text = _text(item.get("text"))
-        if not text:
-            return "leaders.text 为空"
-        parsed.append({"code": code, "text": text})
+            return "leaders 格式不对"
+        code = _short(item.get("code"))
+        if code not in allowed:
+            return "leaders 不在成分股名单"
+        if code in seen:
+            return "leaders 重复"
+        seen.add(code)
+        why = _text(item.get("why"))
+        price = _text(item.get("price"))
+        if not why or not price:
+            return "leaders 理由或价格为空"
+        parsed.append({"code": code, "why": why, "price": price})
     return parsed
 
 
@@ -546,11 +582,65 @@ def _search_block(client: Any, settings: Mapping, *, title: str, sector: str, tr
     }
 
 
+def _member_rows(event: Mapping, pool: CompanyPool, skip: Sequence[str], daily_rows: Sequence[Mapping],
+                  as_of: date, carriers: Mapping, profiles: Mapping, pool_rows: Sequence[Mapping]) -> list[dict]:
+    """池内、属于这个板块、且不在当天主线名单里的成分股，按代码从小到大。"""
+    skipped = {_short(code) for code in skip}
+    skipped.discard("")
+    stored: dict[str, Mapping] = {}
+    for row in pool_rows:
+        if isinstance(row, Mapping):
+            short = _short(row.get("code"))
+            if short:
+                stored[short] = row
+    blob = "\n".join(
+        f"{getattr(message, 'title', '') or ''}\n{getattr(message, 'text', '') or ''}"
+        for message in event.get("messages") or []
+    )
+    chosen: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for code in event.get("members") or []:
+        short = _short(code)
+        if not short or short in skipped or short in seen:
+            continue
+        company = pool.companies.get(str(code)) or pool.companies.get(f"{short}.SZ")
+        if company is None:
+            company = next((item for item in pool.companies.values() if item.short_code == short), None)
+        if company is None:
+            continue
+        seen.add(short)
+        chosen.append((short, company))
+    chosen.sort(key=lambda item: item[0])
+    rows = []
+    for short, company in chosen:
+        facts = member_facts(
+            company.code, daily_rows, as_of, amount_window=int(carriers["amountWindow"]),
+            limit_window=int(carriers["limitWindow"]), change_window=int(carriers["changeWindow"]))
+        detail = stored.get(short) or {}
+        summary = detail.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            fallback = profiles.get(company.code) or profiles.get(short)
+            summary = fallback if isinstance(fallback, str) and fallback.strip() else None
+        circ = detail.get("circMv")
+        rows.append({
+            "code": short,
+            "name": company.name,
+            "summary": summary,
+            "circMv": circ if isinstance(circ, (int, float)) and not isinstance(circ, bool) else None,
+            "averageAmountYuan": facts["averageAmountYuan"],
+            "limitUps20": facts["limitUps"],
+            "change5Percent": facts["changePercent"],
+            "named": bool(company.name) and company.name in blob,
+        })
+    return rows
+
+
 def build_event_package(*, event: Mapping, day: date, window: Window, pool: CompanyPool,
-                         daily_rows: Sequence[Mapping], as_of: date, market: Mapping, rank_by: str,
+                         daily_rows: Sequence[Mapping], as_of: date, market: Mapping, carriers: Mapping,
                          skip: Sequence[str], search_client: Any, search_settings: Mapping,
-                         package_settings: Mapping) -> dict:
-    """一个事件的评估数据包。同样的材料得到同样的 dict。limitups 只放在数据包里。"""
+                         package_settings: Mapping, profiles: Mapping | None = None,
+                         pool_rows: Sequence[Mapping] = ()) -> dict:
+    """一个事件的评估数据包。同样的材料得到同样的 dict。"""
     messages = sorted(event["messages"], key=lambda message: (message.published_at, message.ref))
     numbers = {message.ref: f"m{index}" for index, message in enumerate(messages, start=1)}
     listed = [{
@@ -580,20 +670,12 @@ def build_event_package(*, event: Mapping, day: date, window: Window, pool: Comp
             "publishedAt": _published(message.published_at), "text": body[:checked["mediaChars"]],
             "chars": len(body), "truncated": len(body) > checked["mediaChars"],
         })
-    members = list(event["members"])
+    member_rows = _member_rows(event, pool, skip, daily_rows, as_of, carriers, profiles or {}, pool_rows)
+    if not member_rows:
+        gaps.append("板块里没有可选的成分股")
     windows = list(market["boardWindows"])
-    board = board_material(members, daily_rows, as_of, windows, int(market["limitWindow"]), list(pool.companies))
-    amount = rank_leaders(members, daily_rows, as_of, int(market["leaderWindow"]), int(market["leaderCount"]),
-                          skip, rank_by)
-    other = rank_leaders(members, daily_rows, as_of, int(market["leaderWindow"]), int(market["leaderCount"]),
-                         skip, "limitups" if rank_by != "limitups" else "amount")
-    if amount["short"]:
-        gaps.append(f"龙头不足 {int(market['leaderCount'])} 只")
-    leaders = []
-    for item in amount["leaders"]:
-        material = leader_material(item["code"], daily_rows, as_of)
-        material["name"] = _company_name(pool, material["code"])
-        leaders.append(material)
+    board = board_material(list(event["members"]), daily_rows, as_of, windows, int(market["limitWindow"]),
+                           list(pool.companies))
     search = _search_block(
         search_client, search_settings, title=str(event["title"]), sector=str(event["sector"]),
         trade_date=day, collected_by=window.collected_by)
@@ -614,9 +696,13 @@ def build_event_package(*, event: Mapping, day: date, window: Window, pool: Comp
         "messages": listed,
         "original": {"kind": "news", "documents": documents, "media": media},
         "board": board,
-        "leaders": leaders,
-        "leaderRankings": {"amount": amount if rank_by == "amount" else other,
-                           "limitups": other if rank_by == "amount" else amount},
+        "carriers": {
+            "max": int(carriers["max"]),
+            "amountWindow": int(carriers["amountWindow"]),
+            "limitWindow": int(carriers["limitWindow"]),
+            "changeWindow": int(carriers["changeWindow"]),
+        },
+        "members": member_rows,
         "limits": {key: checked[key] for key in _PACKAGE_KEYS},
         "search": search,
         "gaps": gaps,
@@ -632,9 +718,9 @@ def _blank_stats(raw: int, dropped: Mapping[str, int] | None = None, kept: int =
         "raw": raw,
         "dropped": dict(dropped or {}),
         "kept": kept,
-        "candidates": {"batches": 0, "calls": 0, "fromReceipt": 0, "messages": 0,
+        "candidates": {"batches": 0, "calls": 0, "fromReceipt": 0, "messages": 0, "splits": 0,
                        "usage": _zero_usage(), "seconds": 0.0},
-        "mapping": {"calls": 0, "fromReceipt": 0, "events": 0, "null": 0, "repeat": 0,
+        "mapping": {"calls": 0, "fromReceipt": 0, "events": 0, "null": 0, "repeat": 0, "light": 0,
                     "usage": _zero_usage(), "seconds": 0.0},
         "evaluation": {"calls": 0, "fromReceipt": 0, "evaluated": 0, "verdicts": {"推": 0, "不推": 0},
                        "invalid": 0, "gap": 0, "vetoed": 0, "droppedViews": 0, "repairs": 0, "repaired": 0,
@@ -712,18 +798,18 @@ def _public_entries(rows: Sequence[Mapping], pool: CompanyPool) -> list[dict]:
             if isinstance(view, Mapping):
                 views.append(_public_view(view, index, sources))
         leaders = []
-        material = package.get("leaders") if isinstance(package.get("leaders"), list) else []
         parsed = output.get("leaders") if isinstance(output.get("leaders"), list) else []
-        for item, text_row in zip(material, parsed):
+        for item in parsed:
             if not isinstance(item, Mapping):
                 continue
-            text = text_row.get("text") if isinstance(text_row, Mapping) else ""
             code = _short(item.get("code"))
+            why = item.get("why") if isinstance(item.get("why"), str) else ""
+            price = item.get("price") if isinstance(item.get("price"), str) else ""
             leaders.append({
                 "companyCode": code,
-                "companyName": item.get("name") if isinstance(item.get("name"), str) and item.get("name")
-                else _company_name(pool, code),
-                "price": text if isinstance(text, str) else "",
+                "companyName": _company_name(pool, code),
+                "why": why,
+                "price": price,
             })
         sector = package.get("sector") if isinstance(package.get("sector"), Mapping) else {}
         event = package.get("event") if isinstance(package.get("event"), Mapping) else {}
@@ -740,9 +826,10 @@ def _public_entries(rows: Sequence[Mapping], pool: CompanyPool) -> list[dict]:
             },
             "conclusion": output.get("conclusion") if isinstance(output.get("conclusion"), str) else "",
             "questions": {
-                "value": _question_text(questions.get("value")),
-                "priced": _question_text(questions.get("priced")),
-                "money": _question_text(questions.get("money")),
+                "fresh": _question_text(questions.get("fresh")),
+                "weight": _question_text(questions.get("weight")),
+                "position": _question_text(questions.get("position")),
+                "carriers": _question_text(questions.get("carriers")),
             },
             "leaders": leaders,
             "risk": output.get("risk") if isinstance(output.get("risk"), str) else "",
@@ -915,6 +1002,7 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     stats["mapping"]["events"] = len(events)
     stats["mapping"]["null"] = sum(1 for event in events if event["sector"] is None)
     stats["mapping"]["repeat"] = sum(1 for event in events if event["repeat"])
+    stats["mapping"]["light"] = sum(1 for event in events if event.get("light"))
     now = clock()
     for event in events:
         if not event["skip"]:
@@ -961,12 +1049,21 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
             with db.read(db_path) as conn:
                 daily_rows = db.read_market_daily(conn)
         workers = int(sectors["evaluation"]["concurrency"])
+        pool_rows: list[dict] = []
+        try:
+            with db.read(db_path) as conn:
+                stored_pool = db.read_stock_pool(conn)
+        except db.NotReady:
+            stored_pool = None
+        if stored_pool:
+            pool_rows = list(stored_pool["rows"])
 
         def evaluate(event: Mapping) -> dict:
             return _evaluate_event(
                 event, db_path=db_path, report_id=report_id, day=day, window=window, pool=pool,
-                daily_rows=daily_rows, as_of=as_of, market=sectors["market"], rank_by=sectors["leaders"]["rankBy"],
-                skip=skip, search_client=search_client, search_settings=sectors["evaluation"]["search"],
+                daily_rows=daily_rows, as_of=as_of, market=sectors["market"], carriers=sectors["carriers"],
+                skip=skip, profiles=getattr(config, "profiles", {}) or {}, pool_rows=pool_rows,
+                search_client=search_client, search_settings=sectors["evaluation"]["search"],
                 package_settings=sectors["evaluation"]["package"], client=client,
                 options=sectors["evaluation"]["modelOptions"], cutoff=cutoff, clock=clock)
 
@@ -1062,16 +1159,59 @@ def _attach(mapped: Sequence[Mapping], by_number: Mapping[str, Message], by_name
         refs = [message.ref for message in messages]
         first = min(message.published_at for message in messages)
         concept = by_name.get(item["sector"]) if item["sector"] else None
+        light = not bool(item.get("weighty"))
+        reason = item["weight"] if light else item["reason"]
         events.append({
             "id": event_id(refs), "title": item["title"], "ids": list(item["ids"]), "messages": messages,
             "refs": refs, "sector": None if concept is None else concept["name"],
             "sectorCode": None if concept is None else concept["tsCode"],
             "members": [] if concept is None else list(concept["members"]),
-            "reason": item["reason"], "repeat": bool(item["repeat"]),
+            "reason": reason, "repeat": bool(item["repeat"]),
+            "weighty": bool(item.get("weighty")), "weight": item.get("weight") or "", "light": light,
             "firstPublished": _minutes(first),
-            "skip": concept is None or bool(item["repeat"]),
+            "skip": concept is None or bool(item["repeat"]) or light,
         })
     return events
+
+
+def _split_length_batch(batch: Sequence[tuple[str, Message]], hit: Mapping, *, client: Any, options: Mapping,
+                        head_chars: int, cutoff: str, clock: Callable[[], datetime]) -> dict:
+    """输出被截断时按顺序对半各发一次。只拆这一次，有一半失败这一批就没挑成。"""
+    mid = len(batch) // 2
+    calls = int(hit.get("calls") or 0)
+    from_receipt = int(hit.get("fromReceipt") or 0)
+    usage = dict(hit.get("usage") or _zero_usage())
+    seconds = float(hit.get("seconds") or 0)
+    merged: set[str] = set()
+    for half in (batch[:mid], batch[mid:]):
+        if _cutoff_reached(clock(), cutoff):
+            return {"ids": set(), "cutoff": True, "calls": calls, "fromReceipt": from_receipt,
+                    "usage": usage, "seconds": seconds, "split": True}
+        allowed = {number for number, _message in half}
+        messages = [
+            {"role": "system", "content": CANDIDATE_SYSTEM},
+            {"role": "user", "content": candidate_user_prompt(
+                [candidate_line(number, message, head_chars) for number, message in half])},
+        ]
+        second = _call_model(client, messages, options)
+        calls += int(second.get("calls") or 0)
+        from_receipt += int(second.get("fromReceipt") or 0)
+        usage = _add_usage(usage, second.get("usage") or {})
+        seconds = round(seconds + float(second.get("seconds") or 0), 3)
+        if second.get("fatal"):
+            second = dict(second)
+            second.update(calls=calls, fromReceipt=from_receipt, usage=usage, seconds=seconds, split=True)
+            return second
+        parsed: set[str] | str = "调用失败"
+        if not second.get("error") and second.get("finish") == "stop":
+            parsed = parse_candidate_output(second.get("content") or "", allowed)
+        if isinstance(parsed, str):
+            reason = second.get("error") or (parsed if second.get("finish") == "stop" else f"finish:{second.get('finish')}")
+            return {"ids": set(), "error": reason, "calls": calls, "fromReceipt": from_receipt,
+                    "usage": usage, "seconds": seconds, "split": True}
+        merged.update(parsed)
+    return {"ids": merged, "calls": calls, "fromReceipt": from_receipt, "usage": usage,
+            "seconds": seconds, "split": True, "finish": "stop"}
 
 
 def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client: Any, options: Mapping,
@@ -1093,6 +1233,9 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
             hit["cutoff"] = True
             hit["ids"] = set()
             return hit
+        if hit.get("finish") == "length" and len(batch) >= 2:
+            return _split_length_batch(batch, hit, client=client, options=options, head_chars=head_chars,
+                                       cutoff=cutoff, clock=clock)
         if hit.get("finish") != "stop":
             hit["error"] = f"finish:{hit.get('finish')}"
             return hit
@@ -1110,6 +1253,8 @@ def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client
         if hit is None:
             failed += 1
             continue
+        if hit.get("split"):
+            stats["candidates"]["splits"] += 1
         stats["candidates"]["calls"] += int(hit.get("calls") or 0)
         stats["candidates"]["fromReceipt"] += int(hit.get("fromReceipt") or 0)
         stats["candidates"]["usage"] = _add_usage(stats["candidates"]["usage"], hit.get("usage") or {})
@@ -1169,9 +1314,9 @@ def _map_candidates(selected: set[str], *, by_number: Mapping[str, Message], nam
 
 def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date, window: Window,
                     pool: CompanyPool, daily_rows: Sequence[Mapping], as_of: date, market: Mapping,
-                    rank_by: str, skip: Sequence[str], search_client: Any, search_settings: Mapping,
-                    package_settings: Mapping, client: Any, options: Mapping, cutoff: str,
-                    clock: Callable[[], datetime]) -> dict:
+                    carriers: Mapping, skip: Sequence[str], profiles: Mapping, pool_rows: Sequence[Mapping],
+                    search_client: Any, search_settings: Mapping, package_settings: Mapping, client: Any,
+                    options: Mapping, cutoff: str, clock: Callable[[], datetime]) -> dict:
     row = _load(db_path, report_id, event["id"])
     if _terminal(row):
         return {"calls": 0, "fromReceipt": 0, "usage": _zero_usage(), "seconds": 0.0, "repairs": 0, "repaired": 0}
@@ -1184,8 +1329,8 @@ def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date,
             return {"calls": 0, "fromReceipt": 0, "usage": _zero_usage(), "seconds": 0.0, "repairs": 0, "repaired": 0}
         package = build_event_package(
             event=event, day=day, window=window, pool=pool, daily_rows=daily_rows, as_of=as_of, market=market,
-            rank_by=rank_by, skip=skip, search_client=search_client, search_settings=search_settings,
-            package_settings=package_settings)
+            carriers=carriers, skip=skip, profiles=profiles, pool_rows=pool_rows,
+            search_client=search_client, search_settings=search_settings, package_settings=package_settings)
         now = clock()
         _insert(db_path, report_id=report_id, event_id=event["id"], title=event["title"], sector=event["sector"],
                 reason=event["reason"], repeat=False, state="prepared", package=package, prepared_at=now)

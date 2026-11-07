@@ -109,7 +109,7 @@ def _candidate(code: str) -> SimpleNamespace:
 def _answer(verdict: str = "推", *, value_pass: bool = True, priced_pass: bool = True,
             views: list | None = None, title: str = "签下订单", money_logic: str = "一般") -> dict:
     return {
-        "title": title, "verdict": verdict, "moneyLogic": money_logic,
+        "title": title, "verdict": verdict,
         "conclusion": "值得跟踪" if verdict == "推" else "先不推",
         "questions": {
             "value": {"pass": value_pass, "text": "订单占营收不低"},
@@ -193,7 +193,7 @@ def test_prompt_renders_the_package_deterministically() -> None:
     assert system_prompt().startswith("你是 A 股创业板的消息评估员")
     assert "①不过关或②透支，一票否决" in system_prompt()
     assert "联网" not in system_prompt()
-    assert CONTRACT == "evaluation-v2"
+    assert CONTRACT == "evaluation-v3"
     # 11/01 口径：资金逻辑为出发点，③为核心；第 4 条原则改写，透支只看股价
     assert "这条消息给了资金什么新理由" in system_prompt() and "这是核心，综合判断以它为主" in system_prompt()
     assert "利好要能被验证，不能只是想象空间" in system_prompt() and "优先有真实业绩支撑" not in system_prompt()
@@ -202,7 +202,7 @@ def test_prompt_renders_the_package_deterministically() -> None:
     assert "研报早有预期不等于市场已经交易过" in system_prompt()
     assert "资金今天会不会因为这条消息入场" in system_prompt()
     assert "不要在这里再当作不推的理由" in system_prompt()
-    assert '"moneyLogic":"强 或 一般"' in system_prompt()
+    assert "moneyLogic" not in system_prompt()
     assert "还是只确认了大家已经知道的事" not in system_prompt()
 
 
@@ -231,19 +231,10 @@ def test_parse_accepts_push_and_skip_and_rejects_contradictions() -> None:
     missing = _answer()
     missing["questions"]["value"]["pass"] = 1
     assert parse_output(json.dumps(missing), package) == "value.pass 不是布尔"
-    for logic in ("强", "一般"):
-        parsed = parse_output(json.dumps(_answer(money_logic=logic)), package)
-        assert isinstance(parsed, Evaluation) and parsed.money_logic == logic
-        assert parsed.as_dict()["moneyLogic"] == logic
-    padded = parse_output(json.dumps(_answer(money_logic=" 强 ")), package)
-    assert isinstance(padded, Evaluation) and padded.money_logic == "强"
-    missing = _answer()
-    del missing["moneyLogic"]
-    assert parse_output(json.dumps(missing), package) == "moneyLogic 无效"
-    for bad in ("", "中", "很强"):
-        answer = _answer()
-        answer["moneyLogic"] = bad
-        assert parse_output(json.dumps(answer), package) == "moneyLogic 无效"
+    extra = _answer()
+    extra["moneyLogic"] = "强"
+    parsed = parse_output(json.dumps(extra), package)
+    assert isinstance(parsed, Evaluation) and "moneyLogic" not in parsed.as_dict()
 
 
 def test_bad_views_are_dropped_and_counted() -> None:
@@ -571,7 +562,7 @@ def test_config_requires_cutoff_concurrency_and_model_options(tmp_path: Path) ->
     rejected(lambda rules: rules["evaluation"].__setitem__("concurrency", 0), "concurrency")
     rejected(lambda rules: rules["evaluation"].__setitem__("concurrency", True), "concurrency")
     rejected(lambda rules: rules["evaluation"].__setitem__("modelOptions", []), "modelOptions")
-    rejected(lambda rules: rules["evaluation"].__setitem__("contract", "evaluation-v1"), "evaluation-v2")
+    rejected(lambda rules: rules["evaluation"].__setitem__("contract", "evaluation-v1"), "evaluation-v3")
     rejected(lambda rules: rules.pop("delivery"), "delivery")
     rejected(lambda rules: rules["delivery"].__setitem__("maxItems", 0), "maxItems")
     rejected(lambda rules: rules["delivery"].__setitem__("maxItems", True), "maxItems")
@@ -759,32 +750,25 @@ def test_bad_json_is_repaired_once_and_settled(path: Path) -> None:
     assert usage == _USE_SUM and seconds == pytest.approx(sum(receipt_seconds))
 
 
-def test_missing_money_logic_is_repaired_once(path: Path) -> None:
-    bad = _answer()
-    del bad["moneyLogic"]
-    seen: dict[str, dict] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if len(body["messages"]) == 2:
-            seen["first"] = body
-            return _http(bad, usage=_USE_A)
-        seen["repair"] = body
-        return _http(_answer("推", money_logic="强"), usage=_USE_B)
-
-    result = _run(path, handler, [_candidate("300001")], settings=_settings(concurrency=1))
-    item = result.items[0]
-    assert item.state == "succeeded" and item.verdict == "推" and item.evaluation.money_logic == "强"
-    assert result.stats["calls"] == 2 and result.stats["repairs"] == 1 and result.stats["repaired"] == 1
-    _assert_repair_request(seen["first"], seen["repair"], "moneyLogic 无效", _wire(bad))
+def test_evaluation_v3_only_drops_the_money_logic_line_and_key() -> None:
+    """evaluation-v3 的系统提示词只比 B130 的 evaluation-v2 少 moneyLogic 那一行和那个键。"""
+    line = ("moneyLogic（资金逻辑）：按③的判断写「强」或「一般」。资金今天很可能因为这条消息入场、"
+            "后面也有人接力，两点都明确才写「强」，否则写「一般」。它不改变 verdict。\n")
+    restored = system_prompt().replace("\n\n判断规则：", "\n" + line + "\n判断规则：", 1)
+    restored = restored.replace(
+        '"verdict":"推 或 不推","conclusion"',
+        '"verdict":"推 或 不推","moneyLogic":"强 或 一般","conclusion"', 1)
+    assert hashlib.sha256(restored.encode()).hexdigest() == (
+        "44f99a1265e0b29fffe1177a3d613aee0b5daa738755b2ecec2c12c05afbbf8b")
+    assert "moneyLogic" not in system_prompt()
 
 
-def test_reuse_reads_money_logic_and_tolerates_old_rows(path: Path) -> None:
-    strong = _answer(money_logic="强")
+def test_reuse_tolerates_an_old_row_that_still_has_money_logic(path: Path) -> None:
+    current = _answer()
     old = _answer()
-    del old["moneyLogic"]
+    old["moneyLogic"] = "强"
     with db.write(path) as conn:
-        for code, output in (("300001", strong), ("300002", old)):
+        for code, output in (("300001", current), ("300002", old)):
             db.insert_prepared(conn, report_id=REPORT, company=code, contract=CONTRACT,
                                package=_package(code), prepared_at=WHEN)
             db.settle_evaluation(conn, report_id=REPORT, company=code, state="succeeded", settled_at=WHEN,
@@ -798,8 +782,8 @@ def test_reuse_reads_money_logic_and_tolerates_old_rows(path: Path) -> None:
     result = _run(path, handler, [_candidate("300001"), _candidate("300002")])
     by_company = {item.company: item for item in result.items}
     assert calls == [] and result.stats["calls"] == 0
-    assert by_company["300001"].evaluation.money_logic == "强"
-    assert by_company["300002"].evaluation.money_logic == ""
+    assert "moneyLogic" not in by_company["300001"].evaluation.as_dict()
+    assert "moneyLogic" not in by_company["300002"].evaluation.as_dict()
 
 
 def test_missing_question_is_repaired_once(path: Path) -> None:
@@ -1059,7 +1043,7 @@ def test_morning_run_keeps_a_push_repaired_from_bad_json(path: Path) -> None:
 
 
 def test_morning_run_keeps_strong_logic_when_pushes_exceed_the_cap(path: Path, monkeypatch) -> None:
-    """判推多于 delivery.maxItems：最晚的「强」挤掉较晚的「一般」，展示仍按首次公开时间。"""
+    """判推多于 delivery.maxItems：按首次公开时间、代码取前几条，并按这个顺序展示。"""
     prev = "2026-10-12"
     day = "2026-10-13"
     names = (("300001", "甲公司", "16:10", "一般"), ("300002", "乙公司", "17:20", "一般"), ("300003", "丙公司", "18:30", "强"))
@@ -1115,7 +1099,7 @@ def test_morning_run_keeps_strong_logic_when_pushes_exceed_the_cap(path: Path, m
     with db.read(path) as conn:
         stored = db.get_report(conn, day)
     entries = stored["content"]["entries"]
-    assert [entry["companyCode"] for entry in entries] == ["300001", "300003"]
+    assert [entry["companyCode"] for entry in entries] == ["300001", "300002"]
     assert all("moneyLogic" not in entry for entry in entries)
     assert "moneyLogic" not in json.dumps(entries, ensure_ascii=False)
     monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))

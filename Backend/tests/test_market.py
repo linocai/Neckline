@@ -108,6 +108,28 @@ def test_pool_lookup_accepts_code_name_and_alias_and_stops_at_five(tmp_path, mon
     assert not any(name.lower().startswith(("list", "all", "dump", "export")) for name in public)
 
 
+def test_check_pool_names_the_circ_mv_exclusion(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    when = datetime(2026, 11, 5, tzinfo=SHANGHAI)
+    with db.write(path) as conn:
+        db.replace_stock_pool(conn, [{
+            "code": "300001.SZ", "name": "甲公司", "fullname": "", "listDate": "2020-01-01",
+            "aliases": ["甲公司"], "summary": "做设备", "summarySource": "tushare",
+            "circMv": 1000, "totalMv": 2000, "mvDate": "2026-10-12",
+        }], refreshed_at=db.utc(when), sha256="ab", source="tushare",
+            excluded=[{"code": "300009.SZ", "name": "大市值", "circMv": 999999}],
+            mv_date="2026-10-12", exclude_top_share=0.1)
+    monkeypatch.setenv("NECKLINE_V4_DB_PATH", str(path))
+    reason = "不在 K10 股票池：流通市值在创业板前 10%（按 2026-10-12 收盘）"
+    assert lookup("300009")["message"] == reason
+    assert lookup("300009.SZ")["message"] == reason
+    assert lookup("大市值")["message"] == reason
+    assert lookup("300009.SH") == {"inPool": False, "message": "不在 K10 股票池"}
+    assert lookup("300001") == {"inPool": True, "code": "300001.SZ", "name": "甲公司"}
+    assert lookup("不存在的公司")["message"].startswith("不在 K10 股票池（按名称没找到")
+
+
 def test_session_date_follows_the_trading_clock():
     assert intraday_session_date(_at("2026-10-16", "10:00")) == datetime(2026, 10, 16).date()
     assert intraday_session_date(_at("2026-10-16", "09:30")) == datetime(2026, 10, 16).date()

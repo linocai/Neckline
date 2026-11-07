@@ -63,9 +63,10 @@ _QUESTION_LABELS = (
     ("price", "价格划不划算"),
 )
 _SECTOR_QUESTIONS = (
-    ("value", "① 利好值多少"),
-    ("priced", "② 市场已反映多少"),
-    ("money", "③ 资金会不会借题发挥"),
+    ("fresh", "① 是不是新消息"),
+    ("weight", "② 分量够不够"),
+    ("position", "③ 板块在什么位置"),
+    ("carriers", "④ 谁来承接"),
 )
 
 
@@ -195,10 +196,12 @@ def _sector_block(base: str, entries: list) -> str:
         for leader in entry.get("leaders") or []:
             if not isinstance(leader, dict):
                 continue
-            leaders.append(f"<div>{escape(str(leader.get('companyCode') or ''))} "
-                           f"{escape(str(leader.get('companyName') or ''))}："
-                           f"{escape(str(leader.get('price') or ''))}</div>")
-        leader_html = ("<div class=\"q\"><span class=\"lab\">龙头</span>" + "".join(leaders) + "</div>") if leaders else ""
+            leaders.append(
+                f"<div>{escape(str(leader.get('companyName') or ''))} "
+                f"{escape(str(leader.get('companyCode') or ''))}"
+                f"<div>为什么：{escape(str(leader.get('why') or ''))}</div>"
+                f"<div>价格：{escape(str(leader.get('price') or ''))}</div></div>")
+        leader_html = ("".join(leaders)) if leaders else ""
         views = entry.get("views") if isinstance(entry.get("views"), list) else []
         view_html = ("<div class=\"views\"><div>各方怎么看</div>"
                      + "".join(_view_html(view) for view in views if isinstance(view, dict)) + "</div>") if views else ""
