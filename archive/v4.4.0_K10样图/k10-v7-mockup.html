@@ -1,0 +1,295 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>K10 板块热点样图 4.4.0</title><style>
+:root{
+  --page:#F5F6F8; --card:#FFFFFF; --bar:#FFFFFF; --side:#F3F1F2;
+  --t1:#1C1C1E; --t2:#6E6E73; --t3:#8E8E93; --line:#E5E5EA;
+  --accent:#0754E9; --tag:#F2F2F7; --sel:rgba(7,84,233,.12);
+  --red:#FF3B30; --redFill:rgba(255,59,48,.08); --blue:#007AFF; --blueFill:rgba(0,122,255,.07);
+}
+.dark{
+  --page:#1C1C1E; --card:#2C2C2E; --bar:#1C1C1E; --side:#232325;
+  --t1:#F5F5F7; --t2:#98989D; --t3:#636366; --line:#38383A;
+  --accent:#4C8DFF; --tag:#3A3A3C; --sel:rgba(76,141,255,.22);
+  --red:#FF453A; --redFill:rgba(255,69,58,.16); --blue:#0A84FF; --blueFill:rgba(10,132,255,.16);
+}
+*{box-sizing:border-box}
+body{margin:0;background:#E8EAED;color:#1C1C1E;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",sans-serif}
+header.doc,footer.doc{max-width:920px;margin:0 auto;padding:28px 22px 8px}
+header.doc h1{margin:0 0 8px;font-size:22px}
+header.doc p,footer.doc p{margin:8px 0;color:#333;line-height:1.65}
+header.doc b,figcaption b{color:#111}
+.row{display:flex;flex-wrap:wrap;gap:22px 28px;justify-content:center;align-items:flex-start;max-width:1760px;margin:0 auto;padding:6px 20px 32px}
+.row>h2.screen-title{flex:1 0 100%;margin:18px 0 4px;text-align:center;font-size:17px;font-weight:600}
+figure{margin:0;display:flex;flex-direction:column;align-items:center;gap:10px}
+figcaption{max-width:390px;font-size:13px;color:#444;line-height:1.55}
+figure.wide figcaption{max-width:1100px}
+.phone{width:390px;height:844px;border-radius:48px;background:#0B0B0D;padding:11px;box-shadow:0 16px 40px rgba(0,0,0,.18);flex:none}
+.screen{width:100%;height:100%;border-radius:37px;overflow:hidden;position:relative;background:var(--page);color:var(--t1);display:flex;flex-direction:column}
+.island{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:100px;height:32px;border-radius:16px;background:#000;z-index:2}
+.status{height:54px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 18px;font-weight:600;font-size:15px;position:relative;z-index:1}
+.sigs{display:flex;align-items:center;gap:5px}
+.nav{padding:0 16px 4px;flex:none}
+.nav h2{margin:0;font-size:28px;font-weight:700;letter-spacing:-.4px;line-height:1.15}
+.meta{margin-top:4px;font-size:12px;color:var(--t2);line-height:1.35;font-variant-numeric:tabular-nums}
+.seg{display:flex;margin:2px 16px 8px;background:rgba(118,118,128,.16);border-radius:9px;padding:2px;flex:none}
+.seg span{flex:1;text-align:center;font-size:13px;font-weight:500;line-height:28px;border-radius:7px;color:var(--t1)}
+.seg span.on{background:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12),0 1px 3px rgba(0,0,0,.06)}
+.dark .seg{background:rgba(118,118,128,.28)}
+.dark .seg span.on{background:#636366;color:#fff;box-shadow:none}
+.scroll{flex:1;min-height:0;min-width:0;overflow-x:hidden;overflow-y:auto;padding-bottom:12px;margin-bottom:78px}
+.blk{margin:14px 16px 6px;font-size:13px;font-weight:600;color:var(--t2)}
+.list{margin:0 16px;background:var(--card);border-radius:12px;overflow:hidden;border:.5px solid var(--line)}
+.scroll>.list:first-child{margin-top:8px}
+.item{padding:11px 14px;min-width:0}
+.item+.item{border-top:.5px solid var(--line)}
+.item.sel{background:var(--sel)}
+.l1{display:flex;align-items:center;gap:8px;min-width:0}
+.l1 .n{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.l1 .c,.c{font-size:13px;color:var(--t2);font-weight:400;font-variant-numeric:tabular-nums;flex:none}
+.l1 .time,.time{margin-left:auto;flex:none;font-size:12px;color:var(--t3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{flex:none;font-size:12px;font-weight:600;color:var(--t1);background:var(--tag);border-radius:5px;padding:2px 7px;line-height:1.3;white-space:nowrap}
+.count{font-size:12px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-variant-numeric:tabular-nums}
+.l2{font-size:15px;font-weight:600;margin-top:4px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.l3{margin-top:3px;font-size:13px;color:var(--t2);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.l3.one{display:block;white-space:nowrap;text-overflow:ellipsis;-webkit-line-clamp:unset}
+.l4{margin-top:3px;font-size:13px;line-height:1.4;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.l4 .k{color:var(--t2);font-weight:400}
+.quiet{padding:13px 14px;font-size:15px;color:var(--t2);line-height:1.4}
+.tabbar{position:absolute;z-index:4;left:50%;bottom:18px;transform:translateX(-50%);width:236px;height:56px;border-radius:28px;background:rgba(255,255,255,.94);box-shadow:0 8px 28px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.06);display:flex;justify-content:space-around;align-items:center}
+.dark .tabbar{background:rgba(44,44,46,.94);box-shadow:0 8px 28px rgba(0,0,0,.45),0 0 0 .5px rgba(255,255,255,.06)}
+.tabbar span{width:64px;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;font-weight:500;color:var(--t3);line-height:1.1}
+.tabbar span.on{color:var(--accent);font-weight:600}
+.home{position:absolute;z-index:5;left:50%;bottom:7px;transform:translateX(-50%);width:124px;height:5px;border-radius:3px;background:#111}
+.dark .home{background:rgba(255,255,255,.86)}
+.navbar{height:48px;flex:none;display:flex;align-items:center;padding:0 12px;position:relative}
+.back{width:32px;height:32px;border-radius:16px;background:var(--card);color:var(--t1);display:flex;align-items:center;justify-content:center;box-shadow:0 1px 2px rgba(0,0,0,.06),0 0 0 .5px var(--line);z-index:1}
+.navbar .ttl{position:absolute;left:48px;right:48px;text-align:center;font-size:17px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail{padding:2px 16px 8px;min-width:0}
+.dhead{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px}
+.dhead .n{font-size:20px;font-weight:600}
+.idkind{font-size:11px;font-weight:500;color:var(--t3)}
+.dmeta{font-size:12px;color:var(--t2);margin-top:2px;font-variant-numeric:tabular-nums}
+.dtitle{font-size:19px;font-weight:600;margin-top:6px;line-height:1.3}
+.concl{font-size:15px;line-height:1.45;margin-top:6px}
+.risk{margin-top:12px;display:flex;gap:8px;align-items:flex-start;color:var(--red);font-size:14px;line-height:1.5;background:var(--redFill);border-radius:10px;padding:9px 12px}
+.risk .ic{flex:none;font-weight:700}
+.sect{font-size:12px;font-weight:500;color:var(--t3);margin:14px 0 4px}
+.card{background:var(--card);border-radius:12px;padding:2px 14px;border:.5px solid var(--line)}
+.ld{padding:6px 0}
+.ld+.ld{border-top:.5px solid var(--line)}
+.ld1{display:flex;align-items:baseline;gap:8px;font-size:15px;font-weight:600}
+.ld2{font-size:14px;line-height:1.45;margin-top:3px;color:var(--t2);font-weight:400}
+.ldp{font-size:14px;line-height:1.45;margin-top:2px;color:var(--t1)}
+.ldp .k{color:var(--t2)}
+.views{background:var(--blueFill);border-radius:12px;padding:4px 14px;color:var(--blue)}
+.v{padding:8px 0;font-size:14px;line-height:1.5}
+.v+.v{border-top:.5px solid rgba(127,127,127,.25)}
+.v small{display:block;font-size:11.5px;opacity:.85;margin-bottom:1px}
+.src{display:flex;align-items:center;gap:8px;padding:9px 0}
+.src+.src{border-top:.5px solid var(--line)}
+.src .txt{flex:1;min-width:0}
+.s1{font-size:12px;color:var(--t2);font-variant-numeric:tabular-nums}
+.s2{font-size:14px;line-height:1.4;margin-top:2px}
+.chev{color:var(--t3);flex:none;font-size:18px;line-height:1}
+.mac{width:1100px;height:720px;border-radius:12px;overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.18);background:var(--page);color:var(--t1);display:flex;flex-direction:column;flex:none;border:.5px solid rgba(0,0,0,.14)}
+.titlebar{height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--bar);border-bottom:.5px solid var(--line);position:relative}
+.dots{display:flex;gap:8px}
+.dots i{width:12px;height:12px;border-radius:50%;display:block}
+.dots i:nth-child(1){background:#FF5F57}
+.dots i:nth-child(2){background:#FEBC2E}
+.dots i:nth-child(3){background:#28C840}
+.wintitle{position:absolute;left:0;right:0;text-align:center;font-size:13px;font-weight:600;pointer-events:none}
+.tools{margin-left:auto;display:flex;align-items:center;gap:14px;position:relative;z-index:1}
+.tool{color:var(--t2);display:flex}
+.body{flex:1;min-height:0;display:flex}
+.side{width:156px;flex:none;min-height:0;background:var(--side);border-right:.5px solid var(--line);padding-top:8px}
+.sideitem{margin:2px 8px;padding:6px 10px;border-radius:8px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--t1)}
+.sideitem.on{background:rgba(0,0,0,.06);font-weight:600}
+.listcol{width:392px;flex:none;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;border-right:.5px solid var(--line);background:var(--page)}
+.detailcol{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;background:var(--page);padding:20px 28px 32px}
+.listcol h3{margin:6px 16px 0;font-size:26px;font-weight:700;letter-spacing:-.3px;line-height:1.15}
+.listcol .meta{margin:4px 16px 2px}
+.datepop{margin:10px 16px 0;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:3px}
+.caret{font-size:10px;color:var(--t2)}
+.mac .detail{padding:0}
+footer.doc h2{margin:12px 0 6px;font-size:18px}
+table{width:100%;border-collapse:collapse;margin:8px 0 12px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid #E5E5EA;font-size:13px;line-height:1.45}
+th{font-size:12px;color:#666;font-weight:600}
+.del{color:#9A3412;text-decoration:line-through;opacity:.75}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px}
+</style></head><body>
+<header class="doc">
+  <h1>K10 板块热点样图（4.4.0）· 样例数据，仅示意版式</h1>
+  <p>列表沿用方案 A（4.3.1）现状；<b>只改板块详情</b>：去掉四个问题，结论前置，风险沿用红底提示条、挪到结论之后，再接各方怎么看、承接股、原文。</p>
+</header>
+
+<div class="row">
+<h2 class="screen-title">屏 1 · iPhone 板块详情（浅色）· 身份类板块</h2>
+<figure>
+<div class="phone"><div class="screen">
+<div class="island" aria-hidden="true"></div>
+<div class="status"><span>8:07</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="15" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 4.2C3.2 2.2 5.5 1.2 8 1.2s4.8 1 7 3"/><path d="M3.2 6.6A6.4 6.4 0 0 1 8 4.9a6.4 6.4 0 0 1 4.8 1.7"/><path d="M5.6 9A3.4 3.4 0 0 1 8 8.2 3.4 3.4 0 0 1 10.4 9"/><circle cx="8" cy="11" r=".9" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/><path d="M23.6 4v4c.9-.4 1.5-1.1 1.5-2s-.6-1.6-1.5-2z" fill="currentColor"/></svg></span></div>
+<div class="navbar"><span class="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></span><span class="ttl">参股券商</span></div>
+<div class="scroll"><div class="detail">
+<div class="dhead"><span class="n">参股券商</span><span class="idkind">身份类</span></div>
+<div class="dmeta">创业板 3 只 · 首次公开 11-01 15:19</div>
+<div class="dtitle">金融监管部门召开两个座谈会，研究推动支持资本市场工具使用</div>
+<div class="concl">座谈直指券商与资本市场工具，参股券商链弹性大，周末已发酵，短线资金易沿身份映射扩散。</div>
+<div class="risk"><span class="ic">!</span><span>风险：会议若无细则落地，题材偏一日游，高开易回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 金十数据</small>监管部门今日召开两个座谈会，研究资本市场工具使用。</div>
+  <div class="v"><small>媒体 · 央广网</small>座谈会聚焦多层次资本市场与工具创新支持方向。</div>
+  <div class="v"><small>券商 · 某研究所晨报</small>参股券商映射成交活，情绪溢价大于基本面。</div>
+</div>
+<div class="sect">承接股</div>
+<div class="card">
+  <div class="ld"><div class="ld1"><span>银之杰</span><span class="c">300085</span></div><div class="ld2">交易所行情与金融数据合作，参股券商身份清晰。</div><div class="ldp"><span class="k">价格：</span>明显高开不追，回落企稳再看</div></div>
+  <div class="ld"><div class="ld1"><span>华峰超纤</span><span class="c">300180</span></div><div class="ld2">控股券商路径被市场反复炒作，波动大。</div><div class="ldp"><span class="k">价格：</span>冲高不追，缩量震荡再观察</div></div>
+</div>
+<div class="sect">原文</div>
+<div class="card">
+  <div class="src"><div class="txt"><div class="s1">金十快讯 · 11-01 15:19</div><div class="s2">金融监管部门今日召开两个座谈会</div></div><span class="chev">›</span></div>
+</div>
+</div></div>
+<div class="tabbar"><span class="on"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2"/></svg>K10</span><span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg>设置</span></div>
+<div class="home" aria-hidden="true"></div>
+</div></div>
+<figcaption>11/02 参股券商：板块名旁标「身份类」；无四问；风险为红底提示条；承接股各含为什么与价格。</figcaption>
+</figure>
+</div>
+
+<div class="row">
+<h2 class="screen-title">屏 2 · iPhone 板块详情（深色）· 消息直接点名无价格</h2>
+<figure>
+<div class="phone dark"><div class="screen">
+<div class="island" aria-hidden="true"></div>
+<div class="status"><span>18:42</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/></svg></span></div>
+<div class="navbar"><span class="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></span><span class="ttl">减肥药</span></div>
+<div class="scroll"><div class="detail">
+<div class="dhead"><span class="n">减肥药</span></div>
+<div class="dmeta">创业板 21 只 · 首次公开 10-29 22:15</div>
+<div class="dtitle">礼来上调全年销售预期，GLP-1 景气再获验证</div>
+<div class="concl">海外龙头上调指引强化景气预期，资金向 CXO 与原料药映射，开盘前已传播，接力看龙头表态。</div>
+<div class="risk"><span class="ic">!</span><span>风险：海外指引已部分定价，跟风股分化快，谨防冲高回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 财联社</small>礼来上调全年营收指引，减重适应症贡献超预期。</div>
+  <div class="v"><small>公司 · 礼来公告</small>管理层称 GLP-1 产能扩张按计划推进。</div>
+  <div class="v"><small>券商 · 某医药团队</small>产业链订单能见度提升，但估值已不便宜。</div>
+</div>
+<div class="sect">承接股</div>
+<div class="card">
+  <div class="ld"><div class="ld1"><span>博腾股份</span><span class="c">300363</span></div><div class="ld2">多肽产能与海外大客户绑定，赛道景气映射标的。</div><div class="ldp"><span class="k">价格：</span>高开过大观望，放量企稳再跟</div></div>
+  <div class="ld"><div class="ld1"><span>常山药业</span><span class="c">300255</span></div><div class="ld2">消息直接点名，短炒情绪主导，不设价格行。</div></div>
+  <div class="ld"><div class="ld1"><span>普利制药</span><span class="c">300630</span></div><div class="ld2">制剂出口与减重管线有特色，弹性次于龙头。</div><div class="ldp"><span class="k">价格：</span>明显高开不追</div></div>
+</div>
+<div class="sect">原文</div>
+<div class="card">
+  <div class="src"><div class="txt"><div class="s1">财联社 · 10-29 22:15</div><div class="s2">礼来上调全年销售预期</div></div><span class="chev">›</span></div>
+</div>
+</div></div>
+<div class="tabbar"><span class="on"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2"/></svg>K10</span><span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span>设置</span></div>
+<div class="home" aria-hidden="true"></div>
+</div></div>
+<figcaption>10/30 减肥药：深色模式；常山药业为「消息直接点名」，仅展示为什么、不展示价格行。</figcaption>
+</figure>
+</div>
+
+<div class="row">
+<h2 class="screen-title">屏 3 · iPhone 晨报列表（浅色）· 个股 + 板块热点</h2>
+<figure>
+<div class="phone"><div class="screen">
+<div class="island" aria-hidden="true"></div>
+<div class="status"><span>8:06</span><span class="sigs" aria-hidden="true"><svg width="17" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx=".6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx=".6" fill="currentColor"/><rect x="10" y="2.5" width="3" height="9.5" rx=".6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx=".6" fill="currentColor"/></svg><svg width="25" height="12" viewBox="0 0 26 12"><rect x=".7" y=".7" width="21.2" height="10.6" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.3" y="2.3" width="16" height="7.4" rx="1" fill="currentColor"/></svg></span></div>
+<div class="nav"><h2>晨报 11/02 周一</h2><div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div></div>
+<div class="seg"><span class="on">最新</span><span>历史</span></div>
+<div class="scroll">
+<div class="blk">个股</div>
+<div class="list"><div class="quiet">今天没有入选的个股</div></div>
+<div class="blk">板块热点</div>
+<div class="list">
+<div class="item"><div class="l1"><span class="pill">减肥药</span><span class="count">创业板 21 只</span><span class="time">10-29 22:15</span></div><div class="l2">礼来上调全年销售预期，GLP-1 景气再获验证</div><div class="l3 one">海外龙头上调指引，资金向 CXO 与原料药映射，开盘前已传播。</div><div class="l4"><span class="k">承接：</span>博腾股份 · 常山药业 · 普利制药</div></div>
+<div class="item"><div class="l1"><span class="pill">参股券商</span><span class="count">创业板 3 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开两个座谈会，研究推动支持资本市场工具使用</div><div class="l3 one">座谈直指资本市场工具，参股券商身份映射，周末已发酵。</div><div class="l4"><span class="k">承接：</span>银之杰 · 华峰超纤</div></div>
+</div>
+</div>
+<div class="tabbar"><span class="on"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2"/></svg>K10</span><span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>KX</span><span>设置</span></div>
+<div class="home" aria-hidden="true"></div>
+</div></div>
+<figcaption>列表版式与 4.3.1 一致；第四行前缀为「承接：」，未改详情结构。</figcaption>
+</figure>
+</div>
+
+<div class="row">
+<h2 class="screen-title">屏 4 · Mac 晨报两栏（浅色）· 列表 + 4.4.0 详情</h2>
+<figure class="wide">
+<div class="mac">
+  <div class="titlebar">
+    <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="wintitle">晨报</span>
+    <span class="tools"><span class="tool"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13.4a7.4 7.4 0 0 0 .1-1.4l2-1.5-2-3.4-2.4.9a7.4 7.4 0 0 0-2.5-1.4L14.1 2h-4.2l-.4 2.6a7.4 7.4 0 0 0-2.5 1.4l-2.4-.9-2 3.4 2 1.5a7.4 7.4 0 0 0-.1 1.4l-2 1.5 2 3.4 2.4-.9a7.4 7.4 0 0 0 2.5 1.4l.4 2.6h4.2l.4-2.6a7.4 7.4 0 0 0 2.5-1.4l2.4.9 2-3.4-2-1.5zM12 15.3A3.3 3.3 0 1 1 15.3 12 3.3 3.3 0 0 1 12 15.3z"/></svg></span></span>
+  </div>
+  <div class="body">
+    <aside class="side">
+      <div class="sideitem on"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="3.3"/><path d="M12 2.7v2M12 19.3v2M2.7 12h2M19.3 12h2"/></svg><span>K10</span></div>
+      <div class="sideitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>KX</span></div>
+    </aside>
+    <div class="listcol">
+      <div class="datepop">11/02 周一 <span class="caret">▾</span></div>
+      <h3>晨报 11/02 周一</h3>
+      <div class="meta">10/30 15:00 – 11/02 08:00 · 个股 0 只 · 板块 2 个</div>
+      <div class="blk">个股</div><div class="list"><div class="quiet">今天没有入选的个股</div></div>
+      <div class="blk">板块热点</div>
+      <div class="list">
+        <div class="item"><div class="l1"><span class="pill">减肥药</span><span class="count">创业板 21 只</span><span class="time">10-29 22:15</span></div><div class="l2">礼来上调全年销售预期</div><div class="l3 one">海外景气映射，开盘前已传播。</div><div class="l4"><span class="k">承接：</span>博腾股份 · 常山药业 · 普利制药</div></div>
+        <div class="item sel"><div class="l1"><span class="pill">参股券商</span><span class="count">创业板 3 只</span><span class="time">11-01 15:19</span></div><div class="l2">金融监管部门召开两个座谈会</div><div class="l3 one">身份映射，周末已发酵。</div><div class="l4"><span class="k">承接：</span>银之杰 · 华峰超纤</div></div>
+      </div>
+    </div>
+    <div class="detailcol"><div class="detail">
+<div class="dhead"><span class="n">参股券商</span><span class="idkind">身份类</span></div>
+<div class="dmeta">创业板 3 只 · 首次公开 11-01 15:19</div>
+<div class="dtitle">金融监管部门召开两个座谈会，研究推动支持资本市场工具使用</div>
+<div class="concl">座谈直指券商与资本市场工具，参股券商链弹性大，短线资金易沿身份映射扩散。</div>
+<div class="risk"><span class="ic">!</span><span>风险：会议若无细则落地，题材偏一日游，高开易回落。</span></div>
+<div class="sect">各方怎么看</div>
+<div class="views">
+  <div class="v"><small>媒体 · 金十数据</small>监管部门今日召开两个座谈会。</div>
+  <div class="v"><small>券商 · 某研究所晨报</small>参股券商映射成交活，情绪溢价大于基本面。</div>
+</div>
+<div class="sect">承接股</div>
+<div class="card">
+  <div class="ld"><div class="ld1"><span>银之杰</span><span class="c">300085</span></div><div class="ld2">金融数据与参股身份，映射清晰。</div><div class="ldp"><span class="k">价格：</span>明显高开不追</div></div>
+  <div class="ld"><div class="ld1"><span>华峰超纤</span><span class="c">300180</span></div><div class="ld2">控股券商路径被反复炒作。</div><div class="ldp"><span class="k">价格：</span>冲高不追</div></div>
+</div>
+<div class="sect">原文</div>
+<div class="card"><div class="src"><div class="txt"><div class="s1">金十快讯 · 11-01 15:19</div><div class="s2">金融监管部门今日召开两个座谈会</div></div><span class="chev">›</span></div></div>
+</div></div>
+  </div>
+</div>
+<figcaption>左侧列表仍用承接前缀；右侧详情与屏 1 同结构，无四问区块。</figcaption>
+</figure>
+</div>
+
+<footer class="doc">
+<h2 class="screen-title" style="text-align:left;margin-top:24px">屏 5 · 字段对照（4.3.1 → 4.4.0）</h2>
+<p>只对照板块热点详情与列表承接行；画面上不出现字段名。</p>
+<table>
+<thead><tr><th>界面元素</th><th>4.3.1</th><th>4.4.0</th></tr></thead>
+<tbody>
+<tr><td>列表第四行前缀</td><td>承接：（已上线）</td><td>保留</td></tr>
+<tr><td>板块名、创业板 N 只、首次公开</td><td>保留</td><td>保留</td></tr>
+<tr><td>事件标题、结论段落</td><td>保留</td><td>保留（结论仍说明资金为何来）</td></tr>
+<tr><td class="del">四个问题整块</td><td class="del">① 是不是新消息</td><td>删除</td></tr>
+<tr><td class="del"></td><td class="del">② 分量够不够</td><td>删除</td></tr>
+<tr><td class="del"></td><td class="del">③ 板块在什么位置</td><td>删除</td></tr>
+<tr><td class="del"></td><td class="del">④ 谁来承接（内嵌承接股与价格）</td><td>删除；承接独立成节</td></tr>
+<tr><td>风险</td><td>红底提示条，在四问之后</td><td>同样式，挪到结论之后</td></tr>
+<tr><td>各方怎么看</td><td>保留</td><td>保留；位置在风险之后</td></tr>
+<tr><td>承接股</td><td>嵌在④内，简称与价格</td><td>独立「承接股」节，含为什么、可选价格</td></tr>
+<tr><td>消息直接点名、无价格</td><td>—</td><td>新增：不展示价格行</td></tr>
+<tr><td>身份类标签</td><td>—</td><td>新增：板块名旁小字「身份类」</td></tr>
+<tr><td>原文</td><td>保留</td><td>保留</td></tr>
+</tbody>
+</table>
+</footer>
+</body></html>
