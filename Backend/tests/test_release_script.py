@@ -1909,9 +1909,12 @@ def test_downgrade_from_v6_to_v5_keeps_the_pool_rows(tmp_path, monkeypatch):
         con.execute("INSERT INTO market_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
                     ("300001.SZ", "2026-11-04", 1, 1, 1, 1, 1, 0, 1000, 0))
         con.execute(
-            "INSERT INTO sector_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO sector_events(report_id, event_id, title, sector, reason, repeat, state, verdict,
+               package_json, output_json, error, usage_json, seconds, prepared_at, settled_at, routes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             ("morning-2026-11-05", "0123456789abcdef", "金融座谈会", "人工智能", "直接", 0, "skipped",
-             None, "{}", None, None, "{}", None, "2026-11-05T00:00:00+00:00", "2026-11-05T00:00:00+00:00"))
+             None, "{}", None, None, "{}", None, "2026-11-05T00:00:00+00:00", "2026-11-05T00:00:00+00:00",
+             "[]"))
         con.commit()
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
     assert result["switched"] is True and result["schema"] == {"before": 6, "target": 5, "action": "downgrade"}
@@ -1967,9 +1970,12 @@ def test_downgrade_from_v7_to_v6_recreates_an_empty_market_daily(tmp_path, monke
                     ("302001.SZ", "甲公司", "甲公司全称", "2020-01-01", "[]", None, "tushare",
                      "2026-11-05T00:00:00+00:00", 100000, 200000, "2026-11-04"))
         con.execute(
-            "INSERT INTO sector_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO sector_events(report_id, event_id, title, sector, reason, repeat, state, verdict,
+               package_json, output_json, error, usage_json, seconds, prepared_at, settled_at, routes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             ("morning-2026-11-05", "0123456789abcdef", "金融座谈会", "人工智能", "直接", 0, "skipped",
-             None, "{}", None, None, "{}", None, "2026-11-05T00:00:00+00:00", "2026-11-05T00:00:00+00:00"))
+             None, "{}", None, None, "{}", None, "2026-11-05T00:00:00+00:00", "2026-11-05T00:00:00+00:00",
+             "[]"))
         con.commit()
     before = _documents(driven.db)
     result = release.switch(release=_TARGET, previous=_PREVIOUS)
@@ -1981,6 +1987,22 @@ def test_downgrade_from_v7_to_v6_recreates_an_empty_market_daily(tmp_path, monke
     assert _documents(driven.db) == before
     with closing(sqlite3.connect(driven.db)) as con:
         names = {row[0] for row in con.execute("SELECT name FROM sqlite_master")}
+        columns = [row[1] for row in con.execute("PRAGMA table_info(sector_events)")]
+        assert "routes" in columns
+        kept = con.execute(
+            "SELECT title, routes FROM sector_events WHERE event_id=?", ("0123456789abcdef",)).fetchone()
+        assert kept == ("金融座谈会", "[]")
+        # v4.3.1-b132 按列名写入，不带 routes。降级后这一列留着，省略它时用默认空数组。
+        con.execute(
+            """INSERT INTO sector_events(report_id, event_id, title, sector, reason, repeat, state, verdict,
+               package_json, output_json, error, usage_json, seconds, prepared_at, settled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("morning-2026-11-05", "abcdef0123456789", "另一条", "人工智能", "直接", 0, "skipped",
+             None, "{}", None, None, "{}", None, "2026-11-05T00:00:00+00:00", "2026-11-05T00:00:00+00:00"))
+        con.commit()
+        written = con.execute(
+            "SELECT title, routes FROM sector_events WHERE event_id=?", ("abcdef0123456789",)).fetchone()
+        assert written == ("另一条", "[]")
     assert "idx_market_daily_trade_date" in names
 
 

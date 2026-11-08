@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 import httpx
 
@@ -305,14 +305,18 @@ def _covered_pair(pair: object) -> tuple[datetime, datetime] | None:
     return lo, hi
 
 
-def coverage_gaps(runs: list[dict], start: datetime, end: datetime) -> list[str]:
+def coverage_gaps(runs: list[dict], start: datetime, end: datetime, *,
+                  only: Collection[str] | None = None) -> list[str]:
     """逐来源看窗口是否被完整的采集覆盖；没覆盖的写明最后一次的原因。
 
     不完整的记录若带 covered 切片，这些切片也算覆盖。没有该字段的旧记录只看 complete。
     后来才上线的来源（LATE_SOURCES）在传入的采集记录里一条都没有时跳过：它上线之前的窗口本来就没有采过。
+    only 给出时只核对这些来源，其余来源不出现在缺口里。
     """
     gaps = []
     for key, label in SOURCE_LABELS.items():
+        if only is not None and key not in only:
+            continue
         if key in LATE_SOURCES and not any(source.get("sourceKey") == key for run in runs for source in run["sources"]):
             continue
         intervals, last_error = [], None

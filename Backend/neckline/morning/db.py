@@ -8,6 +8,8 @@
 sector_concepts、sector_members、sector_concepts_meta（同花顺概念和最近一次刷新），
 market_daily（创业板日线）、sector_events（板块线事件）。
 版本 7 删掉 market_daily（索引随表删除）。板块线不再用日线位置。
+4.4.0 还没上线，库结构仍是 7：sector_events 增加 routes（JSON 数组）。新建库直接带这一列；
+从版本 6 升上来时补上这一列。已经是版本 7 但还没有这一列的（第一轮库）也补上，其余行不动。
 init_schema 把版本 1～6 的库在同一个事务里升到版本 7，升级失败整体回滚。
 """
 from __future__ import annotations
@@ -198,6 +200,7 @@ CREATE TABLE IF NOT EXISTS sector_events (
   seconds REAL,
   prepared_at TEXT NOT NULL,
   settled_at TEXT,
+  routes TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (report_id, event_id)
 );
 """
@@ -245,7 +248,7 @@ def init_schema(path: Path) -> None:
 
     新库一次建到当前版本，不再建 KX 的三张表，也不建 market_daily。版本 1～6 的库在同一个事务里补上缺的表、
     删掉 kx_pool / kx_picks / kx_daily_stats 和 market_daily，并把版本号升到当前版本。任何一步失败都整体回滚。
-    已经是当前版本时什么都不改。只读连接不走这里。
+    已经是当前版本时，只在 sector_events 缺 routes 列时补上这一列。只读连接不走这里。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -260,6 +263,7 @@ def init_schema(path: Path) -> None:
             raise NotReady(f"{path} 不是 V4 晨报库（application_id={app_id}, user_version={version}）")
         conn.execute("PRAGMA journal_mode=WAL")
         if tables and version == SCHEMA_VERSION:
+            _ensure_sector_routes(conn)
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -268,6 +272,7 @@ def init_schema(path: Path) -> None:
             for name in _RETIRED_KX_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
             conn.execute("DROP TABLE IF EXISTS market_daily")
+            _ensure_sector_routes(conn)
             conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.execute("COMMIT")
@@ -277,6 +282,13 @@ def init_schema(path: Path) -> None:
             raise
     finally:
         conn.close()
+
+
+def _ensure_sector_routes(conn: sqlite3.Connection) -> None:
+    """sector_events 缺 routes 时补上。已有的行用默认空数组。表还不存在时什么都不做。"""
+    rows = conn.execute("PRAGMA table_info(sector_events)").fetchall()
+    if rows and not any(row[1] == "routes" for row in rows):
+        conn.execute("ALTER TABLE sector_events ADD COLUMN routes TEXT NOT NULL DEFAULT '[]'")
 
 
 def _check(conn: sqlite3.Connection, path: Path) -> None:
@@ -366,6 +378,33 @@ def iter_documents(conn: sqlite3.Connection, *, published_from: datetime, publis
     sql = _DOC_QUERY.format(upper="<=" if include_end else "<")
     cutoff = utc(fetched_by)
     for row in conn.execute(sql, (utc(published_from), utc(published_to), cutoff, cutoff)):
+        meta = json.loads(row["metadata_json"])
+        meta["title"] = row["title"]
+        yield {"documentId": row["document_id"], "revision": row["revision"], "sourceKey": row["source_key"],
+               "url": row["url"], "firstSeenAt": row["first_seen_at"], "publishedAt": row["published_at"],
+               "fetchedAt": row["fetched_at"], "text": row["original_text"], "excerpt": row["excerpt"], "meta": meta}
+
+
+def iter_document_heads(conn: sqlite3.Connection, *, published_after: datetime, published_to: datetime,
+                        fetched_by: datetime, text_chars: int) -> Iterator[dict]:
+    """和 iter_documents 同一口径的版本，但原文在 SQL 里截断，并且发布时间不含起点。
+
+    发酵统计只看标题和正文前若干字。截断后再交给 to_message，避免把整篇读进内存。
+    """
+    if isinstance(text_chars, bool) or not isinstance(text_chars, int) or text_chars < 1:
+        raise ValueError("text_chars 须为正整数")
+    sql = """
+    SELECT v.document_id, v.revision, d.source_key, d.url, d.first_seen_at, v.published_at, v.fetched_at,
+           v.title, substr(v.original_text, 1, ?) AS original_text,
+           substr(coalesce(v.excerpt, ''), 1, ?) AS excerpt, v.metadata_json
+    FROM document_versions v JOIN documents d USING(document_id)
+    WHERE v.published_precision='exact' AND v.published_at > ? AND v.published_at <= ? AND v.fetched_at <= ?
+      AND v.revision = (SELECT max(revision) FROM document_versions w
+                        WHERE w.document_id = v.document_id AND w.fetched_at <= ?)
+    ORDER BY v.published_at, v.document_id
+    """
+    cutoff = utc(fetched_by)
+    for row in conn.execute(sql, (text_chars, text_chars, utc(published_after), utc(published_to), cutoff, cutoff)):
         meta = json.loads(row["metadata_json"])
         meta["title"] = row["title"]
         yield {"documentId": row["document_id"], "revision": row["revision"], "sourceKey": row["source_key"],
@@ -799,6 +838,12 @@ def _sector_event(row: sqlite3.Row) -> dict:
         except ValueError:
             data["output"] = raw_output
     data["usage"] = json.loads(data.pop("usage_json") or "{}")
+    raw_routes = data.pop("routes", "[]")
+    try:
+        parsed_routes = json.loads(raw_routes or "[]")
+    except ValueError:
+        parsed_routes = []
+    data["routes"] = parsed_routes if isinstance(parsed_routes, list) else []
     return data
 
 
@@ -817,7 +862,8 @@ def insert_sector_event(conn: sqlite3.Connection, *, report_id: str, event_id: s
                         sector: str | None, reason: str | None, repeat: bool, state: str,
                         package: Mapping, prepared_at: datetime, verdict: str | None = None,
                         output: Any = None, error: str | None = None, usage: Mapping | None = None,
-                        seconds: float | None = None, settled_at: datetime | None = None) -> bool:
+                        seconds: float | None = None, settled_at: datetime | None = None,
+                        routes: Sequence[str] | None = None) -> bool:
     """写入一条事件。同一期同一编号已经有行时不覆盖，续跑沿用原来的数据包和终态。"""
     if len(event_id) != 16:
         raise ValueError("事件编号须为 16 位")
@@ -837,14 +883,16 @@ def insert_sector_event(conn: sqlite3.Connection, *, report_id: str, event_id: s
         output_json = None
     else:
         output_json = _dumps(output)
+    route_list = [item for item in (routes or []) if isinstance(item, str)]
     cursor = conn.execute(
         """INSERT INTO sector_events(report_id, event_id, title, sector, reason, repeat, state, verdict,
-                                     package_json, output_json, error, usage_json, seconds, prepared_at, settled_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                     package_json, output_json, error, usage_json, seconds, prepared_at, settled_at,
+                                     routes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(report_id, event_id) DO NOTHING""",
         (report_id, event_id, title, sector, reason, 1 if repeat else 0, state, verdict, _dumps(package),
          output_json, error, _dumps(dict(usage or {})), seconds, utc(prepared_at),
-         None if settled_at is None else utc(settled_at)))
+         None if settled_at is None else utc(settled_at), _dumps(route_list)))
     return cursor.rowcount == 1
 
 

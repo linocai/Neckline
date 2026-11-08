@@ -1,12 +1,62 @@
 """Offline guards. Tests use temporary databases only and do not load `.env`."""
 from __future__ import annotations
 
+import copy as _copy
 import os as _os
 from pathlib import Path
 
 import pytest
 
+
+def cover_sector_history(path, day):
+    """给发酵统计补上完整采集覆盖。不算业务数据，只让 C 路在历史不全时不要挡住别的测试。"""
+    from datetime import date as date_cls
+
+    from neckline.morning import db
+    from neckline.morning.report import load_config
+    from neckline.morning.sector_ferment import history_bounds
+
+    trade_day = day if isinstance(day, date_cls) else date_cls.fromisoformat(str(day)[:10])
+    rules = load_config().rules
+    periods = rules["sectors"]["fermenting"]["recentDays"] + rules["sectors"]["fermenting"]["baseDays"]
+    start, end = history_bounds(trade_day, rules["schedule"]["windowEnd"], periods)
+    run_id = f"cover-{trade_day.isoformat()}"
+    with db.write(path) as conn:
+        existing = conn.execute("SELECT 1 FROM collection_runs WHERE run_id=?", (run_id,)).fetchone()
+        if existing:
+            return
+        db.begin_collection(conn, run_id=run_id, slot_at=end, started_at=end)
+        db.finish_collection(conn, run_id=run_id, status="completed", finished_at=end, sources=[
+            {"sourceKey": key, "requestedStart": start.isoformat(), "requestedEnd": end.isoformat(),
+             "complete": True, "error": None, "documents": 0}
+            for key in ("tushare-major-news", "jin10-flash", "jin10-news")
+        ])
+
+
+def approved_config(base=None):
+    """已批准的配置副本。文件里的 approval 是 pending，需要跑晨报的测试都从这里取。"""
+    from neckline.morning.report import LoadedConfig, load_config
+
+    base = base or load_config()
+    rules = _copy.deepcopy(base.rules)
+    rules["approval"] = "approved"
+    return LoadedConfig(rules=rules, sha256=base.sha256, pool=base.pool,
+                        profiles=dict(base.profiles), alias_seed=base.alias_seed)
+
 _os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
+
+@pytest.fixture(autouse=True)
+def cli_uses_the_approved_copy(monkeypatch):
+    """文件里的筛选规则是 pending。命令行和回放要跑晨报时，用这一份已批准的副本。"""
+    from neckline.morning.report import load_config as load_rules
+
+    def _load_approved(*args, **kwargs):
+        loaded = load_rules(*args, **kwargs) if args or kwargs else load_rules()
+        return approved_config(loaded)
+
+    monkeypatch.setattr("neckline.morning.cli.load_config", _load_approved)
+    monkeypatch.setattr("neckline.morning.replay.load_config", _load_approved)
 
 
 @pytest.fixture(autouse=True)

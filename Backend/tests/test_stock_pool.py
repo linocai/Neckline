@@ -85,7 +85,9 @@ def _run(path, post, *, environ=None, now=None):
         sent.append((title, body))
         return type("R", (), {"ok": True, "reason": "ok"})()
 
-    result = run_morning(path, now=now, config=load_config(), clock=lambda: now,
+    from tests.conftest import approved_config
+
+    result = run_morning(path, now=now, config=approved_config(), clock=lambda: now,
                          collector=lambda _at: {"status": "completed"}, client_factory=lambda _rid: None,
                          pusher=Pusher(path, push, lambda: now), pool_post=post,
                          pool_environ=environ if environ is not None else {"TUSHARE_TOKEN": SECRET})
@@ -172,13 +174,15 @@ def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     rules = load_config().rules
     body = {key: value for key, value in rules.items()
             if key not in {"configVersion", "approvedAt", "note", "companyPool", "matching", "sectors"}}
+    # 批准状态改成 pending 不改主线规则。哈希仍按 approved 比对，常量保持原值。
+    body["approval"] = "approved"
     digest = hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert digest == MAINLINE_SHA256
     # matching 只多了扩池新增公司的常用词简称，原来 7 个原样保留
     assert rules["matching"]["strictShortNames"] == ["值得买", "线上线下", "向日葵", "新天地", "探路者", "新城市", "杭州高新",
                                                     "机器人", "同花顺", "新产业", "指南针", "创世纪", "东方财富"]
     assert set(rules["matching"]) == {"note", "strictShortNames"}
-    assert rules["configVersion"] == "screening-v7" and rules["approval"] == "approved"
+    assert rules["configVersion"] == "screening-v7" and rules["approval"] == "pending"
     assert len(load_config().alias_seed) == 1089 and len(load_config().pool) == 0
 
     def rejected(mutate, message):

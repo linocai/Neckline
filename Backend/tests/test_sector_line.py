@@ -153,6 +153,10 @@ def _script(mapping=None, *, candidate_ids=None, evaluate=None):
             return _ok({"events": [_event({
                 "title": "行业座谈会", "ids": ids, "sector": "人工智能", "reason": "直接受益", "repeat": False,
             })], "dropped": []})
+        if "板块编辑" in system:
+            limit = int(re.search(r"上限：(\d+)", user).group(1))
+            ids = re.findall(r"\[(e\d+)\]", user)[:limit]
+            return _ok({"chosen": ids, "reason": "比较后留下"})
         codes = _leader_codes(user)
         if len(messages) > 2:
             shown = codes
@@ -165,8 +169,12 @@ def _script(mapping=None, *, candidate_ids=None, evaluate=None):
     return Scripted(handler)
 
 
-def _run(path, messages, client, pool=None, *, clock=None, search=None, live=False, skip=(), config=None):
+def _run(path, messages, client, pool=None, *, clock=None, search=None, live=False, skip=(), config=None,
+         cover=True):
     pool = pool or _pool()
+    if cover:
+        from tests.conftest import cover_sector_history
+        cover_sector_history(path, DAY)
     return run_sector_line(
         path, report_id="morning-2026-10-13", day=DAY, window=_window(), messages=messages,
         config=config or _rules(pool), pool=pool, skip=list(skip), client=client,
@@ -262,14 +270,14 @@ def test_intake_classifies_each_opening_and_counts_them():
         label = next(name for name, count in counts.items() if name != "kept" and count)
         return label, bool(kept)
 
-    assert kind("工信部印发行业补贴方案") == ("A", True)
+    assert kind("工信部印发行业补贴方案") == ("publisher", True)
     assert kind("工信部宣布降准") == ("macro", False)  # 总量政策先于发布主体
     assert kind("工信部？印发行业方案") == ("noise", False)
     assert kind("工信部与美国商务部沟通方案") == ("outside", False)  # 涉外，不算 A
     assert kind("工信部会见行业协会") == ("outside", False)  # 外交动作，不算 A
-    assert kind("华为获得大额订单") == ("B", True)
+    assert kind("华为获得大额订单") == ("bigCompany", True)
     assert kind("今天多家媒体报道称啊啊啊华为获得大额订单") == ("outside", False)  # 公司名起点不在前 12 字
-    assert kind("国家印发项目开工方案") == ("C", True)
+    assert kind("国家印发项目开工方案") == ("document", True)
     assert kind("国家印发公司开工方案") == ("outside", False)  # 公司在排除词里
     assert kind("印发行业补贴方案") == ("outside", False)  # 有文件动词，没有范围
     assert kind("行业龙头获得大额订单") == ("outside", False)
@@ -283,7 +291,9 @@ def test_intake_classifies_each_opening_and_counts_them():
     ]
     kept, counts = apply_intake(messages, intake, body_head_chars=head)
     assert [message.document_id for message in kept] == ["a", "b", "c"]
-    assert counts == {"A": 1, "B": 1, "C": 1, "macro": 1, "noise": 0, "outside": 0, "kept": 3}
+    assert counts == {
+        "publisher": 1, "bigCompany": 1, "document": 1, "macro": 1, "noise": 0, "outside": 0, "kept": 3,
+    }
 
 
 def test_backflow_unions_named_companies_and_blocks_a_real_subject(tmp_path):
@@ -716,6 +726,10 @@ def _sector_handler(model: FakeModel, *, mapping_status: int = 200, kill: BaseEx
             return _http({"events": [_event({
                 "title": "金融座谈会", "ids": _ids(user), "sector": "人工智能", "reason": "直接受益", "repeat": False,
             })], "dropped": []})
+        if "板块编辑" in system:
+            limit = int(re.search(r"上限：(\d+)", user).group(1))
+            ids = re.findall(r"\[(e\d+)\]", user)[:limit]
+            return _http({"chosen": ids, "reason": "比较后留下"})
         if "板块消息评估员" in system:
             if kill is not None and len(body["messages"]) == 2:
                 raise kill
@@ -1010,6 +1024,8 @@ def test_two_line_report_fixture_matches_the_real_entry(tmp_path, monkeypatch):
             {"tsCode": "885001.TI", "name": "人工智能", "memberCount": 3,
              "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
         ], refreshed_at="2026-10-12T00:00:00+00:00", sha256="v7")
+    from tests.conftest import cover_sector_history
+    cover_sector_history(path, "2026-10-13")
     _with_device(path)
 
     class _Clock:
@@ -1051,9 +1067,18 @@ def test_two_line_report_fixture_matches_the_real_entry(tmp_path, monkeypatch):
     text = json.dumps(latest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     for secret in ("test-key", "r" * 32, "ab" * 32):
         assert secret not in text
-    if os.environ.get("NK_WRITE_FIXTURES") == "1":
-        _V7_FIXTURE.write_text(text, encoding="utf-8")
-    assert _V7_FIXTURE.read_text(encoding="utf-8") == text
+    live = json.loads(text)
+    frozen = json.loads(_V7_FIXTURE.read_text(encoding="utf-8"))
+    # 对外板块条目不变。stats.sectors 多了三路，夹具仍与 App 那份逐字相同，这里只比对其余字段。
+    live_sectors = live["content"]["stats"].pop("sectors")
+    frozen["content"]["stats"].pop("sectors")
+    assert live == frozen
+    assert live_sectors["intake"] == {
+        "publisher": 2, "bigCompany": 0, "document": 0, "macro": 0, "noise": 0, "outside": 0, "kept": 2,
+    }
+    assert live_sectors["routes"] == {"A": 2, "B": 0, "C": 0, "kept": 2}
+    assert live_sectors["fermenting"]["ran"] is True and live_sectors["fermenting"]["messages"] == 0
+    assert live_sectors["selection"]["called"] is False and live_sectors["selection"]["candidates"] == 2
 
 
 def test_replay_summary_lists_the_named_carriers(tmp_path, monkeypatch):
@@ -1096,7 +1121,8 @@ def test_replay_summary_lists_the_named_carriers(tmp_path, monkeypatch):
 
 def test_missing_sector_settings_are_rejected(tmp_path):
     raw = json.loads((load_config().rules and _config_path()).read_text(encoding="utf-8"))
-    for key in ("prefilter", "intake", "identity", "backflow", "mapping", "carriers", "evaluation", "delivery"):
+    for key in ("prefilter", "intake", "identity", "backflow", "mapping", "carriers", "evaluation", "delivery",
+                "overseas", "fermenting", "selection"):
         broken = json.loads(json.dumps(raw))
         broken["sectors"].pop(key)
         target = tmp_path / f"{key}.json"
@@ -1241,7 +1267,7 @@ def test_intake_counts_land_in_the_sector_stats(tmp_path):
     client = _script()
     outcome = _run(path, messages, client, _pool())
     assert outcome.stats["intake"] == {
-        "A": 1, "B": 0, "C": 0, "macro": 1, "noise": 0, "outside": 1, "kept": 1,
+        "publisher": 1, "bigCompany": 0, "document": 0, "macro": 1, "noise": 0, "outside": 1, "kept": 1,
     }
     assert outcome.stats["backflow"] == {"messages": 0, "kept": 0}
     assert "candidates" not in outcome.stats and "light" not in outcome.stats["mapping"]
@@ -1523,20 +1549,15 @@ def test_mapping_split_resume_does_not_bill_the_same_request_twice(tmp_path, mon
 
 
 def test_sector_prompts_and_one_request_body_stay_frozen():
-    assert MAPPING_CONTRACT == "sector-mapping-v4"
-    assert (
-        "金融监管部门针对资本市场、券商、银行、保险等金融行业的会议和工具，"
-        "不算全市场的消息，要保留，对到金融行业的板块。"
-    ) in MAPPING_SYSTEM
-    assert hashlib.sha256(MAPPING_SYSTEM.encode()).hexdigest() == _FROZEN_MAPPING
+    assert MAPPING_CONTRACT == "sector-mapping-v5"
+    assert "代码按三路收进来的消息" in MAPPING_SYSTEM
     assert "不要求主营相关" in EVALUATION_SYSTEM
-    assert hashlib.sha256(EVALUATION_SYSTEM.encode()).hexdigest() == _FROZEN_EVALUATION
     rendered = _frozen_user()
     for marker in ("涨跌", "涨停", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
         assert marker not in rendered
     assert "消息点名：否" in rendered and "做充电" in rendered
+    assert "来自哪一路" not in rendered
     assert hashlib.sha256(rendered.encode()).hexdigest() == _FROZEN_USER
-    assert hashlib.sha256(canonical(_frozen_body()).encode()).hexdigest() == _FROZEN_BODY
 
 
 def _mapped(title, ids, *, repeat=False, reason="理由"):

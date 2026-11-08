@@ -34,6 +34,7 @@ Schema 6 only adds ``stock_pool``, ``stock_pool_meta``, ``sector_concepts``, ``s
 A downgrade of an add-tables-only step (2→1, 3→2, 3→1, 4→3, 4→2, 4→1, and 6→5) only rewrites ``user_version``
 after the services are stopped and before the files are replaced; extra tables are kept.
 7→6 recreates an empty ``market_daily`` table and its index from the frozen v6 DDL, then sets ``user_version`` back to 6.
+The ``sector_events.routes`` column is left in place: v6 (B132) inserts and updates by column name, and ``SELECT *`` still reads.
 A downgrade from schema 5, 6 or 7 to 4, 3 or 2 recreates, in that same transaction, the empty KX tables the
 target version needs (v4 and v3: ``kx_pool`` with ``theme`` / ``first_seen`` / ``buyable``; v2: the three tables
 without those columns). 7→5, 6→5, 7→1, 6→1 and 5→1 do not recreate KX tables or ``market_daily``.
@@ -107,6 +108,7 @@ _KX_BASELINE_KEYS = ("kxPool", "kxPicks", "kxBoard")
 # 从 5、6 或 7 往回：目标是 2、3、4 时先在同一事务里补建空 KX 表，再写 user_version。不需要的表保留。
 # 6→5 只改版本号。stock_pool 和板块概念都留着，B131 按 user_version=5 打开。
 # 7→6 按下面冻结的 v6 DDL 重建空的 market_daily 和索引，再把 user_version 设回 6。7 降到 5 及更早不重建日线。
+# sector_events.routes 列保留：B132（v4.3.1-b132）按列名插入、按列名更新，SELECT * 多一列仍能读写。
 ADDITIVE_DOWNGRADES = frozenset({
     (2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1),
     (5, 4), (5, 3), (5, 2), (5, 1),

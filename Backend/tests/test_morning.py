@@ -402,7 +402,9 @@ def test_collection_without_an_attempt_still_needs_bootstrap_and_makes_no_reques
 # ------------------------------------------------------------------ 出报真实入口
 
 def _config(**rules_overrides) -> LoadedConfig:
-    base = load_config()
+    from tests.conftest import approved_config
+
+    base = approved_config()
     pool = CompanyPool([Company("300953.SZ", "震裕科技", ("震裕科技",)), Company("300683.SZ", "海特生物", ("海特生物",)),
                         Company("300082.SZ", "奥克股份", ("奥克股份",))])
     rules = json.loads(json.dumps(base.rules))
@@ -427,6 +429,8 @@ def _seed_window(path, day="2026-10-13"):
             db.finish_collection(conn, run_id=run_id, status="completed", finished_at=slot, sources=[
                 {"sourceKey": key, "requestedStart": start.isoformat(), "requestedEnd": slot.isoformat(),
                  "complete": True, "error": None, "documents": 1} for key in ("tushare-major-news", "jin10-flash", "jin10-news")])
+    from tests.conftest import cover_sector_history
+    cover_sector_history(path, day)
 
 
 @dataclass
@@ -700,7 +704,7 @@ def test_old_report_output_drops_importance_and_review_without_rewriting_the_row
     assert "importance" not in json.dumps(latest["content"]["entries"], ensure_ascii=False)
 
 
-def test_shipped_config_is_approved_and_pool_verified():
+def test_shipped_config_is_pending_and_pool_verified():
     config = load_config()
-    assert config.rules["approval"] == "approved" and config.rules["configVersion"] == "screening-v7"
+    assert config.rules["approval"] == "pending" and config.rules["configVersion"] == "screening-v7"
     assert len(config.pool) == 0 and len(config.alias_seed) == 1089 and config.rules["schedule"] == SCHEDULE
