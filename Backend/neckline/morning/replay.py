@@ -2,7 +2,7 @@
 
   python -m neckline.morning.replay --snapshot <只读快照库> --trade-date YYYY-MM-DD \\
       --work <目录> --market-snapshot <json> --receipts <回执目录> --filings-cache <目录> \\
-      [--config screening-v6.json] (--pool-snapshot <json> | --pool-seed-only) \\
+      [--config screening-v7.json] (--pool-snapshot <json> | --pool-seed-only) \\
       [--sector-snapshot <json>]
 
 业务时钟从快照里该日晨报的 started_at 起步，按真实流逝时间前进。

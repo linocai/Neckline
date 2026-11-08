@@ -218,7 +218,7 @@ def _validate_screening_rules(rules: object) -> dict:
 
 
 def _validate_sectors(rules: dict) -> None:
-    """板块清单和日线参数。缺了或类型不对就拒绝整份配置，不补默认值。"""
+    """板块清单和板块线参数。缺了或类型不对就拒绝整份配置，不补默认值。"""
     sectors = _require_dict(rules, "sectors", "sectors")
     concepts = _require_dict(sectors, "concepts", "sectors.concepts")
     names = _require(concepts, "excludeNames", "sectors.concepts.excludeNames")
@@ -237,13 +237,6 @@ def _validate_sectors(rules: dict) -> None:
     if maximum < minimum:
         raise ValueError("sectors.concepts.maxMembers 须 ≥ sectors.concepts.minMembers")
     _require_min_int(concepts, "refreshDays", "sectors.concepts.refreshDays", 1)
-    market = _require_dict(sectors, "market", "sectors.market")
-    _require_min_int(market, "lookbackDays", "sectors.market.lookbackDays", 1)
-    _require_min_int(market, "limitWindow", "sectors.market.limitWindow", 1)
-    windows = _require(market, "boardWindows", "sectors.market.boardWindows")
-    if (not isinstance(windows, list) or not windows
-            or any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in windows)):
-        raise ValueError("sectors.market.boardWindows 类型不对")
     validate_sector_settings(sectors)
 
 
@@ -267,7 +260,7 @@ def _validate_company_pool(pool: dict) -> None:
         raise ValueError("companyPool.aliasSeed 类型不对")
 
 
-def load_config(name: str = "screening-v6.json", *, path: Path | None = None) -> LoadedConfig:
+def load_config(name: str = "screening-v7.json", *, path: Path | None = None) -> LoadedConfig:
     """规则和别名种子。运行时的股票池在库里，这里的 pool 是空的。"""
     package = resources.files("neckline.config")
     raw = path.read_bytes() if path is not None else (package / name).read_bytes()
@@ -1011,7 +1004,7 @@ def run_morning(db_path: Path, *, now: datetime, config: LoadedConfig, collector
     sector = run_sector_line(
         db_path, report_id=report_id, day=day, window=window, messages=unmatched_messages, config=config,
         pool=config.pool, skip=[entry["companyCode"] for entry in delivered.entries], client=sector_client,
-        clock=clock, search_client=sector_search, sector_live=sector_live)
+        clock=clock, search_client=sector_search, sector_live=sector_live, classification=result)
     gaps = coverage_gaps(runs, start, end)
     filing_failures = sum(int(count) for count in filing_stats.failed.values())
     summary = gap_summary(gaps, selection, config.pool, unevaluated=delivered.unevaluated,

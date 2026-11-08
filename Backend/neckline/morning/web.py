@@ -62,14 +62,6 @@ _QUESTION_LABELS = (
     ("money", "资金为什么买或不买"),
     ("price", "价格划不划算"),
 )
-_SECTOR_QUESTIONS = (
-    ("fresh", "① 是不是新消息"),
-    ("weight", "② 分量够不够"),
-    ("position", "③ 板块在什么位置"),
-    ("carriers", "④ 谁来承接"),
-)
-
-
 def _page(title: str, body: str) -> HTMLResponse:
     html = (f"<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
             f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -188,10 +180,6 @@ def _sector_block(base: str, entries: list) -> str:
         published = entry.get("firstPublished") or ""
         shown = published[5:16].replace("T", " ") if isinstance(published, str) and len(published) >= 16 else ""
         when = f"<span class=\"tag\">{escape(shown)}</span>" if shown else ""
-        questions = entry.get("questions") if isinstance(entry.get("questions"), dict) else {}
-        question_html = "".join(
-            f"<div class=\"q\"><span class=\"lab\">{escape(label)}</span>{escape(str(questions.get(key) or ''))}</div>"
-            for key, label in _SECTOR_QUESTIONS)
         leaders = []
         for leader in entry.get("leaders") or []:
             if not isinstance(leader, dict):
@@ -210,7 +198,7 @@ def _sector_block(base: str, entries: list) -> str:
             f"<li><div class=\"hl\">{escape(str(entry.get('title') or ''))}</div>"
             f"<div><span class=\"co\">{escape(str(sector.get('name') or ''))}</span>{count_html}{when}</div>"
             f"<div class=\"why\">{escape(str(entry.get('conclusion') or ''))}</div>"
-            f"{question_html}{leader_html}<p class=\"risk\">风险：{escape(str(entry.get('risk') or ''))}</p>"
+            f"{leader_html}<p class=\"risk\">风险：{escape(str(entry.get('risk') or ''))}</p>"
             f"{view_html}<div class=\"src\">原文：{sources}</div></li>")
     return "<ol>" + "".join(items) + "</ol>"
 

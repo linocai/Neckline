@@ -6,9 +6,9 @@
 版本 5 删掉 kx_pool、kx_picks、kx_daily_stats（KX 看板改为只读 KX，不再落库）。
 版本 6 只加表：stock_pool、stock_pool_meta（当前股票池、流通市值和最近一次刷新），
 sector_concepts、sector_members、sector_concepts_meta（同花顺概念和最近一次刷新），
-market_daily（创业板日线）、sector_events（板块线事件）。这一版还没上线，表结构直接改在这一版上，
-没有半套 v6 要再迁一次。
-init_schema 把版本 1～5 的库在同一个事务里升到版本 6，升级失败整体回滚。
+market_daily（创业板日线）、sector_events（板块线事件）。
+版本 7 删掉 market_daily（索引随表删除）。板块线不再用日线位置。
+init_schema 把版本 1～6 的库在同一个事务里升到版本 7，升级失败整体回滚。
 """
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 6
-_UPGRADABLE_FROM = (1, 2, 3, 4, 5)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 7
+_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6)  # 这些版本的库可由 init_schema 原地升级到当前版本
 # 版本 5 退役的三张表。索引随表一起删掉。
 _RETIRED_KX_TABLES = ("kx_daily_stats", "kx_picks", "kx_pool")
 
@@ -182,20 +182,6 @@ CREATE TABLE IF NOT EXISTS sector_concepts_meta (
   content_sha256 TEXT NOT NULL,
   error TEXT
 );
-CREATE TABLE IF NOT EXISTS market_daily (
-  code TEXT NOT NULL,
-  trade_date TEXT NOT NULL,
-  open REAL NOT NULL,
-  high REAL NOT NULL,
-  low REAL NOT NULL,
-  close REAL NOT NULL,
-  pre_close REAL NOT NULL,
-  pct_chg REAL NOT NULL,
-  amount REAL NOT NULL,
-  limit_up INTEGER NOT NULL CHECK(limit_up IN (0, 1)),
-  PRIMARY KEY (code, trade_date)
-);
-CREATE INDEX IF NOT EXISTS idx_market_daily_trade_date ON market_daily(trade_date);
 CREATE TABLE IF NOT EXISTS sector_events (
   report_id TEXT NOT NULL,
   event_id TEXT NOT NULL CHECK(length(event_id) = 16),
@@ -214,6 +200,24 @@ CREATE TABLE IF NOT EXISTS sector_events (
   settled_at TEXT,
   PRIMARY KEY (report_id, event_id)
 );
+"""
+
+# 版本 6 的日线表。init_schema 不再执行它。降到版本 6 时由 release.py 用同一份语句重建空表。
+MARKET_DAILY_V6_DDL = """
+CREATE TABLE IF NOT EXISTS market_daily (
+  code TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  open REAL NOT NULL,
+  high REAL NOT NULL,
+  low REAL NOT NULL,
+  close REAL NOT NULL,
+  pre_close REAL NOT NULL,
+  pct_chg REAL NOT NULL,
+  amount REAL NOT NULL,
+  limit_up INTEGER NOT NULL CHECK(limit_up IN (0, 1)),
+  PRIMARY KEY (code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_market_daily_trade_date ON market_daily(trade_date);
 """
 
 
@@ -239,8 +243,8 @@ def _statements(script: str) -> list[str]:
 def init_schema(path: Path) -> None:
     """显式建表（init-db 与写命令调用）。
 
-    新库一次建到当前版本，不再建 KX 的三张表。版本 1～5 的库在同一个事务里补上缺的表、
-    删掉 kx_pool / kx_picks / kx_daily_stats，并把版本号升到当前版本。任何一步失败都整体回滚。
+    新库一次建到当前版本，不再建 KX 的三张表，也不建 market_daily。版本 1～6 的库在同一个事务里补上缺的表、
+    删掉 kx_pool / kx_picks / kx_daily_stats 和 market_daily，并把版本号升到当前版本。任何一步失败都整体回滚。
     已经是当前版本时什么都不改。只读连接不走这里。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +267,7 @@ def init_schema(path: Path) -> None:
                 conn.execute(statement)
             for name in _RETIRED_KX_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
+            conn.execute("DROP TABLE IF EXISTS market_daily")
             conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.execute("COMMIT")
@@ -776,52 +781,6 @@ def set_sector_refresh_error(conn: sqlite3.Connection, error: str) -> None:
         conn.execute("INSERT INTO sector_concepts_meta VALUES (1,NULL,0,?,?)", ("", error))
         return
     conn.execute("UPDATE sector_concepts_meta SET error=? WHERE id=1", (error,))
-
-
-def market_codes(conn: sqlite3.Connection) -> list[str]:
-    return [row[0] for row in conn.execute("SELECT DISTINCT code FROM market_daily ORDER BY code")]
-
-
-def market_dates(conn: sqlite3.Connection) -> list[str]:
-    return [row[0] for row in conn.execute("SELECT DISTINCT trade_date FROM market_daily ORDER BY trade_date")]
-
-
-def read_market_daily(conn: sqlite3.Connection, *, start: str | None = None, end: str | None = None) -> list[dict]:
-    sql = """SELECT code, trade_date, open, high, low, close, pre_close, pct_chg, amount, limit_up
-             FROM market_daily"""
-    clauses: list[str] = []
-    args: list[str] = []
-    if start is not None:
-        clauses.append("trade_date>=?")
-        args.append(start)
-    if end is not None:
-        clauses.append("trade_date<=?")
-        args.append(end)
-    if clauses:
-        sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY trade_date, code"
-    rows = []
-    for row in conn.execute(sql, args):
-        rows.append({
-            "code": row["code"], "tradeDate": row["trade_date"], "open": row["open"], "high": row["high"],
-            "low": row["low"], "close": row["close"], "preClose": row["pre_close"], "pctChg": row["pct_chg"],
-            "amount": row["amount"], "limitUp": bool(row["limit_up"]),
-        })
-    return rows
-
-
-def write_market_day(conn: sqlite3.Connection, trade_date: str, rows: Sequence[Mapping]) -> None:
-    """替换一个交易日的日线。调用方负责放进同一个事务。"""
-    conn.execute("DELETE FROM market_daily WHERE trade_date=?", (trade_date,))
-    for row in rows:
-        conn.execute("INSERT INTO market_daily VALUES (?,?,?,?,?,?,?,?,?,?)", (
-            row["code"], trade_date, row["open"], row["high"], row["low"], row["close"], row["preClose"],
-            row["pctChg"], row["amount"], 1 if row.get("limitUp") else 0))
-
-
-def delete_market_daily_outside(conn: sqlite3.Connection, start: str, end: str) -> int:
-    cursor = conn.execute("DELETE FROM market_daily WHERE trade_date<? OR trade_date>?", (start, end))
-    return cursor.rowcount
 
 
 # ------------------------------------------------------------------ 板块事件

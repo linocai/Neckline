@@ -1,4 +1,4 @@
-"""板块线：粗筛、挑候选、归并、成分股、备料、评估、收口。
+"""板块线：粗筛、收消息、回流、归并、成分股、评估、收口。
 
 主线名单定了之后才跑。任一步出错只记在板块线上，不往外抛（BaseException 除外，留给进程被杀后续跑）。
 模型调用走同一张回执；已有终态的事件不再调用。unknown 的回执不重发。
@@ -24,14 +24,10 @@ from neckline.evaluation.search import _failure, project_results, summarize_sear
 from neckline.morning import db
 from neckline.morning.schedule import CST, CalendarGap, previous_trading_day
 from neckline.morning.sector_prompt import (
-    CANDIDATE_SYSTEM, CANDIDATES_CONTRACT, EVALUATION_CONTRACT, EVALUATION_SYSTEM, MAPPING_CONTRACT,
-    MAPPING_SYSTEM, candidate_line, candidate_user_prompt, evaluation_user_prompt, mapping_user_prompt,
-    published_label,
+    EVALUATION_CONTRACT, EVALUATION_SYSTEM, MAPPING_CONTRACT, MAPPING_SYSTEM, evaluation_user_prompt,
+    mapping_user_prompt, published_label,
 )
-from neckline.morning.sectors import (
-    FETCH_CUTOFF, MEMBER_INTERVAL_SECONDS, DailyFill, board_material, commit_market_daily, concept_list,
-    member_facts, plan_market_daily, pull_market_days,
-)
+from neckline.morning.sectors import concept_list
 from neckline.screening.deepseek import ChatError, ChatRejected, ChatUnknown
 from neckline.screening.pool import CompanyPool
 from neckline.screening.prefilter import Message, Window
@@ -51,6 +47,12 @@ _CONCEPT_NEVER = "板块清单还没有成功刷新过"
 _MAPPING_GAP = "板块线没有完成：归并没有完成"
 _WAIT_SLICE = 1.0
 _MAPPING_HALF = "板块线有一半候选没归并成"
+_NAMED_WHY = "消息直接点名"
+_NO_CARRIER = "判推但核对后没有承接股"
+_INTAKE_LISTS = (
+    "publishers", "foreign", "diplomacy", "bigCompanies", "bigEvents", "documents", "documentScope",
+    "documentExclude", "macro", "noise",
+)
 _REPAIR_PROMPT = (
     "你上一条输出没有通过格式检查：{reason}。"
     "请对照系统提示里的输出格式，把同一份评估重新完整输出为一个 JSON 对象。"
@@ -123,6 +125,13 @@ def _require_int(obj: Mapping, key: str, label: str, minimum: int = 1) -> int:
     return value
 
 
+def _require_words(obj: Mapping, key: str, label: str) -> list[str]:
+    value = _require(obj, key, label)
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{label} 类型不对")
+    return list(value)
+
+
 def _compile(pattern: str, label: str) -> re.Pattern[str]:
     try:
         return re.compile(pattern)
@@ -162,23 +171,21 @@ def validate_sector_settings(sectors: Mapping) -> None:
             _require_int(rule, "absentChars", f"{label}.absentChars")
     if "leaders" in sectors:
         raise ValueError("sectors.leaders 已停用")
-    market = sectors.get("market")
-    if isinstance(market, Mapping):
-        if "leaderCount" in market:
-            raise ValueError("sectors.market.leaderCount 已停用")
-        if "leaderWindow" in market:
-            raise ValueError("sectors.market.leaderWindow 已停用")
+    if "market" in sectors:
+        raise ValueError("sectors.market 已停用")
+    if "candidates" in sectors:
+        raise ValueError("sectors.candidates 已停用")
+    intake = _require_dict(sectors, "intake", "sectors.intake")
+    for key in _INTAKE_LISTS:
+        _require_words(intake, key, f"sectors.intake.{key}")
+    _require_int(intake, "bigLeadChars", "sectors.intake.bigLeadChars")
+    identity = _require_dict(sectors, "identity", "sectors.identity")
+    _require_words(identity, "keywords", "sectors.identity.keywords")
+    backflow = _require_dict(sectors, "backflow", "sectors.backflow")
+    for key in ("relations", "types", "excludeDirections"):
+        _require_words(backflow, key, f"sectors.backflow.{key}")
     carriers = _require_dict(sectors, "carriers", "sectors.carriers")
-    for key in ("max", "amountWindow", "limitWindow", "changeWindow"):
-        _require_int(carriers, key, f"sectors.carriers.{key}")
-    candidates = _require_dict(sectors, "candidates", "sectors.candidates")
-    if _require_str(candidates, "contract", "sectors.candidates.contract") != CANDIDATES_CONTRACT:
-        raise ValueError(f"sectors.candidates.contract 须为 {CANDIDATES_CONTRACT}")
-    _require_int(candidates, "batchChars", "sectors.candidates.batchChars")
-    _require_int(candidates, "headChars", "sectors.candidates.headChars")
-    _require_int(candidates, "concurrency", "sectors.candidates.concurrency")
-    if not isinstance(_require(candidates, "modelOptions", "sectors.candidates.modelOptions"), dict):
-        raise ValueError("sectors.candidates.modelOptions 类型不对")
+    _require_int(carriers, "max", "sectors.carriers.max")
     mapping = _require_dict(sectors, "mapping", "sectors.mapping")
     if _require_str(mapping, "contract", "sectors.mapping.contract") != MAPPING_CONTRACT:
         raise ValueError(f"sectors.mapping.contract 须为 {MAPPING_CONTRACT}")
@@ -283,40 +290,114 @@ def assign_numbers(messages: Sequence[Message]) -> list[tuple[str, Message]]:
     return [(f"n{index}", message) for index, message in enumerate(ordered, start=1)]
 
 
-def split_batches(numbered: Sequence[tuple[str, Message]], *, batch_chars: int, head_chars: int,
-                  ) -> list[list[tuple[str, Message]]]:
-    """按渲染后的行长分批。单行超过上限时单独成批。空列表不产生空批。"""
-    batches: list[list[tuple[str, Message]]] = []
-    current: list[tuple[str, Message]] = []
-    total = 0
-    for item in numbered:
-        size = len(candidate_line(item[0], item[1], head_chars))
-        if current and total + size > batch_chars:
-            batches.append(current)
-            current, total = [], 0
-        current.append(item)
-        total += size
-    if current:
-        batches.append(current)
-    return batches
+def _word_pattern(words: Sequence[str]) -> re.Pattern[str]:
+    """名单逐词转义，长词优先。空名单不命中任何文本。"""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        if word not in seen:
+            seen.add(word)
+            unique.append(word)
+    unique.sort(key=len, reverse=True)
+    if not unique:
+        return re.compile(r"(?!)")
+    return re.compile("|".join(re.escape(word) for word in unique))
 
 
-def parse_candidate_output(content: str, allowed: set[str]) -> set[str] | str:
-    """只收下本批出现过的编号。编号不在本批里的丢掉，不让整批失效。"""
-    try:
-        data = json.loads(content)
-    except ValueError:
-        data = None
-    if not isinstance(data, dict) or not isinstance(data.get("events"), list):
-        return "输出不是 JSON 对象"
-    found: set[str] = set()
-    for event in data["events"]:
-        if not isinstance(event, dict) or not isinstance(event.get("ids"), list):
+def apply_intake(messages: Sequence[Message], settings: Mapping, *, body_head_chars: int,
+                 ) -> tuple[list[Message], dict[str, int]]:
+    """粗筛之后收消息。命中 macro、noise 或三类都不是的去掉；A/B/C 留下。"""
+    patterns = {key: _word_pattern(settings[key]) for key in (
+        "macro", "noise", "publishers", "foreign", "diplomacy", "bigCompanies", "bigEvents",
+        "documents", "documentScope", "documentExclude")}
+    lead = int(settings["bigLeadChars"])
+    counts = {"A": 0, "B": 0, "C": 0, "macro": 0, "noise": 0, "outside": 0, "kept": 0}
+    kept: list[Message] = []
+    for message in messages:
+        kind = _intake_class(opening_text(message, body_head_chars), patterns, lead)
+        counts[kind] += 1
+        if kind in ("A", "B", "C"):
+            kept.append(message)
+            counts["kept"] += 1
+    return kept, counts
+
+
+def _intake_class(opening: str, patterns: Mapping[str, re.Pattern[str]], lead: int) -> str:
+    if patterns["macro"].search(opening):
+        return "macro"
+    if patterns["noise"].search(opening):
+        return "noise"
+    foreign = patterns["foreign"].search(opening) is not None
+    if (patterns["publishers"].search(opening) and not foreign
+            and patterns["diplomacy"].search(opening) is None):
+        return "A"
+    company = patterns["bigCompanies"].search(opening)
+    if company is not None and company.start() < lead and patterns["bigEvents"].search(opening):
+        return "B"
+    if (patterns["documents"].search(opening) and patterns["documentScope"].search(opening)
+            and patterns["documentExclude"].search(opening) is None and not foreign):
+        return "C"
+    return "outside"
+
+
+def backflow_messages(classification: Any, settings: Mapping) -> dict[str, tuple[Message, set[str]]]:
+    """从主线分类结果取出回流消息。返回 ref → (消息, 点名公司六位代码)。"""
+    if classification is None:
+        return {}
+    relations = set(settings["relations"])
+    types = set(settings["types"])
+    excluded = set(settings["excludeDirections"])
+    by_id = classification.by_id
+    blocked: set[str] = set()
+    for result in classification.results.values():
+        for event in result.events:
+            if event.relation == "主体" and event.type != "行业动态":
+                for mid in event.ids:
+                    message = by_id.get(mid)
+                    if message is not None:
+                        blocked.add(message.ref)
+    found: dict[str, tuple[Message, set[str]]] = {}
+    for result in classification.results.values():
+        code = _short(result.company)
+        if not code:
             continue
-        for item in event["ids"]:
-            if isinstance(item, str) and item in allowed:
-                found.add(item)
+        for event in result.events:
+            if event.direction in excluded:
+                continue
+            if event.relation not in relations and event.type not in types:
+                continue
+            for mid in event.ids:
+                message = by_id.get(mid)
+                if message is None or message.ref in blocked:
+                    continue
+                slot = found.get(message.ref)
+                if slot is None:
+                    found[message.ref] = (message, {code})
+                else:
+                    slot[1].add(code)
     return found
+
+
+def merge_sector_inputs(unmatched: Sequence[Message], backflow: Mapping[str, tuple[Message, set[str]]],
+                        ) -> tuple[list[Message], dict[str, set[str]], set[str]]:
+    """未匹配和回流合成一份。同一条消息只留一次，点名公司取并集。"""
+    named: dict[str, set[str]] = {}
+    order: list[Message] = []
+    seen: set[str] = set()
+    for message in unmatched:
+        if message.ref in seen:
+            continue
+        seen.add(message.ref)
+        order.append(message)
+        named[message.ref] = set()
+    for ref, (message, codes) in backflow.items():
+        if ref in seen:
+            named[ref].update(codes)
+            continue
+        seen.add(ref)
+        order.append(message)
+        named[ref] = set(codes)
+    return order, named, set(backflow)
 
 
 def event_id(refs: Sequence[str]) -> str:
@@ -354,15 +435,8 @@ def parse_mapping_output(content: str, allowed: set[str], names: set[str]) -> li
         if not isinstance(sector, str) or sector not in names:
             sector = None
         reason = raw.get("reason") if isinstance(raw.get("reason"), str) else ""
-        weighty = raw.get("weighty")
-        if not isinstance(weighty, bool):
-            return "weighty 无效"
-        weight = raw.get("weight")
-        if not isinstance(weight, str) or not weight.strip():
-            return "weight 无效"
         events.append({
             "title": title.strip(), "ids": ids, "sector": sector, "reason": reason, "repeat": raw["repeat"],
-            "weighty": weighty, "weight": weight.strip(),
         })
     return events
 
@@ -429,7 +503,7 @@ def _known_refs(package: Mapping) -> set[str]:
 
 
 def parse_evaluation_output(content: str, package: Mapping) -> dict | str:
-    """格式不合格时返回原因。四个 pass 里有 false 却判推的，改记不推。对不上的观点删掉并计数。"""
+    """格式不合格时返回原因。判推但核对后没有承接股的，改记不推。对不上的观点删掉并计数。"""
     try:
         data = json.loads(content)
     except ValueError:
@@ -448,43 +522,22 @@ def parse_evaluation_output(content: str, package: Mapping) -> dict | str:
     risk = _text(data.get("risk"))
     if not risk:
         return "risk 为空"
-    questions = _questions(data.get("questions"))
-    if isinstance(questions, str):
-        return questions
-    leaders = _leaders(data.get("leaders"), package, carriers_pass=questions["carriers"]["pass"])
+    leaders = _leaders(data.get("leaders"), package)
     if isinstance(leaders, str):
         return leaders
     views = _views(data.get("views"), _known_refs(package))
     if isinstance(views, str):
         return views
     kept, dropped = views
-    vetoed = verdict == "推" and any(not questions[key]["pass"] for key in ("fresh", "weight", "position", "carriers"))
-    if vetoed:
-        verdict = "不推"
     output = {
-        "title": title, "verdict": verdict, "conclusion": conclusion, "questions": questions,
+        "title": title, "verdict": verdict, "conclusion": conclusion,
         "leaders": leaders, "risk": risk, "views": kept, "droppedViews": dropped,
     }
-    if vetoed:
+    if verdict == "推" and not leaders:
+        output["verdict"] = "不推"
+        output["note"] = _NO_CARRIER
         output["vetoed"] = True
     return output
-
-
-def _questions(raw: object) -> dict | str:
-    if not isinstance(raw, Mapping):
-        return "questions 不是对象"
-    parsed: dict[str, Any] = {}
-    for key in ("fresh", "weight", "position", "carriers"):
-        block = raw.get(key)
-        if not isinstance(block, Mapping):
-            return f"questions 缺少 {key}"
-        if not isinstance(block.get("pass"), bool):
-            return f"{key}.pass 不是布尔"
-        text = _text(block.get("text"))
-        if not text:
-            return f"{key}.text 为空"
-        parsed[key] = {"pass": block["pass"], "text": text}
-    return parsed
 
 
 def _carrier_max(package: Mapping) -> int | str:
@@ -507,34 +560,56 @@ def _member_codes(package: Mapping) -> set[str]:
     return found
 
 
-def _leaders(raw: object, package: Mapping, *, carriers_pass: bool) -> list[dict] | str:
+def _named_member_codes(package: Mapping) -> list[str]:
+    found: list[str] = []
+    for item in package.get("members") or []:
+        if not isinstance(item, Mapping) or item.get("named") is not True:
+            continue
+        code = _short(item.get("code"))
+        if code and code not in found:
+            found.append(code)
+    return found
+
+
+def _leaders(raw: object, package: Mapping) -> list[dict] | str:
+    """点名公司在前，模型给的接在后面。不在名单里、重复、超出上限的丢掉。空 why 或 price 不是字符串才算格式错。"""
     if not isinstance(raw, list):
         return "leaders 不是列表"
-    if not carriers_pass:
-        return []
     maximum = _carrier_max(package)
     if isinstance(maximum, str):
         return maximum
-    if not 1 <= len(raw) <= maximum:
-        return "leaders 数量不对"
     allowed = _member_codes(package)
-    seen: set[str] = set()
-    parsed = []
+    model: dict[str, dict] = {}
     for item in raw:
         if not isinstance(item, Mapping):
             return "leaders 格式不对"
+        why = item.get("why")
+        price = item.get("price")
+        if not isinstance(why, str) or not why.strip():
+            return "leaders 理由为空"
+        if not isinstance(price, str):
+            return "leaders 价格不是字符串"
         code = _short(item.get("code"))
-        if code not in allowed:
-            return "leaders 不在成分股名单"
-        if code in seen:
-            return "leaders 重复"
-        seen.add(code)
-        why = _text(item.get("why"))
-        price = _text(item.get("price"))
-        if not why or not price:
-            return "leaders 理由或价格为空"
-        parsed.append({"code": code, "why": why, "price": price})
-    return parsed
+        if code not in allowed or code in model:
+            continue
+        model[code] = {"code": code, "why": why.strip(), "price": price}
+    ordered: list[dict] = []
+    used: set[str] = set()
+    for code in _named_member_codes(package):
+        if len(ordered) >= maximum:
+            break
+        if code not in allowed or code in used:
+            continue
+        ordered.append(model.get(code) or {"code": code, "why": _NAMED_WHY, "price": ""})
+        used.add(code)
+    for code, item in model.items():
+        if len(ordered) >= maximum:
+            break
+        if code in used:
+            continue
+        ordered.append(item)
+        used.add(code)
+    return ordered
 
 
 def _views(raw: object, refs: set[str]) -> tuple[list[dict], int] | str:
@@ -594,40 +669,40 @@ def _search_block(client: Any, settings: Mapping, *, title: str, sector: str, tr
     }
 
 
-def _member_rows(event: Mapping, pool: CompanyPool, skip: Sequence[str], daily_rows: Sequence[Mapping],
-                  as_of: date, carriers: Mapping, profiles: Mapping, pool_rows: Sequence[Mapping]) -> list[dict]:
-    """池内、属于这个板块、且不在当天主线名单里的成分股，按代码从小到大。"""
+def _lookup_company(pool: CompanyPool, code: str):
+    short = _short(code)
+    company = pool.companies.get(str(code)) or pool.companies.get(f"{short}.SZ")
+    if company is None:
+        company = next((item for item in pool.companies.values() if item.short_code == short), None)
+    return short, company
+
+
+def _member_rows(event: Mapping, pool: CompanyPool, skip: Sequence[str], profiles: Mapping,
+                 pool_rows: Sequence[Mapping]) -> list[dict]:
+    """板块的池内成分股，加上本事件回流点名、且还在池内的公司。两边都去掉当天主线名单。按代码排序。"""
     skipped = {_short(code) for code in skip}
     skipped.discard("")
+    named = {_short(code) for code in event.get("named") or ()}
+    named.discard("")
     stored: dict[str, Mapping] = {}
     for row in pool_rows:
         if isinstance(row, Mapping):
             short = _short(row.get("code"))
             if short:
                 stored[short] = row
-    blob = "\n".join(
-        f"{getattr(message, 'title', '') or ''}\n{getattr(message, 'text', '') or ''}"
-        for message in event.get("messages") or []
-    )
     chosen: list[tuple[str, Any]] = []
     seen: set[str] = set()
-    for code in event.get("members") or []:
-        short = _short(code)
-        if not short or short in skipped or short in seen:
-            continue
-        company = pool.companies.get(str(code)) or pool.companies.get(f"{short}.SZ")
-        if company is None:
-            company = next((item for item in pool.companies.values() if item.short_code == short), None)
-        if company is None:
+    codes = list(event.get("members") or [])
+    codes.extend(event.get("named") or [])
+    for code in codes:
+        short, company = _lookup_company(pool, str(code))
+        if not short or short in skipped or short in seen or company is None:
             continue
         seen.add(short)
         chosen.append((short, company))
     chosen.sort(key=lambda item: item[0])
     rows = []
     for short, company in chosen:
-        facts = member_facts(
-            company.code, daily_rows, as_of, amount_window=int(carriers["amountWindow"]),
-            limit_window=int(carriers["limitWindow"]), change_window=int(carriers["changeWindow"]))
         detail = stored.get(short) or {}
         summary = detail.get("summary")
         if not isinstance(summary, str) or not summary.strip():
@@ -639,19 +714,22 @@ def _member_rows(event: Mapping, pool: CompanyPool, skip: Sequence[str], daily_r
             "name": company.name,
             "summary": summary,
             "circMv": circ if isinstance(circ, (int, float)) and not isinstance(circ, bool) else None,
-            "averageAmountYuan": facts["averageAmountYuan"],
-            "limitUps20": facts["limitUps"],
-            "change5Percent": facts["changePercent"],
-            "named": bool(company.name) and company.name in blob,
+            "named": short in named,
         })
     return rows
 
 
+def _identity_keyword(name: str, keywords: Sequence[str]) -> str | None:
+    for word in keywords:
+        if isinstance(word, str) and word and word in name:
+            return word
+    return None
+
+
 def build_event_package(*, event: Mapping, day: date, window: Window, pool: CompanyPool,
-                         daily_rows: Sequence[Mapping], as_of: date, market: Mapping, carriers: Mapping,
-                         skip: Sequence[str], search_client: Any, search_settings: Mapping,
+                         carriers: Mapping, skip: Sequence[str], search_client: Any, search_settings: Mapping,
                          package_settings: Mapping, profiles: Mapping | None = None,
-                         pool_rows: Sequence[Mapping] = ()) -> dict:
+                         pool_rows: Sequence[Mapping] = (), identity_keywords: Sequence[str] = ()) -> dict:
     """一个事件的评估数据包。同样的材料得到同样的 dict。"""
     messages = sorted(event["messages"], key=lambda message: (message.published_at, message.ref))
     numbers = {message.ref: f"m{index}" for index, message in enumerate(messages, start=1)}
@@ -682,12 +760,9 @@ def build_event_package(*, event: Mapping, day: date, window: Window, pool: Comp
             "publishedAt": _published(message.published_at), "text": body[:checked["mediaChars"]],
             "chars": len(body), "truncated": len(body) > checked["mediaChars"],
         })
-    member_rows = _member_rows(event, pool, skip, daily_rows, as_of, carriers, profiles or {}, pool_rows)
+    member_rows = _member_rows(event, pool, skip, profiles or {}, pool_rows)
     if not member_rows:
         gaps.append("板块里没有可选的成分股")
-    windows = list(market["boardWindows"])
-    board = board_material(list(event["members"]), daily_rows, as_of, windows, int(market["limitWindow"]),
-                           list(pool.companies))
     search = _search_block(
         search_client, search_settings, title=str(event["title"]), sector=str(event["sector"]),
         trade_date=day, collected_by=window.collected_by)
@@ -706,16 +781,14 @@ def build_event_package(*, event: Mapping, day: date, window: Window, pool: Comp
             "id": event["id"], "title": event["title"], "reason": event["reason"],
             "firstPublished": event["firstPublished"],
         },
-        "sector": {"name": event["sector"], "code": event["sectorCode"]},
+        "sector": {
+            "name": event["sector"], "code": event["sectorCode"],
+            "memberCount": len(event.get("members") or []),
+        },
         "messages": listed,
         "original": {"kind": "news", "documents": documents, "media": media},
-        "board": board,
-        "carriers": {
-            "max": int(carriers["max"]),
-            "amountWindow": int(carriers["amountWindow"]),
-            "limitWindow": int(carriers["limitWindow"]),
-            "changeWindow": int(carriers["changeWindow"]),
-        },
+        "carriers": {"max": int(carriers["max"])},
+        "identityKeyword": _identity_keyword(str(event.get("sector") or ""), identity_keywords),
         "members": member_rows,
         "limits": {key: checked[key] for key in _PACKAGE_KEYS},
         "search": search,
@@ -732,9 +805,9 @@ def _blank_stats(raw: int, dropped: Mapping[str, int] | None = None, kept: int =
         "raw": raw,
         "dropped": dict(dropped or {}),
         "kept": kept,
-        "candidates": {"batches": 0, "calls": 0, "fromReceipt": 0, "messages": 0, "splits": 0,
-                       "usage": _zero_usage(), "seconds": 0.0},
-        "mapping": {"calls": 0, "fromReceipt": 0, "splits": 0, "events": 0, "null": 0, "repeat": 0, "light": 0,
+        "intake": {"A": 0, "B": 0, "C": 0, "macro": 0, "noise": 0, "outside": 0, "kept": 0},
+        "backflow": {"messages": 0, "kept": 0},
+        "mapping": {"calls": 0, "fromReceipt": 0, "splits": 0, "events": 0, "null": 0, "repeat": 0,
                     "usage": _zero_usage(), "seconds": 0.0},
         "evaluation": {"calls": 0, "fromReceipt": 0, "evaluated": 0, "verdicts": {"推": 0, "不推": 0},
                        "invalid": 0, "gap": 0, "vetoed": 0, "droppedViews": 0, "repairs": 0, "repaired": 0,
@@ -816,7 +889,6 @@ def _public_entries(rows: Sequence[Mapping], pool: CompanyPool) -> list[dict]:
     for row in rows:
         output = row.get("output") if isinstance(row.get("output"), Mapping) else {}
         package = row.get("package") if isinstance(row.get("package"), Mapping) else {}
-        questions = output.get("questions") if isinstance(output.get("questions"), Mapping) else {}
         sources = _sources(package)
         index = _ref_index(package)
         views = []
@@ -839,8 +911,7 @@ def _public_entries(rows: Sequence[Mapping], pool: CompanyPool) -> list[dict]:
             })
         sector = package.get("sector") if isinstance(package.get("sector"), Mapping) else {}
         event = package.get("event") if isinstance(package.get("event"), Mapping) else {}
-        board = package.get("board") if isinstance(package.get("board"), Mapping) else {}
-        member_count = board.get("memberCount")
+        member_count = sector.get("memberCount")
         entries.append({
             "title": output.get("title") if isinstance(output.get("title"), str) else "",
             "sector": {
@@ -849,14 +920,11 @@ def _public_entries(rows: Sequence[Mapping], pool: CompanyPool) -> list[dict]:
                 # 当期股票池里的成分股只数（App 显示「创业板 N 只」）
                 "memberCount": member_count if isinstance(member_count, int) and not isinstance(member_count, bool)
                 else None,
+                # 身份类板块命中的关键词（App 标「身份类」），其他板块为 null
+                "identity": package.get("identityKeyword") if isinstance(package.get("identityKeyword"), str)
+                else None,
             },
             "conclusion": output.get("conclusion") if isinstance(output.get("conclusion"), str) else "",
-            "questions": {
-                "fresh": _question_text(questions.get("fresh")),
-                "weight": _question_text(questions.get("weight")),
-                "position": _question_text(questions.get("position")),
-                "carriers": _question_text(questions.get("carriers")),
-            },
             "leaders": leaders,
             "risk": output.get("risk") if isinstance(output.get("risk"), str) else "",
             "views": views,
@@ -864,13 +932,6 @@ def _public_entries(rows: Sequence[Mapping], pool: CompanyPool) -> list[dict]:
             "firstPublished": event.get("firstPublished") if isinstance(event.get("firstPublished"), str) else "",
         })
     return entries
-
-
-def _question_text(value: object) -> str:
-    if isinstance(value, Mapping):
-        text = value.get("text")
-        return text.strip() if isinstance(text, str) else ""
-    return ""
 
 
 def _sources(package: Mapping) -> list[dict]:
@@ -1161,56 +1222,15 @@ def _call_model(client: Any, messages: list[dict], options: Mapping) -> dict:
     }
 
 
-def _await_market_daily(db_path: Path, *, as_of: date, lookback_days: int, prefixes: Sequence[str],
-                        cutoff: str, clock: Callable[[], datetime]) -> DailyFill:
-    """日线补齐以 evaluation.cutoff 为绝对期限。
-
-    先短读算出缺口，再在工作线程里取数，主流程只等到收口。取数不占写事务。
-    到点还没回来的这次结果整段丢掉，不写入 market_daily，晚到的行不能改已交付的名单。
-    """
-    if _cutoff_reached(clock(), cutoff):
-        return DailyFill((), 0, FETCH_CUTOFF)
-    with db.read(db_path) as conn:
-        plan = plan_market_daily(conn, as_of=as_of, lookback_days=lookback_days, prefixes=prefixes)
-    if plan.error:
-        return DailyFill((), 0, plan.error)
-    if not plan.missing or not plan.known:
-        with db.write(db_path) as conn:
-            return commit_market_daily(conn, plan, (), error=None)
-
-    def work() -> tuple[tuple[tuple[str, list[dict]], ...], str | None]:
-        return pull_market_days(
-            plan, interval_seconds=MEMBER_INTERVAL_SECONDS,
-            before_call=lambda: _cutoff_reached(clock(), cutoff))
-
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(work)
-    try:
-        while not future.done():
-            if _cutoff_reached(clock(), cutoff):
-                return DailyFill((), 0, FETCH_CUTOFF)
-            remaining = _seconds_until(clock(), cutoff)
-            if remaining <= 0:
-                return DailyFill((), 0, FETCH_CUTOFF)
-            wait((future,), timeout=min(_WAIT_SLICE, remaining))
-        rows, error = future.result()
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
-    if _cutoff_reached(clock(), cutoff) or error == FETCH_CUTOFF:
-        return DailyFill((), 0, FETCH_CUTOFF)
-    with db.write(db_path) as conn:
-        return commit_market_daily(conn, plan, rows, error=error)
-
-
 def run_sector_line(db_path: Path, *, report_id: str, day: date, window: Window, messages: Sequence[Message],
                     config: Any, pool: CompanyPool, skip: Sequence[str], client: Any,
                     clock: Callable[[], datetime], search_client: Any = None, sector_live: bool = True,
-                    ) -> SectorOutcome:
-    """板块线入口。messages 是主线粗筛后没点名池内公司的那些 Message。"""
+                    classification: Any = None) -> SectorOutcome:
+    """板块线入口。messages 是主线粗筛后没点名池内公司的那些 Message。classification 用来取回流。"""
     try:
         return _run(db_path, report_id=report_id, day=day, window=window, messages=messages, config=config,
                     pool=pool, skip=skip, client=client, clock=clock, search_client=search_client,
-                    sector_live=sector_live)
+                    sector_live=sector_live, classification=classification)
     except Exception:
         logger.exception("板块线出错")
         stats = _blank_stats(len(messages))
@@ -1219,62 +1239,56 @@ def run_sector_line(db_path: Path, *, report_id: str, day: date, window: Window,
 
 def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: Sequence[Message],
          config: Any, pool: CompanyPool, skip: Sequence[str], client: Any, clock: Callable[[], datetime],
-         search_client: Any, sector_live: bool) -> SectorOutcome:
+         search_client: Any, sector_live: bool, classification: Any) -> SectorOutcome:
+    del sector_live  # 日线已退役。参数保留，回放仍传入 False。
     rules = config.rules
     sectors = rules["sectors"]
     concept_note = _stored_concept_note(db_path)
-    if not messages:
+    merged, named, backflow_refs = merge_sector_inputs(
+        messages, backflow_messages(classification, sectors["backflow"]))
+    if not merged:
         stats = _blank_stats(0)
+        stats["backflow"]["messages"] = len(backflow_refs)
         if concept_note:
             stats["conceptNote"] = concept_note
         return _done(stats, _content(0, 0, 0, []), None, [])
-    kept, dropped = apply_prefilter(messages, sectors["prefilter"])
-    stats = _blank_stats(len(messages), dropped, len(kept))
+    kept, dropped = apply_prefilter(merged, sectors["prefilter"])
+    stats = _blank_stats(len(merged), dropped, len(kept))
+    stats["backflow"]["messages"] = len(backflow_refs)
     if concept_note:
         stats["conceptNote"] = concept_note
-    if not kept:
+    accepted, intake_counts = apply_intake(
+        kept, sectors["intake"], body_head_chars=int(sectors["prefilter"]["bodyHeadChars"]))
+    stats["intake"] = intake_counts
+    stats["backflow"]["kept"] = sum(1 for message in accepted if message.ref in backflow_refs)
+    if not accepted:
         return _done(stats, _content(0, 0, 0, []), None, [])
-    # 没有可选的板块就不必花钱挑候选
     concepts, concept_note = _concepts(db_path, pool, sectors["concepts"])
     if concept_note:
         stats["conceptNote"] = concept_note
     if not concepts:
-        # 刷新失败且没有旧清单时，缺口就是这件事，不再另写「清单是空的」。
         gap = None if concept_note == _CONCEPT_NEVER else "板块线没有完成：概念清单是空的"
         return _done(stats, _content(0, 0, 0, []), gap, [])
     cutoff = rules["evaluation"]["cutoff"]
     client = _budget(client, cutoff, clock)
     search_client = _budget(search_client, cutoff, clock)
-    numbered = assign_numbers(kept)
+    numbered = assign_numbers(accepted)
     by_number = {number: message for number, message in numbered}
-    candidate_settings = sectors["candidates"]
-    batches = split_batches(numbered, batch_chars=int(candidate_settings["batchChars"]),
-                            head_chars=int(candidate_settings["headChars"]))
-    stats["candidates"]["batches"] = len(batches)
     if _cutoff_reached(clock(), cutoff):
         return _done(stats, _content(0, 0, 0, []), "板块线没有完成：收口时刻前没评完", [])
-    selected, block = _pick_candidates(
-        batches, client=client, options=candidate_settings["modelOptions"],
-        head_chars=int(candidate_settings["headChars"]), workers=int(candidate_settings["concurrency"]),
-        cutoff=cutoff, clock=clock, stats=stats)
-    if block:
-        return _done(stats, _content(0, 0, 0, []), block, [])
-    if not selected:
-        return _done(stats, _content(0, 0, 0, []), None, [])
     names = {item["name"] for item in concepts}
     by_name: dict[str, dict] = {}
     for item in concepts:
         by_name.setdefault(item["name"], item)
     mapped, block = _map_candidates(
-        selected, by_number=by_number, names=names, concepts=concepts, db_path=db_path, day=day,
+        set(by_number), by_number=by_number, names=names, concepts=concepts, db_path=db_path, day=day,
         client=client, settings=sectors["mapping"], cutoff=cutoff, clock=clock, stats=stats)
     if block:
         return _done(stats, _content(0, 0, 0, []), block, [])
-    events = _attach(mapped, by_number, by_name)
+    events = _attach(mapped, by_number, by_name, named)
     stats["mapping"]["events"] = len(events)
     stats["mapping"]["null"] = sum(1 for event in events if event["sector"] is None)
     stats["mapping"]["repeat"] = sum(1 for event in events if event["repeat"])
-    stats["mapping"]["light"] = sum(1 for event in events if event.get("light"))
     now = clock()
     for event in events:
         if not event["skip"]:
@@ -1284,44 +1298,9 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
                     sector=event["sector"], reason=event["reason"], repeat=event["repeat"], state="skipped",
                     package=_skipped_package(event), prepared_at=now, settled_at=now)
     pending = [event for event in events if not event["skip"] and not _terminal(_load(db_path, report_id, event["id"]))]
-    need_build = [event for event in pending if _load(db_path, report_id, event["id"]) is None]
-    daily_rows: list[dict] = []
-    as_of = None
-    if need_build:
-        try:
-            as_of = previous_trading_day(day)
-        except CalendarGap as exc:
-            return _done(stats, _content(0, 0, 0, []), f"板块线没有完成：{exc}", _rows(db_path, report_id, events))
-        if sector_live:
-            filled = _await_market_daily(
-                db_path, as_of=as_of, lookback_days=int(sectors["market"]["lookbackDays"]),
-                prefixes=tuple(rules["companyPool"]["prefixes"]), cutoff=cutoff, clock=clock)
-            if filled.error == FETCH_CUTOFF:
-                return _done(stats, _content(0, 0, 0, []), "板块线没有完成：收口时刻前没备齐行情",
-                             _rows(db_path, report_id, events))
-            if not filled.ok:
-                logger.error("板块线日线没取到：%s", filled.error)
-                for event in need_build:
-                    _insert(db_path, report_id=report_id, event_id=event["id"], title=event["title"],
-                            sector=event["sector"], reason=event["reason"], repeat=False, state="gap",
-                            package=_skipped_package(event), prepared_at=clock(), error="日线没取到",
-                            settled_at=clock())
-                rows = _rows(db_path, report_id, events)
-                return _done(stats, _render(rows, pool, int(sectors["delivery"]["maxEvents"])),
-                             "板块线没有完成：日线没取到", rows, stats_rows=rows)
-        with db.read(db_path) as conn:
-            daily_rows = db.read_market_daily(conn)
-    elif pending:
-        try:
-            as_of = previous_trading_day(day)
-        except CalendarGap as exc:
-            return _done(stats, _content(0, 0, 0, []), f"板块线没有完成：{exc}", _rows(db_path, report_id, events))
     eval_hits: list[dict] = []
     started = time.monotonic()
-    if pending and as_of is not None:
-        if not daily_rows:
-            with db.read(db_path) as conn:
-                daily_rows = db.read_market_daily(conn)
+    if pending:
         workers = int(sectors["evaluation"]["concurrency"])
         pool_rows: list[dict] = []
         try:
@@ -1335,8 +1314,8 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
         def evaluate(event: Mapping) -> dict:
             return _evaluate_event(
                 event, db_path=db_path, report_id=report_id, day=day, window=window, pool=pool,
-                daily_rows=daily_rows, as_of=as_of, market=sectors["market"], carriers=sectors["carriers"],
-                skip=skip, profiles=getattr(config, "profiles", {}) or {}, pool_rows=pool_rows,
+                carriers=sectors["carriers"], skip=skip, profiles=getattr(config, "profiles", {}) or {},
+                pool_rows=pool_rows, identity_keywords=sectors["identity"]["keywords"],
                 search_client=search_client, search_settings=sectors["evaluation"]["search"],
                 package_settings=sectors["evaluation"]["package"], client=client,
                 options=sectors["evaluation"]["modelOptions"], cutoff=cutoff, clock=clock)
@@ -1384,17 +1363,14 @@ def _search_misses(rows: Sequence[Mapping]) -> str | None:
 
 
 def _annotate(stats: Mapping, gap: str | None) -> str | None:
-    """有的批次没挑成、或归并只成了一半时，已经拿到的仍然往下走，并补上缺口。"""
+    """归并只成了一半时，已经拿到的仍然往下走，并补上缺口。"""
     notes: list[str] = []
     if isinstance(stats, dict):
         concept = stats.pop("conceptNote", None)
         if isinstance(concept, str) and concept:
             notes.append(concept)
-    missed = int(stats["candidates"].get("failedBatches") or 0)
-    if stats["candidates"].get("incomplete") and missed:
-        # 板块照常出，只是这几批消息没看过
-        notes.append(f"板块线有 {missed} 批消息没挑成（共 {stats['candidates']['batches']} 批）")
-    if stats["mapping"].get("incomplete"):
+    mapping = stats.get("mapping") if isinstance(stats, Mapping) else None
+    if isinstance(mapping, Mapping) and mapping.get("incomplete"):
         notes.append(_MAPPING_HALF)
     if not notes:
         return gap
@@ -1461,7 +1437,8 @@ def _skipped_package(event: Mapping) -> dict:
     }
 
 
-def _attach(mapped: Sequence[Mapping], by_number: Mapping[str, Message], by_name: Mapping[str, Mapping]) -> list[dict]:
+def _attach(mapped: Sequence[Mapping], by_number: Mapping[str, Message], by_name: Mapping[str, Mapping],
+            named: Mapping[str, set[str]]) -> list[dict]:
     events = []
     for item in mapped:
         messages = [by_number[number] for number in item["ids"] if number in by_number]
@@ -1470,126 +1447,19 @@ def _attach(mapped: Sequence[Mapping], by_number: Mapping[str, Message], by_name
         refs = [message.ref for message in messages]
         first = min(message.published_at for message in messages)
         concept = by_name.get(item["sector"]) if item["sector"] else None
-        light = not bool(item.get("weighty"))
-        reason = item["weight"] if light else item["reason"]
+        codes: set[str] = set()
+        for message in messages:
+            codes.update(named.get(message.ref) or ())
         events.append({
             "id": event_id(refs), "title": item["title"], "ids": list(item["ids"]), "messages": messages,
             "refs": refs, "sector": None if concept is None else concept["name"],
             "sectorCode": None if concept is None else concept["tsCode"],
             "members": [] if concept is None else list(concept["members"]),
-            "reason": reason, "repeat": bool(item["repeat"]),
-            "weighty": bool(item.get("weighty")), "weight": item.get("weight") or "", "light": light,
+            "reason": item["reason"], "repeat": bool(item["repeat"]), "named": sorted(codes),
             "firstPublished": _minutes(first),
-            "skip": concept is None or bool(item["repeat"]) or light,
+            "skip": concept is None or bool(item["repeat"]),
         })
     return events
-
-
-def _split_length_batch(batch: Sequence[tuple[str, Message]], hit: Mapping, *, client: Any, options: Mapping,
-                        head_chars: int, cutoff: str, clock: Callable[[], datetime]) -> dict:
-    """输出被截断时按顺序对半各发一次。只拆这一次，有一半失败这一批就没挑成。"""
-    mid = len(batch) // 2
-    calls = int(hit.get("calls") or 0)
-    from_receipt = int(hit.get("fromReceipt") or 0)
-    usage = dict(hit.get("usage") or _zero_usage())
-    seconds = float(hit.get("seconds") or 0)
-    merged: set[str] = set()
-    for half in (batch[:mid], batch[mid:]):
-        if _cutoff_reached(clock(), cutoff):
-            return {"ids": set(), "cutoff": True, "calls": calls, "fromReceipt": from_receipt,
-                    "usage": usage, "seconds": seconds, "split": True}
-        allowed = {number for number, _message in half}
-        messages = [
-            {"role": "system", "content": CANDIDATE_SYSTEM},
-            {"role": "user", "content": candidate_user_prompt(
-                [candidate_line(number, message, head_chars) for number, message in half])},
-        ]
-        second = _call_model(client, messages, options)
-        calls += int(second.get("calls") or 0)
-        from_receipt += int(second.get("fromReceipt") or 0)
-        usage = _add_usage(usage, second.get("usage") or {})
-        seconds = round(seconds + float(second.get("seconds") or 0), 3)
-        if second.get("cutoff") or _cutoff_reached(clock(), cutoff):
-            return {"ids": set(), "cutoff": True, "calls": calls, "fromReceipt": from_receipt,
-                    "usage": usage, "seconds": seconds, "split": True}
-        if second.get("fatal"):
-            second = dict(second)
-            second.update(calls=calls, fromReceipt=from_receipt, usage=usage, seconds=seconds, split=True)
-            return second
-        parsed: set[str] | str = "调用失败"
-        if not second.get("error") and second.get("finish") == "stop":
-            parsed = parse_candidate_output(second.get("content") or "", allowed)
-        if isinstance(parsed, str):
-            reason = second.get("error") or (parsed if second.get("finish") == "stop" else f"finish:{second.get('finish')}")
-            return {"ids": set(), "error": reason, "calls": calls, "fromReceipt": from_receipt,
-                    "usage": usage, "seconds": seconds, "split": True}
-        merged.update(parsed)
-    return {"ids": merged, "calls": calls, "fromReceipt": from_receipt, "usage": usage,
-            "seconds": seconds, "split": True, "finish": "stop"}
-
-
-def _pick_candidates(batches: Sequence[Sequence[tuple[str, Message]]], *, client: Any, options: Mapping,
-                     head_chars: int, workers: int, cutoff: str, clock: Callable[[], datetime],
-                     stats: dict) -> tuple[set[str], str | None]:
-    def work(batch: Sequence[tuple[str, Message]]) -> dict:
-        if _cutoff_reached(clock(), cutoff):
-            return {"ids": set(), "cutoff": True, "calls": 0, "fromReceipt": 0, "usage": _zero_usage(), "seconds": 0.0}
-        allowed = {number for number, _message in batch}
-        messages = [
-            {"role": "system", "content": CANDIDATE_SYSTEM},
-            {"role": "user", "content": candidate_user_prompt([candidate_line(number, message, head_chars)
-                                                               for number, message in batch])},
-        ]
-        hit = _call_model(client, messages, options)
-        if hit.get("cutoff") or _cutoff_reached(clock(), cutoff):
-            hit["cutoff"] = True
-            hit["ids"] = set()
-            return hit
-        if hit.get("fatal") or hit.get("error"):
-            return hit
-        if hit.get("finish") == "length" and len(batch) >= 2:
-            return _split_length_batch(batch, hit, client=client, options=options, head_chars=head_chars,
-                                       cutoff=cutoff, clock=clock)
-        if hit.get("finish") != "stop":
-            hit["error"] = f"finish:{hit.get('finish')}"
-            return hit
-        parsed = parse_candidate_output(hit.get("content") or "", allowed)
-        if isinstance(parsed, str):
-            hit["error"] = parsed
-            return hit
-        hit["ids"] = parsed
-        return hit
-
-    hits = _run_calls(list(batches), workers, work, cutoff=cutoff, clock=clock)
-    if _cutoff_reached(clock(), cutoff) and any(_open_hit(hit) for hit in hits):
-        return set(), _CUTOFF_GAP
-    selected: set[str] = set()
-    failed = 0
-    for hit in hits:
-        if hit is None:
-            failed += 1
-            continue
-        if hit.get("split"):
-            stats["candidates"]["splits"] += 1
-        stats["candidates"]["calls"] += int(hit.get("calls") or 0)
-        stats["candidates"]["fromReceipt"] += int(hit.get("fromReceipt") or 0)
-        stats["candidates"]["usage"] = _add_usage(stats["candidates"]["usage"], hit.get("usage") or {})
-        stats["candidates"]["seconds"] = round(stats["candidates"]["seconds"] + float(hit.get("seconds") or 0), 3)
-        if hit.get("cutoff"):
-            return set(), _CUTOFF_GAP
-        if hit.get("fatal"):
-            return set(), "板块线没有完成：挑候选没有完成"
-        if hit.get("error"):
-            failed += 1
-            continue
-        selected.update(hit.get("ids") or ())
-    stats["candidates"]["messages"] = len(selected)
-    if failed and not selected:
-        return set(), "板块线没有完成：挑候选没有完成"
-    if failed:
-        stats["candidates"]["incomplete"] = True
-        stats["candidates"]["failedBatches"] = failed
-    return selected, None
 
 
 def _add_mapping_hit(stats: dict, hit: Mapping) -> None:
@@ -1622,8 +1492,8 @@ def _earliest_index(ids: Sequence[str], position: Mapping[str, int]) -> int:
 
 
 def _mapping_usable(event: Mapping) -> bool:
-    """只有不重复、分量也够的事件才和同板块的其他有效事件合并。"""
-    return not bool(event.get("repeat")) and bool(event.get("weighty"))
+    """不重复的事件才和同板块的其他有效事件合并。"""
+    return not bool(event.get("repeat"))
 
 
 def _copied_mapping(event: Mapping) -> dict:
@@ -1633,14 +1503,12 @@ def _copied_mapping(event: Mapping) -> dict:
         "sector": event.get("sector"),
         "reason": event["reason"],
         "repeat": bool(event["repeat"]),
-        "weighty": bool(event.get("weighty")),
-        "weight": event["weight"],
     }
 
 
 def _merge_mapping_halves(left: Sequence[Mapping], right: Sequence[Mapping], ordered: Sequence[str],
                           left_dropped: Sequence, right_dropped: Sequence, names: set[str]) -> list[dict] | str:
-    """同名板块里，重复或分量不够的各自保留；有效事件才合并，代表取首条消息最早的那件。"""
+    """同名板块里，重复的各自保留；不重复的才合并，代表取首条消息最早的那件。"""
     position = {number: index for index, number in enumerate(ordered)}
     grouped: dict[str, list[Mapping]] = {}
     loose: list[Mapping] = []
@@ -1666,13 +1534,11 @@ def _merge_mapping_halves(left: Sequence[Mapping], right: Sequence[Mapping], ord
         merged["ids"] = [number for number in ordered if number in chosen]
         merged["sector"] = sector
         merged["repeat"] = False
-        merged["weighty"] = True
         events.append(merged)
     for event in loose:
         events.append({
             "title": event["title"], "ids": list(event["ids"]), "sector": None,
             "reason": event["reason"], "repeat": bool(event["repeat"]),
-            "weighty": bool(event.get("weighty")), "weight": event["weight"],
         })
     events.sort(key=lambda event: _earliest_index(event["ids"], position))
     dropped = list(left_dropped) + list(right_dropped)
@@ -1757,10 +1623,10 @@ def _map_candidates(selected: set[str], *, by_number: Mapping[str, Message], nam
 
 
 def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date, window: Window,
-                    pool: CompanyPool, daily_rows: Sequence[Mapping], as_of: date, market: Mapping,
-                    carriers: Mapping, skip: Sequence[str], profiles: Mapping, pool_rows: Sequence[Mapping],
-                    search_client: Any, search_settings: Mapping, package_settings: Mapping, client: Any,
-                    options: Mapping, cutoff: str, clock: Callable[[], datetime]) -> dict:
+                    pool: CompanyPool, carriers: Mapping, skip: Sequence[str], profiles: Mapping,
+                    pool_rows: Sequence[Mapping], identity_keywords: Sequence[str], search_client: Any,
+                    search_settings: Mapping, package_settings: Mapping, client: Any, options: Mapping,
+                    cutoff: str, clock: Callable[[], datetime]) -> dict:
     row = _load(db_path, report_id, event["id"])
     if _terminal(row):
         return {"calls": 0, "fromReceipt": 0, "usage": _zero_usage(), "seconds": 0.0, "repairs": 0, "repaired": 0}
@@ -1771,8 +1637,8 @@ def _evaluate_event(event: Mapping, *, db_path: Path, report_id: str, day: date,
             return _abandoned_hit(repairs=0, repaired=0)
         try:
             package = build_event_package(
-                event=event, day=day, window=window, pool=pool, daily_rows=daily_rows, as_of=as_of,
-                market=market, carriers=carriers, skip=skip, profiles=profiles, pool_rows=pool_rows,
+                event=event, day=day, window=window, pool=pool, carriers=carriers, skip=skip,
+                profiles=profiles, pool_rows=pool_rows, identity_keywords=identity_keywords,
                 search_client=search_client, search_settings=search_settings,
                 package_settings=package_settings)
         except _StillOpen:

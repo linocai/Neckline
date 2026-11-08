@@ -3,7 +3,7 @@
     python -m neckline.evaluation.snapshot --codes codes.txt --out market.json [--merge market.json]
     python -m neckline.evaluation.snapshot --sector --start YYYY-MM-DD --end YYYY-MM-DD --out sector.json
 
---sector 写同花顺概念、成分、区间里的创业板日线和涨停，以及股票池回放要用的
+--sector 写同花顺概念、成分、流通市值，以及股票池回放要用的
 stock_basic、stock_company、namechange、daily_basic。同一份 JSON 也可以当作 --pool-snapshot。
 token 只从环境变量 TUSHARE_TOKEN 读取。已在快照里的代码跳过。进度只打印计数。
 """
@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--merge", type=Path, help="已有快照；其中已有的代码跳过")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout", type=float, default=20)
-    parser.add_argument("--sector", action="store_true", help="改抓板块、日线和股票池回放材料")
+    parser.add_argument("--sector", action="store_true", help="改抓板块和股票池回放材料")
     parser.add_argument("--start", help="板块快照起始日 YYYY-MM-DD")
     parser.add_argument("--end", help="板块快照结束日 YYYY-MM-DD")
     args = parser.parse_args(argv)

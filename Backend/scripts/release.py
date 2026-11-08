@@ -30,18 +30,20 @@ Database schema version. ``build`` records the commit's ``SCHEMA_VERSION`` in th
 An upgrade runs ``init-db`` as the neckline user after the new files, wheel and manifest are in place and verified,
 before the units return. Schema 5's ``init_schema`` drops ``kx_pool``, ``kx_picks`` and ``kx_daily_stats``.
 Schema 6 only adds ``stock_pool``, ``stock_pool_meta``, ``sector_concepts``, ``sector_members``,
-``sector_concepts_meta`` and ``market_daily``.
+``sector_concepts_meta``, ``market_daily`` and ``sector_events``. Schema 7's ``init_schema`` drops ``market_daily``.
 A downgrade of an add-tables-only step (2→1, 3→2, 3→1, 4→3, 4→2, 4→1, and 6→5) only rewrites ``user_version``
 after the services are stopped and before the files are replaced; extra tables are kept.
-A downgrade from schema 5 or 6 to 4, 3 or 2 recreates, in that same transaction, the empty KX tables the
+7→6 recreates an empty ``market_daily`` table and its index from the frozen v6 DDL, then sets ``user_version`` back to 6.
+A downgrade from schema 5, 6 or 7 to 4, 3 or 2 recreates, in that same transaction, the empty KX tables the
 target version needs (v4 and v3: ``kx_pool`` with ``theme`` / ``first_seen`` / ``buyable``; v2: the three tables
-without those columns). 6→5, 6→1 and 5→1 do not recreate KX tables. Tables the target does not need are left in place.
-Rollback of a 4→5 or 4→6 upgrade does the same rebuild before writing the old version back. Once the old files,
+without those columns). 7→5, 6→5, 7→1, 6→1 and 5→1 do not recreate KX tables or ``market_daily``.
+Tables the target does not need are left in place.
+Rollback of a 4→5, 4→6 or 6→7 upgrade does the same rebuild before writing the old version back. Once the old files,
 wheel and manifest are back, every rollback puts the schema back to ``schemaBefore`` (services still stopped) before
 the units return and before the old release's readiness check; if that fails the units stay masked. If the old files cannot
 be restored at all, the database is left at the version that matches whatever files are in place and ``schemaNow`` in
 ``switch-state.json`` says what it is. Business rows are never rewritten; the only drops are the three retired KX
-tables inside ``init_schema``.
+tables and ``market_daily`` inside ``init_schema``.
 
 Opening the production database as root can leave root-owned ``-wal`` / ``-shm`` files next to it (a read-only
 connection to a WAL database creates them when none exist), which would lock the neckline service out. Every
@@ -102,12 +104,14 @@ KX_FLAGS = ("kxPool", "kxBoard")  # 旧版 health 用 kxPool，schema 5 起用 k
 KX_SCHEMA = 2  # 清单 schemaVersion 达到它的发布才报告、也才要求 KX 项
 _KX_BASELINE_KEYS = ("kxPool", "kxPicks", "kxBoard")
 # 只改版本号的降级：旧代码按列名读写，多出来的表和列保留不删。
-# 从 5 或 6 往回：目标是 2、3、4 时先在同一事务里补建空 KX 表，再写 user_version。不需要的表保留。
-# 6→5 只改版本号。stock_pool、板块概念和日线都留着，B131 按 user_version=5 打开。
+# 从 5、6 或 7 往回：目标是 2、3、4 时先在同一事务里补建空 KX 表，再写 user_version。不需要的表保留。
+# 6→5 只改版本号。stock_pool 和板块概念都留着，B131 按 user_version=5 打开。
+# 7→6 按下面冻结的 v6 DDL 重建空的 market_daily 和索引，再把 user_version 设回 6。7 降到 5 及更早不重建日线。
 ADDITIVE_DOWNGRADES = frozenset({
     (2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1),
     (5, 4), (5, 3), (5, 2), (5, 1),
     (6, 5), (6, 4), (6, 3), (6, 2), (6, 1),
+    (7, 6), (7, 5), (7, 4), (7, 3), (7, 2), (7, 1),
 })
 # 冻结自 v4.2.1（B130）的 neckline/morning/db.py。5→4 与 5→3 用这份（kx_pool 带 theme、first_seen、buyable）。
 _KX_V4_DDL = """
@@ -173,6 +177,23 @@ CREATE TABLE IF NOT EXISTS kx_daily_stats (
 );
 """
 _KX_RESTORE_DDL = {4: _KX_V4_DDL, 3: _KX_V4_DDL, 2: _KX_V2_DDL}
+# 冻结自 v6 的 market_daily。必须与 neckline.morning.db.MARKET_DAILY_V6_DDL 逐字相同。7→6 用这份重建空表。
+_MARKET_DAILY_V6_DDL = """
+CREATE TABLE IF NOT EXISTS market_daily (
+  code TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  open REAL NOT NULL,
+  high REAL NOT NULL,
+  low REAL NOT NULL,
+  close REAL NOT NULL,
+  pre_close REAL NOT NULL,
+  pct_chg REAL NOT NULL,
+  amount REAL NOT NULL,
+  limit_up INTEGER NOT NULL CHECK(limit_up IN (0, 1)),
+  PRIMARY KEY (code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_market_daily_trade_date ON market_daily(trade_date);
+"""
 _PENDING_KX_DDL: str | None = None
 
 
@@ -181,10 +202,16 @@ def _sql_statements(script: str) -> list[str]:
 
 
 def _queue_kx_restore(current: int | None, target: int) -> None:
-    """5 或 6 降到 2/3/4 时，把目标版本要的建表语句交给下一次 set_schema_version。5 和 1 没有要补的表。"""
+    """5、6 或 7 降到 2/3/4 时补建空 KX 表。7 降到 6 时重建空的 market_daily。其余降级没有要补的表。"""
     global _PENDING_KX_DDL
-    if current in (5, 6):
-        _PENDING_KX_DDL = _KX_RESTORE_DDL.get(target)
+    parts: list[str] = []
+    if current in (5, 6, 7):
+        ddl = _KX_RESTORE_DDL.get(target)
+        if ddl:
+            parts.append(ddl)
+    if current == 7 and target == 6:
+        parts.append(_MARKET_DAILY_V6_DDL)
+    _PENDING_KX_DDL = "\n".join(parts) if parts else None
 
 
 def sha256(data: bytes) -> str:
@@ -548,7 +575,7 @@ def read_schema_version() -> int | None:
 
 
 def set_schema_version(version: int) -> None:
-    """改 user_version。从 schema 5 或 6 降到 2/3/4 时，同一事务里先补建目标版本需要的空 KX 表。不删表、不改业务行。"""
+    """改 user_version。降到 2/3/4 时同一事务里先补建空 KX 表；7→6 时先重建空的 market_daily。不删表、不改业务行。"""
     global _PENDING_KX_DDL
     ddl = _PENDING_KX_DDL
     _PENDING_KX_DDL = None
@@ -608,7 +635,7 @@ def upgrade_schema(plan: SchemaPlan) -> None:
 
 
 def downgrade_schema(plan: SchemaPlan) -> None:
-    """白名单内的降级：服务已停、文件未换。5 或 6 降到 2/3/4 时先补建空表再写版本号；其余只改版本号。"""
+    """白名单内的降级：服务已停、文件未换。降到 2/3/4 时先补建空 KX 表；7→6 时先重建空的 market_daily。"""
     plan.touched = True
     _queue_kx_restore(plan.before, plan.target)
     try:
@@ -620,7 +647,7 @@ def downgrade_schema(plan: SchemaPlan) -> None:
 
 
 def restore_schema(plan: SchemaPlan) -> dict:
-    """回滚时把库恢复成 schemaBefore。升到 5 或 6 之后要回到 2/3/4 的，先补建对应的空 KX 表。"""
+    """回滚时把库恢复成 schemaBefore。升到 5、6 或 7 之后要回到 2/3/4 的，先补建对应的空 KX 表；7 回到 6 时重建空的 market_daily。"""
     current = read_schema_version()
     if current == plan.before:
         return {"status": "unchanged", "version": current}

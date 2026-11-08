@@ -1,9 +1,9 @@
 {
   "availableAt": "2026-10-13T00:02:00+00:00",
-  "configVersion": "screening-v6",
+  "configVersion": "screening-v7",
   "content": {
-    "candidates": 2,
-    "configVersion": "screening-v6",
+    "candidates": 1,
+    "configVersion": "screening-v7",
     "entries": [
       {
         "companyCode": "300683",
@@ -37,52 +37,63 @@
             "text": "转述"
           }
         ]
-      },
-      {
-        "companyCode": "300953",
-        "companyName": "震裕科技",
-        "conclusion": "值得跟踪",
-        "firstDisclosed": null,
-        "questions": {
-          "money": "有新增量",
-          "price": "明显高开不追",
-          "priced": "还没怎么涨",
-          "value": "利好有量"
-        },
-        "risk": "可能落空",
-        "sources": [
-          {
-            "documentId": "doc_56a97b4e657cf8c6cd7214836b8b60f4@1",
-            "publishedAt": "2026-10-12T17:05+08:00",
-            "sourceLabel": "金十快讯",
-            "title": "震裕科技：预计前三季度净利增长58%",
-            "url": "https://flash.jin10.com/detail/z1"
-          }
-        ],
-        "title": "值得跟踪",
-        "type": "业绩预增",
-        "views": [
-          {
-            "by": "媒体",
-            "name": "来源",
-            "sourceTitle": "震裕科技：预计前三季度净利增长58%",
-            "sourceUrl": "https://flash.jin10.com/detail/z1",
-            "text": "转述"
-          }
-        ]
       }
     ],
-    "evaluated": 2,
-    "gapSummary": "股票池没能刷新（未配置 TUSHARE_TOKEN），沿用上一份；2 家材料不全：海特生物、震裕科技",
+    "evaluated": 1,
+    "gapSummary": "股票池没能刷新（未配置 TUSHARE_TOKEN），沿用上一份；1 家材料不全：海特生物",
     "generatedAt": "2026-10-13T08:02+08:00",
     "kind": "morning",
     "reportId": "morning-2026-10-13",
     "sectors": {
-      "candidates": 1,
+      "candidates": 2,
       "entries": [
         {
           "conclusion": "资金会看一眼",
-          "firstPublished": "2026-10-12T17:30+08:00",
+          "firstPublished": "2026-10-12T17:10+08:00",
+          "leaders": [
+            {
+              "companyCode": "300953",
+              "companyName": "震裕科技",
+              "price": "",
+              "why": "消息直接点名"
+            },
+            {
+              "companyCode": "300082",
+              "companyName": "奥克股份",
+              "price": "明显高开不追",
+              "why": "消息点到它"
+            }
+          ],
+          "risk": "可能落空",
+          "sector": {
+            "code": "885801.TI",
+            "identity": "参股",
+            "memberCount": 3,
+            "name": "参股券商"
+          },
+          "sources": [
+            {
+              "documentId": "doc_3d018a0706b8e3bd548de7e7be20b759@1",
+              "publishedAt": "2026-10-12T17:10+08:00",
+              "sourceLabel": "金十快讯",
+              "title": "证监会印发行业补贴方案",
+              "url": "https://flash.jin10.com/detail/broker"
+            }
+          ],
+          "title": "值得看的板块",
+          "views": [
+            {
+              "by": "媒体",
+              "name": "财联社",
+              "sourceTitle": "媒体标题",
+              "sourceUrl": "https://news.example/a",
+              "text": "认为有催化"
+            }
+          ]
+        },
+        {
+          "conclusion": "资金会看一眼",
+          "firstPublished": "2026-10-12T18:20+08:00",
           "leaders": [
             {
               "companyCode": "300082",
@@ -91,25 +102,20 @@
               "why": "消息点到它"
             }
           ],
-          "questions": {
-            "carriers": "有人接",
-            "fresh": "是新消息",
-            "position": "位置不高",
-            "weight": "分量够"
-          },
           "risk": "可能落空",
           "sector": {
             "code": "885001.TI",
+            "identity": null,
             "memberCount": 3,
             "name": "人工智能"
           },
           "sources": [
             {
-              "documentId": "doc_1897318c3719945f5b916863d3446c71@1",
-              "publishedAt": "2026-10-12T17:30+08:00",
+              "documentId": "doc_780f2260d87dc6079a71fe8f4caed07d@1",
+              "publishedAt": "2026-10-12T18:20+08:00",
               "sourceLabel": "金十快讯",
-              "title": "央行、证监会将于明天召开座谈会",
-              "url": "https://flash.jin10.com/detail/forum"
+              "title": "工信部印发行业补贴方案",
+              "url": "https://flash.jin10.com/detail/ai"
             }
           ],
           "title": "值得看的板块",
@@ -124,44 +130,44 @@
           ]
         }
       ],
-      "evaluated": 1,
+      "evaluated": 2,
       "overflow": 0
     },
     "stats": {
-      "candidates": 2,
+      "candidates": 1,
       "classification": {
         "calls": 1,
         "fromReceipt": 0,
         "seconds": 0.0,
         "usage": {
-          "completion_tokens": 5,
-          "prompt_tokens": 10
+          "completion_tokens": 3,
+          "prompt_tokens": 4
         }
       },
       "collection": "completed",
       "collectionGaps": [],
-      "companies": 3,
+      "companies": 2,
       "contract": "screening-classify-v4",
       "duplicates": 0,
       "evaluation": {
-        "calls": 2,
-        "candidates": 2,
+        "calls": 1,
+        "candidates": 1,
         "droppedViews": 0,
         "fromReceipt": 0,
         "gap": 0,
         "invalid": 0,
         "repaired": 0,
         "repairs": 0,
-        "seconds": 0.01,
+        "seconds": 0.0,
         "usage": {
-          "completion_tokens": 10,
-          "prompt_cache_hit_tokens": 2,
-          "prompt_tokens": 20,
-          "reasoning_tokens": 4
+          "completion_tokens": 3,
+          "prompt_cache_hit_tokens": 1,
+          "prompt_tokens": 4,
+          "reasoning_tokens": 2
         },
         "verdicts": {
           "不推": 0,
-          "推": 2
+          "推": 1
         },
         "vetoed": 0
       },
@@ -173,9 +179,9 @@
         "seconds": 0.0
       },
       "gaps": [],
-      "history": 1,
-      "inWindow": 4,
-      "messages": 3,
+      "history": 0,
+      "inWindow": 3,
+      "messages": 2,
       "overflow": 0,
       "pool": {
         "count": 3,
@@ -186,11 +192,11 @@
         "sha256": "fc629fb168dd77a92eeb05dfb1e18df34f37474e12a38de1c158229816e9fd95"
       },
       "prepare": {
-        "seconds": 0.008
+        "seconds": 0.0
       },
-      "pushed": 2,
+      "pushed": 1,
       "search": {
-        "calls": 2,
+        "calls": 1,
         "dropped": {
           "afterCutoff": 0,
           "badUrl": 0,
@@ -200,25 +206,15 @@
         "enabled": true,
         "failed": 0,
         "fromReceipt": 0,
-        "kept": 2,
-        "returned": 2,
+        "kept": 1,
+        "returned": 1,
         "seconds": 0.0,
         "viewsCited": 0
       },
       "sectors": {
-        "candidates": {
-          "batches": 1,
-          "calls": 1,
-          "fromReceipt": 0,
-          "messages": 1,
-          "seconds": 0.0,
-          "splits": 0,
-          "usage": {
-            "completion_tokens": 3,
-            "prompt_cache_hit_tokens": 1,
-            "prompt_tokens": 4,
-            "reasoning_tokens": 2
-          }
+        "backflow": {
+          "kept": 1,
+          "messages": 1
         },
         "dropped": {
           "dropSources": 0,
@@ -231,36 +227,45 @@
           "tape": 0
         },
         "evaluation": {
-          "calls": 1,
+          "calls": 2,
           "droppedViews": 0,
-          "evaluated": 1,
+          "evaluated": 2,
           "fromReceipt": 0,
           "gap": 0,
           "invalid": 0,
           "repaired": 0,
           "repairs": 0,
-          "seconds": 0.005,
+          "seconds": 0.0,
           "usage": {
-            "completion_tokens": 3,
-            "prompt_cache_hit_tokens": 1,
-            "prompt_tokens": 4,
-            "reasoning_tokens": 2
+            "completion_tokens": 6,
+            "prompt_cache_hit_tokens": 2,
+            "prompt_tokens": 8,
+            "reasoning_tokens": 4
           },
           "verdicts": {
             "不推": 0,
-            "推": 1
+            "推": 2
           },
           "vetoed": 0
         },
-        "kept": 1,
+        "intake": {
+          "A": 2,
+          "B": 0,
+          "C": 0,
+          "kept": 2,
+          "macro": 0,
+          "noise": 0,
+          "outside": 0
+        },
+        "kept": 2,
         "mapping": {
           "calls": 1,
-          "events": 1,
+          "events": 2,
           "fromReceipt": 0,
-          "light": 0,
           "null": 0,
           "repeat": 0,
           "seconds": 0.0,
+          "splits": 0,
           "usage": {
             "completion_tokens": 3,
             "prompt_cache_hit_tokens": 1,
@@ -269,9 +274,9 @@
           }
         },
         "overflow": 0,
-        "raw": 1,
+        "raw": 2,
         "search": {
-          "calls": 1,
+          "calls": 2,
           "dropped": {
             "afterCutoff": 0,
             "badUrl": 0,
@@ -281,10 +286,10 @@
           "enabled": true,
           "failed": 0,
           "fromReceipt": 0,
-          "kept": 1,
-          "returned": 1,
+          "kept": 2,
+          "returned": 2,
           "seconds": 0.0,
-          "viewsCited": 1
+          "viewsCited": 2
         }
       },
       "unmatched": 1
@@ -297,7 +302,7 @@
   },
   "failedAt": null,
   "failureReason": null,
-  "gapSummary": "股票池没能刷新（未配置 TUSHARE_TOKEN），沿用上一份；2 家材料不全：海特生物、震裕科技",
+  "gapSummary": "股票池没能刷新（未配置 TUSHARE_TOKEN），沿用上一份；1 家材料不全：海特生物",
   "reportId": "morning-2026-10-13",
   "status": "available",
   "tradeDate": "2026-10-13",

@@ -1,7 +1,6 @@
-"""板块清单、日线和成分股材料。
+"""板块清单和回放快照。
 
-概念每周从 TuShare 整份替换；日线按交易日补缺。纯函数只吃行和日期，不读库、不联网。
-多日涨跌用涨跌幅连乘。均线上下用主线价格背景的同一条判定（差额四舍五入到四位小数后看符号）。
+概念每周从 TuShare 整份替换。回放快照留下概念、成分、流通市值和股票池要的表。
 """
 from __future__ import annotations
 
@@ -11,14 +10,13 @@ import logging
 import math
 import os
 import re
-import statistics
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Callable, Mapping, Sequence
 
 from neckline.morning import db, stock_pool
-from neckline.morning.schedule import CST, CalendarGap, is_trading_day
+from neckline.morning.schedule import CST, is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +27,6 @@ _PAGE_LIMIT = 5000
 _DAILY_LIMIT = 6000
 _INDEX_FIELDS = "ts_code,name,count,exchange,list_date,type"
 _MEMBER_FIELDS = "ts_code,con_code,con_name"
-_DAILY_FIELDS = "ts_code,trade_date,open,high,low,close,pre_close,pct_chg,amount"
-_LIMIT_FIELDS = "ts_code,trade_date"
 _BASIC_FIELDS = "ts_code,name,fullname,list_date,list_status"
 _COMPANY_FIELDS = "ts_code,main_business"
 _NAMECHANGE_FIELDS = "ts_code,name,start_date,end_date,ann_date,change_reason"
@@ -50,25 +46,8 @@ class ConceptRefresh:
     replaced: bool
 
 
-# 外呼前的预算用尽。调用方把它写成板块线缺口，不当成行情源故障。
-FETCH_CUTOFF = "cutoff"
-
-
 class _Stopped(Exception):
     """收口时刻已到，这一次外呼不再发出。"""
-
-
-@dataclass(frozen=True)
-class DailyFill:
-    """error 交给板块线记缺口。主线不看这个结果。"""
-
-    filled: tuple[str, ...]
-    deleted: int
-    error: str | None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
 
 
 def concepts_content_sha256(concepts: Sequence[Mapping]) -> str:
@@ -157,81 +136,6 @@ def concept_list(concepts: Sequence[Mapping], members: Sequence[Mapping], pool_c
     return {"concepts": kept}
 
 
-def board_material(member_codes: Sequence[str], daily_rows: Sequence[Mapping], as_of: date,
-                   windows: Sequence[int], limit_window: int, baseline_codes: Sequence[str]) -> dict:
-    """板块和创业板全体在各窗口的等权涨跌中位数、上涨占比，以及近几日涨停家数。
-
-    多日涨跌是涨跌幅连乘。缺任何一天的成员不计入，并单独计数。不用 as_of 之后的行。
-    """
-    if isinstance(limit_window, bool) or not isinstance(limit_window, int) or limit_window < 1:
-        raise ValueError("limitWindow 无效")
-    if not windows or any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in windows):
-        raise ValueError("窗口无效")
-    indexed = _index_rows(daily_rows, as_of)
-    members = _unique_symbols(member_codes)
-    baseline = _unique_symbols(baseline_codes)
-    span = max(max(windows), limit_window)
-    calendar = {width: trading_days_ending(as_of, width) for width in set(windows) | {limit_window, span}}
-    blocks = []
-    for width in windows:
-        sector = _window_stats(members, indexed, calendar[width])
-        base = _window_stats(baseline, indexed, calendar[width])
-        blocks.append({
-            "days": width,
-            "median": sector["median"], "upRatio": sector["upRatio"], "up": sector["up"],
-            "counted": sector["counted"], "missing": sector["missing"],
-            "baselineMedian": base["median"], "baselineUpRatio": base["upRatio"], "baselineUp": base["up"],
-            "baselineCounted": base["counted"], "baselineMissing": base["missing"],
-        })
-    limit_days = calendar[limit_window]
-    limit_ups, limit_missing = _limit_stats(members, indexed, limit_days)
-    base_ups, base_missing = _limit_stats(baseline, indexed, limit_days)
-    return {
-        "asOf": as_of.isoformat(),
-        "memberCount": len(members),
-        "baselineCount": len(baseline),
-        "windows": blocks,
-        "limitWindow": limit_window,
-        "limitUps": limit_ups,
-        "limitMissing": limit_missing,
-        "baselineLimitUps": base_ups,
-        "baselineLimitMissing": base_missing,
-    }
-
-
-def member_facts(code: str, daily_rows: Sequence[Mapping], as_of: date, *, amount_window: int,
-                 limit_window: int, change_window: int) -> dict:
-    """近 amount_window 日日均成交额、近 limit_window 日涨停次数、前 change_window 日涨跌。
-
-    口径与原来的龙头材料一致：窗口里缺任何一天，这一项留空。涨跌用涨跌幅连乘。
-    不用 as_of 之后的行。成交额沿用库里的元。
-    """
-    symbol = _symbol(code)
-    if symbol is None:
-        raise ValueError("代码无效")
-    for label, window in (("amountWindow", amount_window), ("limitWindow", limit_window),
-                          ("changeWindow", change_window)):
-        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
-            raise ValueError(f"{label} 无效")
-    days = trading_days_ending(as_of, max(amount_window, limit_window, change_window))
-    series = _index_rows(daily_rows, as_of).get(symbol, {})
-    complete = {day for day in days if _complete_bar(series.get(day))}
-
-    def ready(width: int) -> list[date] | None:
-        chosen = days[-width:]
-        if all(day in complete for day in chosen):
-            return chosen
-        return None
-
-    amount_days = ready(amount_window)
-    limit_days = ready(limit_window)
-    change_days = ready(change_window)
-    average = None if amount_days is None else sum(_num(series[day]["amount"]) for day in amount_days) / amount_window
-    limits = None if limit_days is None else sum(1 for day in limit_days if series[day].get("limitUp"))
-    change = None if change_days is None else _compound([_num(series[day]["pctChg"]) for day in change_days])  # type: ignore[misc]
-    return {"averageAmountYuan": average, "limitUps": limits, "changePercent": change}
-
-
 def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: datetime,
                      post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
                      sleep: Callable[[float], None] = time.sleep,
@@ -269,99 +173,11 @@ def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: date
     return ConceptRefresh(len(concepts), digest, refreshed_at, None, True)
 
 
-@dataclass(frozen=True)
-class MarketDailyPlan:
-    """缺哪些交易日。known 是取数时要留下的创业板代码，取数期间不再读库。"""
-
-    window: tuple[date, ...]
-    missing: tuple[date, ...]
-    known: frozenset[str]
-    prefixes: tuple[str, ...]
-    error: str | None = None
-
-
-def plan_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequence[str]) -> MarketDailyPlan:
-    """只读：算出还缺哪些交易日。不联网。"""
-    try:
-        window = tuple(trading_days_ending(as_of, lookback_days))
-    except (CalendarGap, ValueError) as exc:
-        logger.error("日线没能补齐：%s", exc)
-        return MarketDailyPlan((), (), frozenset(), tuple(prefixes), str(exc))
-    known = frozenset(_known_codes(conn, prefixes))
-    present = set(db.market_dates(conn))
-    missing = tuple(day for day in window if day.isoformat() not in present)
-    return MarketDailyPlan(window, missing, known, tuple(prefixes), None)
-
-
-def pull_market_days(plan: MarketDailyPlan, *, post: Callable[..., dict] | None = None,
-                     environ: Mapping[str, str] | None = None,
-                     sleep: Callable[[float], None] = time.sleep,
-                     interval_seconds: float,
-                     before_call: Callable[[], bool] | None = None,
-                     ) -> tuple[tuple[tuple[str, list[dict]], ...], str | None]:
-    """只取数，不写库。收口或失败时带回已经取全的交易日。"""
-    _check_interval(interval_seconds)
-    if plan.error:
-        return (), plan.error
-    if not plan.missing or not plan.known:
-        return (), None
-    try:
-        token, sender = _sender(post, environ)
-    except SectorFetchError as exc:
-        logger.error("日线没能补齐：%s", exc)
-        return (), str(exc)
-    pause = {"started": False}
-    rows: list[tuple[str, list[dict]]] = []
-    codes = set(plan.known)
-    for day in plan.missing:
-        try:
-            bars = _pull_day(sender, token, day, codes, plan.prefixes, sleep=sleep,
-                             interval_seconds=interval_seconds, pause=pause, before_call=before_call)
-        except _Stopped:
-            return tuple(rows), FETCH_CUTOFF
-        except SectorFetchError as exc:
-            logger.error("日线没能补齐：%s", exc)
-            return tuple(rows), str(exc)
-        rows.append((day.isoformat(), bars))
-    return tuple(rows), None
-
-
-def commit_market_daily(conn, plan: MarketDailyPlan, rows: Sequence[tuple[str, Sequence[Mapping]]], *,
-                        error: str | None) -> DailyFill:
-    """写入已经取到的交易日。失败时保留这些日子，不删窗口外的旧行。"""
-    filled: list[str] = []
-    for trade_date, bars in rows:
-        db.write_market_day(conn, trade_date, bars)
-        filled.append(trade_date)
-    if error or not plan.window:
-        return DailyFill(tuple(filled), 0, error)
-    deleted = db.delete_market_daily_outside(conn, plan.window[0].isoformat(), plan.window[-1].isoformat())
-    return DailyFill(tuple(filled), deleted, None)
-
-
-def fill_market_daily(conn, *, as_of: date, lookback_days: int, prefixes: Sequence[str],
-                      post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
-                      sleep: Callable[[float], None] = time.sleep,
-                      interval_seconds: float, before_call: Callable[[], bool] | None = None) -> DailyFill:
-    """补齐 as_of 往前 lookback_days 个交易日里还没有日线的日子，并删掉窗口外的行。
-
-    只存当前池子或库里已经有过的创业板代码。失败返回 error，已经补上的日子保留；
-    这种失败不抛给主线。晨报里的板块线不走这里：它把取数放到事务外，只等到收口。
-    """
-    _check_interval(interval_seconds)
-    plan = plan_market_daily(conn, as_of=as_of, lookback_days=lookback_days, prefixes=prefixes)
-    if plan.error:
-        return DailyFill((), 0, plan.error)
-    rows, error = pull_market_days(
-        plan, post=post, environ=environ, sleep=sleep, interval_seconds=interval_seconds, before_call=before_call)
-    return commit_market_daily(conn, plan, rows, error=error)
-
-
 def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
                            post: Callable[..., dict] | None = None, environ: Mapping[str, str] | None = None,
                            sleep: Callable[[float], None] = time.sleep, interval_seconds: float,
                            progress: Callable[[str], None] | None = None) -> dict:
-    """给 NB 用的回放快照：概念、成分、区间日线（只留创业板）、流通市值和股票池回放要的表。"""
+    """给 NB 用的回放快照：概念、成分、流通市值和股票池回放要的表。start/end 仍校验交易日区间。"""
     _check_interval(interval_seconds)
     token, sender = _sender(post, environ)
     pause = {"started": False}
@@ -381,20 +197,9 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
         members.extend(page)
         if progress is not None:
             progress(f"concepts {index}/{total}")
-    daily: list[dict] = []
-    limits: list[dict] = []
     basic_mv: list[dict] = []
     for index, day in enumerate(days, start=1):
         stamp = day.strftime("%Y%m%d")
-        bars = _call(sender, token, "daily", {"trade_date": stamp, "limit": _DAILY_LIMIT}, _DAILY_FIELDS,
-                     sleep=sleep, interval_seconds=interval_seconds, pause=pause)
-        _require_same_day(bars, day, "daily")
-        daily.extend(row for row in bars if _normalize(row.get("ts_code"), prefixes))
-        ups = _call(sender, token, "limit_list_d",
-                    {"trade_date": stamp, "limit_type": "U", "limit": _PAGE_LIMIT}, _LIMIT_FIELDS,
-                    sleep=sleep, interval_seconds=interval_seconds, pause=pause)
-        _require_same_day(ups, day, "limit_list_d")
-        limits.extend(row for row in ups if _normalize(row.get("ts_code"), prefixes))
         mv = _call(sender, token, "daily_basic", {"trade_date": stamp, "limit": _DAILY_LIMIT}, _MV_FIELDS,
                    sleep=sleep, interval_seconds=interval_seconds, pause=pause)
         _require_same_day(mv, day, "daily_basic")
@@ -411,8 +216,6 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
     return {
         "ths_index": index_rows,
         "ths_member": members,
-        "daily": daily,
-        "limit_list_d": limits,
         "daily_basic": basic_mv,
         "stock_basic": basic,
         "stock_company": company,
@@ -421,23 +224,16 @@ def capture_sector_payload(*, start: date, end: date, prefixes: Sequence[str],
 
 
 def install_sector_snapshot(conn, payload: Mapping, *, refreshed_at: str, prefixes: Sequence[str]) -> dict:
-    """把回放快照写进概念表和日线。日线只留创业板，成交额换成元。"""
+    """把回放快照写进概念表。旧快照里的日线键忽略，不写 market_daily。"""
     if not isinstance(payload, Mapping):
         raise SectorFetchError("板块快照不是对象")
-    for key in ("ths_index", "ths_member", "daily", "limit_list_d"):
+    for key in ("ths_index", "ths_member"):
         if not isinstance(payload.get(key), list):
             raise SectorFetchError(f"板块快照缺少 {key}")
     concepts = concepts_from_raw(payload["ths_index"], payload["ths_member"], prefixes)
-    bars = market_rows_from_raw(payload["daily"], payload["limit_list_d"], prefixes, codes=None)
     digest = concepts_content_sha256(concepts)
     db.replace_sector_concepts(conn, concepts, refreshed_at=refreshed_at, sha256=digest)
-    conn.execute("DELETE FROM market_daily")
-    grouped: dict[str, list[dict]] = {}
-    for row in bars:
-        grouped.setdefault(row["tradeDate"], []).append(row)
-    for trade_date, rows in grouped.items():
-        db.write_market_day(conn, trade_date, rows)
-    return {"concepts": len(concepts), "days": len(grouped), "bars": len(bars), "sha256": digest}
+    return {"concepts": len(concepts), "sha256": digest}
 
 
 def concepts_from_raw(index_rows: Sequence[Mapping], member_rows: Sequence[Mapping],
@@ -470,33 +266,6 @@ def concepts_from_raw(index_rows: Sequence[Mapping], member_rows: Sequence[Mappi
     return concepts
 
 
-def market_rows_from_raw(daily_rows: Sequence[Mapping], limit_rows: Sequence[Mapping], prefixes: Sequence[str],
-                         codes: set[str] | None) -> list[dict]:
-    limited = set()
-    for row in limit_rows:
-        code = _normalize(row.get("ts_code") or row.get("code"), prefixes)
-        day = _as_date(row.get("trade_date") or row.get("tradeDate"))
-        if code is None or day is None:
-            continue
-        if _text(row.get("limit")) not in ("", "U"):
-            continue
-        limited.add((code, day.isoformat()))
-    bars = []
-    seen: set[tuple[str, str]] = set()
-    for row in daily_rows:
-        code = _normalize(row.get("ts_code") or row.get("code"), prefixes)
-        day = _as_date(row.get("trade_date") or row.get("tradeDate"))
-        if code is None or day is None or (codes is not None and code not in codes):
-            continue
-        bar = _bar(row, code, day, (code, day.isoformat()) in limited)
-        if bar is None or (code, bar["tradeDate"]) in seen:
-            continue
-        seen.add((code, bar["tradeDate"]))
-        bars.append(bar)
-    bars.sort(key=lambda item: (item["tradeDate"], item["code"]))
-    return bars
-
-
 def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
                    environ: Mapping[str, str] | None, sleep: Callable[[float], None],
                    interval_seconds: float, before_call: Callable[[], bool] | None = None) -> list[dict]:
@@ -519,40 +288,6 @@ def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
     if not concepts:
         raise SectorFetchError("ths_index 没有返回概念")
     return concepts
-
-
-def _pull_day(post: Callable[..., dict], token: str, day: date, codes: set[str], prefixes: Sequence[str], *,
-              sleep: Callable[[float], None], interval_seconds: float, pause: dict,
-              before_call: Callable[[], bool] | None = None) -> list[dict]:
-    stamp = day.strftime("%Y%m%d")
-    daily_rows = _call(post, token, "daily", {"trade_date": stamp, "limit": _DAILY_LIMIT}, _DAILY_FIELDS,
-                       sleep=sleep, interval_seconds=interval_seconds, pause=pause, before_call=before_call)
-    _require_same_day(daily_rows, day, "daily")
-    if not daily_rows:
-        raise SectorFetchError(f"{day.isoformat()} 没有返回日线")
-    limit_rows = _call(post, token, "limit_list_d",
-                       {"trade_date": stamp, "limit_type": "U", "limit": _PAGE_LIMIT}, _LIMIT_FIELDS,
-                       sleep=sleep, interval_seconds=interval_seconds, pause=pause, before_call=before_call)
-    _require_same_day(limit_rows, day, "limit_list_d")
-    bars = market_rows_from_raw(daily_rows, limit_rows, prefixes, codes)
-    if not bars:
-        raise SectorFetchError(f"{day.isoformat()} 没有可写入的创业板日线")
-    return bars
-
-
-def _known_codes(conn, prefixes: Sequence[str]) -> set[str]:
-    found: set[str] = set()
-    stored = db.read_stock_pool(conn)
-    if stored is not None:
-        for row in stored["rows"]:
-            code = _normalize(row.get("code"), prefixes)
-            if code is not None:
-                found.add(code)
-    for code in db.market_codes(conn):
-        normalized = _normalize(code, prefixes)
-        if normalized is not None:
-            found.add(normalized)
-    return found
 
 
 def _sender(post: Callable[..., dict] | None, environ: Mapping[str, str] | None) -> tuple[str, Callable[..., dict]]:
@@ -626,107 +361,11 @@ def _require_same_day(rows: Sequence[Mapping], day: date, api: str) -> None:
             raise SectorFetchError(f"{day.isoformat()} 的{api}交易日对不上")
 
 
-def _bar(row: Mapping, code: str, day: date, limit_up: bool) -> dict | None:
-    open_ = _num(row.get("open"))
-    high = _num(row.get("high"))
-    low = _num(row.get("low"))
-    close = _num(row.get("close"))
-    pre_close = _num(row.get("pre_close") if "pre_close" in row else row.get("preClose"))
-    pct = _num(row.get("pct_chg") if "pct_chg" in row else row.get("pctChg"))
-    amount = _num(row.get("amount"))
-    if None in (open_, high, low, close, pre_close, pct, amount):
-        return None
-    if close <= 0 or amount < 0:
-        return None
-    # TuShare daily.amount 是千元，库里记元。
-    return {
-        "code": code, "tradeDate": day.isoformat(), "open": open_, "high": high, "low": low, "close": close,
-        "preClose": pre_close, "pctChg": pct, "amount": amount * 1000, "limitUp": limit_up,
-    }
-
-
-def _window_stats(symbols: Sequence[str], indexed: Mapping[str, Mapping[date, Mapping]],
-                  dates: Sequence[date]) -> dict:
-    returns = []
-    missing = 0
-    for symbol in symbols:
-        series = indexed.get(symbol, {})
-        pcts = []
-        complete = True
-        for day in dates:
-            pct = None if day not in series else _num(series[day].get("pctChg"))
-            if pct is None:
-                complete = False
-                break
-            pcts.append(pct)
-        if not complete:
-            missing += 1
-            continue
-        returns.append(_compound(pcts))
-    up = sum(1 for value in returns if value > 0)
-    counted = len(returns)
-    return {
-        "median": None if not returns else float(statistics.median(returns)),
-        "upRatio": None if counted == 0 else up / counted,
-        "up": up, "counted": counted, "missing": missing,
-    }
-
-
-def _limit_stats(symbols: Sequence[str], indexed: Mapping[str, Mapping[date, Mapping]],
-                 dates: Sequence[date]) -> tuple[int, int]:
-    ups = 0
-    missing = 0
-    for symbol in symbols:
-        series = indexed.get(symbol, {})
-        hit = False
-        complete = True
-        for day in dates:
-            row = series.get(day)
-            if row is None or _num(row.get("pctChg")) is None:
-                complete = False
-                break
-            if row.get("limitUp"):
-                hit = True
-        if not complete:
-            missing += 1
-        elif hit:
-            ups += 1
-    return ups, missing
-
-
-def _compound(pcts: Sequence[float]) -> float:
-    factor = 1.0
-    for pct in pcts:
-        factor *= 1 + pct / 100
-    return (factor - 1) * 100
-
-
-def _index_rows(daily_rows: Sequence[Mapping], as_of: date) -> dict[str, dict[date, Mapping]]:
-    indexed: dict[str, dict[date, Mapping]] = {}
-    for raw in daily_rows:
-        symbol = _symbol(raw.get("code"))
-        day = _as_date(raw.get("tradeDate") or raw.get("trade_date"))
-        if symbol is None or day is None or day > as_of:
-            continue
-        indexed.setdefault(symbol, {})[day] = raw
-    return indexed
-
-
-def _complete_bar(row: Mapping | None) -> bool:
-    if row is None:
-        return False
-    return _num(row.get("close")) is not None and _num(row.get("pctChg")) is not None and _num(row.get("amount")) is not None
-
-
 def _pool_index(codes: Sequence[str]) -> dict[str, str]:
     found = {}
     for _symbol_code, shown in _unique_pairs(codes):
         found.setdefault(_symbol_code, shown)
     return found
-
-
-def _unique_symbols(codes: Sequence[str]) -> list[str]:
-    return [symbol for symbol, _shown in _unique_pairs(codes)]
 
 
 def _unique_pairs(codes: Sequence[str]) -> list[tuple[str, str]]:

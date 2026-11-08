@@ -40,7 +40,7 @@ def _doc(i: int, text: str, *, published: str, seen: str = "2026-10-13T08:01:00+
 
 
 def _v3() -> dict:
-    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v6.json"
+    path = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v7.json"
     return json.loads(path.read_text(encoding="utf-8"))["selection"]
 
 
@@ -360,7 +360,7 @@ def test_v3_config_groups_match_the_prompt_and_cover_every_kind():
 
 def test_v3_config_requires_filings_and_rejects_leftover_importance(tmp_path):
     config = load_config()
-    assert config.rules["configVersion"] == "screening-v6"
+    assert config.rules["configVersion"] == "screening-v7"
     assert config.rules["classification"]["contract"] == CONTRACT
     assert config.rules["filings"] == {"maxBytes": 20000000, "maxPages": 6, "concurrency": 4,
                                        "timeoutSeconds": 20, "cacheDays": 3}
@@ -417,7 +417,7 @@ def _push(company: str) -> dict:
 
 def test_report_content_has_candidates_without_importance_or_review():
     config = load_config()
-    assert config.rules["configVersion"] == "screening-v6"
+    assert config.rules["configVersion"] == "screening-v7"
     assert config.rules["classification"]["contract"] == CONTRACT
     pool = CompanyPool([Company("300001.SZ", "甲公司", ("甲公司",))])
     by_id = {"m1": _message(1, 16)}
@@ -429,7 +429,7 @@ def test_report_content_has_candidates_without_importance_or_review():
                             gap=None, generated_at=WINDOW.collected_by, stats={},
                             evaluations=[_push("300001.SZ"), {**_push("300002.SZ"), "verdict": "不推"}],
                             max_items=10)
-    assert content["configVersion"] == "screening-v6" and "review" not in content
+    assert content["configVersion"] == "screening-v7" and "review" not in content
     assert content["candidates"] == 1 and content["evaluated"] == 1 and len(content["entries"]) == 1
     entry = content["entries"][0]
     assert set(entry) == {"companyCode", "companyName", "type", "title", "conclusion", "questions", "risk",
@@ -556,7 +556,7 @@ def test_compare_verdicts_script_on_fake_replay(tmp_path):
     verdict_path = tmp_path / "verdicts.json"
     verdict_path.write_text(json.dumps(verdicts, ensure_ascii=False), encoding="utf-8")
     script = Path(__file__).resolve().parents[1] / "scripts" / "compare_verdicts.py"
-    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v6.json"
+    config = Path(__file__).resolve().parents[1] / "neckline" / "config" / "screening-v7.json"
     completed = subprocess.run([sys.executable, str(script), "--replay", str(tmp_path), "--verdicts", str(verdict_path),
                                 "--config", str(config)], check=False, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr

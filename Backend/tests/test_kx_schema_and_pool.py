@@ -1,4 +1,4 @@
-"""库结构 v6：v1～v5 升上来之后三张 KX 表消失、股票池和板块表在，其他表的数据还在；升级失败整体回滚。"""
+"""库结构 v7：v1～v6 升上来之后三张 KX 表和 market_daily 消失、股票池和板块表在，其他表的数据还在；升级失败整体回滚。"""
 from __future__ import annotations
 
 import sqlite3
@@ -10,7 +10,7 @@ import pytest
 from neckline.morning import db
 from tests.kx_support import KX_TABLES, make_legacy_db
 
-_SECTOR_TABLES = {"sector_concepts", "sector_members", "sector_concepts_meta", "market_daily"}
+_SECTOR_TABLES = {"sector_concepts", "sector_members", "sector_concepts_meta"}
 _V6_TABLES = {"stock_pool", "stock_pool_meta", "sector_events"} | _SECTOR_TABLES
 
 
@@ -51,27 +51,27 @@ def _legacy(path, version: int) -> None:
         conn.commit()
 
 
-def test_schema_version_is_six():
-    assert db.SCHEMA_VERSION == 6
+def test_schema_version_is_seven():
+    assert db.SCHEMA_VERSION == 7
 
 
 def test_a_fresh_database_has_no_kx_tables(tmp_path):
     path = tmp_path / "fresh.db"
     db.init_schema(path)
     with db.read(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
         assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool_meta").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM sector_concepts").fetchone()[0] == 0
-        assert conn.execute("SELECT count(*) FROM market_daily").fetchone()[0] == 0
+    assert "market_daily" not in _names(path)
     assert KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
-def test_each_older_database_upgrades_to_v6_and_keeps_other_rows(tmp_path, version):
+def test_each_older_database_upgrades_to_v7_and_keeps_other_rows(tmp_path, version):
     path = tmp_path / f"v{version}.db"
     _legacy(path, version)
     _expect_refused(path)
@@ -82,7 +82,8 @@ def test_each_older_database_upgrades_to_v6_and_keeps_other_rows(tmp_path, versi
         assert "stock_pool" not in _names(path)
 
     db.init_schema(path)
-    assert _version(path) == 6
+    assert _version(path) == 7
+    assert "market_daily" not in _names(path)
     assert KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
     with db.read(path) as conn:
@@ -95,7 +96,7 @@ def test_each_older_database_upgrades_to_v6_and_keeps_other_rows(tmp_path, versi
             assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
     with db.write(path) as conn:
         db.upsert_device(conn, token="ef01", platform="ios", at=datetime(2026, 10, 20, tzinfo=timezone.utc))
-    db.init_schema(path)  # 已经是 v6：什么都不改
+    db.init_schema(path)  # 已经是 v7：什么都不改
     with db.read(path) as conn:
         assert db.device_tokens(conn) == ["abcd", "ef01"]
 
@@ -110,7 +111,7 @@ def test_every_upgrade_path_matches_a_fresh_database(tmp_path):
         db.init_schema(path)
         upgraded.append(path)
     assert all(_structure(path) == _structure(fresh) for path in upgraded)
-    assert all(_version(path) == 6 for path in upgraded)
+    assert all(_version(path) == 7 for path in upgraded)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])
@@ -134,7 +135,7 @@ def test_a_failed_upgrade_rolls_back_as_a_whole(tmp_path, monkeypatch, version):
             assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='filing_reads'").fetchall()
     monkeypatch.undo()
     db.init_schema(path)
-    assert _version(path) == 6 and KX_TABLES.isdisjoint(_names(path))
+    assert _version(path) == 7 and KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
 
 
@@ -155,7 +156,7 @@ def test_a_failed_v5_upgrade_rolls_back_without_adding_pool_tables(tmp_path, mon
             pass
 
 
-@pytest.mark.parametrize("version", [0, 7])
+@pytest.mark.parametrize("version", [0, 8])
 def test_init_schema_refuses_other_versions(tmp_path, version):
     path = tmp_path / "x.db"
     conn = sqlite3.connect(path)
@@ -167,6 +168,26 @@ def test_init_schema_refuses_other_versions(tmp_path, version):
     with pytest.raises(db.NotReady):
         db.init_schema(path)
     assert _version(path) == version
+
+
+def test_v6_database_drops_market_daily_and_keeps_other_rows(tmp_path):
+    path = tmp_path / "v6.db"
+    _legacy(path, 5)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(db.V6_DDL + db.MARKET_DAILY_V6_DDL)
+        conn.execute("INSERT INTO market_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     ("300001.SZ", "2026-11-04", 1, 1, 1, 1, 1, 0, 1000, 0))
+        conn.execute("INSERT INTO stock_pool VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     ("300001.SZ", "甲公司", "甲公司全称", "2020-01-01", "[]", None, "tushare",
+                      "2026-11-05T00:00:00+00:00", 100000, 200000, "2026-11-04"))
+        conn.execute("PRAGMA user_version=6")
+        conn.commit()
+    assert "market_daily" in _names(path)
+    db.init_schema(path)
+    assert _version(path) == 7 and "market_daily" not in _names(path)
+    with db.read(path) as conn:
+        assert conn.execute("SELECT name FROM stock_pool").fetchone()[0] == "甲公司"
+        assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
 
 
 def test_init_schema_refuses_a_foreign_application_id(tmp_path):

@@ -302,6 +302,10 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
     description = morning_tool.get("description") or ""
     assert "四个问题" in description and "不推" in description and "evaluations" not in description
     assert "最多 10 只" in description and "板块热点" in description and "最多 3 个事件" in description
+    assert "板块热点每条带事件、对应板块、结论、风险、各方观点和 1–3 只承接股" in description
+    assert "消息点名的优先，身份类板块按身份" in description
+    assert "不判断高低位" in description
+    assert "板块热点每条带事件、对应板块、结论、风险、各方观点和 1–3 只承接股" in BRIEF
     pool_tool = next(item for item in tools if item["name"] == "check_pool")
     descriptions = "\n".join(item.get("description") or "" for item in tools)
     assert "1,089" not in descriptions and "1,089" not in BRIEF

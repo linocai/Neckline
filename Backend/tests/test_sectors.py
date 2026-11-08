@@ -1,4 +1,4 @@
-"""板块清单、日线和成分股材料。"""
+"""板块清单和回放快照。"""
 from __future__ import annotations
 
 import json
@@ -12,9 +12,8 @@ from neckline.morning.replay import main as replay_main
 from neckline.morning.replay import run_replay
 from neckline.morning.report import load_config
 from neckline.morning.sectors import (
-    FETCH_CUTOFF, MEMBER_INTERVAL_SECONDS, board_material, capture_sector_payload, concept_list,
-    concepts_content_sha256, concepts_refresh_due, fill_market_daily, member_facts, refresh_concepts,
-    trading_days_ending,
+    MEMBER_INTERVAL_SECONDS, capture_sector_payload, concept_list, concepts_content_sha256,
+    concepts_refresh_due, refresh_concepts,
 )
 from neckline.morning.stock_pool import store_rows
 from neckline.evaluation.snapshot import main as snapshot_main
@@ -148,8 +147,9 @@ def test_sector_config_is_required_and_has_no_defaults(tmp_path):
         r"^专精特新$|^股权转让\(并购重组\)$",
     ]
     assert concepts["maxMembers"] == 150 and concepts["minMembers"] == 3 and concepts["refreshDays"] == 7
-    assert rules["sectors"]["market"] == {
-        "lookbackDays": 40, "boardWindows": [1, 5, 20], "limitWindow": 5}
+    assert set(rules["sectors"]["carriers"]) == {"max"}
+    assert rules["sectors"]["intake"]["bigLeadChars"] == 12
+    assert "candidates" not in rules["sectors"] and "market" not in rules["sectors"]
     assert MEMBER_INTERVAL_SECONDS == 0.35
 
     def rejected(mutate, message):
@@ -162,17 +162,19 @@ def test_sector_config_is_required_and_has_no_defaults(tmp_path):
 
     rejected(lambda item: item.pop("sectors"), "sectors")
     rejected(lambda item: item["sectors"].pop("concepts"), "sectors.concepts")
-    rejected(lambda item: item["sectors"].pop("market"), "sectors.market")
+    rejected(lambda item: item["sectors"].pop("intake"), "sectors.intake")
+    rejected(lambda item: item["sectors"].pop("identity"), "sectors.identity")
+    rejected(lambda item: item["sectors"].pop("backflow"), "sectors.backflow")
+    rejected(lambda item: item["sectors"].__setitem__("market", {"lookbackDays": 40}), "sectors.market 已停用")
     rejected(lambda item: item["sectors"]["concepts"].pop("excludeNames"), "excludeNames")
     rejected(lambda item: item["sectors"]["concepts"].pop("excludePatterns"), "excludePatterns")
     rejected(lambda item: item["sectors"]["concepts"].pop("refreshDays"), "refreshDays")
     rejected(lambda item: item["sectors"]["concepts"].__setitem__("maxMembers", True), "maxMembers")
     rejected(lambda item: item["sectors"]["concepts"].__setitem__("maxMembers", 2), "maxMembers")
     rejected(lambda item: item["sectors"]["concepts"]["excludePatterns"].__setitem__(0, "["), "excludePatterns")
-    rejected(lambda item: item["sectors"]["market"].pop("lookbackDays"), "lookbackDays")
-    rejected(lambda item: item["sectors"]["market"].pop("boardWindows"), "boardWindows")
-    rejected(lambda item: item["sectors"]["market"].__setitem__("boardWindows", []), "boardWindows")
-    rejected(lambda item: item["sectors"]["market"].__setitem__("boardWindows", [1, True]), "boardWindows")
+    rejected(lambda item: item["sectors"]["intake"].pop("publishers"), "publishers")
+    rejected(lambda item: item["sectors"]["intake"].__setitem__("bigLeadChars", True), "bigLeadChars")
+    rejected(lambda item: item["sectors"]["backflow"].pop("relations"), "relations")
 
 
 def test_concept_refresh_replaces_everything_and_a_failure_keeps_the_previous(path, caplog):
@@ -285,164 +287,12 @@ def test_collect_keeps_the_list_when_refresh_fails_and_the_command_hides_the_tok
     assert still["concepts"][0]["name"] == "人工智能"
 
 
-def test_daily_fill_only_missing_days_and_drops_rows_outside_the_window(path):
-    window = trading_days_ending(AS_OF, 3)
-    _store_pool(path, ["300001.SZ"])
-    with db.write(path) as conn:
-        db.write_market_day(conn, window[0].isoformat(), [{
-            "code": "300001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-            "pctChg": 0, "amount": 10, "limitUp": False}])
-        db.write_market_day(conn, window[0].isoformat(), [
-            {"code": "300001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-             "pctChg": 0, "amount": 10, "limitUp": False},
-            {"code": "301001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-             "pctChg": 0, "amount": 10, "limitUp": False}])
-        db.write_market_day(conn, "2026-09-01", [{
-            "code": "300001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-             "pctChg": 0, "amount": 10, "limitUp": False}])
-        db.write_market_day(conn, "2026-11-05", [{
-            "code": "300001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-            "pctChg": 0, "amount": 10, "limitUp": False}])
-    asked = []
-
-    def post(_url, payload, _timeout):
-        api = payload["api_name"]
-        stamp = payload["params"]["trade_date"]
-        asked.append((api, stamp))
-        assert stamp != window[0].strftime("%Y%m%d")
-        rows = [
-            ["300001.SZ", stamp, 10, 11, 9, 11, 10, 1, 1.5],
-            ["301001.SZ", stamp, 10, 11, 9, 11, 10, 2, 2],
-            ["302001.SZ", stamp, 10, 11, 9, 11, 10, 3, 3],
-            ["600000.SH", stamp, 10, 11, 9, 11, 10, 4, 4],
-        ]
-        if api == "daily":
-            return _frame(["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "amount"],
-                          rows)
-        if api == "limit_list_d":
-            assert payload["params"]["limit_type"] == "U"
-            return _frame(["ts_code", "trade_date"], [["300001.SZ", stamp], ["600000.SH", stamp]])
-        raise AssertionError(api)
-
-    with db.write(path) as conn:
-        result = fill_market_daily(conn, as_of=AS_OF, lookback_days=3, prefixes=("300", "301", "302"), post=post,
-                                   environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None, interval_seconds=0)
-    assert result.ok and result.filled == tuple(day.isoformat() for day in window[1:])
-    assert result.deleted == 2
-    assert [api for api, _stamp in asked] == ["daily", "limit_list_d", "daily", "limit_list_d"]
-    with db.read(path) as conn:
-        rows = db.read_market_daily(conn)
-    by_day = {}
-    for row in rows:
-        by_day.setdefault(row["tradeDate"], {})[row["code"]] = row
-    assert set(by_day) == {day.isoformat() for day in window}
-    kept = by_day[window[1].isoformat()]
-    assert by_day[window[0].isoformat()]["300001.SZ"]["amount"] == 10
-    assert set(kept) == {"300001.SZ", "301001.SZ"}
-    assert kept["300001.SZ"]["amount"] == 1500 and kept["300001.SZ"]["limitUp"] is True
-    assert kept["301001.SZ"]["limitUp"] is False and kept["301001.SZ"]["pctChg"] == 2
-
-
-def test_daily_fill_failure_is_a_marker_and_keeps_existing_rows(path, caplog):
-    window = trading_days_ending(AS_OF, 2)
-    _store_pool(path, ["300001.SZ"])
-    with db.write(path) as conn:
-        db.write_market_day(conn, window[0].isoformat(), [{
-            "code": "300001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-            "pctChg": 0, "amount": 10, "limitUp": False}])
-        db.write_market_day(conn, "2026-09-01", [{
-            "code": "300001.SZ", "open": 1, "high": 1, "low": 1, "close": 1, "preClose": 1,
-            "pctChg": 0, "amount": 10, "limitUp": False}])
-
-    def post(_url, payload, _timeout):
-        if payload["api_name"] == "daily":
-            return _frame(["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "amount"],
-                          [["300001.SZ", "20261103", 1, 1, 1, 1, 1, 1, 1]])
-        raise AssertionError(payload["api_name"])
-
-    caplog.set_level(logging.ERROR)
-    with db.write(path) as conn:
-        mismatch = fill_market_daily(conn, as_of=AS_OF, lookback_days=2, prefixes=("300", "301", "302"), post=post,
-                                     environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None,
-                                     interval_seconds=0)
-    assert mismatch.ok is False and "交易日对不上" in mismatch.error and SECRET not in mismatch.error
-    assert "日线没能补齐" in caplog.text
-    with db.read(path) as conn:
-        assert db.market_dates(conn) == ["2026-09-01", window[0].isoformat()]
-
-    def explode(_url, payload, _timeout):
-        raise RuntimeError(f"down {SECRET}")
-
-    with db.write(path) as conn:
-        failed = fill_market_daily(conn, as_of=AS_OF, lookback_days=2, prefixes=("300", "301", "302"), post=explode,
-                                   environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None, interval_seconds=0)
-    assert failed.error and SECRET not in failed.error and failed.filled == ()
-    with db.read(path) as conn:
-        assert "2026-09-01" in db.market_dates(conn)
-        assert AS_OF.isoformat() not in db.market_dates(conn)
-    with db.write(path) as conn:
-        uncovered = fill_market_daily(conn, as_of=date(2027, 3, 2), lookback_days=1, prefixes=("300",),
-                                     post=explode, environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None,
-                                     interval_seconds=0)
-    assert uncovered.error and "2027" in uncovered.error
-
-
 def _material_row(code, day, pct, *, close=10, pre_close=10, amount=1000, limit_up=False):
     return {"code": code, "tradeDate": day.isoformat(), "close": close, "preClose": pre_close, "pctChg": pct,
             "amount": amount, "limitUp": limit_up, "open": pre_close, "high": close, "low": pre_close}
 
 
-def test_board_material_compounds_returns_and_stops_at_as_of():
-    days = trading_days_ending(AS_OF, 2)
-    later = date(2026, 11, 5)
-    rows = [
-        _material_row("300001.SZ", days[0], 10, close=11, pre_close=10),
-        _material_row("300001.SZ", days[1], 10, close=5.5, pre_close=5, limit_up=True),
-        _material_row("300001.SZ", later, 100, close=80, limit_up=True),
-        _material_row("300002.SZ", days[0], 1),
-        _material_row("300003.SZ", days[0], 0),
-        _material_row("300003.SZ", days[1], 0),
-    ]
-    # 除权日用收盘价相除会得到 5.5/11-1 = -50%，连乘是 21%。
-    wrong = (5.5 / 11 - 1) * 100
-    result = board_material(["300001.SZ", "300002.SZ"], rows, AS_OF, [1, 2], 2,
-                            ["300001.SZ", "300002.SZ", "300003.SZ"])
-    assert wrong == pytest.approx(-50)
-    by_days = {block["days"]: block for block in result["windows"]}
-    assert by_days[2]["median"] == pytest.approx(21)
-    assert by_days[2]["median"] != pytest.approx(wrong)
-    assert by_days[2]["counted"] == 1 and by_days[2]["missing"] == 1 and by_days[2]["up"] == 1
-    assert by_days[2]["baselineCounted"] == 2 and by_days[2]["baselineMissing"] == 1
-    assert by_days[2]["baselineMedian"] == pytest.approx(10.5)
-    assert by_days[1]["median"] == pytest.approx(10)
-    assert result["limitUps"] == 1 and result["limitMissing"] == 1
-    assert result["baselineLimitUps"] == 1 and result["baselineLimitMissing"] == 1
-    assert result["memberCount"] == 2 and result["asOf"] == "2026-11-04"
-    with pytest.raises(ValueError, match="交易日"):
-        board_material(POOL3, [], date(2026, 11, 7), [1], 1, POOL3)
-
-
-def test_member_facts_keep_each_window_and_ignore_later_bars():
-    days = trading_days_ending(AS_OF, 20)
-    pcts = [0] * 20
-    pcts[0] = 50
-    pcts[-1] = 10
-    limits = [False] * 20
-    limits[1] = limits[2] = True
-    rows = [_material_row("300001.SZ", day, pct, close=10, amount=1000, limit_up=limit_up)
-            for day, pct, limit_up in zip(days, pcts, limits)]
-    rows.append(_material_row("300001.SZ", date(2026, 11, 5), 50, close=1, amount=9, limit_up=True))
-    result = member_facts("300001.SZ", rows, AS_OF, amount_window=20, limit_window=20, change_window=5)
-    assert result["averageAmountYuan"] == 1000
-    assert result["limitUps"] == 2
-    assert result["changePercent"] == pytest.approx(10)
-    gap = [row for row in rows if row["tradeDate"] != days[0].isoformat()]
-    missing = member_facts("300001.SZ", gap, AS_OF, amount_window=20, limit_window=20, change_window=5)
-    assert missing["averageAmountYuan"] is None and missing["limitUps"] is None
-    assert missing["changePercent"] == pytest.approx(10)
-
-
-def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monkeypatch):
+def test_sector_snapshot_keeps_concepts_and_replay_loads_them(tmp_path, monkeypatch):
     seen = []
 
     def post(_url, payload, _timeout):
@@ -482,9 +332,9 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
                                      environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None,
                                      interval_seconds=0, progress=progress.append)
     assert [api for api, _offset in seen].count("namechange") == 2
+    assert "daily" not in {api for api, _offset in seen} and "limit_list_d" not in {api for api, _offset in seen}
     assert SECRET not in json.dumps(payload, ensure_ascii=False) and SECRET not in "".join(progress)
-    assert [row["ts_code"] for row in payload["daily"]] == ["300001.SZ"]
-    assert [row["ts_code"] for row in payload["limit_list_d"]] == ["300001.SZ"]
+    assert "daily" not in payload and "limit_list_d" not in payload
     assert [row["ts_code"] for row in payload["daily_basic"]] == ["300001.SZ"]
     assert len(payload["ths_member"]) == 2 and len(payload["namechange"]) == 2
     assert payload["stock_basic"] and payload["stock_company"]
@@ -513,9 +363,9 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
                sector_snapshot=sector)
     with db.read(tmp_path / "work" / "2026-11-04.db") as conn:
         concepts = db.read_sector_concepts(conn)
-        bars = db.read_market_daily(conn)
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert concepts["concepts"][0]["members"] == ["300001.SZ"]
-    assert bars[0]["amount"] == 1500 and bars[0]["limitUp"] is True and bars[0]["pctChg"] == 1
+    assert "market_daily" not in names
 
     seen_args = {}
 
@@ -528,36 +378,6 @@ def test_sector_snapshot_keeps_chinext_bars_and_replay_loads_them(tmp_path, monk
                         "--market-snapshot", "m.json", "--receipts", "r", "--filings-cache", "f",
                         "--pool-seed-only", "--sector-snapshot", "sector.json"]) == 0
     assert seen_args["sector"].name == "sector.json"
-
-
-def test_daily_fill_stops_before_the_next_call_when_the_budget_is_gone(path):
-    _store_pool(path, ["300001.SZ"])
-    asked = []
-    budget = {"left": 1}
-
-    def before_call():
-        budget["left"] -= 1
-        return budget["left"] < 0
-
-    def post(_url, payload, _timeout):
-        api = payload["api_name"]
-        asked.append(api)
-        stamp = payload["params"]["trade_date"]
-        if api == "daily":
-            return _frame(
-                ["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "amount"],
-                [["300001.SZ", stamp, 10, 11, 9, 11, 10, 1, 1.5]])
-        if api == "limit_list_d":
-            return _frame(["ts_code", "trade_date"], [["300001.SZ", stamp]])
-        raise AssertionError(api)
-
-    with db.write(path) as conn:
-        result = fill_market_daily(
-            conn, as_of=AS_OF, lookback_days=2, prefixes=("300", "301", "302"), post=post,
-            environ={"TUSHARE_TOKEN": SECRET}, sleep=lambda _seconds: None, interval_seconds=0,
-            before_call=before_call)
-    assert asked == ["daily"]
-    assert result.error == FETCH_CUTOFF and result.filled == ()
 
 
 def test_concept_refresh_stops_when_the_budget_is_gone(path):

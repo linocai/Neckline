@@ -26,7 +26,7 @@ from neckline.news.model import SourceDocument
 
 from tests.test_morning import FakeModel, at
 
-# screening-v6 去掉 configVersion、approvedAt、note、companyPool、matching、sectors 之后的 sha256。
+# screening-v7 去掉 configVersion、approvedAt、note、companyPool、matching、sectors 之后的 sha256。
 # 主线评估合同改成 evaluation-v3 之后，这个值不再等于 v4。
 MAINLINE_SHA256 = "a654dfe5a7d71e1cd4979572b75fe0c1090d3044772ea26032fb03cf1741b2f5"
 DAY = date(2026, 11, 5)
@@ -178,7 +178,7 @@ def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     assert rules["matching"]["strictShortNames"] == ["值得买", "线上线下", "向日葵", "新天地", "探路者", "新城市", "杭州高新",
                                                     "机器人", "同花顺", "新产业", "指南针", "创世纪", "东方财富"]
     assert set(rules["matching"]) == {"note", "strictShortNames"}
-    assert rules["configVersion"] == "screening-v6" and rules["approvedAt"] == "2026-11-05"
+    assert rules["configVersion"] == "screening-v7" and rules["approval"] == "approved"
     assert len(load_config().alias_seed) == 1089 and len(load_config().pool) == 0
 
     def rejected(mutate, message):

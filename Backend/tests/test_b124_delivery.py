@@ -525,7 +525,6 @@ _SECTOR = {
     "title": "金融座谈会",
     "sector": {"name": "人工智能", "code": "885001.TI", "memberCount": 12},
     "conclusion": "资金会看一眼",
-    "questions": {"fresh": "是新消息", "weight": "分量够", "position": "位置不高", "carriers": "有人接"},
     "leaders": [
         {"companyCode": "300082", "companyName": "奥克股份", "why": "消息点到它", "price": "明显高开不追"},
         {"companyCode": "300001", "companyName": "甲公司", "why": "成交够", "price": "回落再看"},
@@ -549,10 +548,9 @@ def test_web_sector_section_shows_the_event_leaders_and_plain_empty_states():
     assert "今天没有板块热点" not in page
     assert "金融座谈会" in page and "人工智能" in page and "创业板 12 只" in page
     assert "资金会看一眼" in page
-    assert "① 是不是新消息" in page and "是新消息" in page
-    assert "② 分量够不够" in page and "分量够" in page
-    assert "③ 板块在什么位置" in page and "位置不高" in page
-    assert "④ 谁来承接" in page and "有人接" in page
+    assert "① 是不是新消息" not in page and "② 分量够不够" not in page
+    assert "③ 板块在什么位置" not in page and "④ 谁来承接" not in page
+    assert "是新消息" not in page and "位置不高" not in page
     assert "奥克股份 300082" in page and "为什么：消息点到它" in page and "价格：明显高开不追" in page
     assert "甲公司 300001" in page and "价格：回落再看" in page
     assert "乙公司 300002" in page and "价格：不追高" in page
