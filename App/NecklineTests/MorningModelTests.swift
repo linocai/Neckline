@@ -456,7 +456,7 @@ final class MorningModelTests: XCTestCase {
     }
 
     func testTwoLineSelectionAndEmptySectors() async throws {
-        let both = try fixture("report-v6-two-lines", as: MorningReport.self)
+        let both = try fixture("report-v7-two-lines", as: MorningReport.self)
         let fake = FakeMorningClient()
         fake.latestResult = .success(both)
         let model = makeModel(client: fake)
@@ -471,12 +471,14 @@ final class MorningModelTests: XCTestCase {
         model.select(sector)
         XCTAssertNil(model.detailEntry(in: loaded))
         XCTAssertEqual(model.detailSector(in: loaded)?.listID, sector.listID)
-        XCTAssertEqual(model.detailSector(in: loaded)?.sector.name, "人工智能")
+        XCTAssertEqual(model.detailSector(in: loaded)?.sector.name, "参股券商")
+        XCTAssertEqual(model.detailSector(in: loaded)?.identityMark, "身份类")
+        XCTAssertNil(model.detailSector(in: loaded)?.leaders.first?.displayPrice)
         model.select(stock)
         XCTAssertEqual(model.detailEntry(in: loaded)?.companyName, "海特生物")
         XCTAssertNil(model.detailSector(in: loaded))
 
-        var sectorsOnlyObject = try JSONSerialization.jsonObject(with: fixtureData("report-v6-two-lines")) as! [String: Any]
+        var sectorsOnlyObject = try JSONSerialization.jsonObject(with: fixtureData("report-v7-two-lines")) as! [String: Any]
         var sectorsOnlyContent = sectorsOnlyObject["content"] as! [String: Any]
         sectorsOnlyContent["entries"] = []
         sectorsOnlyObject["content"] = sectorsOnlyContent

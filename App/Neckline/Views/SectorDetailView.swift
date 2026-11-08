@@ -1,4 +1,4 @@
-// 一条板块热点的详情。①②③各一段；④是承接说明和承接股。
+// 一条板块热点的详情。板块名、结论、风险、各方怎么看、承接股、原文。
 
 import SwiftUI
 
@@ -25,9 +25,20 @@ struct SectorDetailView: View {
     private var detail: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(entry.sector.name)
-                    .nkScaledFont(.detailName)
-                    .foregroundStyle(NKMorning.textPrimary)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(entry.sector.name)
+                        .nkScaledFont(.detailName)
+                        .foregroundStyle(NKMorning.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let mark = entry.identityMark {
+                        Text(mark)
+                            .font(NKMorningFont.tag)
+                            .foregroundStyle(NKMorning.textTertiary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .layoutPriority(1)
+                    }
+                }
                 if !entry.detailMeta.isEmpty {
                     Text(entry.detailMeta)
                         .nkScaledFont(.caption)
@@ -51,10 +62,6 @@ struct SectorDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 8)
             }
-            if showsQuestions {
-                sectionTitle(MorningCopy.questionsHeading)
-                questionsCard
-            }
             if let risk = trimmed(entry.risk) {
                 riskBlock(risk)
                     .padding(.top, 14)
@@ -63,6 +70,10 @@ struct SectorDetailView: View {
                 sectionTitle(MorningCopy.viewsHeading)
                 viewsBlock
             }
+            if !entry.leaders.isEmpty {
+                sectionTitle(MorningCopy.leadersHeading)
+                leadersCard
+            }
             if !entry.sources.isEmpty {
                 sectionTitle(MorningCopy.sourcesHeading)
                 sourcesCard
@@ -70,101 +81,48 @@ struct SectorDetailView: View {
         }
     }
 
-    private var textQuestions: [(String, String)] {
-        [
-            (MorningCopy.sectorQuestionFresh, entry.questions.fresh),
-            (MorningCopy.sectorQuestionWeight, entry.questions.weight),
-            (MorningCopy.sectorQuestionPosition, entry.questions.position),
-        ].compactMap { label, text in
-            guard let text = trimmed(text) else { return nil }
-            return (label, text)
-        }
-    }
-
-    private var showsCarrierBlock: Bool {
-        trimmed(entry.questions.carriers) != nil || !entry.leaders.isEmpty
-    }
-
-    private var showsQuestions: Bool {
-        !textQuestions.isEmpty || showsCarrierBlock
-    }
-
-    private var questionsCard: some View {
-        let rows = textQuestions
-        let showCarriers = showsCarrierBlock
-        return VStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.0)
-                        .font(NKMorningFont.caption.weight(.semibold))
-                        .foregroundStyle(NKMorning.textSecondary)
-                    Text(row.1)
-                        .font(NKMorningFont.titleLine)
-                        .foregroundStyle(NKMorning.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 9)
-                if index != rows.count - 1 || showCarriers {
-                    Rectangle().fill(NKMorning.hairline).frame(height: 1)
-                }
-            }
-            if showCarriers {
-                carriersBlock
-            }
-        }
-        .padding(.horizontal, NKMorningSpace.rowH)
-        .morningCard()
-    }
-
-    private var carriersBlock: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(MorningCopy.sectorQuestionCarriers)
-                .font(NKMorningFont.caption.weight(.semibold))
-                .foregroundStyle(NKMorning.textSecondary)
-            if let carriers = trimmed(entry.questions.carriers) {
-                Text(carriers)
-                    .font(NKMorningFont.titleLine)
-                    .foregroundStyle(NKMorning.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    private var leadersCard: some View {
+        VStack(spacing: 0) {
             ForEach(Array(entry.leaders.enumerated()), id: \.offset) { index, leader in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(leader.companyName)
-                            .font(NKMorningFont.titleLine.weight(.semibold))
-                            .foregroundStyle(NKMorning.textPrimary)
-                            .lineLimit(1)
-                        Text(leader.companyCode)
-                            .font(NKMorningFont.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(NKMorning.textSecondary)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                    }
-                    if let why = trimmed(leader.why) {
-                        Text(why)
-                            .font(NKMorningFont.titleLine)
-                            .foregroundStyle(NKMorning.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let price = trimmed(leader.price) {
-                        Text("价格：\(price)")
-                            .font(NKMorningFont.titleLine)
-                            .foregroundStyle(NKMorning.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
+                leaderRow(leader)
                 if index != entry.leaders.count - 1 {
                     Rectangle().fill(NKMorning.hairline).frame(height: 1)
                 }
             }
         }
+        .padding(.horizontal, 14)
+        .morningCard()
+    }
+
+    private func leaderRow(_ leader: MorningSectorLeader) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(leader.companyName)
+                    .font(NKMorningFont.titleLine.weight(.semibold))
+                    .foregroundStyle(NKMorning.textPrimary)
+                    .lineLimit(1)
+                Text(leader.companyCode)
+                    .font(NKMorningFont.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(NKMorning.textSecondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+            if let why = trimmed(leader.why) {
+                Text(why)
+                    .font(NKMorningFont.titleLine)
+                    .foregroundStyle(NKMorning.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let price = leader.displayPrice {
+                (Text(MorningCopy.pricePrefix).foregroundStyle(NKMorning.textSecondary)
+                    + Text(price).foregroundStyle(NKMorning.textPrimary))
+                    .font(NKMorningFont.titleLine)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
     }
 
     private func riskBlock(_ risk: String) -> some View {

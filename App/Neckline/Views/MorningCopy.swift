@@ -12,6 +12,9 @@ enum MorningCopy {
     static let emptyStocks = "今天没有入选的个股"
     static let emptySectors = "今天没有板块热点"
     static let leadersPrefix = "承接："
+    static let leadersHeading = "承接股"
+    static let identityKind = "身份类"
+    static let pricePrefix = "价格："
     static let questionsHeading = "四个问题"
     static let viewsHeading = "各方怎么看"
     static let sourcesHeading = "原文"
@@ -19,10 +22,6 @@ enum MorningCopy {
     static let questionPriced = "② 市场已反映多少"
     static let questionMoney = "③ 资金为什么买、为什么不买"
     static let questionPrice = "④ 价格划不划算"
-    static let sectorQuestionFresh = "① 是不是新消息"
-    static let sectorQuestionWeight = "② 分量够不够"
-    static let sectorQuestionPosition = "③ 板块在什么位置"
-    static let sectorQuestionCarriers = "④ 谁来承接"
     static let failedTitle = "晨报出问题了"
     static let running = "正在出报"
     static let runningDetail = "完成后下拉刷新"
@@ -98,6 +97,18 @@ enum MorningCopy {
         let cleaned = names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         guard !cleaned.isEmpty else { return nil }
         return cleaned.joined(separator: " · ")
+    }
+
+    /// 身份类板块名称旁的小字。关键词为空或只有空白时不标。
+    static func identityMark(_ identity: String?) -> String? {
+        let raw = identity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : identityKind
+    }
+
+    /// 承接股价格。空或只有空白时不显示那一行。
+    static func leaderPrice(_ price: String) -> String? {
+        let text = price.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     /// 「创业板 N 只 · 首次公开 …」。只数为空时只留首次公开。

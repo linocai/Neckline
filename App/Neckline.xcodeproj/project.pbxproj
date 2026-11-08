@@ -10,10 +10,10 @@
 		014B04CFC9639658A3B9992C /* MorningSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA4B808A78796CBF073A531A /* MorningSettingsView.swift */; };
 		04D3F873585F2CC8C8B3C554 /* not-ready.json in Resources */ = {isa = PBXBuildFile; fileRef = E3342D8C6FE415EEF7396FFB /* not-ready.json */; };
 		0514358C3B2DE476B882B409 /* MorningPush.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4F8C33AF7B94DF50E1392E /* MorningPush.swift */; };
+		094272E58222615010AE34CF /* report-v7-two-lines.json in Resources */ = {isa = PBXBuildFile; fileRef = 9160775AD5013338AA8709C9 /* report-v7-two-lines.json */; };
 		0D6F880EF61399E7A9034723 /* MorningModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3597301592C33B76EF3BBF66 /* MorningModels.swift */; };
 		131E0E18B2E62F1A7D5237A1 /* EntryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6796D92CDB96A78D6277B651 /* EntryDetailView.swift */; };
 		185F8382719BE9C67BE88690 /* KXBoardContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70642E258DC95995AF29264A /* KXBoardContractTests.swift */; };
-		1A9D6B2B7C24D9D307BE55CE /* report-v6-two-lines.json in Resources */ = {isa = PBXBuildFile; fileRef = B5CF9D26867B14AA6B343905 /* report-v6-two-lines.json */; };
 		233BFB247F98044520E1C6B5 /* kx_board_v3_partial.json in Resources */ = {isa = PBXBuildFile; fileRef = 74E0B26A56A5201F64BFE1C4 /* kx_board_v3_partial.json */; };
 		2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E32D24CA427022EEC9C9A9 /* AppConfig.swift */; };
 		2E54774157117080103B1B4D /* report-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = DAD5DF9777E116FDCD8FC584 /* report-failed.json */; };
@@ -95,12 +95,12 @@
 		74E0B26A56A5201F64BFE1C4 /* kx_board_v3_partial.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = kx_board_v3_partial.json; sourceTree = "<group>"; };
 		8637BB4377BD0557D4D5223C /* MorningRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningRootView.swift; sourceTree = "<group>"; };
 		865C6D568107580FC642159F /* unauthorized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = unauthorized.json; sourceTree = "<group>"; };
+		9160775AD5013338AA8709C9 /* report-v7-two-lines.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-v7-two-lines.json"; sourceTree = "<group>"; };
 		9368D0D8912B2600FE4585CB /* document-not-found.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "document-not-found.json"; sourceTree = "<group>"; };
 		9ED7FF84C0CF8D88C3C40E81 /* MorningComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningComponents.swift; sourceTree = "<group>"; };
 		A75B75043B9190B8F306FF1D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NecklineApp.swift; sourceTree = "<group>"; };
 		B4D7BB58A402D15EC1FC2CDB /* reports-history.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "reports-history.json"; sourceTree = "<group>"; };
-		B5CF9D26867B14AA6B343905 /* report-v6-two-lines.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "report-v6-two-lines.json"; sourceTree = "<group>"; };
 		BC33E699B9891551265741C6 /* Neckline.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Neckline.entitlements; sourceTree = "<group>"; };
 		BC66DD01ADBEC8E279A7DBCF /* MorningCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorningCopy.swift; sourceTree = "<group>"; };
 		BE181EDBB34EFB442E211D35 /* kx_board_unavailable.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = kx_board_unavailable.json; sourceTree = "<group>"; };
@@ -242,7 +242,7 @@
 				DADCC85586E10EA993971C5A /* report-empty.json */,
 				DAD5DF9777E116FDCD8FC584 /* report-failed.json */,
 				5C14D4C709EBCECE8A15A579 /* report-not-found.json */,
-				B5CF9D26867B14AA6B343905 /* report-v6-two-lines.json */,
+				9160775AD5013338AA8709C9 /* report-v7-two-lines.json */,
 				B4D7BB58A402D15EC1FC2CDB /* reports-history.json */,
 				865C6D568107580FC642159F /* unauthorized.json */,
 			);
@@ -368,7 +368,7 @@
 				3DB9E4BDA138D8E29F8927F2 /* report-empty.json in Resources */,
 				2E54774157117080103B1B4D /* report-failed.json in Resources */,
 				AADC26923148ABE07BC435FD /* report-not-found.json in Resources */,
-				1A9D6B2B7C24D9D307BE55CE /* report-v6-two-lines.json in Resources */,
+				094272E58222615010AE34CF /* report-v7-two-lines.json in Resources */,
 				D0A0E0ACDBE488FF4EFB433E /* reports-history.json in Resources */,
 				EEC0BA092C7ED60560285A3D /* unauthorized.json in Resources */,
 			);

@@ -1,6 +1,7 @@
 // 晨报接口模型。时间保持字符串，展示时再按北京时间格式化。
-// 新晨报用 title / conclusion / questions / risk / views；旧晨报只留 headline / reason 作回退。
-// 4.3.1 起正文另有 sectors。旧晨报没有这个键；历史没有 counts 时，板块按 0。
+// 个股用 title / conclusion / questions / risk / views；旧晨报只留 headline / reason 作回退。
+// 4.3.1 起正文另有 sectors。板块条目没有四问；身份类板块带 identity。
+// 旧晨报没有 sectors 这个键；历史没有 counts 时，板块按 0。
 
 import Foundation
 
@@ -185,6 +186,8 @@ struct MorningSector: Codable, Equatable {
     let code: String
     /// 当期股票池里的创业板成分股只数。空则界面不写「创业板 N 只」。
     let memberCount: Int?
+    /// 身份类板块命中的关键词，例如「参股」。其他板块为空，界面不标「身份类」。
+    let identity: String?
 }
 
 struct MorningSectorLeader: Codable, Equatable {
@@ -192,13 +195,11 @@ struct MorningSectorLeader: Codable, Equatable {
     let companyName: String
     let why: String
     let price: String
-}
 
-struct MorningSectorQuestions: Codable, Equatable {
-    let fresh: String
-    let weight: String
-    let position: String
-    let carriers: String
+    /// 空或只有空白时界面不显示价格行。
+    var displayPrice: String? {
+        MorningCopy.leaderPrice(price)
+    }
 }
 
 /// 板块原文。documentId 为空时只展示、不能点开。
@@ -219,12 +220,16 @@ struct MorningSectorEntry: Codable, Equatable {
     let title: String
     let sector: MorningSector
     let conclusion: String
-    let questions: MorningSectorQuestions
     let leaders: [MorningSectorLeader]
     let risk: String
     let views: [MorningView]
     let sources: [MorningSectorSource]
     let firstPublished: String
+
+    /// 身份类板块名称旁的小字。其他板块不标。
+    var identityMark: String? {
+        MorningCopy.identityMark(sector.identity)
+    }
 
     var displayTitle: String {
         title.trimmingCharacters(in: .whitespacesAndNewlines)

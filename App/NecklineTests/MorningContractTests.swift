@@ -273,11 +273,17 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(MorningCopy.questionPriced, "② 市场已反映多少")
         XCTAssertEqual(MorningCopy.questionMoney, "③ 资金为什么买、为什么不买")
         XCTAssertEqual(MorningCopy.questionPrice, "④ 价格划不划算")
-        XCTAssertEqual(MorningCopy.sectorQuestionFresh, "① 是不是新消息")
-        XCTAssertEqual(MorningCopy.sectorQuestionWeight, "② 分量够不够")
-        XCTAssertEqual(MorningCopy.sectorQuestionPosition, "③ 板块在什么位置")
-        XCTAssertEqual(MorningCopy.sectorQuestionCarriers, "④ 谁来承接")
         XCTAssertEqual(MorningCopy.leadersPrefix, "承接：")
+        XCTAssertEqual(MorningCopy.leadersHeading, "承接股")
+        XCTAssertEqual(MorningCopy.identityKind, "身份类")
+        XCTAssertEqual(MorningCopy.pricePrefix, "价格：")
+        XCTAssertEqual(MorningCopy.identityMark("参股"), "身份类")
+        XCTAssertEqual(MorningCopy.identityMark(" 持股 "), "身份类")
+        XCTAssertNil(MorningCopy.identityMark(nil))
+        XCTAssertNil(MorningCopy.identityMark("  "))
+        XCTAssertNil(MorningCopy.leaderPrice(""))
+        XCTAssertNil(MorningCopy.leaderPrice(" \n\t "))
+        XCTAssertEqual(MorningCopy.leaderPrice(" 明显高开不追 "), "明显高开不追")
         XCTAssertEqual(MorningCopy.emptyStocks, "今天没有入选的个股")
         XCTAssertEqual(MorningCopy.emptySectors, "今天没有板块热点")
         XCTAssertEqual(MorningCopy.riskLine("订单可能放缓"), "风险：订单可能放缓")
@@ -299,59 +305,73 @@ final class MorningContractTests: XCTestCase {
     }
 
     func testTwoLinesOnlyOneLineAndHistoryCounts() throws {
-        let report = try decode("report-v6-two-lines", as: MorningReport.self)
+        let report = try decode("report-v7-two-lines", as: MorningReport.self)
         let content = try XCTUnwrap(report.content)
-        XCTAssertEqual(content.entries.map(\.companyName), ["海特生物", "震裕科技"])
+        XCTAssertEqual(content.entries.map(\.companyName), ["海特生物"])
+        XCTAssertEqual(content.entries[0].questions?.value, "利好有量")
         let block = try XCTUnwrap(content.sectors)
-        XCTAssertEqual(block.candidates, 1)
-        XCTAssertEqual(block.evaluated, 1)
+        XCTAssertEqual(block.candidates, 2)
+        XCTAssertEqual(block.evaluated, 2)
         XCTAssertEqual(block.overflow, 0)
         let sector = try XCTUnwrap(block.entries.first)
         XCTAssertEqual(sector.displayTitle, "值得看的板块")
         XCTAssertEqual(sector.displayConclusion, "资金会看一眼")
-        XCTAssertEqual(sector.sector.name, "人工智能")
-        XCTAssertEqual(sector.sector.code, "885001.TI")
+        XCTAssertEqual(sector.sector.name, "参股券商")
+        XCTAssertEqual(sector.sector.code, "885801.TI")
+        XCTAssertEqual(sector.sector.identity, "参股")
+        XCTAssertEqual(sector.identityMark, "身份类")
         XCTAssertEqual(sector.sector.memberCount, 3)
         XCTAssertEqual(sector.memberLine, "创业板 3 只")
-        XCTAssertEqual(sector.publishedLine, "10-12 17:30")
-        XCTAssertEqual(sector.leaderNames, "奥克股份")
-        XCTAssertEqual(sector.detailMeta, "创业板 3 只 · 首次公开 10-12 17:30")
+        XCTAssertEqual(sector.publishedLine, "10-12 17:10")
+        XCTAssertEqual(sector.leaderNames, "震裕科技 · 奥克股份")
+        XCTAssertEqual(sector.detailMeta, "创业板 3 只 · 首次公开 10-12 17:10")
         XCTAssertFalse(sector.detailMeta.contains(sector.sector.code))
         XCTAssertFalse(sector.detailMeta.contains("memberCount"))
+        XCTAssertFalse(sector.leaderNames?.contains("300953") ?? true)
         XCTAssertFalse(sector.leaderNames?.contains("300082") ?? true)
-        XCTAssertEqual(sector.questions.fresh, "是新消息")
-        XCTAssertEqual(sector.questions.weight, "分量够")
-        XCTAssertEqual(sector.questions.position, "位置不高")
-        XCTAssertEqual(sector.questions.carriers, "有人接")
-        XCTAssertEqual(sector.leaders.map(\.companyCode), ["300082"])
-        XCTAssertEqual(sector.leaders.map(\.companyName), ["奥克股份"])
-        XCTAssertEqual(sector.leaders.map(\.why), ["消息点到它"])
-        XCTAssertEqual(sector.leaders.map(\.price), ["明显高开不追"])
+        XCTAssertNil(Mirror(reflecting: sector).children.first { $0.label == "questions" })
+        XCTAssertEqual(sector.leaders.map(\.companyCode), ["300953", "300082"])
+        XCTAssertEqual(sector.leaders.map(\.companyName), ["震裕科技", "奥克股份"])
+        XCTAssertEqual(sector.leaders.map(\.why), ["消息直接点名", "消息点到它"])
+        XCTAssertEqual(sector.leaders.map(\.price), ["", "明显高开不追"])
+        XCTAssertNil(sector.leaders[0].displayPrice, "空价格不显示价格行")
+        XCTAssertEqual(sector.leaders[1].displayPrice, "明显高开不追")
         XCTAssertEqual(MorningCopy.riskLine(sector.risk), "风险：可能落空")
         XCTAssertEqual(sector.views.first?.by, .media)
         XCTAssertEqual(sector.views.first?.name, "财联社")
-        XCTAssertEqual(sector.sources.first?.documentID, "doc_1897318c3719945f5b916863d3446c71@1")
-        XCTAssertEqual(sector.sources.first?.title, "央行、证监会将于明天召开座谈会")
-        XCTAssertEqual(MorningCopy.listMeta(report: report), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 2 只 · 板块 1 个")
+        XCTAssertEqual(sector.sources.first?.documentID, "doc_3d018a0706b8e3bd548de7e7be20b759@1")
+        XCTAssertEqual(sector.sources.first?.title, "证监会印发行业补贴方案")
+        let plain = try XCTUnwrap(block.entries.dropFirst().first)
+        XCTAssertEqual(plain.sector.name, "人工智能")
+        XCTAssertNil(plain.sector.identity)
+        XCTAssertNil(plain.identityMark)
+        XCTAssertEqual(plain.leaders.map(\.displayPrice), ["明显高开不追"])
+        let raw = try JSONSerialization.jsonObject(with: fixture("report-v7-two-lines")) as! [String: Any]
+        let rawSectors = ((raw["content"] as! [String: Any])["sectors"] as! [String: Any])["entries"] as! [[String: Any]]
+        XCTAssertEqual(rawSectors.count, 2)
+        for entry in rawSectors {
+            XCTAssertNil(entry["questions"], "板块条目没有四问")
+        }
+        XCTAssertEqual(MorningCopy.listMeta(report: report), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 1 只 · 板块 2 个")
         XCTAssertFalse(content.entries.isEmpty)
         XCTAssertFalse(content.sectorEntries.isEmpty)
 
-        let stocksOnly = try mutateReport("report-v6-two-lines") { content in
+        let stocksOnly = try mutateReport("report-v7-two-lines") { content in
             content.removeValue(forKey: "sectors")
         }
         XCTAssertNil(stocksOnly.content?.sectors)
-        XCTAssertEqual(stocksOnly.content?.entries.count, 2)
+        XCTAssertEqual(stocksOnly.content?.entries.count, 1)
         XCTAssertTrue(stocksOnly.content?.sectorEntries.isEmpty ?? false)
-        XCTAssertEqual(MorningCopy.listMeta(report: stocksOnly), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 2 只 · 板块 0 个")
+        XCTAssertEqual(MorningCopy.listMeta(report: stocksOnly), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 1 只 · 板块 0 个")
 
-        let sectorsOnly = try mutateReport("report-v6-two-lines") { content in
+        let sectorsOnly = try mutateReport("report-v7-two-lines") { content in
             content["entries"] = []
         }
         XCTAssertTrue(sectorsOnly.content?.entries.isEmpty ?? false)
-        XCTAssertEqual(sectorsOnly.content?.sectorEntries.count, 1)
-        XCTAssertEqual(MorningCopy.listMeta(report: sectorsOnly), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 0 只 · 板块 1 个")
+        XCTAssertEqual(sectorsOnly.content?.sectorEntries.count, 2)
+        XCTAssertEqual(MorningCopy.listMeta(report: sectorsOnly), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 0 只 · 板块 2 个")
 
-        let neither = try mutateReport("report-v6-two-lines") { content in
+        let neither = try mutateReport("report-v7-two-lines") { content in
             content["entries"] = []
             var sectors = content["sectors"] as! [String: Any]
             sectors["entries"] = []
@@ -361,7 +381,7 @@ final class MorningContractTests: XCTestCase {
         XCTAssertTrue(neither.content?.sectorEntries.isEmpty ?? false)
         XCTAssertEqual(MorningCopy.listMeta(report: neither), "10/12 15:00 \u{2013} 10/13 08:00 · 个股 0 只 · 板块 0 个")
 
-        let missingCount = try mutateReport("report-v6-two-lines") { content in
+        let missingCount = try mutateReport("report-v7-two-lines") { content in
             var sectors = content["sectors"] as! [String: Any]
             var entries = sectors["entries"] as! [[String: Any]]
             var sector = entries[0]["sector"] as! [String: Any]
@@ -372,9 +392,9 @@ final class MorningContractTests: XCTestCase {
         }
         XCTAssertNil(missingCount.content?.sectorEntries.first?.sector.memberCount)
         XCTAssertNil(missingCount.content?.sectorEntries.first?.memberLine)
-        XCTAssertEqual(missingCount.content?.sectorEntries.first?.detailMeta, "首次公开 10-12 17:30")
+        XCTAssertEqual(missingCount.content?.sectorEntries.first?.detailMeta, "首次公开 10-12 17:10")
 
-        let nullCount = try mutateReport("report-v6-two-lines") { content in
+        let nullCount = try mutateReport("report-v7-two-lines") { content in
             var sectors = content["sectors"] as! [String: Any]
             var entries = sectors["entries"] as! [[String: Any]]
             var sector = entries[0]["sector"] as! [String: Any]
@@ -386,6 +406,22 @@ final class MorningContractTests: XCTestCase {
         XCTAssertNil(nullCount.content?.sectorEntries.first?.memberLine)
         XCTAssertEqual(MorningCopy.memberCountLine(nil), nil)
         XCTAssertEqual(MorningCopy.memberCountLine(0), "创业板 0 只")
+
+        let blank = try mutateReport("report-v7-two-lines") { content in
+            var sectors = content["sectors"] as! [String: Any]
+            var entries = sectors["entries"] as! [[String: Any]]
+            var sector = entries[0]["sector"] as! [String: Any]
+            sector["identity"] = "  \n"
+            entries[0]["sector"] = sector
+            var leaders = entries[0]["leaders"] as! [[String: Any]]
+            leaders[1]["price"] = "   "
+            entries[0]["leaders"] = leaders
+            sectors["entries"] = entries
+            content["sectors"] = sectors
+        }
+        let blankEntry = try XCTUnwrap(blank.content?.sectorEntries.first)
+        XCTAssertNil(blankEntry.identityMark, "空白身份不标「身份类」")
+        XCTAssertNil(blankEntry.leaders[1].displayPrice, "只有空白的价格不显示")
         XCTAssertEqual(MorningCopy.leaderNames(["东方财富", "同花顺", "指南针"]), "东方财富 · 同花顺 · 指南针")
         XCTAssertNil(MorningCopy.leaderNames([" ", ""]))
 
