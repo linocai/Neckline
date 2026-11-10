@@ -25,8 +25,8 @@ from neckline.morning import db
 from neckline.morning.schedule import CST, CalendarGap, previous_trading_day
 from neckline.morning.sector_ferment import FermentOutcome, count_fermenting
 from neckline.morning.sector_recognition import (
-    LIMIT_INTERVAL_SECONDS, ensure_limit_ups, load_limit_ups, load_members_all, recognition_window,
-    score_recognition, stored_limit_days,
+    LIMIT_INTERVAL_SECONDS, fetch_limit_ups, load_limit_ups, load_members_all, recognition_window,
+    score_recognition, store_limit_ups, stored_limit_days,
 )
 from neckline.morning.sector_prompt import (
     EVALUATION_CONTRACT, EVALUATION_SYSTEM, MAPPING_CONTRACT, MAPPING_SYSTEM, SELECTION_CONTRACT,
@@ -54,6 +54,8 @@ _WAIT_SLICE = 1.0
 _MAPPING_HALF = "板块线有一半候选没归并成"
 _NO_CARRIER = "判推但核对后没有承接股"
 _LIMIT_GAP = "板块线没跑：涨停数据没取全"
+_MEMBERS_GAP = "板块线没跑：全 A 成分没取到"
+_NO_FULL_MEMBERS = "板块的全 A 成分缺失"
 _EMPTY_RECOGNITION = "板块里没有题材辨识度名单"
 _COUNT_SUFFIX = re.compile(r"｜\d+$")
 _INTAKE_LISTS = (
@@ -1210,7 +1212,7 @@ def _blank_stats(raw: int, dropped: Mapping[str, int] | None = None, kept: int =
         "backflow": {"messages": 0, "kept": 0},
         "fermenting": {"ran": False, "note": None, "boards": [], "messages": 0},
         "recognition": {"ran": False, "note": None, "lookbackDays": None, "days": [], "missing": [],
-                        "fetched": 0, "emptyEvents": 0},
+                        "fetched": 0, "emptyEvents": 0, "noFullMembers": 0},
         "selection": _blank_selection(),
         "mapping": {"calls": 0, "fromReceipt": 0, "splits": 0, "filtered": 0, "events": 0, "null": 0, "repeat": 0,
                     "usage": _zero_usage(), "seconds": 0.0},
@@ -1527,24 +1529,31 @@ class _Budgeted:
         return inner
 
     def _wait(self, fn: Callable[[], Any]) -> Any:
-        if _cutoff_reached(self._clock(), self._cutoff):
-            raise _StillOpen()
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(fn)
-        try:
-            while not future.done():
-                if _cutoff_reached(self._clock(), self._cutoff):
-                    raise _StillOpen()
-                remaining = _seconds_until(self._clock(), self._cutoff)
-                if remaining <= 0:
-                    raise _StillOpen()
-                wait((future,), timeout=min(_WAIT_SLICE, remaining))
-            if _cutoff_reached(self._clock(), self._cutoff):
+        return _wait_before_cutoff(fn, self._cutoff, self._clock)
+
+
+def _wait_before_cutoff(fn: Callable[[], Any], cutoff: str, clock: Callable[[], datetime]) -> Any:
+    """在单个工作线程里跑 ``fn``，主线程按分片等，只等到收口时刻。到点抛 ``_StillOpen``。
+
+    不等在途调用。进程退出时这些非守护线程仍会被解释器 join。
+    """
+    if _cutoff_reached(clock(), cutoff):
+        raise _StillOpen()
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        while not future.done():
+            if _cutoff_reached(clock(), cutoff):
                 raise _StillOpen()
-            return future.result()
-        finally:
-            # 不等在途的 HTTP。进程退出时这些非守护线程仍会被解释器 join。
-            executor.shutdown(wait=False, cancel_futures=True)
+            remaining = _seconds_until(clock(), cutoff)
+            if remaining <= 0:
+                raise _StillOpen()
+            wait((future,), timeout=min(_WAIT_SLICE, remaining))
+        if _cutoff_reached(clock(), cutoff):
+            raise _StillOpen()
+        return future.result()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _budget(client: Any, cutoff: str, clock: Callable[[], datetime]) -> Any:
@@ -1715,6 +1724,12 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     _write_recognition_stats(stats, sectors, day, limit_status)
     if limit_status["missing"]:
         return _done(stats, _content(0, 0, 0, []), _join(_LIMIT_GAP, ferment_gap), [])
+    with db.read(db_path) as conn:
+        members_missing = db.sector_members_all_empty(conn)
+    if members_missing:
+        stats["recognition"]["ran"] = False
+        stats["recognition"]["note"] = _MEMBERS_GAP
+        return _done(stats, _content(0, 0, 0, []), _join(_MEMBERS_GAP, ferment_gap), [])
     names = {item["name"] for item in concepts}
     by_name: dict[str, dict] = {}
     for item in concepts:
@@ -1731,9 +1746,11 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     stats["mapping"]["repeat"] = sum(1 for event in events if event["repeat"])
     profiles = getattr(config, "profiles", {}) or {}
     pool_rows = _stored_pool_rows(db_path)
-    stats["recognition"]["emptyEvents"] = _apply_recognition(
+    empty_events, no_full = _apply_recognition(
         events, db_path=db_path, pool=pool, skip=skip, profiles=profiles, pool_rows=pool_rows, day=day,
         lookback=int(sectors["recognition"]["lookbackDays"]), hot=sectors["recognition"]["hot"])
+    stats["recognition"]["emptyEvents"] = empty_events
+    stats["recognition"]["noFullMembers"] = no_full
     now = clock()
     for event in events:
         if not event["skip"]:
@@ -1790,18 +1807,34 @@ def _mark_c_closed(stats: dict, sectors: Mapping) -> None:
 def _sync_limit_ups(db_path: Path, day: date, lookback: int, *, live: bool, post, environ,
                     sleep: Callable[[float], None] | None, cutoff: str,
                     clock: Callable[[], datetime]) -> dict:
-    """回放（live 为假）只读库。缺的日子在收口前补一次，补不上就原样返回。"""
+    """回放（live 为假）只读库。缺的日子在收口前补一次，补不上就原样返回。
+
+    联网在工作线程里跑，主线程只等到收口，期间不占库连接。到点丢掉在途结果，不写库。
+    """
     window = recognition_window(day, lookback)
     with db.read(db_path) as conn:
         have = stored_limit_days(conn)
     missing = [item for item in window if item.isoformat() not in have]
+    missing_iso = [item.isoformat() for item in missing]
     if not missing or not live:
-        return {"missing": [item.isoformat() for item in missing], "fetched": 0, "error": None}
-    with db.write(db_path) as conn:
-        return ensure_limit_ups(
-            conn, missing, post=post, environ=environ, sleep=sleep or time.sleep,
+        return {"missing": missing_iso, "fetched": 0, "error": None}
+
+    def fetch() -> dict:
+        return fetch_limit_ups(
+            missing, post=post, environ=environ, sleep=sleep or time.sleep,
             interval_seconds=LIMIT_INTERVAL_SECONDS,
             before_call=lambda: _cutoff_reached(clock(), cutoff))
+
+    try:
+        fetched = _wait_before_cutoff(fetch, cutoff, clock)
+    except _StillOpen:
+        return {"missing": missing_iso, "fetched": 0, "error": "收口时刻前没取完"}
+    with db.write(db_path) as conn:
+        written = store_limit_ups(conn, fetched["days"])
+    with db.read(db_path) as conn:
+        have = stored_limit_days(conn)
+    still = [item.isoformat() for item in window if item.isoformat() not in have]
+    return {"missing": still, "fetched": written, "error": fetched["error"]}
 
 
 def _write_recognition_stats(stats: dict, sectors: Mapping, day: date, status: Mapping) -> None:
@@ -1817,6 +1850,7 @@ def _write_recognition_stats(stats: dict, sectors: Mapping, day: date, status: M
         "missing": missing,
         "fetched": int(status.get("fetched") or 0),
         "emptyEvents": 0,
+        "noFullMembers": 0,
     }
 
 
@@ -1833,18 +1867,30 @@ def _stored_pool_rows(db_path: Path) -> list[dict]:
 
 def _apply_recognition(events: Sequence[dict], *, db_path: Path, pool: CompanyPool, skip: Sequence[str],
                        profiles: Mapping, pool_rows: Sequence[Mapping], day: date, lookback: int,
-                       hot: Mapping) -> int:
-    """只留 count ≥ 1 的候选，按辨识度排序。一个都没有的事件不调模型。"""
+                       hot: Mapping) -> tuple[int, int]:
+    """只留 count ≥ 1 的候选，按辨识度排序。一个都没有的事件不调模型。
+
+    返回 (辨识度名单为空的事件数, 缺全 A 成分的事件数)。某个板块在全 A 成分里没有一行时，
+    不用池内成分代替，直接跳过。
+    """
     window = recognition_window(day, lookback)
     with db.read(db_path) as conn:
         members_all = load_members_all(conn)
         ups = load_limit_ups(conn, window)
     empty = 0
+    missing_full = 0
     for event in events:
         if event["skip"]:
             continue
+        sector_code = str(event.get("sectorCode") or "")
+        board = members_all.get(sector_code)
+        if not board:
+            event["skip"] = True
+            event["reason"] = _NO_FULL_MEMBERS
+            missing_full += 1
+            continue
         rows = _member_rows(event, pool, skip, profiles, pool_rows)
-        full = set(members_all.get(event.get("sectorCode") or "") or ())
+        full = set(board)
         for code in event.get("members") or ():
             short = _short(code)
             if short:
@@ -1865,7 +1911,7 @@ def _apply_recognition(events: Sequence[dict], *, db_path: Path, pool: CompanyPo
             empty += 1
         else:
             event["preparedMembers"] = prepared
-    return empty
+    return empty, missing_full
 
 
 def _ferment_gap(ferment: FermentOutcome) -> str | None:

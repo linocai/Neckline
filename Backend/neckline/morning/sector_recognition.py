@@ -104,26 +104,24 @@ def load_members_all(conn) -> dict[str, set[str]]:
     return found
 
 
-def ensure_limit_ups(conn, days: Sequence[date], *, post=None, environ=None, sleep: Callable[[float], None],
-                     interval_seconds: float, before_call: Callable[[], bool] | None = None) -> dict:
-    """只取 ``limit_up_days`` 里还没有的那些天。返回还缺的日期、这次写入的天数和错误。
+def fetch_limit_ups(days: Sequence[date], *, post=None, environ=None, sleep: Callable[[float], None],
+                    interval_seconds: float, before_call: Callable[[], bool] | None = None) -> dict:
+    """只联网，不碰库。按 ``days`` 顺序逐天取。0 行不算取到。出错停在那一天，已经取到的留下。
 
-    调用方负责事务。已经写入的天会随事务提交；中途失败不再继续后面的天，也不留下半页。
+    返回 ``{"days": {YYYY-MM-DD: set(6位代码)}, "error": str | None}``。错误文本不含 token。
     """
     ordered = list(days)
-    missing = [item for item in ordered if item.isoformat() not in stored_limit_days(conn)]
-    if not missing:
-        return {"missing": [], "fetched": 0, "error": None}
+    if not ordered:
+        return {"days": {}, "error": None}
     _check_interval(interval_seconds)
     try:
         token, sender = _sender(post, environ)
     except SectorFetchError as exc:
-        return {"missing": [item.isoformat() for item in missing], "fetched": 0, "error": str(exc)}
+        return {"days": {}, "error": str(exc)}
     pause = {"started": False}
-    fetched = 0
+    found: dict[str, set[str]] = {}
     error = None
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    for day in missing:
+    for day in ordered:
         try:
             codes = _fetch_day(sender, token, day, sleep=sleep, interval_seconds=interval_seconds,
                                pause=pause, before_call=before_call)
@@ -137,12 +135,40 @@ def ensure_limit_ups(conn, days: Sequence[date], *, post=None, environ=None, sle
             text = str(exc)
             error = "limit_list_d 请求失败" if token and token in text else f"limit_list_d 请求失败：{type(exc).__name__}"
             break
+        if codes:
+            found[day.isoformat()] = set(codes)
+    return {"days": found, "error": error}
+
+
+def store_limit_ups(conn, fetched: Mapping[str, set[str]]) -> int:
+    """把已经取到的天写入库。返回写入天数。空的一天不写。"""
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    written = 0
+    for iso in sorted(fetched):
+        codes = set(fetched[iso] or ())
         if not codes:
             continue
-        _store_day(conn, day, codes, stamp)
-        fetched += 1
+        _store_day(conn, date.fromisoformat(iso), codes, stamp)
+        written += 1
+    return written
+
+
+def ensure_limit_ups(conn, days: Sequence[date], *, post=None, environ=None, sleep: Callable[[float], None],
+                     interval_seconds: float, before_call: Callable[[], bool] | None = None) -> dict:
+    """只取 ``limit_up_days`` 里还没有的那些天。返回还缺的日期、这次写入的天数和错误。
+
+    先联网、再写入调用方的事务。中途失败不再继续后面的天，已经取到的天会写上；0 行不算取全。
+    """
+    ordered = list(days)
+    missing = [item for item in ordered if item.isoformat() not in stored_limit_days(conn)]
+    if not missing:
+        return {"missing": [], "fetched": 0, "error": None}
+    fetched = fetch_limit_ups(
+        missing, post=post, environ=environ, sleep=sleep, interval_seconds=interval_seconds,
+        before_call=before_call)
+    written = store_limit_ups(conn, fetched["days"])
     still = [item.isoformat() for item in ordered if item.isoformat() not in stored_limit_days(conn)]
-    return {"missing": still, "fetched": fetched, "error": error}
+    return {"missing": still, "fetched": written, "error": fetched["error"]}
 
 
 def install_limit_snapshot(conn, rows, trade_date: str) -> int:

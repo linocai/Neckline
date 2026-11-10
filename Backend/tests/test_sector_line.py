@@ -842,6 +842,53 @@ def test_sector_failure_does_not_block_the_main_list(tmp_path, monkeypatch):
     assert "板块线没有完成：归并没有完成" in result["gapSummary"]
 
 
+def test_a_stuck_limit_fetch_still_delivers_the_main_list(tmp_path, monkeypatch):
+    path = tmp_path / "v4.db"
+    db.init_schema(path)
+    _seed_sector_context(path)
+    with db.write(path) as conn:
+        conn.execute("DELETE FROM limit_ups")
+        conn.execute("DELETE FROM limit_up_days")
+    _with_device(path)
+    monkeypatch.setenv("TUSHARE_TOKEN", "tushare-secret")
+    monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
+    model = FakeModel()
+    release = threading.Event()
+    phase = {"past": False}
+    calls = {"n": 0}
+
+    def post(_url, payload, _timeout):
+        if payload.get("api_name") != "limit_list_d":
+            raise AssertionError(payload.get("api_name"))
+        calls["n"] += 1
+        if calls["n"] == 1:
+            phase["past"] = True
+            release.wait(8)
+        return {"code": 0, "data": {"fields": ["trade_date", "ts_code"], "items": [], "has_more": False}}
+
+    monkeypatch.setattr("neckline.morning.stock_pool.http_post", post)
+
+    def clock():
+        return at("2026-10-13", "09:06") if phase["past"] else at("2026-10-13", "08:02")
+
+    try:
+        result = run_morning(
+            path, now=at("2026-10-13", "08:02"), config=_config(), clock=clock,
+            collector=lambda _at: {"status": "completed"},
+            client_factory=lambda rid: _client(path, _sector_handler(model), rid, attempts=1),
+            pusher=Pusher(path, FakeApns(), clock))
+    finally:
+        release.set()
+    assert calls["n"] >= 1
+    assert result["state"] == "available" and result["entries"] == 2
+    assert "板块线没跑：涨停数据没取全" in result["gapSummary"]
+    with db.read(path) as conn:
+        stored = db.get_report(conn, "2026-10-13")
+    assert stored["status"] == "available"
+    assert [entry["companyName"] for entry in stored["content"]["entries"]] == ["海特生物", "震裕科技"]
+    assert stored["content"]["sectors"]["entries"] == []
+
+
 def test_cli_morning_round_trip_includes_sectors_and_resume_does_not_rebill(tmp_path, monkeypatch):
     path = tmp_path / "v4.db"
     db.init_schema(path)
