@@ -56,6 +56,7 @@ _NO_CARRIER = "判推但核对后没有承接股"
 _LIMIT_GAP = "板块线没跑：涨停数据没取全"
 _MEMBERS_GAP = "板块线没跑：全 A 成分没取到"
 _NO_FULL_MEMBERS = "板块的全 A 成分缺失"
+_NO_FULL_GAP = "板块线有 {count} 个事件缺全 A 成分，没评"
 _EMPTY_RECOGNITION = "板块里没有题材辨识度名单"
 _COUNT_SUFFIX = re.compile(r"｜\d+$")
 _INTAKE_LISTS = (
@@ -1751,6 +1752,8 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
         lookback=int(sectors["recognition"]["lookbackDays"]), hot=sectors["recognition"]["hot"])
     stats["recognition"]["emptyEvents"] = empty_events
     stats["recognition"]["noFullMembers"] = no_full
+    if no_full and not stats["recognition"]["note"]:
+        stats["recognition"]["note"] = _NO_FULL_GAP.format(count=no_full)
     now = clock()
     for event in events:
         if not event["skip"]:
@@ -1794,6 +1797,8 @@ def _run(db_path: Path, *, report_id: str, day: date, window: Window, messages: 
     gap = _join(gap, _search_misses(rows))
     gap = _join(gap, select_gap)
     gap = _join(gap, ferment_gap)
+    if no_full:
+        gap = _join(gap, _NO_FULL_GAP.format(count=no_full))
     return SectorOutcome(_annotate(stats, gap),
                          _render(rows, pool, max_events, shown=shown, overflow=overflow),
                          stats)

@@ -519,7 +519,8 @@ def test_one_board_without_full_members_is_skipped(tmp_path):
             _msg("b", "工信部印发机器人产业方案", "范围。", datetime(2026, 10, 13, 7, 20, tzinfo=CST)),
         ], config=_config(), pool=_pool(), skip=[], client=Scripted(handler),
         clock=lambda: _at(8, day=13), sector_live=False)
-    assert outcome.gap is None
+    assert outcome.gap == "板块线有 1 个事件缺全 A 成分，没评"
+    assert outcome.stats["recognition"]["note"] == "板块线有 1 个事件缺全 A 成分，没评"
     assert len(evaluated) == 1
     assert outcome.stats["recognition"]["noFullMembers"] == 1
     assert outcome.stats["recognition"]["emptyEvents"] == 0
