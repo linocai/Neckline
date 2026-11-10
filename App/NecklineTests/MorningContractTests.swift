@@ -323,19 +323,28 @@ final class MorningContractTests: XCTestCase {
         XCTAssertEqual(sector.sector.memberCount, 3)
         XCTAssertEqual(sector.memberLine, "创业板 3 只")
         XCTAssertEqual(sector.publishedLine, "10-12 17:10")
-        XCTAssertEqual(sector.leaderNames, "震裕科技 · 奥克股份")
+        XCTAssertEqual(sector.leaderNames, "奥克股份")
         XCTAssertEqual(sector.detailMeta, "创业板 3 只 · 首次公开 10-12 17:10")
         XCTAssertFalse(sector.detailMeta.contains(sector.sector.code))
         XCTAssertFalse(sector.detailMeta.contains("memberCount"))
         XCTAssertFalse(sector.leaderNames?.contains("300953") ?? true)
         XCTAssertFalse(sector.leaderNames?.contains("300082") ?? true)
         XCTAssertNil(Mirror(reflecting: sector).children.first { $0.label == "questions" })
-        XCTAssertEqual(sector.leaders.map(\.companyCode), ["300953", "300082"])
-        XCTAssertEqual(sector.leaders.map(\.companyName), ["震裕科技", "奥克股份"])
-        XCTAssertEqual(sector.leaders.map(\.why), ["消息直接点名", "消息点到它"])
-        XCTAssertEqual(sector.leaders.map(\.price), ["", "明显高开不追"])
-        XCTAssertNil(sector.leaders[0].displayPrice, "空价格不显示价格行")
-        XCTAssertEqual(sector.leaders[1].displayPrice, "明显高开不追")
+        XCTAssertEqual(sector.leaders.map(\.companyCode), ["300082"])
+        XCTAssertEqual(sector.leaders.map(\.companyName), ["奥克股份"])
+        XCTAssertEqual(sector.leaders.map(\.why), ["消息点到它"])
+        XCTAssertEqual(sector.leaders.map(\.price), ["明显高开不追"])
+        XCTAssertEqual(sector.leaders.first?.displayPrice, "明显高开不追")
+        let blankPrice = try mutateReport("report-v7-two-lines") { content in
+            var sectors = content["sectors"] as! [String: Any]
+            var entries = sectors["entries"] as! [[String: Any]]
+            var leaders = entries[0]["leaders"] as! [[String: Any]]
+            leaders[0]["price"] = ""
+            entries[0]["leaders"] = leaders
+            sectors["entries"] = entries
+            content["sectors"] = sectors
+        }
+        XCTAssertNil(blankPrice.content?.sectors?.entries.first?.leaders.first?.displayPrice, "空价格不显示价格行")
         XCTAssertEqual(MorningCopy.riskLine(sector.risk), "风险：可能落空")
         XCTAssertEqual(sector.views.first?.by, .media)
         XCTAssertEqual(sector.views.first?.name, "财联社")
@@ -414,14 +423,14 @@ final class MorningContractTests: XCTestCase {
             sector["identity"] = "  \n"
             entries[0]["sector"] = sector
             var leaders = entries[0]["leaders"] as! [[String: Any]]
-            leaders[1]["price"] = "   "
+            leaders[0]["price"] = "   "
             entries[0]["leaders"] = leaders
             sectors["entries"] = entries
             content["sectors"] = sectors
         }
         let blankEntry = try XCTUnwrap(blank.content?.sectorEntries.first)
         XCTAssertNil(blankEntry.identityMark, "空白身份不标「身份类」")
-        XCTAssertNil(blankEntry.leaders[1].displayPrice, "只有空白的价格不显示")
+        XCTAssertNil(blankEntry.leaders.first?.displayPrice, "只有空白的价格不显示")
         XCTAssertEqual(MorningCopy.leaderNames(["东方财富", "同花顺", "指南针"]), "东方财富 · 同花顺 · 指南针")
         XCTAssertNil(MorningCopy.leaderNames([" ", ""]))
 

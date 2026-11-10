@@ -473,7 +473,7 @@ final class MorningModelTests: XCTestCase {
         XCTAssertEqual(model.detailSector(in: loaded)?.listID, sector.listID)
         XCTAssertEqual(model.detailSector(in: loaded)?.sector.name, "参股券商")
         XCTAssertEqual(model.detailSector(in: loaded)?.identityMark, "身份类")
-        XCTAssertNil(model.detailSector(in: loaded)?.leaders.first?.displayPrice)
+        XCTAssertEqual(model.detailSector(in: loaded)?.leaders.first?.displayPrice, "明显高开不追")
         model.select(stock)
         XCTAssertEqual(model.detailEntry(in: loaded)?.companyName, "海特生物")
         XCTAssertNil(model.detailSector(in: loaded))
