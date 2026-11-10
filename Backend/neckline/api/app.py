@@ -15,8 +15,8 @@ from neckline.mcp.status import set_mcp_serving
 from neckline.morning.api import create_router as create_morning_router
 from neckline.morning.web import create_router as create_read_router
 
-VERSION = "v4.3.1"
-RELEASE_SET = "v4.3.1-b132"
+VERSION = "v4.4.1"
+RELEASE_SET = "v4.4.1-b133"
 
 
 @asynccontextmanager
