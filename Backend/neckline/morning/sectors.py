@@ -64,10 +64,13 @@ def concepts_content_sha256(concepts: Sequence[Mapping]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def concepts_refresh_due(meta: Mapping | None, *, today: date, refresh_days: int) -> bool:
-    """距上次成功刷新满 refresh_days 个自然日，或还从没成功过。失败不改成功时间。"""
+def concepts_refresh_due(meta: Mapping | None, *, today: date, refresh_days: int,
+                         members_all_empty: bool = False) -> bool:
+    """距上次成功刷新满 refresh_days 个自然日，或还从没成功过，或全 A 成分是空的。失败不改成功时间。"""
     if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
         raise ValueError("refreshDays 无效")
+    if members_all_empty:
+        return True
     refreshed = None if meta is None else meta.get("refreshedAt")
     if not refreshed:
         return True
@@ -147,8 +150,8 @@ def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: date
     _check_interval(interval_seconds)
     previous = db.read_sector_concepts(conn)
     try:
-        concepts = _pull_concepts(prefixes=prefixes, post=post, environ=environ, sleep=sleep,
-                                  interval_seconds=interval_seconds, before_call=before_call)
+        concepts, all_members = _pull_concepts(prefixes=prefixes, post=post, environ=environ, sleep=sleep,
+                                               interval_seconds=interval_seconds, before_call=before_call)
     except _Stopped:
         message = "收口时刻前没刷新完"
         db.set_sector_refresh_error(conn, message)
@@ -170,6 +173,7 @@ def refresh_concepts(conn, *, rules: Mapping, prefixes: Sequence[str], now: date
     digest = concepts_content_sha256(concepts)
     refreshed_at = db.utc(now)
     db.replace_sector_concepts(conn, concepts, refreshed_at=refreshed_at, sha256=digest)
+    db.replace_sector_members_all(conn, all_members)
     return ConceptRefresh(len(concepts), digest, refreshed_at, None, True)
 
 
@@ -233,6 +237,8 @@ def install_sector_snapshot(conn, payload: Mapping, *, refreshed_at: str, prefix
     concepts = concepts_from_raw(payload["ths_index"], payload["ths_member"], prefixes)
     digest = concepts_content_sha256(concepts)
     db.replace_sector_concepts(conn, concepts, refreshed_at=refreshed_at, sha256=digest)
+    kept = {item["tsCode"] for item in concepts}
+    db.replace_sector_members_all(conn, all_a_member_rows(payload["ths_member"], kept))
     return {"concepts": len(concepts), "sha256": digest}
 
 
@@ -266,6 +272,24 @@ def concepts_from_raw(index_rows: Sequence[Mapping], member_rows: Sequence[Mappi
     return concepts
 
 
+def all_a_member_rows(member_rows: Sequence[Mapping], kept: set[str]) -> list[tuple[str, str]]:
+    """清单里保留的概念的全部成分，6 位代码，去重。不限创业板。"""
+    seen: set[tuple[str, str]] = set()
+    rows: list[tuple[str, str]] = []
+    for row in member_rows:
+        ts_code = _text(row.get("ts_code") or row.get("tsCode"))
+        if ts_code not in kept:
+            continue
+        raw = row.get("con_code") if row.get("con_code") is not None else row.get("code")
+        code = _symbol(raw)
+        if code is None or (ts_code, code) in seen:
+            continue
+        seen.add((ts_code, code))
+        rows.append((ts_code, code))
+    rows.sort()
+    return rows
+
+
 def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
                    environ: Mapping[str, str] | None, sleep: Callable[[float], None],
                    interval_seconds: float, before_call: Callable[[], bool] | None = None) -> list[dict]:
@@ -287,7 +311,7 @@ def _pull_concepts(*, prefixes: Sequence[str], post: Callable[..., dict] | None,
     concepts = concepts_from_raw(index_rows, members, prefixes)
     if not concepts:
         raise SectorFetchError("ths_index 没有返回概念")
-    return concepts
+    return concepts, all_a_member_rows(members, {item["tsCode"] for item in concepts})
 
 
 def _sender(post: Callable[..., dict] | None, environ: Mapping[str, str] | None) -> tuple[str, Callable[..., dict]]:

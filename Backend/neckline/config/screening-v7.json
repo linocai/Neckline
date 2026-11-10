@@ -1,7 +1,8 @@
 {
   "configVersion": "screening-v7",
-  "approval": "pending",
-  "note": "三路版（11/08 晚）：海外名单 D7、C 路参数 D8 待用户回放后定；fermenting 的 recentDays/growth 是回放比较用的占位",
+  "approval": "approved",
+  "approvedAt": "2026-11-10",
+  "note": "4.4.1：用户 11/10 晚裁定 D7–D10：海外名单不收大宗商品、C 路关闭、辨识度 40 天占比 ≥2%，不回放直接上线",
   "schedule": {
     "previousClose": "15:00",
     "windowEnd": "08:00",
@@ -234,6 +235,13 @@
       "maxMembers": 150,
       "minMembers": 3,
       "refreshDays": 7
+    },
+    "recognition": {
+      "lookbackDays": 40,
+      "hot": {
+        "minOthers": 2,
+        "minShare": 0.02
+      }
     },
     "prefilter": {
       "dropSources": [
@@ -720,7 +728,7 @@
       ]
     },
     "mapping": {
-      "contract": "sector-mapping-v5",
+      "contract": "sector-mapping-v6",
       "excerptChars": 1500,
       "modelOptions": {
         "max_tokens": 32768,
@@ -737,7 +745,7 @@
       "max": 3
     },
     "evaluation": {
-      "contract": "sector-evaluation-v5",
+      "contract": "sector-evaluation-v6",
       "concurrency": 6,
       "modelOptions": {
         "max_tokens": 16384,
@@ -767,7 +775,7 @@
       }
     },
     "selection": {
-      "contract": "sector-selection-v1",
+      "contract": "sector-selection-v2",
       "modelOptions": {
         "max_tokens": 16384,
         "thinking": {
@@ -1161,33 +1169,6 @@
           "aliases": [],
           "industry": "加密货币",
           "note": "加密货币交易所"
-        },
-        {
-          "name": "现货黄金",
-          "aliases": [
-            "COMEX黄金",
-            "国际金价",
-            "伦敦金"
-          ],
-          "industry": "黄金",
-          "note": "国际黄金价格"
-        },
-        {
-          "name": "现货白银",
-          "aliases": [
-            "COMEX白银"
-          ],
-          "industry": "白银",
-          "note": "国际白银价格"
-        },
-        {
-          "name": "伦铜",
-          "aliases": [
-            "LME铜",
-            "COMEX铜"
-          ],
-          "industry": "铜",
-          "note": "国际铜价"
         }
       ],
       "markets": [
@@ -1286,6 +1267,7 @@
       ]
     },
     "fermenting": {
+      "enabled": false,
       "recentDays": 2,
       "growth": 3,
       "baseDays": 5,

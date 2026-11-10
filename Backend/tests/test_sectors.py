@@ -72,6 +72,10 @@ def _concept_post(concepts, members, *, fail_after=None):
             ts_code = payload["params"]["ts_code"]
             return _frame(["ts_code", "con_code", "con_name"],
                           [[ts_code, code, "名"] for code in members[ts_code]])
+        if api == "limit_list_d":
+            assert payload["params"]["limit_type"] == "U"
+            trade = payload["params"]["trade_date"]
+            return _frame(["trade_date", "ts_code"], [[trade, "300001.SZ"]])
         raise AssertionError(api)
 
     return post, seen
@@ -175,6 +179,12 @@ def test_sector_config_is_required_and_has_no_defaults(tmp_path):
     rejected(lambda item: item["sectors"]["intake"].pop("publishers"), "publishers")
     rejected(lambda item: item["sectors"]["intake"].__setitem__("bigLeadChars", True), "bigLeadChars")
     rejected(lambda item: item["sectors"]["backflow"].pop("relations"), "relations")
+    rejected(lambda item: item["sectors"].pop("recognition"), "sectors.recognition")
+    rejected(lambda item: item["sectors"]["fermenting"].pop("enabled"), "sectors.fermenting.enabled")
+    rejected(lambda item: item["sectors"]["fermenting"].__setitem__("enabled", "false"), "enabled 类型不对")
+    rejected(lambda item: item["sectors"]["recognition"]["hot"].__setitem__("minShare", 1), "minShare")
+    rejected(lambda item: item["sectors"]["recognition"].__setitem__("lookbackDays", 0), "lookbackDays")
+    rejected(lambda item: item["sectors"]["recognition"]["hot"].__setitem__("minOthers", -1), "minOthers")
 
 
 def test_concept_refresh_replaces_everything_and_a_failure_keeps_the_previous(path, caplog):
@@ -195,6 +205,10 @@ def test_concept_refresh_replaces_everything_and_a_failure_keeps_the_previous(pa
     assert by_name["人工智能"]["memberCount"] == 10
     assert by_name["人工智能"]["members"] == ["300001.SZ", "300003.SZ"]
     assert by_name["机器人"]["members"] == ["301001.SZ"]
+    with db.read(path) as conn:
+        wide = {row[0] for row in conn.execute(
+            "SELECT code FROM sector_members_all WHERE ts_code='885001.TI'")}
+    assert wide == {"300001", "300003", "600000"}
 
     failed, _seen = _concept_post(
         [{"ts_code": "885009.TI", "name": "全新", "count": 3}], {"885009.TI": ["300001.SZ"]}, fail_after=2)
@@ -239,18 +253,22 @@ def test_refresh_is_due_only_after_seven_days_and_collect_uses_that(path, monkey
     assert concepts_refresh_due({"refreshedAt": None}, today=date(2026, 11, 1), refresh_days=7) is True
     assert concepts_refresh_due(meta, today=date(2026, 11, 7), refresh_days=7) is False
     assert concepts_refresh_due(meta, today=date(2026, 11, 8), refresh_days=7) is True
+    assert concepts_refresh_due(meta, today=date(2026, 11, 2), refresh_days=7, members_all_empty=True) is True
 
     monkeypatch.setattr(cli, "MEMBER_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("neckline.morning.sector_recognition.LIMIT_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(cli, "run_collection", lambda *_args, **_kwargs: {"status": "completed"})
     post, seen = _concept_post(
         [{"ts_code": "885001.TI", "name": "人工智能", "count": 3}], {"885001.TI": ["300001.SZ"]})
     monkeypatch.setattr(stock_pool, "http_post", post)
     monkeypatch.setenv("TUSHARE_TOKEN", SECRET)
     assert cli.main(["--db", str(path), "collect", "--now", "2026-11-01T12:00:00+00:00"]) == 0
-    assert seen == ["ths_index", "ths_member"]
+    assert seen[:2] == ["ths_index", "ths_member"]
+    assert seen[2:] and set(seen[2:]) == {"limit_list_d"}
     seen.clear()
     assert cli.main(["--db", str(path), "collect", "--now", "2026-11-07T12:00:00+00:00"]) == 0
-    assert seen == []
+    assert seen and set(seen) == {"limit_list_d"}
+    seen.clear()
     assert cli.main(["--db", str(path), "refresh-concepts", "--now", "2026-11-02T12:00:00+00:00"]) == 0
     assert seen == ["ths_index", "ths_member"]
     with db.read(path) as conn:
@@ -259,6 +277,7 @@ def test_refresh_is_due_only_after_seven_days_and_collect_uses_that(path, monkey
 
 def test_collect_keeps_the_list_when_refresh_fails_and_the_command_hides_the_token(path, monkeypatch, capsys, caplog):
     monkeypatch.setattr(cli, "MEMBER_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("neckline.morning.sector_recognition.LIMIT_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(cli, "run_collection", lambda *_args, **_kwargs: {"status": "completed"})
     good, _seen = _concept_post(
         [{"ts_code": "885001.TI", "name": "人工智能", "count": 3}], {"885001.TI": ["300001.SZ"]})
@@ -364,7 +383,9 @@ def test_sector_snapshot_keeps_concepts_and_replay_loads_them(tmp_path, monkeypa
     with db.read(tmp_path / "work" / "2026-11-04.db") as conn:
         concepts = db.read_sector_concepts(conn)
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        wide = {row[0] for row in conn.execute("SELECT code FROM sector_members_all")}
     assert concepts["concepts"][0]["members"] == ["300001.SZ"]
+    assert wide == {"300001", "600000"}
     assert "market_daily" not in names
 
     seen_args = {}

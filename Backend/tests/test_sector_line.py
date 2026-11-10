@@ -42,7 +42,7 @@ from tests.test_morning import (
 DAY = date(2026, 10, 13)
 _FROZEN_MAPPING = "e272d397f5ef39c0ff648a1c6d0ea5752abd75ddd49ec783e80edbdbca2e82ee"
 _FROZEN_EVALUATION = "9e90a662cdd4489a0adb8f8f712574e5f7932ff78b7b548b65542076c90b57ee"
-_FROZEN_USER = "8fcc6a804c7fcf3c61ca993ac755bfa06606887a0459a7d85d4d0c88ff27354e"
+_FROZEN_USER = "b1f0afef8b441013d06233de28dd2d1ff3cdb190470c6da80f8893859d1e0718"
 _FROZEN_BODY = "5db1cfa5d69f4fd3ed787f686cb285712756b70e73eb317cad6fe3325c27416f"
 
 
@@ -85,10 +85,56 @@ def _msg(doc_id: str, title: str, text: str, when: datetime, source: str = "jin1
 
 
 def _concept(path, codes=("300001.SZ", "300002.SZ", "300003.SZ"), name="人工智能", ts_code="885001.TI") -> None:
+    concepts = [{"tsCode": ts_code, "name": name, "memberCount": len(codes), "members": list(codes)}]
     with db.write(path) as conn:
-        db.replace_sector_concepts(conn, [{
-            "tsCode": ts_code, "name": name, "memberCount": len(codes), "members": list(codes),
-        }], refreshed_at="2026-10-12T00:00:00+00:00", sha256="ab")
+        db.replace_sector_concepts(conn, concepts, refreshed_at="2026-10-12T00:00:00+00:00", sha256="ab")
+        seed_limit_context(conn, concepts)
+
+
+def _boards(path, names=("人工智能", "机器人", "芯片", "光伏"),
+            codes=("300001.SZ", "300002.SZ", "300003.SZ")) -> None:
+    concepts = [{
+        "tsCode": f"88500{index}.TI", "name": name, "memberCount": len(codes), "members": list(codes),
+    } for index, name in enumerate(names, start=1)]
+    with db.write(path) as conn:
+        db.replace_sector_concepts(conn, concepts, refreshed_at="2026-10-12T00:00:00+00:00", sha256="ab")
+        seed_limit_context(conn, concepts)
+
+
+def seed_limit_context(conn, concepts, day=DAY, also=("300001", "300002", "300003", "300008",
+                                                      "300082", "300683", "300953")) -> None:
+    """给测试用的辨识度：窗口最后一天这些成分和两只主板股一起涨停，其余天只有一只无关股票。"""
+    from neckline.morning.sector_recognition import recognition_window
+
+    report = day if isinstance(day, date) else date.fromisoformat(str(day))
+    window = recognition_window(report, 40)
+    hot = window[-1].isoformat()
+    hot_codes: set[str] = set()
+    for concept in concepts:
+        shorts: list[str] = []
+        for code in list(concept["members"]) + ["600001", "600002"]:
+            short = str(code).split(".")[0]
+            if short not in shorts:
+                shorts.append(short)
+        conn.execute("DELETE FROM sector_members_all WHERE ts_code=?", (concept["tsCode"],))
+        conn.executemany(
+            "INSERT INTO sector_members_all(ts_code, code) VALUES (?, ?)",
+            [(concept["tsCode"], short) for short in shorts])
+        hot_codes.update(shorts)
+    for code in also:
+        hot_codes.add(str(code).split(".")[0])
+    for trade in window:
+        iso = trade.isoformat()
+        if iso == hot:
+            for short in sorted(hot_codes):
+                conn.execute("INSERT OR IGNORE INTO limit_ups(trade_date, code) VALUES (?, ?)", (iso, short))
+        else:
+            conn.execute("INSERT OR IGNORE INTO limit_ups(trade_date, code) VALUES (?, ?)", (iso, "999999"))
+        count = conn.execute("SELECT count(*) FROM limit_ups WHERE trade_date=?", (iso,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO limit_up_days(trade_date, count, fetched_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(trade_date) DO UPDATE SET count=excluded.count, fetched_at=excluded.fetched_at",
+            (iso, count, "2026-10-12T00:00:00+00:00"))
 
 
 def _answer(codes, *, verdict="推", views=None, price="明显高开不追") -> dict:
@@ -123,7 +169,7 @@ class Scripted:
 
 
 def _leader_codes(prompt: str) -> list[str]:
-    chunk = prompt.split("成分股名单", 1)[-1]
+    chunk = prompt.split("题材辨识度名单", 1)[-1]
     return re.findall(r"(?m)^(\d{6}) ", chunk)
 
 
@@ -354,7 +400,7 @@ def test_backflow_unions_named_companies_and_blocks_a_real_subject(tmp_path):
     assert "这是身份类板块（板块名带「参股」）" in prompt
     assert "300001 甲公司" in prompt and "消息点名：是" in prompt
     assert "300008" not in prompt
-    for marker in ("涨跌", "涨停", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
+    for marker in ("涨跌", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
         assert marker not in prompt
 
 
@@ -443,10 +489,11 @@ def test_members_skip_the_main_list_and_render_one_line_each(tmp_path):
     outcome = _run(path, [_msg("a", "工信部印发行业补贴方案", "正文里没有简称。", _at(16))], client, pool,
                    skip=["300008"])
     prompt = client.calls[-1][1]["content"]
-    assert "名单（池内成分股和消息点名的公司，已去掉今天个股名单里的，共 2 只）：" in prompt
-    assert "300001 甲公司｜主营：做充电｜流通市值 123.4 亿元｜消息点名：否" in prompt
+    assert "名单（题材辨识度名单：近 40 个交易日里板块整体走热的日子涨停过的成分股，已按辨识度排好，去掉了今天个股名单里的，共 2 只）：" in prompt
+    assert "300001 甲公司｜题材辨识度：板块热的日子涨停 1 次，最近一次 " in prompt
+    assert "｜主营：做充电｜流通市值：123.4 亿元｜消息点名：否" in prompt
     assert "300002" in prompt and "300008" not in prompt and "龙头" not in prompt
-    for marker in ("涨跌", "涨停", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
+    for marker in ("涨跌", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
         assert marker not in prompt
     package = _rows(path)[0]["package"]
     assert [item["code"] for item in package["members"]] == ["300001", "300002"]
@@ -641,7 +688,8 @@ def test_unknown_evaluation_is_not_sent_again(tmp_path, monkeypatch):
 def test_delivery_keeps_the_three_earliest_and_zero_is_legal(tmp_path):
     pool = _pool()
     path = _db(tmp_path)
-    _concept(path)
+    board_names = ("人工智能", "机器人", "芯片", "光伏", "短剧游戏")
+    _boards(path, board_names)
     titles = [
         "工信部印发行业补贴方案", "证监会印发行业补贴方案", "央行印发行业补贴方案",
         "财政部印发行业补贴方案", "国家印发项目开工方案",
@@ -651,9 +699,10 @@ def test_delivery_keeps_the_three_earliest_and_zero_is_legal(tmp_path):
     def mapping(user):
         ids = _ids(user)
         events = []
-        for number in reversed(ids):
+        for index, number in enumerate(reversed(ids)):
             events.append(_event({
-                "title": f"事件{number}", "ids": [number], "sector": "人工智能", "reason": "直接", "repeat": False,
+                "title": f"事件{number}", "ids": [number],
+                "sector": board_names[index % len(board_names)], "reason": "直接", "repeat": False,
             }))
         return _ok({"events": events, "dropped": []})
 
@@ -702,10 +751,12 @@ def _seed_sector_context(path, *, with_daily=True):
             doc("jin10-flash", "forum", "央行、证监会将于明天召开座谈会，邀请金融机构参加。",
                 at("2026-10-12", "17:30"), at("2026-10-12", "20:00"), title="央行、证监会将于明天召开座谈会"),
         ])
-        db.replace_sector_concepts(conn, [{
+        concepts = [{
             "tsCode": "885001.TI", "name": "人工智能", "memberCount": 3,
             "members": ["300953.SZ", "300683.SZ", "300082.SZ"],
-        }], refreshed_at="2026-10-12T00:00:00+00:00", sha256="cd")
+        }]
+        db.replace_sector_concepts(conn, concepts, refreshed_at="2026-10-12T00:00:00+00:00", sha256="cd")
+        seed_limit_context(conn, concepts)
 
 
 def _sector_handler(model: FakeModel, *, mapping_status: int = 200, kill: BaseException | None = None):
@@ -1018,12 +1069,14 @@ def test_two_line_report_fixture_matches_the_real_entry(tmp_path, monkeypatch):
              "summary": None, "summarySource": "none"}
             for code, name in (("300953.SZ", "震裕科技"), ("300683.SZ", "海特生物"), ("300082.SZ", "奥克股份"))
         ], now=datetime(2026, 10, 12, 4, tzinfo=timezone.utc), source="tushare")
-        db.replace_sector_concepts(conn, [
+        concepts = [
             {"tsCode": "885801.TI", "name": "参股券商", "memberCount": 3,
              "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
             {"tsCode": "885001.TI", "name": "人工智能", "memberCount": 3,
              "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
-        ], refreshed_at="2026-10-12T00:00:00+00:00", sha256="v7")
+        ]
+        db.replace_sector_concepts(conn, concepts, refreshed_at="2026-10-12T00:00:00+00:00", sha256="v7")
+        seed_limit_context(conn, concepts)
     from tests.conftest import cover_sector_history
     cover_sector_history(path, "2026-10-13")
     _with_device(path)
@@ -1058,9 +1111,10 @@ def test_two_line_report_fixture_matches_the_real_entry(tmp_path, monkeypatch):
     assert len(sector_entries) == 2
     by_name = {entry["sector"]["name"]: entry for entry in sector_entries}
     assert set(by_name) == {"参股券商", "人工智能"}
-    named = by_name["参股券商"]["leaders"][0]
-    assert named["companyCode"] == "300953" and named["why"] == "消息直接点名" and named["price"] == ""
-    assert by_name["人工智能"]["leaders"][0]["why"] != "消息直接点名"
+    named = by_name["参股券商"]["leaders"]
+    assert [item["companyCode"] for item in named] == ["300082"]
+    assert named[0]["why"] == "消息点到它"
+    assert by_name["人工智能"]["leaders"][0]["why"] == "消息点到它"
     assert by_name["参股券商"]["sector"]["identity"] == "参股"
     assert by_name["人工智能"]["sector"]["identity"] is None
     assert all("questions" not in entry for entry in sector_entries)
@@ -1077,7 +1131,9 @@ def test_two_line_report_fixture_matches_the_real_entry(tmp_path, monkeypatch):
         "publisher": 2, "bigCompany": 0, "document": 0, "macro": 0, "noise": 0, "outside": 0, "kept": 2,
     }
     assert live_sectors["routes"] == {"A": 2, "B": 0, "C": 0, "kept": 2}
-    assert live_sectors["fermenting"]["ran"] is True and live_sectors["fermenting"]["messages"] == 0
+    assert live_sectors["fermenting"] == {
+        "ran": False, "note": "C 路关闭", "boards": [], "messages": 0,
+    }
     assert live_sectors["selection"]["called"] is False and live_sectors["selection"]["candidates"] == 2
 
 
@@ -1176,8 +1232,10 @@ def _frozen_package() -> dict:
         }], "media": []},
         "carriers": {"max": 3},
         "identityKeyword": None,
+        "recognition": {"lookbackDays": 40},
         "members": [{
             "code": "300001", "name": "特锐德", "summary": "做充电", "circMv": 1_234_000, "named": False,
+            "recognition": {"count": 2, "last": "2026-10-10"},
         }],
         "search": {"enabled": True, "error": None, "results": []},
         "gaps": [],
@@ -1220,13 +1278,13 @@ def test_sector_evaluation_rejects_a_bad_carrier_list_and_vetoes():
     bad_price["leaders"][0]["price"] = 1
     assert parse_evaluation_output(json.dumps(bad_price), package) == "leaders 价格不是字符串"
     parsed = parse_evaluation_output(json.dumps(_answer(["300002", "300001"])), package)
-    assert [item["code"] for item in parsed["leaders"]] == ["300001", "300003", "300002"]
+    assert [item["code"] for item in parsed["leaders"]] == ["300001", "300002"]
     by_code = {item["code"]: item for item in parsed["leaders"]}
     assert by_code["300001"]["why"] == "消息点到它" and by_code["300001"]["price"] == "明显高开不追"
-    assert by_code["300003"]["why"] == "消息直接点名" and by_code["300003"]["price"] == ""
+    assert "300003" not in by_code
     off_list = parse_evaluation_output(json.dumps(_answer(["300099"])), package)
-    assert off_list["verdict"] == "推"
-    assert [item["code"] for item in off_list["leaders"]] == ["300001", "300003"]
+    assert off_list["verdict"] == "不推" and off_list["vetoed"] is True
+    assert off_list["leaders"] == []
     empty = _eval_package(())
     empty["members"] = []
     vetoed = parse_evaluation_output(json.dumps(_answer([])), empty)
@@ -1358,9 +1416,10 @@ def test_mapping_length_split_keeps_light_and_repeat_events_apart(tmp_path):
     assert [_ids(user) for user in users] == [
         ["n1", "n2", "n3", "n4"], ["n1", "n2"], ["n3", "n4"],
     ]
-    full_tail = users[0].split("板块清单：", 1)[1]
+    marker = "板块清单（每行：名称｜池内成分股数）："
+    full_tail = users[0].split(marker, 1)[1]
     for user in users[1:]:
-        assert user.split("板块清单：", 1)[1] == full_tail
+        assert user.split(marker, 1)[1] == full_tail
         assert "昨天的会｜人工智能" in user
     assert "国家印发项目开工方案" not in users[1]
     assert "工信部印发行业补贴方案" not in users[2]
@@ -1488,6 +1547,9 @@ def test_mapping_split_resume_does_not_bill_the_same_request_twice(tmp_path, mon
         body = json.loads(request.content)
         system = body["messages"][0]["content"]
         user = body["messages"][1]["content"] if len(body["messages"]) > 1 else ""
+        if "板块编辑" in system:
+            ids = re.findall(r"\[(e\d+)\]", user)
+            return _http({"chosen": ids[:1], "reason": "同板块留一个"})
         if "板块分析员" in system:
             ids = _ids(user)
             sent.append(("mapping", tuple(ids)))
@@ -1541,19 +1603,18 @@ def test_mapping_split_resume_does_not_bill_the_same_request_twice(tmp_path, mon
         ("mapping", ("n1", "n2")),
         ("mapping", ("n3", "n4")),
     ]
-    done = [row for row in _rows(path) if row["state"] == "succeeded"]
-    assert len(done) == 1 and done[0]["title"] == "前一半"
-    assert [item["title"] for item in done[0]["package"]["messages"]] == [
-        "工信部印发行业补贴方案", "国家印发项目开工方案",
-    ]
+    done = {row["title"]: row for row in _rows(path) if row["state"] == "succeeded"}
+    assert set(done) == {"前一半", "后一半"}
+    assert [item["title"] for item in done["前一半"]["package"]["messages"]] == ["工信部印发行业补贴方案"]
+    assert [item["title"] for item in done["后一半"]["package"]["messages"]] == ["国家印发项目开工方案"]
 
 
 def test_sector_prompts_and_one_request_body_stay_frozen():
-    assert MAPPING_CONTRACT == "sector-mapping-v5"
+    assert MAPPING_CONTRACT == "sector-mapping-v6"
     assert "代码按三路收进来的消息" in MAPPING_SYSTEM
-    assert "不要求主营相关" in EVALUATION_SYSTEM
+    assert "题材辨识度只说明市场炒这个题材时认谁" in EVALUATION_SYSTEM
     rendered = _frozen_user()
-    for marker in ("涨跌", "涨停", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
+    for marker in ("涨跌", "成交额", "上涨家数", "前 1", "前 5", "前 20", "等权"):
         assert marker not in rendered
     assert "消息点名：否" in rendered and "做充电" in rendered
     assert "来自哪一路" not in rendered
@@ -1564,8 +1625,34 @@ def _mapped(title, ids, *, repeat=False, reason="理由"):
     return {"title": title, "ids": list(ids), "sector": "人工智能", "reason": reason, "repeat": repeat}
 
 
+def test_mapping_content_filter_splits_once_and_keeps_a_surviving_half(tmp_path):
+    path = _db(tmp_path)
+    _concept(path)
+    messages = _sector_messages()
+
+    def handler(sent, _options):
+        if "板块分析员" not in sent[0]["content"]:
+            codes = _leader_codes(sent[1]["content"])
+            return _ok(_answer(codes[:1] or ["300001"]))
+        ids = _ids(sent[1]["content"])
+        if ids == ["n1", "n2", "n3", "n4"]:
+            return ChatResult("", {"prompt_tokens": 1, "completion_tokens": 1}, "d", False, 0.1, "content_filter")
+        if ids == ["n1", "n2"]:
+            return _ok({"events": [_event({
+                "title": "左半", "ids": ["n1"], "sector": "人工智能", "reason": "直接", "repeat": False,
+            })], "dropped": []})
+        raise ChatError("一半被拦")
+
+    outcome = _run(path, messages, Scripted(handler))
+    assert outcome.stats["mapping"]["filtered"] == 1
+    assert outcome.stats["mapping"]["splits"] == 1
+    assert outcome.stats["mapping"]["incomplete"] is True
+    titles = {row["title"] for row in _rows(path) if row["state"] == "succeeded"}
+    assert titles == {"左半"}
+
+
 def test_mapping_merge_keeps_repeats_apart_and_folds_the_rest(tmp_path):
-    """重复的各自保留。不重复的同板块事件合并，代表取首条消息最早的那件。"""
+    """同一板块的两半事件都保留，标题各自留下。重复的也各自保留。"""
     ordered = ["n1", "n2", "n3", "n4"]
 
     def merged(left, right):
@@ -1585,17 +1672,17 @@ def test_mapping_merge_keeps_repeats_apart_and_folds_the_rest(tmp_path):
     former_light = merged(
         _mapped("分量不够", ["n1"], reason="旧理由"),
         _mapped("有效事件", ["n3"], reason="有效理由"))
-    assert len(former_light) == 1
-    assert former_light[0]["title"] == "分量不够" and former_light[0]["reason"] == "旧理由"
-    assert former_light[0]["ids"] == ["n1", "n3"] and former_light[0]["repeat"] is False
+    assert [item["title"] for item in former_light] == ["分量不够", "有效事件"]
+    assert former_light[0]["ids"] == ["n1"] and former_light[1]["ids"] == ["n3"]
+    assert former_light[0]["sector"] == "人工智能" and former_light[1]["sector"] == "人工智能"
     assert "weight" not in former_light[0] and "weighty" not in former_light[0]
 
     both_valid = merged(
         _mapped("最早", ["n1"], reason="最早的理由"),
         _mapped("较晚", ["n3"], reason="较晚的理由"))
-    assert len(both_valid) == 1
-    assert both_valid[0]["title"] == "最早" and both_valid[0]["reason"] == "最早的理由"
-    assert both_valid[0]["ids"] == ["n1", "n3"] and both_valid[0]["repeat"] is False
+    assert [item["title"] for item in both_valid] == ["最早", "较晚"]
+    assert both_valid[0]["reason"] == "最早的理由" and both_valid[1]["reason"] == "较晚的理由"
+    assert both_valid[0]["ids"] == ["n1"] and both_valid[1]["ids"] == ["n3"]
 
     def archive(root, left, right):
         path = _db(root)
@@ -1629,11 +1716,11 @@ def test_mapping_merge_keeps_repeats_apart_and_folds_the_rest(tmp_path):
         tmp_path / "light",
         _event(_mapped("分量不够", ["n1"], reason="旧理由")),
         _event(_mapped("有效事件", ["n3"], reason="有效理由")))
-    assert set(stored) == {"分量不够"}
+    assert set(stored) == {"分量不够", "有效事件"}
     assert stored["分量不够"]["state"] == "succeeded" and stored["分量不够"]["reason"] == "旧理由"
-    assert [item["title"] for item in stored["分量不够"]["package"]["messages"]] == [
-        "工信部印发行业补贴方案", "国家印发项目开工方案",
-    ]
+    assert stored["有效事件"]["state"] == "succeeded" and stored["有效事件"]["reason"] == "有效理由"
+    assert [item["title"] for item in stored["分量不够"]["package"]["messages"]] == ["工信部印发行业补贴方案"]
+    assert [item["title"] for item in stored["有效事件"]["package"]["messages"]] == ["国家印发项目开工方案"]
 
 
 class _MorningClock:

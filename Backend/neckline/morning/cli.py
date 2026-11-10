@@ -8,6 +8,7 @@
   python -m neckline.morning.cli evaluations --date YYYY-MM-DD [--json]
   python -m neckline.morning.cli refresh-pool [--now ISO]
   python -m neckline.morning.cli refresh-concepts [--now ISO]
+  python -m neckline.morning.cli refresh-limit-ups [--now ISO]
 
 库路径取 --db 或环境变量 NECKLINE_V4_DB_PATH，没有默认值。凭据只从环境变量读（DEEPSEEK_API_KEY、
 TUSHARE_TOKEN、JIN10_MCP_TOKEN、APNS_*），不写日志。业务时钟可用 --now 显式给出。
@@ -21,6 +22,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
@@ -29,8 +31,10 @@ from neckline.evaluation.search import SearchClient
 from neckline.screening.deepseek import DeepSeekClient
 
 from . import db
+from . import sector_recognition
 from .collect import run_collection
 from .report import Pusher, finalize, load_config, note_error, run_morning
+from .sector_recognition import closed_limit_days, collect_limit_days, ensure_limit_ups
 from .sectors import (
     MEMBER_INTERVAL_SECONDS, ConceptRefresh, concepts_refresh_due, refresh_concepts,
 )
@@ -174,7 +178,9 @@ def _refresh_concepts_if_due(path: Path, now: datetime) -> None:
     try:
         with db.read(path) as conn:
             meta = db.read_sector_concepts(conn)
-        if not concepts_refresh_due(meta, today=today, refresh_days=int(rules["refreshDays"])):
+            members_all_empty = db.sector_members_all_empty(conn)
+        if not concepts_refresh_due(meta, today=today, refresh_days=int(rules["refreshDays"]),
+                                    members_all_empty=members_all_empty):
             return
         with db.write(path) as conn:
             result = refresh_concepts(
@@ -202,6 +208,47 @@ def _refresh_concepts(path: Path, config, now: datetime) -> int:
         print(result.error, file=sys.stderr)
         return 1
     _print(_concept_payload(result))
+    return 0
+
+
+def _refresh_limit_ups_if_needed(path: Path, now: datetime) -> None:
+    """20:00 采集跑完后补齐涨停。今天是交易日就补到今天，否则补到上个交易日。失败只记日志。"""
+    try:
+        config = load_config()
+    except Exception as exc:
+        _LOG.error("涨停数据没能补齐：%s", type(exc).__name__)
+        return
+    lookback = config.rules["sectors"]["recognition"]["lookbackDays"]
+    try:
+        days = collect_limit_days(now, int(lookback))
+        with db.write(path) as conn:
+            result = ensure_limit_ups(
+                conn, days, sleep=time.sleep, interval_seconds=sector_recognition.LIMIT_INTERVAL_SECONDS)
+    except Exception as exc:
+        _LOG.error("涨停数据没能补齐：%s", type(exc).__name__)
+        return
+    if result["error"] or result["missing"]:
+        _LOG.error("涨停数据没取全：missing=%s error=%s", ",".join(result["missing"]), result["error"] or "")
+        return
+    _LOG.info("涨停数据已补齐：%s 天", result["fetched"])
+
+
+def _refresh_limit_ups(path: Path, config, now: datetime) -> int:
+    """手工补齐截至最近一个已收盘交易日的涨停。失败返回 1，不打印 token。"""
+    lookback = int(config.rules["sectors"]["recognition"]["lookbackDays"])
+    days = closed_limit_days(now, config.rules["schedule"]["previousClose"], lookback)
+    try:
+        with db.write(path) as conn:
+            result = ensure_limit_ups(
+                conn, days, sleep=time.sleep, interval_seconds=sector_recognition.LIMIT_INTERVAL_SECONDS)
+    except Exception as exc:
+        print(type(exc).__name__, file=sys.stderr)
+        return 1
+    _print({"missing": result["missing"], "fetched": result["fetched"]})
+    if result["error"]:
+        print(result["error"], file=sys.stderr)
+    if result["error"] or result["missing"]:
+        return 1
     return 0
 
 
@@ -265,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluations.add_argument("--json", action="store_true")
     sub.add_parser("refresh-pool").add_argument("--now")
     sub.add_parser("refresh-concepts").add_argument("--now")
+    sub.add_parser("refresh-limit-ups").add_argument("--now")
     args = ap.parse_args(argv)
     path = _db_path(args.db)
 
@@ -294,7 +342,15 @@ def main(argv: list[str] | None = None) -> int:
         _print(run_collection(path, now=now, config=_collection_config(), tokens=_tokens(),
                               bootstrap_start=bootstrap, max_pages=args.max_pages, clock=clock))
         _refresh_concepts_if_due(path, now)
+        _refresh_limit_ups_if_needed(path, now)
         return 0
+    if args.command == "refresh-limit-ups":
+        try:
+            config = load_config()
+        except Exception as exc:
+            _LOG.error("筛选规则配置无效：%s", type(exc).__name__)
+            return 1
+        return _refresh_limit_ups(path, config, now)
     if args.command == "refresh-concepts":
         try:
             config = load_config()

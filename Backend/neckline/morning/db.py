@@ -8,9 +8,10 @@
 sector_concepts、sector_members、sector_concepts_meta（同花顺概念和最近一次刷新），
 market_daily（创业板日线）、sector_events（板块线事件）。
 版本 7 删掉 market_daily（索引随表删除）。板块线不再用日线位置。
-4.4.0 还没上线，库结构仍是 7：sector_events 增加 routes（JSON 数组）。新建库直接带这一列；
+sector_events 增加 routes（JSON 数组）。新建库直接带这一列；
 从版本 6 升上来时补上这一列。已经是版本 7 但还没有这一列的（第一轮库）也补上，其余行不动。
-init_schema 把版本 1～6 的库在同一个事务里升到版本 7，升级失败整体回滚。
+版本 8 只加表：limit_ups、limit_up_days（涨停）、sector_members_all（同花顺概念的全 A 成分）。
+init_schema 把版本 1～7 的库在同一个事务里升到版本 8，升级失败整体回滚。
 """
 from __future__ import annotations
 
@@ -29,8 +30,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 7
-_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 8
+_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6, 7)  # 这些版本的库可由 init_schema 原地升级到当前版本
 # 版本 5 退役的三张表。索引随表一起删掉。
 _RETIRED_KX_TABLES = ("kx_daily_stats", "kx_picks", "kx_pool")
 
@@ -223,6 +224,25 @@ CREATE TABLE IF NOT EXISTS market_daily (
 CREATE INDEX IF NOT EXISTS idx_market_daily_trade_date ON market_daily(trade_date);
 """
 
+# 版本 8 只加表。降到版本 7 时这些表留着，不删。
+V8_DDL = """
+CREATE TABLE IF NOT EXISTS limit_ups (
+  trade_date TEXT NOT NULL,
+  code TEXT NOT NULL,
+  PRIMARY KEY (trade_date, code)
+);
+CREATE TABLE IF NOT EXISTS limit_up_days (
+  trade_date TEXT PRIMARY KEY,
+  count INTEGER NOT NULL CHECK(count > 0),
+  fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sector_members_all (
+  ts_code TEXT NOT NULL,
+  code TEXT NOT NULL,
+  PRIMARY KEY (ts_code, code)
+);
+"""
+
 
 class NotReady(RuntimeError):
     """库不存在或不是 V4 晨报库。"""
@@ -246,7 +266,7 @@ def _statements(script: str) -> list[str]:
 def init_schema(path: Path) -> None:
     """显式建表（init-db 与写命令调用）。
 
-    新库一次建到当前版本，不再建 KX 的三张表，也不建 market_daily。版本 1～6 的库在同一个事务里补上缺的表、
+    新库一次建到当前版本，不再建 KX 的三张表，也不建 market_daily。版本 1～7 的库在同一个事务里补上缺的表、
     删掉 kx_pool / kx_picks / kx_daily_stats 和 market_daily，并把版本号升到当前版本。任何一步失败都整体回滚。
     已经是当前版本时，只在 sector_events 缺 routes 列时补上这一列。只读连接不走这里。
     """
@@ -267,7 +287,7 @@ def init_schema(path: Path) -> None:
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for statement in _statements(DDL) + _statements(V4_DDL) + _statements(V6_DDL):
+            for statement in _statements(DDL) + _statements(V4_DDL) + _statements(V6_DDL) + _statements(V8_DDL):
                 conn.execute(statement)
             for name in _RETIRED_KX_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
@@ -811,6 +831,17 @@ def replace_sector_concepts(conn: sqlite3.Connection, concepts: Sequence[Mapping
             conn.execute("INSERT INTO sector_members VALUES (?,?)", (item["tsCode"], code))
     conn.execute("INSERT INTO sector_concepts_meta VALUES (1,?,?,?,NULL)",
                  (refreshed_at, len(concepts), sha256))
+
+
+def sector_members_all_empty(conn: sqlite3.Connection) -> bool:
+    """全 A 成分还没有一行。升级后的第一次刷新要补上。"""
+    return conn.execute("SELECT 1 FROM sector_members_all LIMIT 1").fetchone() is None
+
+
+def replace_sector_members_all(conn: sqlite3.Connection, rows: Sequence[tuple[str, str]]) -> None:
+    """整表替换同花顺概念的全 A 成分。code 是 6 位代码。调用方负责放进同一个事务。"""
+    conn.execute("DELETE FROM sector_members_all")
+    conn.executemany("INSERT INTO sector_members_all(ts_code, code) VALUES (?, ?)", list(rows))
 
 
 def set_sector_refresh_error(conn: sqlite3.Connection, error: str) -> None:

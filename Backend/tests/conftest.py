@@ -34,7 +34,7 @@ def cover_sector_history(path, day):
 
 
 def approved_config(base=None):
-    """已批准的配置副本。文件里的 approval 是 pending，需要跑晨报的测试都从这里取。"""
+    """已批准的配置副本。出厂配置本身已是 approved，这里保持恒等，晨报测试仍从这里取。"""
     from neckline.morning.report import LoadedConfig, load_config
 
     base = base or load_config()
@@ -48,7 +48,7 @@ _os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
 @pytest.fixture(autouse=True)
 def cli_uses_the_approved_copy(monkeypatch):
-    """文件里的筛选规则是 pending。命令行和回放要跑晨报时，用这一份已批准的副本。"""
+    """命令行和回放要跑晨报时，用这一份已批准的副本。出厂配置已是 approved，这里是恒等。"""
     from neckline.morning.report import load_config as load_rules
 
     def _load_approved(*args, **kwargs):

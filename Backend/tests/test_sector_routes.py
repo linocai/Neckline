@@ -32,13 +32,13 @@ from neckline.morning.sector_prompt import (
 from neckline.screening.deepseek import ChatError, ChatUnknown, DeepSeekClient
 
 from tests.conftest import approved_config, cover_sector_history
-from tests.sector_v5_draft import (
+from tests.sector_v6_draft import (
     EVALUATION_SYSTEM_DRAFT, MAPPING_SYSTEM_DRAFT, SELECTION_SYSTEM_DRAFT,
 )
 from tests.test_morning import FakeApns, _client, _with_device, at, doc
 from tests.test_sector_line import (
-    _answer, _concept, _db, _event, _http, _ids, _leader_codes, _msg, _ok, _pool, _rows, _rules, _run,
-    _window,
+    _answer, _boards, _concept, _db, _event, _http, _ids, _leader_codes, _msg, _ok, _pool, _rows, _rules, _run,
+    _window, seed_limit_context,
 )
 
 DAY = date(2026, 10, 13)
@@ -51,6 +51,12 @@ def _sectors():
     return load_config().rules["sectors"]
 
 
+def _c_on(pool=None):
+    config = _rules(pool or _pool())
+    config.rules["sectors"]["fermenting"]["enabled"] = True
+    return config
+
+
 def _meta(messages, boards=()):
     _order, meta, stats = collect_routes(messages, _sectors(), boards=list(boards))
     return meta, stats
@@ -60,11 +66,16 @@ def _routes(message, meta) -> list[str]:
     return list((meta.get(message.ref) or {}).get("routes") or [])
 
 
+_BOARD_CYCLE = ("人工智能", "机器人", "芯片", "光伏")
+
+
 def _one_each(user: str):
     events = []
     for index, ref in enumerate(_ids(user), start=1):
         events.append(_event({
-            "title": f"事件{index}", "ids": [ref], "sector": "人工智能", "reason": "直接", "repeat": False,
+            "title": f"事件{index}", "ids": [ref],
+            "sector": _BOARD_CYCLE[(index - 1) % len(_BOARD_CYCLE)],
+            "reason": "直接", "repeat": False,
         }))
     return _ok({"events": events, "dropped": []})
 
@@ -91,7 +102,7 @@ class _Script:
 
 def _four(tmp_path, editor, **kwargs):
     path = _db(tmp_path)
-    _concept(path)
+    _boards(path)
     messages = [
         _msg("a", "工信部印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10, tzinfo=CST)),
         _msg("b", "发改委印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 20, tzinfo=CST)),
@@ -142,19 +153,18 @@ def _count(path, fermenting):
 
 def test_shipped_sectors_match_the_three_route_draft():
     rules = load_config().rules
-    draft = json.loads(Path("Backend/.work/v45/config-draft.json").read_text(encoding="utf-8")
-                       if Path("Backend/.work/v45/config-draft.json").exists()
-                       else Path(".work/v45/config-draft.json").read_text(encoding="utf-8"))
     sectors = rules["sectors"]
-    assert rules["approval"] == "pending" and "approvedAt" not in rules
-    assert rules["note"] == "三路版（11/08 晚）：海外名单 D7、C 路参数 D8 待用户回放后定；fermenting 的 recentDays/growth 是回放比较用的占位"
-    assert sectors["overseas"] == draft["overseas"]
-    assert sectors["fermenting"] == draft["fermenting"]
-    assert sectors["mapping"]["contract"] == MAPPING_CONTRACT == "sector-mapping-v5"
-    assert sectors["evaluation"]["contract"] == EVALUATION_CONTRACT == "sector-evaluation-v5"
-    assert sectors["selection"] == {
-        "contract": SELECTION_CONTRACT, "modelOptions": sectors["evaluation"]["modelOptions"],
-    }
+    assert rules["approval"] == "approved" and rules["approvedAt"] == "2026-11-10"
+    assert rules["note"] == "4.4.1：用户 11/10 晚裁定 D7–D10：海外名单不收大宗商品、C 路关闭、辨识度 40 天占比 ≥2%，不回放直接上线"
+    names = [item["name"] for item in sectors["overseas"]["names"]]
+    assert "现货黄金" not in names and "现货白银" not in names and "伦铜" not in names
+    assert "Coinbase" in names
+    assert sectors["fermenting"]["enabled"] is False
+    assert sectors["fermenting"]["recentDays"] == 2 and sectors["fermenting"]["growth"] == 3
+    assert sectors["recognition"] == {"lookbackDays": 40, "hot": {"minOthers": 2, "minShare": 0.02}}
+    assert sectors["mapping"]["contract"] == MAPPING_CONTRACT == "sector-mapping-v6"
+    assert sectors["evaluation"]["contract"] == EVALUATION_CONTRACT == "sector-evaluation-v6"
+    assert sectors["selection"]["contract"] == SELECTION_CONTRACT == "sector-selection-v2"
 
 
 def test_new_sector_sections_are_rejected_without_defaults():
@@ -275,7 +285,8 @@ def test_route_c_does_not_run_when_history_is_uncovered(tmp_path):
     assert _count(path, _ferment_settings()).blocked == "coverage"
     _concept(path)
     message = _msg("a", "工信部印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, tzinfo=CST))
-    outcome = _run(path, [message], _Script(lambda _messages: _ok({"chosen": [], "reason": "不会调用"})), cover=False)
+    outcome = _run(path, [message], _Script(lambda _messages: _ok({"chosen": [], "reason": "不会调用"})),
+                   config=_c_on(), cover=False)
     assert outcome.gap == _FERMENT_GAP
     assert outcome.stats["fermenting"]["ran"] is False
     assert outcome.stats["routes"]["A"] == 1 and outcome.stats["routes"]["C"] == 0
@@ -320,7 +331,7 @@ def test_one_message_can_take_several_routes_and_skipped_events_store_them(tmp_p
 
     client = _Script(lambda _messages: _ok({"chosen": ["e1"], "reason": "不会调用"}))
     client.complete = lambda messages, options: _finish(client, messages, mapping)
-    outcome = _run(path, [mixed, policy, abroad], client)
+    outcome = _run(path, [mixed, policy, abroad], client, config=_c_on())
     assert outcome.stats["routes"] == {"A": 2, "B": 2, "C": 1, "kept": 3}
     rows = _rows(path)
     by_title = {row["title"]: row for row in rows}
@@ -352,18 +363,30 @@ def test_system_prompts_match_the_draft_character_for_character():
     assert MAPPING_SYSTEM == MAPPING_SYSTEM_DRAFT
     assert EVALUATION_SYSTEM == EVALUATION_SYSTEM_DRAFT
     assert SELECTION_SYSTEM == SELECTION_SYSTEM_DRAFT
-    assert MAPPING_CONTRACT == "sector-mapping-v5"
-    assert EVALUATION_CONTRACT == "sector-evaluation-v5"
-    assert SELECTION_CONTRACT == "sector-selection-v1"
+    assert MAPPING_CONTRACT == "sector-mapping-v6"
+    assert EVALUATION_CONTRACT == "sector-evaluation-v6"
+    assert SELECTION_CONTRACT == "sector-selection-v2"
 
 
 def test_user_prompts_show_routes_overseas_notes_and_fermenting():
     mapping = mapping_user_prompt([
         {"id": "n12", "routes": ["C", "A"], "boards": ["短剧游戏", "漫剧"],
          "source": "金十快讯", "time": "2026-11-02 07:30", "title": "标题", "excerpt": "摘录"},
-    ], ["人工智能"], [])
+    ], [{"name": "人工智能", "count": 3}], [])
     assert "[n12] A、C（短剧游戏、漫剧）｜金十快讯｜2026-11-02 07:30｜标题" in mapping
-    assert mapping_user_prompt([], [], []) == mapping_user_prompt([], [], [])
+    assert "板块清单（每行：名称｜池内成分股数）：\n人工智能｜3" in mapping
+    assert "板块清单（每行：名称｜池内成分股数）：\n无" in mapping_user_prompt([], [], [])
+    from neckline.morning.sector_line import parse_mapping_output
+
+    parsed = parse_mapping_output
+    counted = parsed(json.dumps({"events": [{
+        "title": "事", "ids": ["n1"], "sector": "人工智能｜3", "reason": "窄", "repeat": False,
+    }], "dropped": []}), {"n1"}, {"人工智能", "机器人"})
+    assert counted[0]["sector"] == "人工智能"
+    bare_miss = parsed(json.dumps({"events": [{
+        "title": "事", "ids": ["n1"], "sector": "机器人｜9", "reason": "不在", "repeat": False,
+    }], "dropped": []}), {"n1"}, {"人工智能"})
+    assert bare_miss[0]["sector"] is None
     package = {
         "report": {"tradeDate": "2026-11-02", "windowStart": "2026-11-01T15:00:00+08:00",
                    "windowEnd": "2026-11-02T08:00:00+08:00"},
@@ -401,7 +424,7 @@ def test_user_prompts_show_routes_overseas_notes_and_fermenting():
 
 def test_selection_pushes_all_without_a_call_when_within_the_limit(tmp_path):
     path = _db(tmp_path)
-    _concept(path)
+    _boards(path, ("人工智能", "机器人"))
     messages = [
         _msg("a", "工信部印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10, tzinfo=CST)),
         _msg("b", "发改委印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 20, tzinfo=CST)),
@@ -499,7 +522,7 @@ def test_selection_drops_the_day_when_the_cutoff_has_passed(tmp_path, monkeypatc
 def test_selection_resume_uses_the_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr("neckline.screening.deepseek.time.sleep", lambda _seconds: None)
     path = _db(tmp_path)
-    _concept(path)
+    _boards(path)
     messages = [
         _msg(name, f"{name}印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10 + offset, tzinfo=CST))
         for offset, name in enumerate(("工信部", "发改委", "央行", "财政部"))
@@ -535,6 +558,104 @@ def test_selection_resume_uses_the_receipt(tmp_path, monkeypatch):
     assert second.content["entries"] == []
 
 
+class _Mapped(_Script):
+    def __init__(self, sectors, editor):
+        super().__init__(editor)
+        self.sectors = sectors
+
+    def complete(self, messages, options):
+        self.calls.append(messages)
+        system = messages[0]["content"]
+        user = messages[1]["content"]
+        if "板块分析员" in system:
+            events = []
+            for index, ref in enumerate(_ids(user), start=1):
+                events.append(_event({
+                    "title": f"事件{index}", "ids": [ref],
+                    "sector": self.sectors[(index - 1) % len(self.sectors)],
+                    "reason": "直接", "repeat": False,
+                }))
+            return _ok({"events": events, "dropped": []})
+        if "板块编辑" in system:
+            return self.editor(messages)
+        codes = _leader_codes(user)
+        found = re.search(r"事件：(.+)", user)
+        payload = _answer(codes[:1] or ["300001"])
+        payload["title"] = found.group(1) if found else payload["title"]
+        return _ok(payload)
+
+
+def test_two_same_sector_pushes_compare_and_keep_one(tmp_path):
+    path = _db(tmp_path)
+    _concept(path)
+    messages = [
+        _msg("a", "工信部印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10, tzinfo=CST)),
+        _msg("b", "发改委印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 20, tzinfo=CST)),
+    ]
+    seen: list[str] = []
+
+    def editor(call):
+        seen.append(call[1]["content"])
+        return _ok({"chosen": ["e1"], "reason": "同板块只留一个"})
+
+    outcome = _run(path, messages, _Mapped(("人工智能",), editor))
+    assert len(seen) == 1 and "上限：1 个" in seen[0]
+    assert outcome.stats["selection"]["boards"] == 1
+    assert len(outcome.content["entries"]) == 1
+    assert outcome.gap is None
+
+
+def test_three_distinct_sectors_do_not_compare(tmp_path):
+    path = _db(tmp_path)
+    _boards(path, ("人工智能", "机器人", "芯片"))
+    messages = [
+        _msg(name, f"{name}印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10 + offset, tzinfo=CST))
+        for offset, name in enumerate(("工信部", "发改委", "央行"))
+    ]
+
+    def editor(_call):
+        raise AssertionError("三个不同板块不该比较")
+
+    outcome = _run(path, messages, _Mapped(("人工智能", "机器人", "芯片"), editor))
+    assert outcome.stats["selection"]["called"] is False
+    assert outcome.stats["selection"]["boards"] == 3
+    assert len(outcome.content["entries"]) == 3
+
+
+def test_five_pushes_on_two_sectors_cap_at_two(tmp_path):
+    path = _db(tmp_path)
+    _boards(path, ("人工智能", "机器人"))
+    messages = [
+        _msg(name, f"{name}印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10 + offset, tzinfo=CST))
+        for offset, name in enumerate(("工信部", "发改委", "央行", "财政部", "商务部"))
+    ]
+    prompts: list[str] = []
+
+    def editor(call):
+        prompts.append(call[1]["content"])
+        if len(prompts) == 1:
+            return _ok({"chosen": ["e1", "e3"], "reason": "两个都是同一个板块"})
+        return _ok({"chosen": ["e1", "e2"], "reason": "各留一个板块"})
+
+    outcome = _run(path, messages, _Mapped(("人工智能", "机器人"), editor))
+    assert "上限：2 个" in prompts[0]
+    assert outcome.stats["selection"]["boards"] == 2
+    assert outcome.stats["selection"]["repairs"] == 1
+    assert len(outcome.content["entries"]) == 2
+
+
+def test_c_road_off_does_not_read_history_or_write_the_gap(tmp_path):
+    path = _db(tmp_path)
+    _concept(path)
+    message = _msg("a", "工信部印发行业补贴方案", "范围。", datetime(2026, 10, 13, 7, 10, tzinfo=CST))
+    outcome = _run(path, [message], _Script(lambda _call: (_ for _ in ()).throw(AssertionError("不该比较"))),
+                   cover=False)
+    assert outcome.stats["fermenting"] == {"ran": False, "note": "C 路关闭", "boards": [], "messages": 0}
+    assert outcome.stats["routes"]["C"] == 0
+    assert outcome.gap is None
+    assert len(outcome.content["entries"]) == 1
+
+
 # ------------------------------------------------------------------ 真实入口
 
 
@@ -567,13 +688,22 @@ def test_morning_entry_selects_three_of_four_across_routes(tmp_path, monkeypatch
              "summary": None, "summarySource": "none"}
             for code, name in (("300953.SZ", "震裕科技"), ("300683.SZ", "海特生物"), ("300082.SZ", "奥克股份"))
         ], now=datetime(2026, 10, 12, 4, tzinfo=timezone.utc), source="tushare")
-        db.replace_sector_concepts(conn, [{
-            "tsCode": "885728.TI", "name": "短剧游戏", "memberCount": 3,
-            "members": ["300953.SZ", "300683.SZ", "300082.SZ"],
-        }], refreshed_at="2026-10-12T00:00:00+00:00", sha256="routes")
+        concepts = [
+            {"tsCode": "885728.TI", "name": "短剧游戏", "memberCount": 3,
+             "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
+            {"tsCode": "885001.TI", "name": "人工智能", "memberCount": 3,
+             "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
+            {"tsCode": "885002.TI", "name": "机器人", "memberCount": 3,
+             "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
+            {"tsCode": "885003.TI", "name": "光伏", "memberCount": 3,
+             "members": ["300953.SZ", "300683.SZ", "300082.SZ"]},
+        ]
+        db.replace_sector_concepts(conn, concepts, refreshed_at="2026-10-12T00:00:00+00:00", sha256="routes")
+        seed_limit_context(conn, concepts)
     base = approved_config()
     rules = deepcopy(base.rules)
     rules["sectors"]["evaluation"]["concurrency"] = 1
+    rules["sectors"]["fermenting"]["enabled"] = True
     config = LoadedConfig(rules=rules, sha256=base.sha256, pool=base.pool, profiles=dict(base.profiles),
                           alias_seed=base.alias_seed)
 
@@ -584,10 +714,12 @@ def test_morning_entry_selects_three_of_four_across_routes(tmp_path, monkeypatch
         if "初筛员" in system:
             return _http({"events": []})
         if "板块分析员" in system:
+            names = ("短剧游戏", "人工智能", "机器人", "光伏")
             events = []
-            for number, title in re.findall(r"\[(n\d+)\].*｜([^｜]+)$", user, re.M):
+            for index, (number, title) in enumerate(re.findall(r"\[(n\d+)\].*｜([^｜]+)$", user, re.M)):
                 events.append(_event({
-                    "title": title, "ids": [number], "sector": "短剧游戏", "reason": "直接", "repeat": False,
+                    "title": title, "ids": [number], "sector": names[index % len(names)],
+                    "reason": "直接", "repeat": False,
                 }))
             return _http({"events": events, "dropped": []})
         if "板块编辑" in system:
@@ -658,9 +790,10 @@ def test_new_database_has_routes_and_v6_upgrade_adds_the_column(tmp_path):
         assert "routes" not in [row[1] for row in conn.execute("PRAGMA table_info(sector_events)")]
     db.init_schema(legacy)
     with closing(sqlite3.connect(legacy)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
         row = conn.execute("SELECT title, routes FROM sector_events").fetchone()
         assert row == ("旧事件", "[]")
+        assert conn.execute("SELECT count(*) FROM limit_ups").fetchone()[0] == 0
     already = tmp_path / "v7-old.db"
     with closing(sqlite3.connect(already)) as conn:
         conn.executescript(_old_sector_ddl())
@@ -669,5 +802,6 @@ def test_new_database_has_routes_and_v6_upgrade_adds_the_column(tmp_path):
         conn.commit()
     db.init_schema(already)
     with closing(sqlite3.connect(already)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
         assert "routes" in [row[1] for row in conn.execute("PRAGMA table_info(sector_events)")]
+        assert "limit_up_days" in {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}

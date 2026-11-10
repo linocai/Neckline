@@ -3,12 +3,13 @@
   python -m neckline.morning.replay --snapshot <只读快照库> --trade-date YYYY-MM-DD \\
       --work <目录> --market-snapshot <json> --receipts <回执目录> --filings-cache <目录> \\
       [--config screening-v7.json] (--pool-snapshot <json> | --pool-seed-only) \\
-      [--sector-snapshot <json>]
+      [--sector-snapshot <json>] [--limit-snapshot <json>]
 
 业务时钟从快照里该日晨报的 started_at 起步，按真实流逝时间前进。
 采集不采，推送不发。行情读快照，模型回执落在 --receipts，同样请求不重复计费。
 股票池必须显式给 --pool-snapshot（按交易日构造）或 --pool-seed-only（只用别名种子）。两者都不传就停，不联网。
-给了 --sector-snapshot 时，概念、成分和日线从这份 JSON 写入工作库，不联网。
+给了 --sector-snapshot 时，概念、池内成分和全 A 成分从这份 JSON 写入工作库，不联网。
+给了 --limit-snapshot 时，只把报告日之前的涨停写入工作库。回放从不联网取涨停。
 搜索和模型仍走回执目录。evaluation.search 为 null 时不搜。
 密钥和模型名只从 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 读取，不打印。
 """
@@ -32,6 +33,7 @@ from neckline.evaluation.search import SearchClient
 from neckline.morning import db
 from neckline.morning.report import Pusher, load_config, run_morning
 from neckline.morning.schedule import CST, CalendarGap, previous_trading_day
+from neckline.morning.sector_recognition import install_limit_snapshot
 from neckline.morning.sectors import SectorFetchError, install_sector_snapshot
 from neckline.morning.stock_pool import build_pool_rows, rows_from_seed, store_rows
 from neckline.screening.deepseek import DeepSeekClient, FileReceipts
@@ -327,7 +329,7 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
                filings_cache: Path, config_path: Path | None = None,
                transport: httpx.BaseTransport | None = None, pool_snapshot: Path | None = None,
                pool_seed_only: bool = False, today: date | None = None,
-               sector_snapshot: Path | None = None) -> dict:
+               sector_snapshot: Path | None = None, limit_snapshot: Path | None = None) -> dict:
     if pool_snapshot is None and not pool_seed_only:
         raise ReplayError("要给出 --pool-snapshot 或 --pool-seed-only")
     if pool_snapshot is not None and pool_seed_only:
@@ -342,6 +344,8 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
         raise ReplayError("行情快照不存在")
     if sector_snapshot is not None and not sector_snapshot.is_file():
         raise ReplayError("板块快照不存在")
+    if limit_snapshot is not None and not limit_snapshot.is_file():
+        raise ReplayError("涨停快照不存在")
     dest = work / f"{trade_date}.db"
     out = work / trade_date
     _replace_copy(snapshot, dest)
@@ -361,6 +365,12 @@ def run_replay(*, snapshot: Path, trade_date: str, work: Path, market_snapshot: 
                                         prefixes=tuple(config.rules["companyPool"]["prefixes"]))
             except (SectorFetchError, json.JSONDecodeError, OSError) as exc:
                 raise ReplayError(str(exc) if isinstance(exc, SectorFetchError) else "板块快照不是对象") from None
+        if limit_snapshot is not None:
+            try:
+                rows = json.loads(limit_snapshot.read_text(encoding="utf-8"))
+                install_limit_snapshot(conn, rows, trade_date)
+            except (ValueError, json.JSONDecodeError, OSError):
+                raise ReplayError("涨停快照不是列表") from None
     filings_cache.mkdir(parents=True, exist_ok=True)
     api_key = _required_env("DEEPSEEK_API_KEY")
     model_name = _required_env("DEEPSEEK_MODEL")
@@ -418,13 +428,14 @@ def main(argv: list[str] | None = None, *, transport: httpx.BaseTransport | None
     pool.add_argument("--pool-snapshot", type=Path)
     pool.add_argument("--pool-seed-only", action="store_true")
     ap.add_argument("--sector-snapshot", type=Path)
+    ap.add_argument("--limit-snapshot", type=Path)
     args = ap.parse_args(argv)
     try:
         result = run_replay(snapshot=args.snapshot, trade_date=args.trade_date, work=args.work,
                             market_snapshot=args.market_snapshot, receipts=args.receipts,
                             filings_cache=args.filings_cache, config_path=args.config, transport=transport,
                             pool_snapshot=args.pool_snapshot, pool_seed_only=args.pool_seed_only,
-                            sector_snapshot=args.sector_snapshot)
+                            sector_snapshot=args.sector_snapshot, limit_snapshot=args.limit_snapshot)
     except ReplayError as exc:
         print(str(exc), file=sys.stderr)
         return 1

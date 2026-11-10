@@ -182,7 +182,7 @@ def test_mainline_rules_match_v4_and_company_pool_keys_are_required(tmp_path):
     assert rules["matching"]["strictShortNames"] == ["值得买", "线上线下", "向日葵", "新天地", "探路者", "新城市", "杭州高新",
                                                     "机器人", "同花顺", "新产业", "指南针", "创世纪", "东方财富"]
     assert set(rules["matching"]) == {"note", "strictShortNames"}
-    assert rules["configVersion"] == "screening-v7" and rules["approval"] == "pending"
+    assert rules["configVersion"] == "screening-v7" and rules["approval"] == "approved"
     assert len(load_config().alias_seed) == 1089 and len(load_config().pool) == 0
 
     def rejected(mutate, message):

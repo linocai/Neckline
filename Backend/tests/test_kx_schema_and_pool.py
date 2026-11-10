@@ -52,20 +52,22 @@ def _legacy(path, version: int) -> None:
 
 
 def test_schema_version_is_seven():
-    assert db.SCHEMA_VERSION == 7
+    assert db.SCHEMA_VERSION == 8
 
 
 def test_a_fresh_database_has_no_kx_tables(tmp_path):
     path = tmp_path / "fresh.db"
     db.init_schema(path)
     with db.read(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
         assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool_meta").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM sector_concepts").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM limit_ups").fetchone()[0] == 0
     assert "market_daily" not in _names(path)
+    assert {"limit_ups", "limit_up_days", "sector_members_all"} <= _names(path)
     assert KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
 
@@ -82,7 +84,7 @@ def test_each_older_database_upgrades_to_v7_and_keeps_other_rows(tmp_path, versi
         assert "stock_pool" not in _names(path)
 
     db.init_schema(path)
-    assert _version(path) == 7
+    assert _version(path) == 8
     assert "market_daily" not in _names(path)
     assert KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
@@ -96,7 +98,7 @@ def test_each_older_database_upgrades_to_v7_and_keeps_other_rows(tmp_path, versi
             assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
     with db.write(path) as conn:
         db.upsert_device(conn, token="ef01", platform="ios", at=datetime(2026, 10, 20, tzinfo=timezone.utc))
-    db.init_schema(path)  # 已经是 v7：什么都不改
+    db.init_schema(path)  # 已经是 v8：什么都不改
     with db.read(path) as conn:
         assert db.device_tokens(conn) == ["abcd", "ef01"]
 
@@ -111,7 +113,7 @@ def test_every_upgrade_path_matches_a_fresh_database(tmp_path):
         db.init_schema(path)
         upgraded.append(path)
     assert all(_structure(path) == _structure(fresh) for path in upgraded)
-    assert all(_version(path) == 7 for path in upgraded)
+    assert all(_version(path) == 8 for path in upgraded)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])
@@ -135,7 +137,7 @@ def test_a_failed_upgrade_rolls_back_as_a_whole(tmp_path, monkeypatch, version):
             assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='filing_reads'").fetchall()
     monkeypatch.undo()
     db.init_schema(path)
-    assert _version(path) == 7 and KX_TABLES.isdisjoint(_names(path))
+    assert _version(path) == 8 and KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
 
 
@@ -156,7 +158,7 @@ def test_a_failed_v5_upgrade_rolls_back_without_adding_pool_tables(tmp_path, mon
             pass
 
 
-@pytest.mark.parametrize("version", [0, 8])
+@pytest.mark.parametrize("version", [0, 9])
 def test_init_schema_refuses_other_versions(tmp_path, version):
     path = tmp_path / "x.db"
     conn = sqlite3.connect(path)
@@ -184,10 +186,26 @@ def test_v6_database_drops_market_daily_and_keeps_other_rows(tmp_path):
         conn.commit()
     assert "market_daily" in _names(path)
     db.init_schema(path)
-    assert _version(path) == 7 and "market_daily" not in _names(path)
+    assert _version(path) == 8 and "market_daily" not in _names(path)
+    assert {"limit_ups", "limit_up_days", "sector_members_all"} <= _names(path)
     with db.read(path) as conn:
         assert conn.execute("SELECT name FROM stock_pool").fetchone()[0] == "甲公司"
         assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
+
+
+def test_v7_database_gains_the_limit_tables_and_keeps_them_on_downgrade_shape(tmp_path):
+    path = tmp_path / "v7.db"
+    _legacy(path, 5)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(db.V6_DDL)
+        conn.execute("DROP TABLE IF EXISTS market_daily")
+        conn.execute("PRAGMA user_version=7")
+        conn.commit()
+    assert "limit_ups" not in _names(path)
+    db.init_schema(path)
+    assert _version(path) == 8
+    assert {"limit_ups", "limit_up_days", "sector_members_all"} <= _names(path)
+    assert "market_daily" not in _names(path)
 
 
 def test_init_schema_refuses_a_foreign_application_id(tmp_path):
