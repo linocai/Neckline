@@ -46,12 +46,12 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 - **B132 期间**：11/09、11/10 两期在线上跑过，11/10 的复盘引出 4.4.1。
 - **MCP**：5 个只读工具，`get_morning_report` 带板块热点。三家 Agent 的实测由用户做。
 - **额度**：麦蕊体验版总量 20 万次（约到 12-28），与 KX 共用。TuShare major_news 每天 40 次；limit_list_d 每天 1 次（首次补 40 次）。DeepSeek 4.3.1 口径每天约 160 万 token。
-- **清理**：4.4.0 两轮回放与 4.4.1 备料（本机约 25G，NB 约 1.8G，含两份生产库副本）列在 `Backend/.work/cleanup-4.4.1.sh`，待用户执行；发布包本机与 NB 都留 B132、B133。
+- **清理**（11/11）：4.4.0 两轮回放、4.4.1 备料、B131 发布包、Neckline 的 Xcode 构建缓存已由 `Backend/.work/cleanup-4.4.1.sh` 移走：本机约 25.7G 进废纸篓，NB 约 1.75G 到 `/var/tmp/neckline-trash-20261111/`，**清空后才腾出空间**。记录引用的小报告与脚本留在 `Backend/.work/evidence-4.4/`；发布包本机与 NB 都留 B132、B133。
 
 ## 当前 Plan
 
 1. **11/11 首期核对**（4.4.1，[记录 §9.4](archive/v4.4.1_execution.md#94-上线后要做)）：板块线 `recognition` 统计（窗口、`fetched`、`emptyEvents`、`noFullMembers`）、缺口摘要、判推与承接股是否出自名单前列、比较是否触发；主线条数与出报时间不受影响；09:15 前 finalize 没有误判；当晚 20:00 采集后补上 11-11 的涨停。
-2. **用户**：iPhone 用 Xcode 装 App 4.4.1 (133)；执行 `Backend/.work/cleanup-4.4.1.sh --apply`（先不带参数看清单），再清空废纸篓与 NB 的 `/var/tmp/neckline-trash-*`；三家 Agent 手机端与电脑端实测 MCP。
+2. **用户**：iPhone 用 Xcode 装 App 4.4.1 (133)；清空废纸篓、删掉 NB 的 `/var/tmp/neckline-trash-20261111/`（永久删除由用户做）；三家 Agent 手机端与电脑端实测 MCP。
 3. **复盘**：按 `whynotme/research/K10实盘复盘日志.md` 逐日看承接股与空名单比例；需要改辨识度口径（天数、占比）或开 C 路时，由用户定。
 4. **改进项**：板块配置校验与主线分开（4.4.1 审查 F3）；`post_json` 按期限关掉 HTTP 连接；主线 10 只上限是否放宽。
 5. **核对 B131 竞价显示**：下个交易日 9:15–9:30 看 KX 看板「竞价中」与盘口说明。
