@@ -37,7 +37,7 @@ V3 已按 K10-v1.4 完成首版实现，并于 2026-09-07 发布 3.0.0 / 双端 
 
 下图及分页面参考用于传达风格。验收优先核对业务流程、状态表达、信息完整度和可读性，不设像素相似度门禁。公司、消息、日期、价位和统计均为示例，不作为策略参数或实际结果；图中的交易预案与价位确认已退出 V1.4；当前功能语义以本稿与 K10 规范为准。
 
-![Neckline V3 视觉总览](/Users/linotsai/Lino/Neckline/archive/Neckline_V3_界面参考/00-overview.png)
+![Neckline V3 视觉总览](/Users/linotsai/Lino/trading/Neckline/archive/Neckline_V3_界面参考/00-overview.png)
 
 分页面参考：[卡片筛选、观察清单与略过记录](Neckline_V3_界面参考/01-opportunities.png) · [正反阅读布局参考](Neckline_V3_界面参考/02-analysis-plan.png) · [晨间变化布局参考（修正版）](Neckline_V3_界面参考/03-morning-plan.png) · [策略结果与设置](Neckline_V3_界面参考/04-results-settings.png)。
 
