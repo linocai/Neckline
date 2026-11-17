@@ -7,7 +7,7 @@
 - **读同一份名单的地方**：iPhone 推送、App（iOS 三标签：晨报、历史、设置；macOS 两栏加系统设置窗口）、只读网页、`/api/v4` 和只读 MCP。
 - v3 已在 B113 删除，服务只提供 V4。
 
-计划与状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，4.2.0 的契约与证据见 [archive/v4.2.0_execution.md](archive/v4.2.0_execution.md)，V4 详细计划见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)，项目规则见 [CLAUDE.md](CLAUDE.md)。
+计划与状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，4.2.0 的契约与证据见 [archive/v4.2.0_execution.md](archive/v4.2.0_execution.md)，V4 详细计划见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)，项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 仍然有效的运维事实
 
@@ -22,4 +22,4 @@
 - 复盘时查看当期全部评估（推与不推）：`/opt/neckline/.venv/bin/python -m neckline.morning.cli evaluations --date <日期> [--json]`（只读）。
 - TuShare `major_news` 每个账号每天最多调用 40 次：彩排、手工采集都占这个额度。
 - B92（2026-09-27）之前的数据永远不读取、不导入、不恢复。
-- 后端发布只走 `Backend/scripts/release.py`，用法见 CLAUDE.md「发布」。
+- 后端发布只走 `Backend/scripts/release.py`，用法见 [AGENTS.md](AGENTS.md)「发布」。

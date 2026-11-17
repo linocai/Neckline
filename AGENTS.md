@@ -1,14 +1,14 @@
 # Neckline 项目规则
 
-自用创业板选股器 V4（4.0.0 建成；2026-10-28 起为 4.2.0 K10-v5「以消息为起点的选股器」：初筛 → 数据准备 → 四问评估 → 最多推 10 条；2026-11-07 起为 4.3.1 K10-v6：全创业板动态股票池，个股与板块热点两条线；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给 ChatGPT、Claude、Grok 用的只读 MCP 服务（与 API 同进程）。工作流以 `~/.claude/CLAUDE.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。2026-10-12 起由 Claude 独立开发，Codex 时期的规则不再适用。
+自用创业板选股器 V4（4.0.0 建成；2026-10-28 起为 4.2.0 K10-v5「以消息为起点的选股器」：初筛 → 数据准备 → 四问评估 → 最多推 10 条；2026-11-07 起为 4.3.1 K10-v6：全创业板动态股票池，个股与板块热点两条线；v3 选股器 2026-10-14 退役，B113 删除）：Swift 客户端（iOS/macOS，`App/`），Python 服务（定时采集、DeepSeek 筛选、名单与推送，`Backend/`），以及给多平台 LLM 客户端用的只读 MCP 服务（与 API 同进程）。全局工作流以 `~/AGENTS.md` 为准；现行目标、状态与计划只看 [PROJECT_PLAN.md](PROJECT_PLAN.md)；服务器事实看 iCloud `NB_info.md`。
 
 ## 边界
 
-- 本仓库在 `trading` 工作区（`/Users/linotsai/Lino/trading`，2026-11-16 起）；跨项目边界的唯一出处是工作区 [CLAUDE.md](../CLAUDE.md)，下面只写 Neckline 这一侧的实现细节。
+- 本仓库在 `trading` 工作区（`/Users/linotsai/Lino/trading`，2026-11-16 起）；跨项目边界的唯一出处是工作区 [AGENTS.md](../AGENTS.md)，下面只写 Neckline 这一侧的实现细节。
 - 研究、回测、策略实验在同级的 `../whynotme`，生产代码永不 import 它。
 - 行情由 Neckline 自己取（2026-10-18 用户）：TuShare 用自己的 token；麦蕊借鉴同级的 `../KXMarketTool`（KX，HZ 云）的取数代码另接。不 import KX、不共用 KX 的 MCP 工具。
 - 和 KX 只有一处连接（4.3.0 起）：Neckline 后端只读 KX 的总览 `/kx/read/<访问码>?format=json`（schema 4，访问码在 NB `/opt/neckline/.env` 的 `KX_READ_KEY`），缓存 60 秒后给 App。不读 KX 健康检查，不为 KX 看板调麦蕊或 TuShare；推荐接收接口已于 4.3.0 退役。KX 的改动在 KX 项目里做，Neckline 不改 KX 代码。
-- 根目录只放 `App/`、`Backend/`、`archive/`、`CLAUDE.md`、`PROJECT_PLAN.md`、`README.md`。
+- 根目录只放 `App/`、`Backend/`、`archive/`、`AGENTS.md`、`PROJECT_PLAN.md`、`README.md`。
 - `archive/` 只是历史证据，不是规则来源；需要追溯时按文件名定位后窄读。
 - 退役的功能直接删除：生产者、消费者、路由、配置、测试、存量数据一起删，不留兼容层。
 
@@ -16,6 +16,7 @@
 
 - B92（2026-09-27）是全新数据起点。B92 之前的库、报告、回执、行情与恢复集一律不读、不迁移、不恢复。
 - `.env`、凭据、生产库、`Backend/data/`、行情文件永不提交；凭据不进日志、回复和测试夹具。
+- NB 云（主机事实见 iCloud `NB_info.md`）日常允许只读查询（`systemctl status/show/is-active`、`journalctl`、sqlite `mode=ro` 读 `/opt/neckline/data/`，以及以 `neckline` 用户加载 `/opt/neckline/.env` 跑只调 TuShare 查询接口的公开行情快照如 `neckline.evaluation.snapshot`）；严禁打印/带出凭据、未经放行读 `/etc/neckline/v4.env` 或未经授权写库/重启/改配置。
 - 动生产（部署、写库、改 timer、改配置）前核对目标并准备回退；写库前先备份并做还原校验。有新业务写入后，不得用旧快照整库覆盖。
 - 部署和恢复保持 `/opt/neckline` 的属主与权限；就绪检查要校验接口的实际配置内容，HTTP 200 不算就绪。
 - 只读路径不执行 DDL；`init_schema()` 只在 API 启动、显式写命令或已备份的发布迁移里运行。
@@ -39,7 +40,7 @@
   **全量全绿才能发布**，没有「历史失败」基线；一项失败就是一个待处理问题。开发中可先跑相关文件，发布前必须跑全量。
 - 测试只用临时库或显式只读快照，绝不回落到工作库。自定义 `--basetemp` 时父目录要先存在；不要用 `tmp_path_retention_policy=none`（pytest 9 下它不逐项清理，会占满磁盘）。
 - 名单链路的改动走真实入口验收：定时入口 → worker → 名单记录 → API/MCP，确定性 transport，业务时钟显式传入；中断与续跑要有注入回归，且不重复计费。跨端改动要用隔离库产出的真实 API 响应喂当前 Swift 模型解码。
-- MCP 的验收必须在 ChatGPT、Claude、Grok 的手机端与电脑端实际调用工具，服务器冒烟测试不能代替。OAuth 回调只按精确地址放行；新客户端被拒时日志会记下它的回调（`registration rejected, redirect_uris=…`）。
+- MCP 的验收必须在多平台客户端手机端与电脑端实际调用工具，服务器冒烟测试不能代替。OAuth 回调只按精确地址放行；新客户端被拒时日志会记下它的回调（`registration rejected, redirect_uris=…`）。
 - 改了 `App/` 下任何代码或资源，三条构建都要跑（在 `App/` 下）：
   ```bash
   xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' build
@@ -70,5 +71,4 @@
 - DeepSeek 密钥在 NB 的 `/etc/neckline/v4.env`（不在 `/opt/neckline/.env`）；本机回放要读进进程须用户放行，不落盘。
 - DeepSeek Search 的结果日期只到天（都是北京时间 00:00）。线上 08:00 跑没问题；回放时标着交易日当天的结果可能是 08:00 以后才发的，回放里的券商观点因此偏多。评估判定本身有随机性：同样输入重跑一遍，约 8% 的条目翻转，比较参数要带一组重跑对照（B126 回放）。
 - 本机离线回放：`python -m neckline.morning.replay`（快照库副本 + `market-snapshot.json` + 回执目录，走真实 `run_morning`）。TuShare 行情快照只能在 NB 上用 `neckline.evaluation.snapshot` 生成。
-- Codex 只读沙箱跑不了全量 pytest（建不了临时目录）；审查时附上宿主全量结果。Codex 额度会用尽（报使用上限并给恢复时间），可用 `--resume <会话>` 在原会话续跑。
-
+- Codex 只读沙箱跑不了全量 pytest（建不了临时目录）；派 Codex 审查时附上宿主全量结果。Codex 额度用尽时可用 `--resume <会话>` 续跑。
