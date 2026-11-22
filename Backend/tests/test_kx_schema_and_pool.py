@@ -14,6 +14,7 @@ _SECTOR_TABLES = {"sector_concepts", "sector_members", "sector_concepts_meta"}
 _V6_TABLES = {"stock_pool", "stock_pool_meta", "sector_events"} | _SECTOR_TABLES
 _V8_TABLES = {"limit_ups", "limit_up_days", "sector_members_all"}
 _V9_TABLES = {"kx_board_cache", "kx_watch_state", "kx_push_log"}
+_V10_TABLES = {"qihuo_bundle_cache"}
 
 
 def _version(path) -> int:
@@ -55,19 +56,21 @@ def _legacy(path, version: int) -> None:
             conn.executescript(db.MARKET_DAILY_V6_DDL)
         if version >= 8:
             conn.executescript(db.V8_DDL)
+        if version >= 9:
+            conn.executescript(db.V9_DDL)
         conn.execute(f"PRAGMA user_version={version}")
         conn.commit()
 
 
-def test_schema_version_is_nine():
-    assert db.SCHEMA_VERSION == 9
+def test_schema_version_is_ten():
+    assert db.SCHEMA_VERSION == 10
 
 
-def test_a_fresh_database_has_v9_kx_tables_and_no_legacy_kx_tables(tmp_path):
+def test_a_fresh_database_has_v10_tables_and_no_legacy_kx_tables(tmp_path):
     path = tmp_path / "fresh.db"
     db.init_schema(path)
     with db.read(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
         assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM stock_pool").fetchone()[0] == 0
@@ -75,15 +78,17 @@ def test_a_fresh_database_has_v9_kx_tables_and_no_legacy_kx_tables(tmp_path):
         assert conn.execute("SELECT count(*) FROM kx_board_cache").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM kx_watch_state").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM kx_push_log").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM qihuo_bundle_cache").fetchone()[0] == 0
     assert "market_daily" not in _names(path)
     assert _V8_TABLES <= _names(path)
     assert _V9_TABLES <= _names(path)
+    assert _V10_TABLES <= _names(path)
     assert KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8])
-def test_each_older_database_upgrades_to_v9_and_keeps_other_rows(tmp_path, version):
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8, 9])
+def test_each_older_database_upgrades_to_v10_and_keeps_other_rows(tmp_path, version):
     path = tmp_path / f"v{version}.db"
     _legacy(path, version)
     _expect_refused(path)
@@ -91,14 +96,17 @@ def test_each_older_database_upgrades_to_v9_and_keeps_other_rows(tmp_path, versi
         assert set(KX_TABLES) <= _names(path)
     if version == 8:
         assert _V9_TABLES.isdisjoint(_names(path))
+    if version == 9:
+        assert _V10_TABLES.isdisjoint(_names(path))
 
     db.init_schema(path)
-    assert _version(path) == 9
+    assert _version(path) == 10
     assert "market_daily" not in _names(path)
     assert KX_TABLES.isdisjoint(_names(path))
     assert _V6_TABLES <= _names(path)
     assert _V8_TABLES <= _names(path)
     assert _V9_TABLES <= _names(path)
+    assert _V10_TABLES <= _names(path)
     with db.read(path) as conn:
         assert conn.execute("SELECT token FROM devices").fetchone()[0] == "abcd"
         assert db.latest_report(conn)["report_id"] == "r1"
@@ -109,7 +117,7 @@ def test_each_older_database_upgrades_to_v9_and_keeps_other_rows(tmp_path, versi
             assert conn.execute("SELECT count(*) FROM filing_reads").fetchone()[0] == 0
     with db.write(path) as conn:
         db.upsert_device(conn, token="ef01", platform="ios", at=datetime(2026, 10, 20, tzinfo=timezone.utc))
-    db.init_schema(path)  # 已经是 v9：什么都不改
+    db.init_schema(path)  # 已经是 v10：什么都不改
     with db.read(path) as conn:
         assert db.device_tokens(conn) == ["abcd", "ef01"]
 
@@ -118,13 +126,13 @@ def test_every_upgrade_path_matches_a_fresh_database(tmp_path):
     fresh = tmp_path / "fresh.db"
     db.init_schema(fresh)
     upgraded = []
-    for version in (1, 2, 3, 4, 5, 6, 7, 8):
+    for version in (1, 2, 3, 4, 5, 6, 7, 8, 9):
         path = tmp_path / f"v{version}.db"
         _legacy(path, version)
         db.init_schema(path)
         upgraded.append(path)
     assert all(_structure(path) == _structure(fresh) for path in upgraded)
-    assert all(_version(path) == 9 for path in upgraded)
+    assert all(_version(path) == 10 for path in upgraded)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])
@@ -148,8 +156,8 @@ def test_a_failed_upgrade_rolls_back_as_a_whole(tmp_path, monkeypatch, version):
             assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='filing_reads'").fetchall()
     monkeypatch.undo()
     db.init_schema(path)
-    assert _version(path) == 9 and KX_TABLES.isdisjoint(_names(path))
-    assert _V9_TABLES <= _names(path)
+    assert _version(path) == 10 and KX_TABLES.isdisjoint(_names(path))
+    assert _V9_TABLES <= _names(path) and _V10_TABLES <= _names(path)
 
 
 def test_a_failed_v8_upgrade_rolls_back_without_adding_v9_tables(tmp_path, monkeypatch):
@@ -164,7 +172,19 @@ def test_a_failed_v8_upgrade_rolls_back_without_adding_v9_tables(tmp_path, monke
     assert _V9_TABLES.isdisjoint(_names(path))
 
 
-@pytest.mark.parametrize("version", [0, 10])
+def test_a_failed_v9_upgrade_rolls_back_without_adding_v10_tables(tmp_path, monkeypatch):
+    path = tmp_path / "v9.db"
+    _legacy(path, 9)
+    before_names = _names(path)
+    monkeypatch.setattr(db, "V10_DDL", db.V10_DDL + "\nTHIS IS NOT SQL;")
+    with pytest.raises(sqlite3.OperationalError):
+        db.init_schema(path)
+    assert _version(path) == 9
+    assert _names(path) == before_names
+    assert _V10_TABLES.isdisjoint(_names(path))
+
+
+@pytest.mark.parametrize("version", [0, 11])
 def test_init_schema_refuses_other_versions(tmp_path, version):
     path = tmp_path / "x.db"
     conn = sqlite3.connect(path)

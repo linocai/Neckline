@@ -13,13 +13,16 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from neckline.market.overview import overview
 from neckline.mcp.brief import BRIEF
+from neckline.qihuo import services as qihuo_services
+from neckline.qihuo.board import QihuoUnavailable, load_bundle as load_qihuo_bundle
+from neckline.qihuo.project import project_mcp_overview, project_mcp_product, project_mcp_rules
 
 from . import db
 from .api import document_out, present_content, report_out, v4_db_path
@@ -62,12 +65,37 @@ _QUESTION_LABELS = (
     ("money", "资金为什么买或不买"),
     ("price", "价格划不划算"),
 )
-def _page(title: str, body: str) -> HTMLResponse:
+def _safe_external_url(raw: str | None) -> str | None:
+    """只放行带有效主机的 HTTP(S) 外部链接，拒绝脚本协议与指向带访问码 /read/ 端点的链接。"""
+    if not isinstance(raw, str):
+        return None
+    cleaned = raw.strip()
+    if not cleaned or any(ch.isspace() or ord(ch) < 32 for ch in cleaned):
+        return None
+    try:
+        parts = urlsplit(cleaned)
+        _ = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme.lower() not in ("http", "https")
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+    ):
+        return None
+    lower_path = (parts.path or "").lower()
+    if "/read/" in lower_path or lower_path.endswith("/read"):
+        return None
+    return cleaned
+
+
+def _page(title: str, body: str, *, status_code: int = 200) -> HTMLResponse:
     html = (f"<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
             f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             f"<meta name=\"robots\" content=\"noindex,nofollow\"><meta name=\"referrer\" content=\"no-referrer\">"
             f"<title>{escape(title)}</title><style>{_CSS}</style></head><body><main>{body}</main></body></html>")
-    return HTMLResponse(html, headers=_HEADERS)
+    return HTMLResponse(html, status_code=status_code, headers=_HEADERS)
 
 
 def _day_label(trade_date: str) -> str:
@@ -327,17 +355,144 @@ def render_report(base: str, report: dict) -> HTMLResponse:
     return _page(title, body)
 
 
+def _fmt_signed_int(value: int | None) -> str:
+    return f"{value:+d}" if isinstance(value, int) and not isinstance(value, bool) else "—"
+
+
+def _fmt_int(value: int | None) -> str:
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) else "—"
+
+
+def _fmt_pct1(value: float | None) -> str:
+    return f"{value:.1f}%" if isinstance(value, (int, float)) and not isinstance(value, bool) else "—"
+
+
+def _render_qihuo_overview(base: str, raw: dict, *, stale: bool, stale_reason: str | None) -> HTMLResponse:
+    rules = project_mcp_rules(raw, stale=stale, stale_reason=stale_reason)
+    ov = project_mcp_overview(raw, stale=stale, stale_reason=stale_reason)
+    stale_html = f"<div class=\"gap\">提示：{escape(stale_reason or '当前展示缓存快照')}</div>" if stale else ""
+    cards = []
+    for p in ov["products"]:
+        snap = p["snapshot"]
+        wsr = snap.get("wsr")
+        wsr_txt = f"{wsr['value']:g} {wsr['unit']}（日变 {wsr.get('changeText') or '—'}）" if wsr and wsr.get("value") is not None else "—"
+        hold = snap.get("holding")
+        if hold and any(hold.get(k) is not None for k in ("net", "longRatioPct", "longChg", "shortChg")):
+            hold_txt = (
+                f"净 {_fmt_signed_int(hold.get('net'))} 手"
+                f"（多 {_fmt_pct1(hold.get('longRatioPct'))}，多变 {_fmt_signed_int(hold.get('longChg'))} / 空变 {_fmt_signed_int(hold.get('shortChg'))}）"
+            )
+        else:
+            hold_txt = "—"
+        spot = snap.get("spot")
+        basis = snap.get("basis")
+        if spot and spot.get("displayValue"):
+            spot_txt = f"{spot['displayValue']} {spot['unit']}（{spot.get('date') or ''}）"
+            if basis and basis.get("displayValue"):
+                spot_txt += f" · 基差 {basis['displayValue']}"
+        elif p.get("spotPending"):
+            spot_txt = "留空（无免费自动日度源，可自行搜索最新现期表）"
+        else:
+            spot_txt = "暂无最新现货记录"
+        ns = snap["newsSummary"]
+        bull_txt = _fmt_int(ns.get("bullCount"))
+        bear_txt = _fmt_int(ns.get("bearCount"))
+        href = f"{base}/qihuo/{quote(p['code'], safe='')}"
+        close_txt = f"{snap['close']:g}" if snap.get("close") is not None else "—"
+        pct_txt = f"{snap['pctChg']:+.2f}%" if snap.get("pctChg") is not None else "—"
+        cards.append(
+            f"<li><a href=\"{href}\"><span class=\"co\">{escape(p['name'])}</span></a>"
+            f"<span class=\"tag\">{escape(snap.get('mainContract') or p['code'])} · {escape(p['exchangeName'])} · {escape(p.get('chainTag') or '')}</span>"
+            f"<div class=\"hl\">收盘 {escape(close_txt)}（{escape(pct_txt)}）｜仓单 {escape(wsr_txt)}</div>"
+            f"<div class=\"why\">前20持仓：{escape(hold_txt)}｜现货/基差：{escape(spot_txt)}｜近15日消息：{escape(bull_txt)} 利多 / {escape(bear_txt)} 利空</div>"
+            f"<div class=\"src\"><a href=\"{href}\">查看完整档案与近15日明细</a> · <a href=\"{href}?format=json\">JSON</a></div></li>"
+        )
+    paused = "、".join(f"{x['name']}({x['code']})" for x in ov["pool"]["paused"])
+    active_count = ov["pool"]["activeCount"]
+    body = (
+        f"<h1>Q 期货 · 启用池总览（{active_count}/{ov['pool']['totalStoredCount']}）</h1>"
+        f"<div class=\"meta\">数据日 {escape(ov.get('asOfDate') or '—')}｜快照 {escape(ov['version'])}｜晚间 1 次静默更新 · 不推送</div>"
+        f"<div class=\"gap\">说明：{escape(ov['researchNote'])}</div>"
+        f"{stale_html}"
+        f"<details open><summary>Q1 交易搭档规则与提示词（{escape(rules['source'])}）</summary><pre>{escape(rules['rules'])}</pre></details>"
+        f"<h2>当前启用 {active_count} 品种</h2><ol>{''.join(cards)}</ol>"
+        f"<p class=\"meta\">其余 {ov['pool']['pausedCount']} 个停用品种（历史留存未删）：{escape(paused)}</p>"
+        f"<footer><a href=\"{base}\">K10 晨报</a>　·　<a href=\"{base}/qihuo?format=json\">JSON</a></footer>"
+    )
+    return _page("Q 期货总览", body)
+
+
+def _render_qihuo_product(base: str, raw: dict, query: str, *, stale: bool, stale_reason: str | None) -> HTMLResponse:
+    data = project_mcp_product(raw, query, stale=stale, stale_reason=stale_reason)
+    if data.get("status") != "ok":
+        body = (
+            f"<h1>Q 期货 · {escape(query)}</h1>"
+            f"<p>{escape(data.get('message') or '不在启用池内')}</p>"
+            f"<div class=\"gap\">{escape(data.get('researchNote') or '')}</div>"
+            f"<footer><a href=\"{base}/qihuo\">返回 Q 期货总览</a></footer>"
+        )
+        return _page(f"Q 期货 · {query}", body, status_code=404)
+    p = data["product"]
+    snap = p["snapshot"]
+    news_parts = []
+    for n in p["news"]:
+        safe_url = _safe_external_url(n.get("url"))
+        link_html = (
+            f"<div class=\"src\"><a href=\"{escape(safe_url, quote=True)}\" rel=\"noreferrer noopener\">原文链接</a></div>"
+            if safe_url else ""
+        )
+        news_parts.append(
+            f"<li><div><b>[{escape(n['direction'])}]</b> {escape(n['title'])} "
+            f"<span class=\"tag\">{escape(n['publishedDisplay'])} · {escape(n['source'])}</span></div>"
+            f"<div class=\"why\">{escape(n['summary'])}</div>{link_html}</li>"
+        )
+    news_html = "".join(news_parts) or "<li>近 15 日暂无明确利多/利空消息。</li>"
+    data_rows_html = "".join(
+        f"<tr><td>{escape(r['date'])}</td><td>{r['close'] if r['close'] is not None else '—'}</td>"
+        f"<td>{r['settle'] if r['settle'] is not None else '—'}</td>"
+        f"<td>{r['wsr'] if r['wsr'] is not None else '—'}</td><td>{escape(r.get('wsrChgText') or '—')}</td></tr>"
+        for r in p["dataRows"]
+    )
+    hold_rows_html = "".join(
+        f"<tr><td>{escape(h['date'])}</td><td>{escape(h.get('contract') or '—')}</td>"
+        f"<td>{_fmt_int(h.get('longTotal'))}({_fmt_signed_int(h.get('longChg'))})</td>"
+        f"<td>{_fmt_int(h.get('shortTotal'))}({_fmt_signed_int(h.get('shortChg'))})</td>"
+        f"<td>{_fmt_pct1(h.get('longRatioPct'))}</td><td>{_fmt_signed_int(h.get('net'))}</td></tr>"
+        for h in p["holdRows"]
+    )
+    sections_html = "".join(
+        f"<h3>{escape(s['title'])}</h3><pre>{escape(s['markdown'])}</pre>"
+        for s in p["basic"]["sections"]
+    )
+    stale_html = f"<div class=\"gap\">提示：{escape(stale_reason or '当前展示缓存快照')}</div>" if stale else ""
+    body = (
+        f"<h1>{escape(p['name'])}（{escape(p['code'])}）</h1>"
+        f"<div class=\"meta\">主力 {escape(snap.get('mainContract') or '—')}｜{escape(p['exchangeName'])}｜{escape(p.get('chainTag') or '')}｜数据日 {escape(data.get('asOfDate') or '—')}</div>"
+        f"<div class=\"gap\">说明：{escape(data['researchNote'])}</div>"
+        f"{stale_html}"
+        f"<h2>近 15 日筛选消息（{len(p['news'])}）</h2><ol>{news_html}</ol>"
+        f"<h2>近 15 日收盘与仓单</h2><table><tr><th>日期</th><th>收盘</th><th>结算</th><th>仓单(吨)</th><th>日变</th></tr>{data_rows_html}</table>"
+        f"<h2>近 15 日前 20 名会员持仓</h2><table><tr><th>日期</th><th>合约</th><th>多单</th><th>空单</th><th>多占比</th><th>净持仓</th></tr>{hold_rows_html}</table>"
+        f"<details><summary>基本信息档案（更新于 {escape(p['basic'].get('updated') or '—')}）</summary>{sections_html}</details>"
+        f"<footer><a href=\"{base}/qihuo\">返回 Q 期货总览</a>　·　<a href=\"{base}/qihuo/{quote(p['code'], safe='')}?format=json\">JSON</a></footer>"
+    )
+    return _page(f"{p['name']} ({p['code']}) · Q 期货", body)
+
+
 def create_router(*, db_path_provider: Callable[[], Path | None] = v4_db_path,
                   read_key_provider: Callable[[], str | None] = lambda: os.environ.get("NECKLINE_READ_KEY")) -> APIRouter:
     router = APIRouter(include_in_schema=False)
 
-    def guard(key: str) -> Path:
+    def guard_auth(key: str) -> None:
         expected = (read_key_provider() or "").strip()
         if len(expected) < 24 or not hmac.compare_digest(key.encode(), expected.encode()):
-            raise HTTPException(status_code=404)
+            raise HTTPException(status_code=404, headers=_HEADERS)
+
+    def guard(key: str) -> Path:
+        guard_auth(key)
         path = db_path_provider()
         if path is None:
-            raise HTTPException(status_code=404)
+            raise HTTPException(status_code=404, headers=_HEADERS)
         return path
 
     def _report(path: Path, trade_date: str | None) -> dict:
@@ -428,5 +583,61 @@ def create_router(*, db_path_provider: Callable[[], Path | None] = v4_db_path,
             payload["brief"] = BRIEF
             return JSONResponse(payload, headers=_HEADERS)
         return _render_stock(f"/read/{key}", data)
+
+    @router.get("/read/{key}/qihuo")
+    async def qihuo_overview_page(key: str, format: str | None = None):
+        guard_auth(key)
+        path = db_path_provider()
+        if path is None:
+            msg = "数据缓存库尚未配置，暂时无法读取 Q 期货。"
+            if format == "json":
+                return JSONResponse({"status": "unavailable", "reason": "v4_not_configured", "message": msg},
+                                    status_code=503, headers=_HEADERS)
+            return _page("Q 期货", f"<h1>Q 期货</h1><p>{escape(msg)}</p><footer><a href=\"/read/{key}\">返回晨报</a></footer>",
+                         status_code=503)
+        try:
+            raw, _fetched_at, stale, stale_reason = await load_qihuo_bundle(qihuo_services.current(), db_path=path)
+        except QihuoUnavailable as error:
+            if format == "json":
+                return JSONResponse({"status": "unavailable", "reason": error.reason, "message": error.message},
+                                    status_code=503, headers=_HEADERS)
+            return _page(
+                "Q 期货",
+                f"<h1>Q 期货</h1><p>{escape(error.message)}</p><footer><a href=\"/read/{key}\">返回晨报</a></footer>",
+                status_code=503,
+            )
+        if format == "json":
+            payload = project_mcp_overview(raw, stale=stale, stale_reason=stale_reason)
+            payload["rules"] = project_mcp_rules(raw, stale=stale, stale_reason=stale_reason)["rules"]
+            return JSONResponse(payload, headers=_HEADERS)
+        return _render_qihuo_overview(f"/read/{key}", raw, stale=stale, stale_reason=stale_reason)
+
+    @router.get("/read/{key}/qihuo/{product}")
+    async def qihuo_product_page(key: str, product: str, format: str | None = None):
+        guard_auth(key)
+        path = db_path_provider()
+        if path is None:
+            msg = "数据缓存库尚未配置，暂时无法读取 Q 期货。"
+            if format == "json":
+                return JSONResponse({"status": "unavailable", "reason": "v4_not_configured", "message": msg},
+                                    status_code=503, headers=_HEADERS)
+            return _page("Q 期货", f"<h1>Q 期货</h1><p>{escape(msg)}</p><footer><a href=\"/read/{key}/qihuo\">返回总览</a></footer>",
+                         status_code=503)
+        try:
+            raw, _fetched_at, stale, stale_reason = await load_qihuo_bundle(qihuo_services.current(), db_path=path)
+        except QihuoUnavailable as error:
+            if format == "json":
+                return JSONResponse({"status": "unavailable", "reason": error.reason, "message": error.message},
+                                    status_code=503, headers=_HEADERS)
+            return _page(
+                "Q 期货",
+                f"<h1>Q 期货</h1><p>{escape(error.message)}</p><footer><a href=\"/read/{key}/qihuo\">返回总览</a></footer>",
+                status_code=503,
+            )
+        if format == "json":
+            payload = project_mcp_product(raw, product, stale=stale, stale_reason=stale_reason)
+            status = 200 if payload.get("status") == "ok" else 404
+            return JSONResponse(payload, status_code=status, headers=_HEADERS)
+        return _render_qihuo_product(f"/read/{key}", raw, product, stale=stale, stale_reason=stale_reason)
 
     return router

@@ -1,0 +1,16 @@
+[Unit]
+Description=Neckline Qihuo V2 silent post-market JSON sync (20:15-20:35 CST, zero APNs push)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python -m neckline.qihuo.cli sync --db /opt/neckline/data/v4.db
+TimeoutStartSec=25min
+MemoryHigh=256M
+MemoryMax=384M

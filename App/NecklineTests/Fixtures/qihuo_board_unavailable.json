@@ -1,0 +1,6 @@
+{
+  "detail": {
+    "reason": "qihuo_unsupported_schema",
+    "message": "Qihuo 数据协议版本暂不支持（收到 schema 4，当前仅支持 schema 3）。"
+  }
+}

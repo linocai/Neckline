@@ -1,5 +1,5 @@
-// 根视图。iOS 底部三个标签：K10、KX、设置，K10 里再分「最新」和「历史」；
-// macOS 侧栏分 K10 和 KX，K10 保持两栏，设置放在系统设置窗口。
+// 根视图。iOS 底部四个标签：K10、KX、Q 期货、设置，K10 里再分「最新」和「历史」；
+// macOS 侧栏分 K10、KX 与 Q 期货，K10 保持两栏，设置放在系统设置窗口。
 
 import SwiftUI
 #if DEBUG && os(macOS)
@@ -9,6 +9,7 @@ import AppKit
 struct MorningRootView: View {
     @Bindable var model: MorningModel
     @Bindable var kx: KXBoardModel
+    @Bindable var qihuo: QihuoBoardModel
     @ObservedObject var config: AppConfig
     @Environment(\.scenePhase) private var scenePhase
     #if DEBUG
@@ -22,28 +23,42 @@ struct MorningRootView: View {
             .onChange(of: config.apiToken) { _, _ in
                 model.connectionInputsChanged()
                 kx.connectionInputsChanged()
+                qihuo.connectionInputsChanged()
             }
             .onChange(of: config.baseURLOverride) { _, _ in
                 model.connectionInputsChanged()
                 kx.connectionInputsChanged()
+                qihuo.connectionInputsChanged()
             }
             .onChange(of: config.environment) { _, _ in
+                let qihuoChanged = qihuo.invalidateForConnectionChange()
                 Task {
-                    await model.handleConnectionChange()
-                    await kx.handleConnectionChange()
+                    async let m: Void = model.handleConnectionChange()
+                    async let k: Void = kx.handleConnectionChange()
+                    async let q: Void = {
+                        if qihuoChanged && model.tab == .qihuo {
+                            await qihuo.loadIfNeeded()
+                        }
+                    }()
+                    _ = await (m, k, q)
                 }
             }
-            // KX V4 盘中彻底静默：无自动轮询，首次进入、改连接或跨过 20:00 后重进按需取一次盘后快照。
+            // KX V4 与 Q 期货盘中均彻底静默：无自动轮询，首次进入、改连接或跨过晚间整理节点后重进按需取一次快照。
             .onChange(of: model.tab) { _, tab in
                 kx.setVisible(tab == .kx)
+                qihuo.setVisible(tab == .qihuo)
                 if tab == .kx {
                     Task { await kx.loadIfNeeded() }
+                } else if tab == .qihuo {
+                    Task { await qihuo.loadIfNeeded() }
                 }
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
                 if model.tab == .kx {
                     Task { await kx.loadIfNeeded() }
+                } else if model.tab == .qihuo {
+                    Task { await qihuo.loadIfNeeded() }
                 }
                 #if os(iOS)
                 Task { await model.retryFailedDeviceRegistration() }
@@ -51,8 +66,11 @@ struct MorningRootView: View {
             }
             .onAppear {
                 kx.setVisible(model.tab == .kx)
+                qihuo.setVisible(model.tab == .qihuo)
                 if model.tab == .kx {
                     Task { await kx.loadIfNeeded() }
+                } else if model.tab == .qihuo {
+                    Task { await qihuo.loadIfNeeded() }
                 }
             }
             #if DEBUG
@@ -72,11 +90,14 @@ struct MorningRootView: View {
             List(selection: sidebarSelection) {
                 Label("K10", systemImage: "sun.max").tag(MorningTab.k10)
                 Label("KX", systemImage: "tablecells").tag(MorningTab.kx)
+                Label("Q 期货", systemImage: "chart.bar.doc.horizontal").tag(MorningTab.qihuo)
             }
             .navigationSplitViewColumnWidth(min: 140, ideal: 160, max: 220)
         } detail: {
             if model.tab == .kx {
                 KXBoardView(kx: kx, openSettings: { MorningChrome.openSettings(model) })
+            } else if model.tab == .qihuo {
+                QihuoBoardView(qihuo: qihuo, openSettings: { MorningChrome.openSettings(model) })
             } else {
                 k10Panes
             }
@@ -93,6 +114,8 @@ struct MorningRootView: View {
                     Task {
                         if model.tab == .kx {
                             await kx.refresh()
+                        } else if model.tab == .qihuo {
+                            await qihuo.refresh()
                         } else {
                             await model.reload(model.focus)
                             await model.reloadHistory()
@@ -109,6 +132,7 @@ struct MorningRootView: View {
         TabView(selection: $model.tab) {
             k10Tab
             kxTab
+            qihuoTab
             settingsTab
         }
         #endif
@@ -125,6 +149,12 @@ struct MorningRootView: View {
         KXBoardView(kx: kx, openSettings: { MorningChrome.openSettings(model) })
             .tabItem { Label("KX", systemImage: "tablecells") }
             .tag(MorningTab.kx)
+    }
+
+    private var qihuoTab: some View {
+        QihuoBoardView(qihuo: qihuo, openSettings: { MorningChrome.openSettings(model) })
+            .tabItem { Label("Q 期货", systemImage: "chart.bar.doc.horizontal") }
+            .tag(MorningTab.qihuo)
     }
 
     private var settingsTab: some View {
@@ -188,7 +218,13 @@ struct MorningRootView: View {
     #if os(macOS)
     private var sidebarSelection: Binding<MorningTab?> {
         Binding(
-            get: { model.tab == .kx ? .kx : .k10 },
+            get: {
+                switch model.tab {
+                case .kx: .kx
+                case .qihuo: .qihuo
+                default: .k10
+                }
+            },
             set: { if let tab = $0 { model.tab = tab } }
         )
     }
@@ -315,6 +351,9 @@ struct MorningRootView: View {
         case "kx":
             model.tab = .kx
             await kx.refresh()
+        case "qihuo":
+            model.tab = .qihuo
+            await qihuo.refresh()
         case "settings":
             model.tab = .settings
             await runConnectionCheck()

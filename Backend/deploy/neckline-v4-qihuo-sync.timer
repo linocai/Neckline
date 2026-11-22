@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Neckline Qihuo V2 silent evening sync at Beijing 20:15 every day (non-trading days skip)
+
+[Timer]
+OnCalendar=*-*-* 20:15:00 Asia/Shanghai
+AccuracySec=30s
+Persistent=false
+Unit=neckline-v4-qihuo-sync.service
+
+[Install]
+WantedBy=timers.target

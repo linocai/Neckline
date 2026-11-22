@@ -23,7 +23,7 @@ from neckline.market.services import Services, use
 from neckline.market.tushare_daily import TuShareDaily
 from neckline.market.util import SHANGHAI
 from neckline.mcp.auth import password_digest
-from neckline.mcp.brief import BRIEF
+from neckline.mcp.brief import BRIEF, MCP_INSTRUCTIONS
 from neckline.morning import db
 from neckline.morning.report import load_config
 from neckline.morning.stock_pool import rows_from_seed, store_rows
@@ -43,7 +43,10 @@ API_TOKEN = "a" * 16
 READ_KEY = "c" * 24
 VERIFIER = "v" * 64
 NOW = datetime(2026, 10, 16, 10, 6, tzinfo=SHANGHAI)
-TOOLS = {"read_brief", "get_morning_report", "get_document", "check_pool", "get_stock_overview"}
+TOOLS = {
+    "read_brief", "get_morning_report", "get_document", "check_pool", "get_stock_overview",
+    "read_qihuo_rules", "get_qihuo_overview", "get_qihuo_product",
+}
 
 
 def _frame(fields, rows):
@@ -287,7 +290,10 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
     init = _rpc(test_client, headers, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
                                                     "clientInfo": {"name": "test", "version": "1"}})
     assert init.status_code == 200, init.text
-    assert init.json()["result"]["instructions"] == BRIEF
+    instructions = init.json()["result"]["instructions"]
+    assert instructions == MCP_INSTRUCTIONS
+    assert BRIEF in instructions
+    assert "Q 期货" in instructions and "绝不限制" in instructions and "联网搜索" in instructions
     listing = _rpc(test_client, headers, "tools/list", identifier=2)
     tools = listing.json()["result"]["tools"]
     assert {item["name"] for item in tools} == TOOLS
@@ -297,7 +303,10 @@ def test_oauth_pkce_and_mcp_tools_round_trip(browser, caplog):
         assert hints.get("destructiveHint", hints.get("destructive_hint")) is False
     titles = {item["name"]: item.get("title") for item in tools}
     assert titles == {"read_brief": "读取简要提示词", "get_morning_report": "读取晨报", "get_document": "读取原文",
-                      "check_pool": "查询股票池", "get_stock_overview": "读取单票技术面概览"}
+                      "check_pool": "查询股票池", "get_stock_overview": "读取单票技术面概览",
+                      "read_qihuo_rules": "读取 Q1 期货规则与提示词",
+                      "get_qihuo_overview": "读取 Q 期货启用池总览",
+                      "get_qihuo_product": "读取单个启用品种完整档案与近15日记录"}
     morning_tool = next(item for item in tools if item["name"] == "get_morning_report")
     description = morning_tool.get("description") or ""
     assert "四个问题" in description and "不推" in description and "evaluations" not in description

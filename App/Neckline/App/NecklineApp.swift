@@ -13,6 +13,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
     @StateObject private var config: AppConfig
     @State private var model: MorningModel
     @State private var kx: KXBoardModel
+    @State private var qihuo: QihuoBoardModel
     #if os(iOS)
     @UIApplicationDelegateAdaptor(MorningPush.self) private var push
     #endif
@@ -22,17 +23,19 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         let config = Self.makeConfig(defaults: defaults)
         let model = MorningModel(config: config, defaults: defaults)
         let kx = KXBoardModel(config: config)
+        let qihuo = QihuoBoardModel(config: config)
         #if DEBUG
         Self.applyQALaunchState(to: model)
         #endif
         _config = StateObject(wrappedValue: config)
         _model = State(initialValue: model)
         _kx = State(initialValue: kx)
+        _qihuo = State(initialValue: qihuo)
     }
 
     var body: some Scene {
         WindowGroup {
-            MorningRootView(model: model, kx: kx, config: config)
+            MorningRootView(model: model, kx: kx, qihuo: qihuo, config: config)
                 .qaAppearance()
                 .task { await launch() }
         }
@@ -111,6 +114,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         switch ProcessInfo.processInfo.environment["NK_QA_ROUTE"] {
         case "history": model.k10Section = .history
         case "kx": model.tab = .kx
+        case "qihuo": model.tab = .qihuo
         case "settings": model.tab = .settings
         default: break
         }
@@ -133,11 +137,13 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
               path.hasSuffix(".png") else { return }
         if model.tab == .kx {
             await kx.loadIfNeeded()
+        } else if model.tab == .qihuo {
+            await qihuo.loadIfNeeded()
         } else {
             await model.reload(.latest)
             await model.reloadHistory()
         }
-        let root = MorningRootView(model: model, kx: kx, config: config)
+        let root = MorningRootView(model: model, kx: kx, qihuo: qihuo, config: config)
             .qaAppearance()
             .frame(width: 1280, height: 860)
         let view = NSHostingView(rootView: root)

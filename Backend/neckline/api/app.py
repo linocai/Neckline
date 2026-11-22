@@ -14,9 +14,11 @@ from neckline.mcp.gateway import MCP_ROUTES, gateway
 from neckline.mcp.status import set_mcp_serving
 from neckline.morning.api import create_router as create_morning_router
 from neckline.morning.web import create_router as create_read_router
+from neckline.qihuo.api import create_router as create_qihuo_router
+from neckline.qihuo.services import close_default_services as close_qihuo_services
 
-VERSION = "v4.5.0"
-RELEASE_SET = "v4.5.0-b134"
+VERSION = "v4.6.0"
+RELEASE_SET = "v4.6.0-b135"
 
 
 @asynccontextmanager
@@ -39,6 +41,7 @@ async def lifespan(app: FastAPI):
     finally:
         app.state.mcp_bundle = None
         await close_kx_services()
+        await close_qihuo_services()
         await close_default_services()
 
 
@@ -50,6 +53,7 @@ app.include_router(create_morning_router(
     release_set=RELEASE_SET,
 ))
 app.include_router(create_kx_router(require_token_dependency=require_token))
+app.include_router(create_qihuo_router(require_token_dependency=require_token))
 app.include_router(create_read_router())
 for _index, (_path, _methods) in enumerate(MCP_ROUTES):
     app.router.routes.append(Route(

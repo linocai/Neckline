@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from neckline.kx import settings as kx_settings
 from neckline.mcp.status import mcp_serving
+from neckline.qihuo import settings as qihuo_settings
 from neckline.screening.text import plain_text
 
 from . import db
@@ -131,7 +132,8 @@ def create_router(*, require_token_dependency: Callable[..., Any],
                 "mcp": mcp_serving(),
                 "tushare": bool((os.environ.get("TUSHARE_TOKEN") or "").strip()),
                 "mairui": bool((os.environ.get("MAIRUI_LICENCE") or "").strip()),
-                "kxBoard": kx_settings.read_key() is not None}
+                "kxBoard": kx_settings.read_key() is not None,
+                "qihuoBoard": qihuo_settings.is_configured()}
         if version is not None:
             body["version"] = version
         if release_set is not None:

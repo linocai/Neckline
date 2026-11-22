@@ -128,6 +128,28 @@ enum NKKX {
     static let segmentShadow = Color.black.opacity(0.12)
 }
 
+/// Q 期货看板颜色（严格对照已确认 HTML 样图浅/深色规范）。
+enum NKQihuo {
+    static let page = Color(light: 0xF5F6F8, dark: 0x1C1C1E)
+    static let card = Color(light: 0xFFFFFF, dark: 0x2C2C2E)
+    static let cardSubtle = Color(light: 0xFAFAFC, dark: 0x242426)
+    static let textPrimary = Color(light: 0x1C1C1E, dark: 0xF5F5F7)
+    static let textSecondary = Color(light: 0x6E6E73, dark: 0x98989D)
+    static let textTertiary = Color(light: 0x76767B, dark: 0x8E8E93)
+    static let hairline = Color(light: 0xE5E5EA, dark: 0x38383A)
+    static let accent = Color(light: 0x0754E9, dark: 0x4C8DFF)
+    static let accentFill = Color(light: 0x0754E9, lightAlpha: 0.08, dark: 0x4C8DFF, darkAlpha: 0.15)
+    static let openBorder = Color(light: 0x0754E9, lightAlpha: 0.28, dark: 0x4C8DFF, darkAlpha: 0.38)
+    static let tagFill = Color(light: 0xF2F2F7, dark: 0x3A3A3C)
+    static let up = Color(light: 0xE0312B, dark: 0xFF5A4E)
+    static let upFill = Color(light: 0xE0312B, lightAlpha: 0.09, dark: 0xFF5A4E, darkAlpha: 0.15)
+    static let down = Color(light: 0x139A5B, dark: 0x30C67C)
+    static let downFill = Color(light: 0x139A5B, lightAlpha: 0.09, dark: 0x30C67C, darkAlpha: 0.15)
+    static let flat = Color(light: 0x8E8E93, dark: 0x8E8E93)
+    static let amberInk = Color(light: 0x6B3E00, dark: 0xFFE7A3)
+    static let amberBackground = Color(light: 0xFF9F0A, lightAlpha: 0.14, dark: 0xFF9F0A, darkAlpha: 0.22)
+}
+
 /// 分段控件字号（K10 最新/历史分段控件在用；V3 KX 退役字号已清理）。
 enum NKKXFont {
     static let segment = Font.system(size: 13)

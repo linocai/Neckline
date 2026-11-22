@@ -3,10 +3,11 @@
 import Foundation
 import Observation
 
-/// 顶层分区。iOS 是底部三个标签；macOS 侧栏只有 K10 和 KX。
+/// 顶层分区。iOS 是底部四个标签；macOS 侧栏是 K10、KX、Q 期货。
 enum MorningTab: Hashable {
     case k10
     case kx
+    case qihuo
     case settings
 }
 

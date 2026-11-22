@@ -33,6 +33,8 @@ FIXTURES = Path(__file__).resolve().parents[2] / "App" / "NecklineTests" / "Fixt
 KX_BACKEND_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KX_COPIED = {"kx_board_v4.json", "kx_board_v4_partial.json", "kx_board_v4_stale.json",
              "kx_board_v4_elim.json", "kx_board_unavailable.json"}
+QIHUO_COPIED = {"qihuo_board_v3.json", "qihuo_board_v3_warn.json", "qihuo_board_v3_stale.json",
+                "qihuo_board_unavailable.json"}
 KX_APP_ONLY: set[str] = set()
 # 两条线的晨报样例由板块线测试经隔离库真实入口产出（Backend/tests/fixtures），App 原样复制。
 SECTOR_COPIED = {"report-v7-two-lines.json"}
@@ -309,7 +311,7 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
 
     health = json.loads(bodies["health.json"])
     assert health["mcp"] is False and health["tushare"] is False and health["mairui"] is False
-    for key in ("mcp", "tushare", "mairui", "kxBoard"):
+    for key in ("mcp", "tushare", "mairui", "kxBoard", "qihuoBoard"):
         health.pop(key)
     bodies["health.json"] = json.dumps(health, ensure_ascii=False).encode()
 
@@ -326,14 +328,14 @@ def test_v4_client_fixtures_match_isolated_api(tmp_path, monkeypatch):
         for name, raw in bodies.items():
             (FIXTURES / name).write_text(pretty(raw), encoding="utf-8")
         for path in FIXTURES.glob("*.json"):
-            if path.name not in bodies and path.name not in KX_COPIED | KX_APP_ONLY | SECTOR_COPIED:
+            if path.name not in bodies and path.name not in KX_COPIED | QIHUO_COPIED | KX_APP_ONLY | SECTOR_COPIED:
                 path.unlink()
 
     missing = [name for name in bodies if not (FIXTURES / name).is_file()]
     assert not missing, missing
     for name, raw in bodies.items():
         assert canon((FIXTURES / name).read_text(encoding="utf-8")) == canon(raw), name
-    for name in KX_COPIED | SECTOR_COPIED:
+    for name in KX_COPIED | QIHUO_COPIED | SECTOR_COPIED:
         assert canon((FIXTURES / name).read_text(encoding="utf-8")) == canon(
             (KX_BACKEND_FIXTURES / name).read_text(encoding="utf-8")), name
-    assert {path.name for path in FIXTURES.glob("*.json")} == set(bodies) | KX_COPIED | KX_APP_ONLY | SECTOR_COPIED
+    assert {path.name for path in FIXTURES.glob("*.json")} == set(bodies) | KX_COPIED | QIHUO_COPIED | KX_APP_ONLY | SECTOR_COPIED

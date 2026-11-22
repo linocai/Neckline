@@ -11,8 +11,9 @@ market_daily（创业板日线）、sector_events（板块线事件）。
 sector_events 增加 routes（JSON 数组）。新建库直接带这一列；
 从版本 6 升上来时补上这一列。已经是版本 7 但还没有这一列的（第一轮库）也补上，其余行不动。
 版本 8 只加表：limit_ups、limit_up_days（涨停）、sector_members_all（同花顺概念的全 A 成分）。
-版本 9 只加表：kx_board_cache（KX V4 盘后看板快照缓存）、kx_push_log（KX 20:00 盘后推送去重记录）。
-init_schema 把版本 1～8 的库在同一个事务里升到版本 9，升级失败整体回滚。
+版本 9 只加表：kx_board_cache（KX V4 盘后看板快照缓存）、kx_watch_state、kx_push_log（KX 20:00 盘后推送去重记录）。
+版本 10 只加表：qihuo_bundle_cache（Qihuo V2 只读数据包持久缓存，无推送表）。
+init_schema 把版本 1～9 的库在同一个事务里升到版本 10，升级失败整体回滚。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import os
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 from urllib.parse import unquote
@@ -31,8 +32,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 9
-_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6, 7, 8)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 10
+_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6, 7, 8, 9)  # 这些版本的库可由 init_schema 原地升级到当前版本
 # 版本 5 退役的三张表。索引随表一起删掉。
 _RETIRED_KX_TABLES = ("kx_daily_stats", "kx_picks", "kx_pool")
 
@@ -277,6 +278,25 @@ CREATE TABLE IF NOT EXISTS kx_push_log (
 );
 """
 
+# 版本 10 只加表：Qihuo V2 只读数据包持久缓存（零推送，不建推送表）。降到版本 9 时保留不删。
+V10_DDL = """
+CREATE TABLE IF NOT EXISTS qihuo_bundle_cache (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  schema_version INTEGER NOT NULL,
+  bundle_version TEXT NOT NULL,
+  as_of_date TEXT,
+  generated_at TEXT NOT NULL,
+  etag TEXT,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  last_error TEXT,
+  last_error_reason TEXT,
+  last_error_at TEXT,
+  schema_blocked_error TEXT,
+  schema_blocked_at TEXT
+);
+"""
+
 
 class NotReady(RuntimeError):
     """库不存在或不是 V4 晨报库。"""
@@ -317,16 +337,34 @@ def init_schema(path: Path) -> None:
             raise NotReady(f"{path} 不是 V4 晨报库（application_id={app_id}, user_version={version}）")
         conn.execute("PRAGMA journal_mode=WAL")
         if tables and version == SCHEMA_VERSION:
-            _ensure_sector_routes(conn)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for statement in _statements(V10_DDL):
+                    conn.execute(statement)
+                _ensure_sector_routes(conn)
+                _ensure_qihuo_cache_columns(conn)
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for statement in _statements(DDL) + _statements(V4_DDL) + _statements(V6_DDL) + _statements(V8_DDL) + _statements(V9_DDL):
+            for statement in (
+                _statements(DDL)
+                + _statements(V4_DDL)
+                + _statements(V6_DDL)
+                + _statements(V8_DDL)
+                + _statements(V9_DDL)
+                + _statements(V10_DDL)
+            ):
                 conn.execute(statement)
             for name in _RETIRED_KX_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
             conn.execute("DROP TABLE IF EXISTS market_daily")
             _ensure_sector_routes(conn)
+            _ensure_qihuo_cache_columns(conn)
             conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.execute("COMMIT")
@@ -343,6 +381,24 @@ def _ensure_sector_routes(conn: sqlite3.Connection) -> None:
     rows = conn.execute("PRAGMA table_info(sector_events)").fetchall()
     if rows and not any(row[1] == "routes" for row in rows):
         conn.execute("ALTER TABLE sector_events ADD COLUMN routes TEXT NOT NULL DEFAULT '[]'")
+
+
+def _ensure_qihuo_cache_columns(conn: sqlite3.Connection) -> None:
+    """幂等补齐 qihuo_bundle_cache 在彩排或升降级旧表形态中可能缺失的列，并把已有协议不兼容记录回填到独立阻断列。"""
+    rows = conn.execute("PRAGMA table_info(qihuo_bundle_cache)").fetchall()
+    if not rows:
+        return
+    cols = {row[1] for row in rows}
+    for name in ("last_error_reason", "schema_blocked_error", "schema_blocked_at"):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE qihuo_bundle_cache ADD COLUMN {name} TEXT")
+    conn.execute(
+        """UPDATE qihuo_bundle_cache
+              SET schema_blocked_error = COALESCE(last_error, 'Qihuo 数据协议版本暂不支持，未强行解析。'),
+                  schema_blocked_at = COALESCE(last_error_at, fetched_at)
+            WHERE last_error_reason = 'qihuo_unsupported_schema'
+              AND schema_blocked_error IS NULL"""
+    )
 
 
 def _check(conn: sqlite3.Connection, path: Path) -> None:
@@ -1241,3 +1297,256 @@ def log_kx_push(conn: sqlite3.Connection, *, trade_date: str, kind: str, board_v
         "INSERT OR REPLACE INTO kx_push_log VALUES (?,?,?,?,?,?,?)",
         (trade_date, kind, board_version, token, state, detail, utc(at)),
     )
+
+
+# ------------------------------------------------------------------ Q 期货只读数据包缓存（v10，零推送）
+
+def _norm_iso_date(value: Any) -> str:
+    """规范化 ISO 日期（YYYY-MM-DD）；非字符串或无效日期返回空串，绝不凭字典序压过合法日期。"""
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip()
+    if len(cleaned) != 10 or cleaned[4] != "-" or cleaned[7] != "-":
+        return ""
+    try:
+        date.fromisoformat(cleaned)
+    except ValueError:
+        return ""
+    return cleaned
+
+
+def _strict_iso_ts_key(value: Any) -> str:
+    """严格解析完整 ISO-8601 时间戳（必须含日期与时间部分），保留完整微秒精度，无效值返回空串。"""
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip()
+    if len(cleaned) < 16 or ("T" not in cleaned and " " not in cleaned):
+        return ""
+    try:
+        dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _qihuo_row_semantically_valid(as_of_date: Any, generated_at: Any, bundle_version: Any, raw: Any) -> bool:
+    """判断缓存行在日期/时间戳/结构语义上是否有效；无效行必须被下一次合法 v3 包无条件替换。"""
+    if not isinstance(raw, Mapping):
+        return False
+    if not isinstance(bundle_version, str) or not bundle_version.strip():
+        return False
+    if not _strict_iso_ts_key(generated_at):
+        return False
+    if as_of_date is not None and not _norm_iso_date(as_of_date):
+        return False
+    raw_gen = raw.get("generated_at")
+    if not _strict_iso_ts_key(raw_gen):
+        return False
+    raw_as_of = raw.get("as_of_date")
+    if raw_as_of is not None and not _norm_iso_date(raw_as_of):
+        return False
+    collect = raw.get("latest_collect")
+    if isinstance(collect, Mapping):
+        if collect.get("trade_date") is not None and not _norm_iso_date(collect.get("trade_date")):
+            return False
+        if collect.get("started_at") is not None and not _strict_iso_ts_key(collect.get("started_at")):
+            return False
+        if collect.get("finished_at") is not None and not _strict_iso_ts_key(collect.get("finished_at")):
+            return False
+    return True
+
+
+def _qihuo_bundle_rank(as_of_date: Any, generated_at: Any, bundle_version: Any,
+                       raw: Any) -> tuple[int, str, str, str, int, str, str]:
+    """单调比较两份 Qihuo schema 3 数据包：
+    语义有效包（rank[0]=1）永远胜过损坏/畸形旧记录（rank[0]=0）；
+    有效包内仅使用严格规范化的日期与时间戳进行比较。
+    """
+    is_valid = int(_qihuo_row_semantically_valid(as_of_date, generated_at, bundle_version, raw))
+    gen_key = _strict_iso_ts_key(generated_at)
+    norm_as_of = _norm_iso_date(as_of_date)
+    collect = raw.get("latest_collect") if isinstance(raw, Mapping) else None
+    c_date = _norm_iso_date(collect.get("trade_date")) if isinstance(collect, Mapping) else ""
+    c_fin = _strict_iso_ts_key(collect.get("finished_at")) if isinstance(collect, Mapping) else ""
+    raw_run_id = collect.get("run_id") if isinstance(collect, Mapping) else None
+    c_run_id = raw_run_id if isinstance(raw_run_id, int) and not isinstance(raw_run_id, bool) else 0
+    return (
+        is_valid,
+        norm_as_of,
+        c_date,
+        c_fin,
+        c_run_id,
+        gen_key,
+        bundle_version if isinstance(bundle_version, str) else "",
+    )
+
+
+def get_qihuo_bundle_cache(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM qihuo_bundle_cache WHERE id=1").fetchone()
+    if row is None:
+        return None
+    keys = row.keys()
+    raw_json = row["raw_json"]
+    corrupted = False
+    raw_obj: dict[str, Any] | None = None
+    if isinstance(raw_json, str) and raw_json.strip():
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                raw_obj = parsed
+            else:
+                corrupted = True
+        except ValueError:
+            corrupted = True
+    else:
+        corrupted = True
+    return {
+        "schemaVersion": row["schema_version"],
+        "bundleVersion": row["bundle_version"],
+        "asOfDate": row["as_of_date"],
+        "generatedAt": row["generated_at"],
+        "etag": row["etag"],
+        "raw": raw_obj,
+        "corrupted": corrupted,
+        "fetchedAt": row["fetched_at"],
+        "lastError": row["last_error"],
+        "lastErrorReason": row["last_error_reason"] if "last_error_reason" in keys else None,
+        "lastErrorAt": row["last_error_at"],
+        "schemaBlockedError": row["schema_blocked_error"] if "schema_blocked_error" in keys else None,
+        "schemaBlockedAt": row["schema_blocked_at"] if "schema_blocked_at" in keys else None,
+    }
+
+
+_UNSET_BLOCK = object()
+
+
+def save_qihuo_bundle_cache(
+    conn: sqlite3.Connection,
+    *,
+    schema_version: int,
+    bundle_version: str,
+    as_of_date: str | None,
+    generated_at: str,
+    etag: str | None,
+    raw: Mapping[str, Any],
+    fetched_at: datetime,
+    observed_blocked_at: object = _UNSET_BLOCK,
+    validate_existing: Any = None,
+) -> dict[str, Any]:
+    """在 BEGIN IMMEDIATE 事务内单调落库 Qihuo 数据包：
+    - 并发保护：若传入 observed_blocked_at 且事务内发现较新请求已写下新的 schema_blocked_at，
+      绝不让迟到的旧 v3 响应清掉较新的协议阻断；
+    - 损坏或未通过契约校验（validate_existing）的旧行直接被有效新包覆盖；
+    - 合法新包（new_rank >= old_rank）落库并清除全部错误与协议阻断。
+    """
+    existing = get_qihuo_bundle_cache(conn)
+    if existing is not None:
+        if (
+            observed_blocked_at is not _UNSET_BLOCK
+            and existing.get("schemaBlockedError")
+            and existing.get("schemaBlockedAt") != observed_blocked_at
+        ):
+            return existing
+        existing_ok = (not existing.get("corrupted")) and (existing.get("raw") is not None)
+        if existing_ok and validate_existing is not None:
+            existing_ok = bool(validate_existing(existing["raw"]))
+        if existing_ok:
+            old_rank = _qihuo_bundle_rank(
+                existing["asOfDate"], existing["generatedAt"], existing["bundleVersion"], existing["raw"],
+            )
+            new_rank = _qihuo_bundle_rank(as_of_date, generated_at, bundle_version, raw)
+            if old_rank[0] == 1 and new_rank < old_rank:
+                return existing
+
+    fetched_iso = utc(fetched_at)
+    serialized = json.dumps(dict(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    conn.execute(
+        """INSERT INTO qihuo_bundle_cache(
+             id, schema_version, bundle_version, as_of_date, generated_at, etag,
+             raw_json, fetched_at, last_error, last_error_reason, last_error_at,
+             schema_blocked_error, schema_blocked_at)
+           VALUES (1,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)
+           ON CONFLICT(id) DO UPDATE SET
+             schema_version=excluded.schema_version,
+             bundle_version=excluded.bundle_version,
+             as_of_date=excluded.as_of_date,
+             generated_at=excluded.generated_at,
+             etag=excluded.etag,
+             raw_json=excluded.raw_json,
+             fetched_at=excluded.fetched_at,
+             last_error=NULL,
+             last_error_reason=NULL,
+             last_error_at=NULL,
+             schema_blocked_error=NULL,
+             schema_blocked_at=NULL""",
+        (schema_version, bundle_version, as_of_date, generated_at, etag, serialized, fetched_iso),
+    )
+    return get_qihuo_bundle_cache(conn)  # type: ignore[return-value]
+
+
+def touch_qihuo_bundle_cache(
+    conn: sqlite3.Connection,
+    *,
+    expected_etag: str | None,
+    etag: str | None,
+    fetched_at: datetime,
+) -> dict[str, Any] | None:
+    """上游返回 HTTP 304 时，仅当未处于协议阻断且库内仍是发出请求时的 ETag 才刷新校验时间并清除普通告警；
+    协议阻断期间绝不借 304 解除阻断。"""
+    existing = get_qihuo_bundle_cache(conn)
+    if existing is None or existing.get("corrupted") or existing.get("raw") is None:
+        return None
+    if existing.get("schemaBlockedError"):
+        return None
+    if existing.get("etag") != expected_etag:
+        return existing
+    conn.execute(
+        """UPDATE qihuo_bundle_cache
+           SET etag=COALESCE(?, etag), fetched_at=?, last_error=NULL, last_error_reason=NULL, last_error_at=NULL
+           WHERE id=1 AND etag IS ? AND schema_blocked_error IS NULL""",
+        (etag, utc(fetched_at), expected_etag),
+    )
+    return get_qihuo_bundle_cache(conn)
+
+
+def record_qihuo_bundle_error(
+    conn: sqlite3.Connection,
+    *,
+    error: str,
+    at: datetime,
+    reason: str = "qihuo_unavailable",
+) -> None:
+    """记录最近一次同步错误：协议不兼容写入独立的 schema_blocked_error（含微秒代次），普通网络/超时错误绝不覆盖或解除它。"""
+    at_iso = utc(at)
+    block_iso = at.astimezone(timezone.utc).isoformat(timespec="microseconds")
+    is_schema = reason == "qihuo_unsupported_schema"
+    if is_schema:
+        conn.execute(
+            """INSERT INTO qihuo_bundle_cache(
+                 id, schema_version, bundle_version, as_of_date, generated_at, etag,
+                 raw_json, fetched_at, last_error, last_error_reason, last_error_at,
+                 schema_blocked_error, schema_blocked_at)
+               VALUES (1, 0, '', NULL, '', NULL, '', ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 last_error=excluded.last_error,
+                 last_error_reason=excluded.last_error_reason,
+                 last_error_at=excluded.last_error_at,
+                 schema_blocked_error=excluded.schema_blocked_error,
+                 schema_blocked_at=excluded.schema_blocked_at""",
+            (at_iso, error[:200], reason[:80], at_iso, error[:200], block_iso),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO qihuo_bundle_cache(
+                 id, schema_version, bundle_version, as_of_date, generated_at, etag,
+                 raw_json, fetched_at, last_error, last_error_reason, last_error_at,
+                 schema_blocked_error, schema_blocked_at)
+               VALUES (1, 0, '', NULL, '', NULL, '', ?, ?, ?, ?, NULL, NULL)
+               ON CONFLICT(id) DO UPDATE SET
+                 last_error=excluded.last_error,
+                 last_error_reason=excluded.last_error_reason,
+                 last_error_at=excluded.last_error_at""",
+            (at_iso, error[:200], reason[:80], at_iso),
+        )

@@ -101,7 +101,7 @@ class OwnerAuth:
                 return HTMLResponse("连接请求已过期，请回到对话客户端重新连接。", status_code=400)
             html = f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连接 Neckline</title>
 <style>body{{font:17px system-ui;max-width:420px;margin:12vh auto;padding:24px;color:#182438;background:#f6f8fc}}main{{background:white;padding:28px;border-radius:16px}}input,button{{box-sizing:border-box;width:100%;padding:14px;margin-top:14px;font:inherit;border:1px solid #ccd3df;border-radius:8px}}button{{background:#9a3412;color:white;border:0}}p{{line-height:1.65;color:#526071}}</style>
-<main><h1>连接 Neckline</h1><p>允许这个对话客户端读取晨报和 K10 股票数据。这里只提供数据，不执行交易。</p>
+<main><h1>连接 Neckline</h1><p>允许这个对话客户端读取晨报、K10 股票与 Q 期货客观数据。这里只提供数据，不执行交易。</p>
 <form method="post" action="/login"><input type="hidden" name="request" value="{escape(pending, quote=True)}"><input type="hidden" name="csrf" value="{escape(item['csrf'], quote=True)}">
 <label for="password">输入你的 Neckline 连接口令</label><input id="password" type="password" name="password" required maxlength="128" autocomplete="current-password"><button type="submit">授权连接</button></form>
 <p>这里使用部署时生成的连接口令，不用填写行情证书。</p></main></html>'''

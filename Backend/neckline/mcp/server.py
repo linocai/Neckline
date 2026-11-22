@@ -1,4 +1,4 @@
-"""只读 MCP。工具只有简要提示词、晨报、原文、股票池查询、单票概览。"""
+"""只读 MCP。工具涵盖 K10 晨报/股票池/单票概览，以及 Q 期货规则、启用池总览与单品种档案。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,10 +16,13 @@ import neckline
 from neckline.market.overview import overview
 from neckline.market.pool_query import assess
 from neckline.mcp.auth import SCOPE, OwnerAuth
-from neckline.mcp.brief import BRIEF
+from neckline.mcp.brief import BRIEF, MCP_INSTRUCTIONS
 from neckline.mcp.settings import McpSettings, load_mcp_settings
 from neckline.morning import db
 from neckline.morning.api import document_out, report_out, v4_db_path
+from neckline.qihuo import services as qihuo_services
+from neckline.qihuo.board import QihuoUnavailable, load_bundle as load_qihuo_bundle
+from neckline.qihuo.project import project_mcp_overview, project_mcp_product, project_mcp_rules
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
@@ -65,13 +68,29 @@ def _document(document_id: str) -> dict:
     return document_out(document)
 
 
+async def _load_qihuo() -> tuple[dict[str, Any] | None, bool, str | None, dict[str, Any] | None]:
+    path = v4_db_path()
+    if path is None:
+        return None, False, None, {"status": "unavailable", "message": "数据缓存库还没配置。"}
+    try:
+        with db.read(path):
+            pass
+    except db.NotReady:
+        return None, False, None, {"status": "unavailable", "message": "数据缓存库还没准备好。"}
+    try:
+        raw, _fetched_at, stale, stale_reason = await load_qihuo_bundle(qihuo_services.current(), db_path=path)
+    except QihuoUnavailable as error:
+        return None, False, None, {"status": "unavailable", "reason": error.reason, "message": error.message}
+    return raw, stale, stale_reason, None
+
+
 def _build(settings: McpSettings, limiter) -> McpBundle:
     auth = OwnerAuth(settings)
     server = MCPServer(
         name="neckline",
         title="Neckline",
         version=neckline.__version__,
-        instructions=BRIEF,
+        instructions=MCP_INSTRUCTIONS,
         auth_server_provider=auth,
         auth=AuthSettings(
             issuer_url=settings.public_base,
@@ -112,6 +131,30 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
         except Exception:
             _LOG.warning("overview failed")
             return {"status": "unavailable", "message": "技术面概览没有取到。"}
+
+    @server.tool(name="read_qihuo_rules", title="读取 Q1 期货规则与提示词", annotations=_READ)
+    async def read_qihuo_rules() -> dict[str, Any]:
+        """读取国内期货（Q1）规则与对话提示词（同步自 Q1.md 第 7 章）。讨论国内期货时建议先读，作为讨论框架；涉及盘面或实时现货/资讯时，请结合你自身的网络搜索能力自由补充。只读。"""
+        raw, stale, stale_reason, err = await _load_qihuo()
+        if err is not None or raw is None:
+            return err or {"status": "unavailable", "message": "Q 期货数据暂不可用。"}
+        return project_mcp_rules(raw, stale=stale, stale_reason=stale_reason)
+
+    @server.tool(name="get_qihuo_overview", title="读取 Q 期货启用池总览", annotations=_READ)
+    async def get_qihuo_overview() -> dict[str, Any]:
+        """读取当前启用的 5 个化工期货品种（烧碱 SH、塑料 L、甲醇 MA、PP pp、乙二醇 eg）总览快照，含最新收盘/结算、仓单及日变、主力前 20 名会员净持仓、参考现货/基差（乙二醇暂留空）、近 15 日利多/利空消息数及采集状态，与 App 看板同源。本工具提供快速客观基线，请结合自身搜索能力补充最新实时资讯。只读。"""
+        raw, stale, stale_reason, err = await _load_qihuo()
+        if err is not None or raw is None:
+            return err or {"status": "unavailable", "message": "Q 期货数据暂不可用。"}
+        return project_mcp_overview(raw, stale=stale, stale_reason=stale_reason)
+
+    @server.tool(name="get_qihuo_product", title="读取单个启用品种完整档案与近15日记录", annotations=_READ)
+    async def get_qihuo_product(product: str) -> dict[str, Any]:
+        """按品种代码、slug 或中文名（如 SH、sh、烧碱、L、塑料、MA、甲醇、pp、PP、eg、乙二醇）读取单个启用品种的长期基本信息档案与近 15 天消息、数据、持仓明细（与 App 看板同源）。池外或已停用品种会明确提醒不在当前 5 品种启用池内。看板中未覆盖的实时现货/突发新闻可自由使用你的搜索能力补充。只读。"""
+        raw, stale, stale_reason, err = await _load_qihuo()
+        if err is not None or raw is None:
+            return err or {"status": "unavailable", "message": "Q 期货数据暂不可用。"}
+        return project_mcp_product(raw, product, stale=stale, stale_reason=stale_reason)
 
     @server.custom_route("/login", methods=["GET", "POST"], include_in_schema=False)
     async def login(request):
