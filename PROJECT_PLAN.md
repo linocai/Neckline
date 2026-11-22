@@ -41,7 +41,7 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 
 ## 当前状态（2026-11-22）
 
-- **现役生产后端 4.6.0 B135**（`e417b0a`，tag `v4.6.0-b135`，11/22 19:58 切换，库结构 v10）；`Qihuo` V2（schema 3）与 `KXMarketTool` V4（schema 5）均已在 HZ 上线。NB `/api/v4/health` 全绿，`neckline-v4-kx-watch.timer`（20:02 仅推 iPhone）与 `neckline-v4-qihuo-sync.timer`（20:15 静默零推送）均 `active + enabled`，`/api/v4/qihuo/board`（5 启用/11 停用）与 `/read/<访问码>/qihuo*` 均正常。详情见 [archive/v4.6.0-b135_execution.md](archive/v4.6.0-b135_execution.md)。
+- **现役生产后端 4.6.0 B136**（`ff7447f`，tag `v4.6.0-b136`，11/22 21:34 切换，库结构 v10）：相对 B135（`e417b0a`）放行 Gemini 自定义 MCP OAuth 回调与 `https://gemini.google.com` Origin；`Qihuo` V2（schema 3）与 `KXMarketTool` V4（schema 5）均在线，`neckline-v4-kx-watch.timer`（20:02 仅推 iPhone）与 `neckline-v4-qihuo-sync.timer`（20:15 静默零推送）均 `active + enabled`。详情见 [B135](archive/v4.6.0-b135_execution.md)、[B136](archive/v4.6.0-b136_execution.md)。
 - **K10 晨报已暂停（2026-11-22 20:09 用户定）**：已于 NB `systemctl disable --now` 停用 `neckline-v4-morning.timer`、`neckline-v4-finalize.timer`、`neckline-v4-collect.timer`（三者均 `inactive + disabled` 且 `Persistent=false`），不再调 DeepSeek、不再发 K10 推送、不报错不补跑；代码、单元文件与全部历史数据原样保留，主服务/APNs/KX/Q/MCP 不受影响。
 - **App 4.6.0 (135)**：macOS 已用 `ditto` 覆盖 `/Applications/Neckline.app`；iPhone 端 Release 构建签名通过待 Xcode 安装。
 - **MCP**：8 个只读工具（K10 5 + Q 期货 3：`read_qihuo_rules`、`get_qihuo_overview`、`get_qihuo_product`），鼓励对话 Agent 自由联网拓展。
@@ -108,4 +108,4 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 - 2026-11-16：仓库搬入 `trading` 工作区（`/Users/linotsai/Lino/trading/Neckline`），跨项目边界移到工作区 `../AGENTS.md`；搬迁前基线 tag `workspace-baseline-20261116`（未推送）。
 - 2026-11-17：统一双机规范，项目与工作区 `CLAUDE.md` 收口为 `AGENTS.md`。
 - 2026-11-22：4.5.0 B134 上线（KX V4 / schema 5，盘中彻底静默 + 20:00 仅推 iPhone，库结构 v9，`4a875b6`，tag `v4.5.0-b134`，Codex 审查五轮 0 P0 / 0 P1，App 4.5.0 (134)）；见 [B134 记录](archive/v4.5.0-b134_execution.md)。
-- 2026-11-22：4.6.0 B135 上线（新增 Q 期货板块：只读桥接 Qihuo V2 / schema 3，完全静默零推送，3 个 MCP 工具 + `/read/<访问码>/qihuo`，库结构 v10，`e417b0a`，tag `v4.6.0-b135`，App 4.6.0 (135)）；见 [B135 记录](archive/v4.6.0-b135_execution.md)。
+- 2026-11-22：4.6.0 B135 上线（新增 Q 期货板块：schema 3 零推送、3 个 MCP 工具 + `/read/<访问码>/qihuo`，库结构 v10，`e417b0a`，tag `v4.6.0-b135`，App 4.6.0 (135)），同日 20:09 暂停 K10 三只 timer，21:34 上线快修 B136（放行 Gemini MCP 回调，`ff7447f`，tag `v4.6.0-b136`）；见 [B135](archive/v4.6.0-b135_execution.md)、[B136](archive/v4.6.0-b136_execution.md)。
