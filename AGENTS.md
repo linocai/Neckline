@@ -8,6 +8,7 @@
 - 研究、回测、策略实验在同级的 `../whynotme`，生产代码永不 import 它。
 - 行情由 Neckline 自己取（2026-10-18 用户）：TuShare 用自己的 token；麦蕊借鉴同级的 `../KXMarketTool`（KX，HZ 云）的取数代码另接。不 import KX、不共用 KX 的 MCP 工具。
 - 和 KX 只有一处连接（4.3.0 起；4.5.0 B134 升为 V4）：Neckline 后端只读 KX 的总览 `/kx/read/<访问码>?format=json`（schema 5，访问码在 NB `/opt/neckline/.env` 的 `KX_READ_KEY`），校验 `schema_version == 5` 后单调落库 SQLite 持久缓存（盘中彻底静默，交易日 20:02～20:45 由 `neckline-v4-kx-watch.timer` 轮询检测新版本并仅推 iPhone）。不读 KX 健康检查，不为 KX 看板调麦蕊或 TuShare；推荐接收接口已于 4.3.0 退役。KX 的改动在 KX 项目里做，Neckline 不改 KX 代码。
+- 和 Qihuo 只有一处连接（4.6.0 B135 起）：Neckline 后端只读 Qihuo 的导出 `/qihuo/read/<访问码>`（schema 3，配置在 NB `/opt/neckline/.env` 的 `QIHUO_BASE_URL` 与 `QIHUO_READ_KEY`），校验 `schema_version == 3` 后落库 `qihuo_bundle_cache`（交易日 20:15～20:35 由 `neckline-v4-qihuo-sync.timer` 温和同步，**完全静默绝不发送任何 APNs 推送**），同源供 App `/api/v4/qihuo/board`、只读 MCP 与 `/read/<访问码>/qihuo` 使用。Qihuo 的改动在 Qihuo 项目里做，Neckline 不改 Qihuo 代码。
 - 根目录只放 `App/`、`Backend/`、`archive/`、`AGENTS.md`、`PROJECT_PLAN.md`、`README.md`。
 - `archive/` 只是历史证据，不是规则来源；需要追溯时按文件名定位后窄读。
 - 退役的功能直接删除：生产者、消费者、路由、配置、测试、存量数据一起删，不留兼容层。
@@ -52,9 +53,9 @@
 
 ## 发布
 
-- 对外版本号由用户决定（现为 4.5.0）；版本号不变的快修只递增 build。后端每次发布递增 `Backend/neckline/api/app.py` 的 `RELEASE_SET`；客户端只在 `App/` 有改动时才递增 build、重新构建与签名。两端一起改版本时用 `App/scripts/prepare_release_candidate.sh <版本> <build>`，它同步所有版本号并重新生成 Xcode 工程。
+- 对外版本号由用户决定（现为 4.6.0）；版本号不变的快修只递增 build。后端每次发布递增 `Backend/neckline/api/app.py` 的 `RELEASE_SET`；客户端只在 `App/` 有改动时才递增 build、重新构建与签名。两端一起改版本时用 `App/scripts/prepare_release_candidate.sh <版本> <build>`，它同步所有版本号并重新生成 Xcode 工程。
 - 后端发布只走 `Backend/scripts/release.py`：本地 `build --release <rs> --commit <sha> --out <暂存目录>` 从提交构建（不含工作区改动）；目录上传到 `/opt/neckline/releases/<rs>/` 后，在服务器以 root 跑 `release.py switch --release <rs> --previous <线上 rs>`。它会停服、做恢复点并还原校验、按清单增删替换文件并装 wheel，再把服务和 timer 恢复到切换前的状态并核对 health；任何一步失败自动回滚代码，生产库从不被覆盖。
-- 库结构有版本（B121 起为 2，B123 起为 3，B124 起为 4，B131 起为 5，B132 起为 6，B133 起为 8，B134 起为 9），manifest 记 `schemaVersion`，release.py 在切换时升级或降级（降级只许白名单里只加表的版本）。**往回切换一律用较新那一版的 release.py**，旧脚本不懂新库结构；先 `--check-only` 看 `schemaAction`。
+- 库结构有版本（B121 起为 2，B123 起为 3，B124 起为 4，B131 起为 5，B132 起为 6，B133 起为 8，B134 起为 9，B135 起为 10），manifest 记 `schemaVersion`，release.py 在切换时升级或降级（降级只许白名单里只加表的版本）。**往回切换一律用较新那一版的 release.py**，旧脚本不懂新库结构；先 `--check-only` 看 `schemaAction`。
 - 每个上线的后端 build 打不可变 tag `v<版本>-b<build>`，打在实际部署的 commit 上。
 - 一个 build 一份 `archive/v<版本>-b<build>_execution.md`：范围、验证、部署证据、回退点。PROJECT_PLAN 只留一行索引，README 只写已经上线的事实。
 

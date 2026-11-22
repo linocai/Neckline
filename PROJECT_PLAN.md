@@ -1,7 +1,8 @@
-# Neckline · 4.5.0（已上线）
+# Neckline · 4.6.0（已上线）
 
 唯一工程控制面。项目规则见 [AGENTS.md](AGENTS.md)。
 
+- **4.6.0（新增 Q 期货板块：只读桥接 Qihuo V2 / schema 3，完全静默零推送，3 个 MCP 工具 + `/read/<key>/qihuo`，B135 已上线）**：方案、裁定、测试、审查与上线/回退证据见 [archive/v4.6.0-b135_execution.md](archive/v4.6.0-b135_execution.md)；需求来源是 `whynotme/Q1.md`、`whynotme/Qihuo设计案.md` 与已确认 HTML 样图（2026-11-22 用户拍板）。
 - **4.5.0（KX 看板升为 KX V4 / schema 5，盘中静默 + 20:00 仅推 iPhone，B134 已上线）**：方案、裁定、测试、五轮 Codex 审查（0 P0 / 0 P1）与上线/回退证据见 [archive/v4.5.0-b134_execution.md](archive/v4.5.0-b134_execution.md)；需求来源是 `whynotme/KX.md`（KX V4）与已确认 HTML 样图（2026-11-22 用户拍板；原 K10 4.5.0 草案已放弃）。
 - **4.4.1（承接股按题材辨识度、对板块取最窄，B133 已上线）**：方案、对比、裁定、施工、审查与上线证据见 [archive/v4.4.1_execution.md](archive/v4.4.1_execution.md)；需求来源是 `whynotme/K10.md` 第五节第 3–6 条（2026-11-10 用户确认）。
 - **4.4.0（K10 板块线按第一性重做，三路收消息；并入 4.4.1 随 B133 上线）**：方案、回放与缺陷见 [archive/v4.4.0_execution.md](archive/v4.4.0_execution.md)。
@@ -40,16 +41,16 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 
 ## 当前状态（2026-11-22）
 
-- **现役生产后端 4.5.0 B134**（`4a875b6`，tag `v4.5.0-b134`，11/22 15:20 切换，库结构 v9）；`KXMarketTool` V4（`0.5.0` build 13，schema 5）已于同日在 HZ 上线。NB 实测 `/api/v4/health`（本地与公网）全绿，`neckline-v4-kx-watch.timer` 已 `active + enabled`，`/api/v4/kx/board` 已返回 `schemaVersion: 5`（`kx-20261120-003`，19 只候选）并落库 `kx_board_cache`。详情与恢复点见 [archive/v4.5.0-b134_execution.md](archive/v4.5.0-b134_execution.md)。
-- **App 4.5.0 (134)**：macOS 与 iOS Release 构建签名均通过；macOS 已用 `ditto` 覆盖安装 `/Applications/Neckline.app`；iPhone 端待用户用 Xcode 安装（旧版解不了 schema 5）。
-- **晨报（K10-v6 主线 + 4.4.1 板块线）**：保持 B133 口径不变（此前 4.5.0 K10 草案已取消）。
-- **MCP**：5 个只读工具，`get_morning_report` 带板块热点。
+- **现役生产后端 4.6.0 B135**（`e417b0a`，tag `v4.6.0-b135`，11/22 19:58 切换，库结构 v10）；`Qihuo` V2（`0.2.0` build 13，schema 3）与 `KXMarketTool` V4（`0.5.0` build 13，schema 5）均已在 HZ 上线。NB 实测 `/api/v4/health`（本地与公网）全绿（`kxBoard: true`、`qihuoBoard: true`），`neckline-v4-qihuo-sync.timer` 已 `active + enabled`（完全静默零推送），`/api/v4/qihuo/board` 已返回 `schemaVersion: 3`（`qihuo-20261120-r54`，5 启用品种 `SH`/`L`/`MA`/`pp`/`eg`、11 停用），`/read/<访问码>/qihuo*` 全绿。详情与恢复点见 [archive/v4.6.0-b135_execution.md](archive/v4.6.0-b135_execution.md)。
+- **App 4.6.0 (135)**：macOS 与 iOS Release 构建签名均通过；macOS 已用 `ditto` 覆盖安装 `/Applications/Neckline.app`；iPhone 端待用户用 Xcode 安装。
+- **晨报（K10-v6 主线 + 4.4.1 板块线）与 KX V4**：保持 B133 / B134 口径不变。
+- **MCP**：8 个只读工具（K10 5 个 + Q 期货 3 个：`read_qihuo_rules`、`get_qihuo_overview`、`get_qihuo_product`），明确鼓励对话 Agent 结合实时搜索自由研究。
 - **额度**：麦蕊体验版总量 20 万次（约到 12-28），与 KX 共用。TuShare major_news 每天 40 次；limit_list_d 每天 1 次。DeepSeek 4.3.1 口径每天约 160 万 token。
 - **待用户清理**：本机废纸篓及 NB `/var/tmp/neckline-replay-b134`（已放弃的 K10 4.5.0 回放缓存约 4.3G）。
 
 ## 当前 Plan
 
-1. **用户**：iPhone 用 Xcode 安装 App 4.5.0 (134)；于下个交易日（11/23 周一）20:02 后核对首条 KX V4 完成推送（仅推 iPhone、点通知直达 KX Tab）；清空本机废纸篓并按需清理 NB `/var/tmp/neckline-replay-b134`。
+1. **用户**：iPhone 用 Xcode 安装 App 4.6.0 (135)；于下个交易日（11/23 周一）20:02 后核对 KX V4 推送、20:15 后核对 Q 期货静默同步，并在 Gemini 手机端实测 `/read/<访问码>/qihuo`；清空本机废纸篓并按需清理 NB `/var/tmp/neckline-replay-b134`。
 2. **复盘与后续**：按 `whynotme/research/K10实盘复盘日志.md` 持续复盘；板块配置校验分离（4.4.1 F3）、`post_json` 期限关连接等留待后续。
 
 ## 待决定（用户）
@@ -111,3 +112,4 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 - 2026-11-16：仓库搬入 `trading` 工作区（`/Users/linotsai/Lino/trading/Neckline`），跨项目边界移到工作区 `../AGENTS.md`；搬迁前基线 tag `workspace-baseline-20261116`（未推送）。
 - 2026-11-17：统一双机规范，项目与工作区 `CLAUDE.md` 收口为 `AGENTS.md`。
 - 2026-11-22：4.5.0 B134 上线（KX V4 / schema 5，盘中彻底静默 + 20:00 仅推 iPhone，库结构 v9，`4a875b6`，tag `v4.5.0-b134`，Codex 审查五轮 0 P0 / 0 P1，App 4.5.0 (134)）；见 [B134 记录](archive/v4.5.0-b134_execution.md)。
+- 2026-11-22：4.6.0 B135 上线（新增 Q 期货板块：只读桥接 Qihuo V2 / schema 3，完全静默零推送，3 个 MCP 工具 + `/read/<访问码>/qihuo`，库结构 v10，`e417b0a`，tag `v4.6.0-b135`，App 4.6.0 (135)）；见 [B135 记录](archive/v4.6.0-b135_execution.md)。

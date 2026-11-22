@@ -1,21 +1,21 @@
 # Neckline
 
-自用创业板选股器（K10-v6：以消息为起点，个股与板块热点两条线）。**现状（2026-11-22）：现役 4.5.0 B134（App 4.5.0 (134)）。** App 分为 K10（晨报，个股与板块热点两块）和 KX 两块。KX 看板（4.5.0 起升为 KX V4）按盘后快照展示：顶栏容量、近 5 日主板情绪条与 DeepSeek 情绪周期判断、派系胶囊直滤与搜索、龙头/高情绪/淘汰三区、主次派系与独立节奏标签、6 项核心事实、5 日轨迹、可展开龙虎榜买卖前五与 DeepSeek 筹码点评；盘中彻底静默，后端只读 KX 总览（schema 5）单调落库 SQLite 持久缓存，交易日 20:02～20:45 由 `neckline-v4-kx-watch.timer` 轮询检测新版本并仅推 iPhone。不显示买卖建议，不记录持仓与收益。
+自用创业板选股器（K10-v6：以消息为起点，个股与板块热点两条线）。**现状（2026-11-22）：现役 4.6.0 B135（App 4.6.0 (135)）。** App 分为 **K10 晨报**（个股与板块热点）、**KX 主板**（4.5.0 起升为 KX V4 / schema 5，盘中静默 + 交易日 20:02～20:45 轮询并仅推 iPhone）和 **Q 期货**（4.6.0 起新增，只读桥接 Qihuo V2 / schema 3，展示 5 个启用化工品种的下拉卡片：4 格客观快照、近 15 日消息/仓单基差/主力前 20 持仓、默认收起的基本信息档案；交易日 20:15～20:35 由 `neckline-v4-qihuo-sync.timer` 静默同步，**零 APNs 推送**）三块。全站不显示买卖建议，不记录持仓与收益。
 
 - **晨报**：每个交易日早上出一份，窗口为上个交易日 15:00 → 当天 08:00。
 - **流程**：一级初筛（DeepSeek 分类）→ 二级数据准备（公告 PDF、公司快照、价格背景、业绩另算，纯代码）→ 三级评估（每条一次，回答四个问题，①②一票否决）→ 只推判「推」的，最多 10 条，可以 0 条。判「不推」的评估连同数据包存在后台（`evaluations` 表），不显示。
-- **读同一份名单的地方**：iPhone 推送、App（iOS 三标签：晨报、历史、设置；macOS 两栏加系统设置窗口）、只读网页、`/api/v4` 和只读 MCP。
+- **读同一份名单/看板的地方**：iPhone 推送（仅 K10 与 KX）、App（iOS 四标签：晨报、KX、Q 期货、设置；macOS 三项侧边栏加系统设置窗口）、只读网页、`/api/v4` 和只读 MCP。
 - v3 已在 B113 删除，服务只提供 V4。
 
-计划与状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，4.2.0 的契约与证据见 [archive/v4.2.0_execution.md](archive/v4.2.0_execution.md)，V4 详细计划见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)，项目规则见 [AGENTS.md](AGENTS.md)。
+计划与状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，4.6.0 记录见 [archive/v4.6.0-b135_execution.md](archive/v4.6.0-b135_execution.md)，4.2.0 的契约与证据见 [archive/v4.2.0_execution.md](archive/v4.2.0_execution.md)，V4 详细计划见 [archive/v4.0.0_execution.md](archive/v4.0.0_execution.md)，项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 仍然有效的运维事实
 
 - 代码在 `App/`（iOS/macOS）和 `Backend/`；服务入口 `https://nk.linotsai.top`。V4 接口前缀 `/api/v4/`（Bearer 鉴权，`/api/v4/health` 除外），App 只调这些接口；`/api/v4/health` 报版本号与 `releaseSet`。凭据不得进入 Git、日志或回复。
-- 只读网页 `https://nk.linotsai.top/read/<访问码>`：顶部是给对话 Agent 的简要提示词；最新一期、`/day/<日期>`、`/history`、`/doc/<id>`、单票页 `/stock/<代码或简称>`（池内给收盘后与盘中的技术面概览，池外写「不在 K10 股票池」），加 `?format=json` 给 Agent 读。访问码只在 `/etc/neckline/v4.env` 和交付给用户本人的链接里；NPM 对 `/read/` 不写访问日志，改 nk 代理时必须保留。
-- 只读 MCP `https://nk.linotsai.top/mcp`（和 API 同一个服务）：工具 `read_brief`、`get_morning_report`、`get_document`、`check_pool`、`get_stock_overview`；OAuth 只放行 ChatGPT、Claude 与 Grok 的回调，登录用部署时生成的连接口令（服务器只存 salt 与 scrypt 哈希），不接受 `API_TOKEN`。单票技术面概览只限池内：收盘后数据来自 TuShare，盘中报价与分时来自麦蕊（证书与 KX 共用，同一证书 60 秒内最多 2 个来源 IP，本机不直连）。
-- 服务器是 NB 云，目录 `/opt/neckline`。API 是 `neckline.service`；V4 定时任务：`neckline-v4-morning.timer`（每天 08:00 采集，交易日接着出报并推送 iPhone）、`neckline-v4-collect.timer`（每天 20:00 采集）、`neckline-v4-finalize.timer`（09:15 截止兜底）、`neckline-v4-kx-watch.timer`（交易日 20:02～20:45 轮询 KX V4 并仅推 iPhone）。
-- 配置：`/opt/neckline/.env`（TuShare、金十、麦蕊、APNs、API 令牌、MCP 公开地址与连接口令哈希、OAuth 状态库路径）、`/etc/neckline/v4.env`（V4 库路径、DeepSeek 密钥、网页访问码，root:neckline 0640）。V4 库 `/opt/neckline/data/v4.db`，MCP 的 OAuth 状态库 `/opt/neckline/data/mcp-auth.db`。DeepSeek 密钥已不归 App 设置页管。
+- 只读网页 `https://nk.linotsai.top/read/<访问码>`：顶部是给对话 Agent 的简要提示词；K10 含最新一期、`/day/<日期>`、`/history`、`/doc/<id>`、单票页 `/stock/<代码或简称>`；Q 期货含 `/qihuo` 总览与 `/qihuo/<代码或名称>` 单品种页（均支持 `?format=json`，明确鼓励对话 Agent 结合实时搜索拓展研究）。访问码只在 `/etc/neckline/v4.env` 和交付给用户本人的链接里；NPM 对 `/read/` 不写访问日志，改 nk 代理时必须保留。
+- 只读 MCP `https://nk.linotsai.top/mcp`（和 API 同一个服务）：8 个只读工具——K10 5 个（`read_brief`、`get_morning_report`、`get_document`、`check_pool`、`get_stock_overview`）+ Q 期货 3 个（`read_qihuo_rules`、`get_qihuo_overview`、`get_qihuo_product`）；OAuth 只放行 ChatGPT、Claude 与 Grok 的回调，登录用部署时生成的连接口令（服务器只存 salt 与 scrypt 哈希），不接受 `API_TOKEN`。单票技术面概览只限池内：收盘后数据来自 TuShare，盘中报价与分时来自麦蕊（证书与 KX 共用，同一证书 60 秒内最多 2 个来源 IP，本机不直连）。
+- 服务器是 NB 云，目录 `/opt/neckline`。API 是 `neckline.service`；V4 定时任务：`neckline-v4-morning.timer`（每天 08:00 采集，交易日接着出报并推送 iPhone）、`neckline-v4-collect.timer`（每天 20:00 采集）、`neckline-v4-finalize.timer`（09:15 截止兜底）、`neckline-v4-kx-watch.timer`（交易日 20:02～20:45 轮询 KX V4 并仅推 iPhone）、`neckline-v4-qihuo-sync.timer`（交易日 20:15～20:35 静默同步 Qihuo V2，零推送）。
+- 配置：`/opt/neckline/.env`（TuShare、金十、麦蕊、KX/Qihuo 只读访问码、APNs、API 令牌、MCP 公开地址与连接口令哈希、OAuth 状态库路径）、`/etc/neckline/v4.env`（V4 库路径、DeepSeek 密钥、网页访问码，root:neckline 0640）。V4 库 `/opt/neckline/data/v4.db`（schema v10），MCP 的 OAuth 状态库 `/opt/neckline/data/mcp-auth.db`。DeepSeek 密钥已不归 App 设置页管。
 - V4 命令（以 neckline 用户、先加载两个环境文件）：`/opt/neckline/.venv/bin/python -m neckline.morning.cli {collect|morning|finalize|show|evaluations|refresh-pool|refresh-concepts|refresh-limit-ups}`（股票池每期出报前自动刷新；概念清单与全 A 成分每 7 天在 20:00 采集后刷新；涨停数据每天 20:00 采集后补到当天，晨报跑板块线前再补一次缺的天）。晨报服务的 `TimeoutStartSec` 为 80 分钟（`/etc/systemd/system/neckline-v4-morning.service`，不由 release.py 管，改动要手工备份后替换）。
 - 依赖另装：release.py 只装 Neckline 自己的 wheel；4.2.0 新增依赖 pypdf（读巨潮公告 PDF）。
 - 筛选、评估与交付规则在 `Backend/neckline/config/screening-v7.json`（主线 K10-v6，用户 2026-11-04 确认、2026-11-07 修订；板块线 2026-11-08 与 11-10 裁定；收录口径沿用 2026-10-18 的点评，见 `archive/2026-10-18_消息偏好点评.md`）。改规则须升版本并经用户确认。股票池是全部创业板（300/301/302，不含 ST），每期出报前用 TuShare 刷新，并按上个交易日流通市值去掉最大的 10%；原 1,089 家的别名与主营摘要作种子。个股线：评估收口 09:05（到点没评完的记为缺口），截止 09:15；评估前给每条候选调一次 DeepSeek Search（取 10 条），只补背景和各方观点，不能推翻公告数字；输出没通过格式检查时带着原输出再问一次（B127 起）；判推超过 10 条时按首次公开时间取（B132 起）。板块线（B133 起）：主线没对上个股的消息，按路收进来（A 国内政策：国家级发布方、大厂事件、文件会议；B 海外映射：前一晚海外同行业的行情与龙头事件，名单不含大宗商品；C 发酵中题材暂不开）→ 归并并对一个同花顺概念，能对上几个时取最窄的 → 承接股候选是该板块的题材辨识度名单（近 40 个交易日里，板块全 A 成分除本股外还有 ≥2 只、且 ≥2% 涨停的日子，本股涨停的次数，按次数和最近一次排序），名单为空的事件不评 → 评估（新不新、分量、各方看法，按路另加条件，不看位置），从名单前面选 1–3 只承接股、代码核对 → 每天最多 3 个，超过或同一板块有两个以上时由模型比较一次、同一板块只留一个。每一步都守 09:05 收口；涨停或全 A 成分没取到、出错，都只影响板块线并写一行缺口。
