@@ -1,4 +1,4 @@
-"""单用户连接口令。动态注册只放行 ChatGPT、Claude 和 Grok 的回调。"""
+"""单用户连接口令。动态注册只放行 ChatGPT、Claude、Grok 和 Gemini 的回调。"""
 from __future__ import annotations
 
 import hashlib
@@ -41,6 +41,15 @@ def _same(left: str, right: str) -> bool:
 # Grok 连接器的回调：xAI 没有公开文档，按多家 MCP 服务实测报告只放行这两个精确地址
 # （现用的带结尾斜杠；旧路径一并放行）。grok.com 的其他路径、子域名、端口仍拒绝。
 _GROK_CALLBACKS = {"/connectors-oauth-exchange-code/", "/connectors/oauth/callback"}
+# Gemini 自定义 MCP 连接器的回调（按 2026-11-22 NB 线上实测日志）：
+# 只放行 Google 官方三个 OAuth 回调域名下的 /{r,a}/user_bound_custom-mcp-<id> 精确路径格式；
+# googleusercontent.com 的其他子域名、路径、端口、查询串、http 仍拒绝。
+_GEMINI_HOSTS = {
+    "oauth-redirect.googleusercontent.com",
+    "oauth-redirect-test.googleusercontent.com",
+    "oauth-redirect-sandbox.googleusercontent.com",
+}
+_GEMINI_CALLBACK = re.compile(r"/[ra]/user_bound_custom-mcp-[A-Za-z0-9_-]+")
 
 
 def allowed_redirect(value) -> bool:
@@ -50,6 +59,8 @@ def allowed_redirect(value) -> bool:
     if parts.netloc == "chatgpt.com" and (parts.path == "/connector_platform_oauth_redirect" or _CONNECTOR.fullmatch(parts.path)):
         return True
     if parts.netloc == "grok.com" and parts.path in _GROK_CALLBACKS:
+        return True
+    if parts.netloc in _GEMINI_HOSTS and _GEMINI_CALLBACK.fullmatch(parts.path):
         return True
     return parts.netloc in {"claude.ai", "claude.com"} and parts.path == "/api/mcp/auth_callback"
 
@@ -67,7 +78,7 @@ class OwnerAuth:
         if not client_info.redirect_uris or not all(allowed_redirect(item) for item in client_info.redirect_uris):
             # 回调地址不是秘密：记下被拒的地址，新客户端接入时不用猜它的回调。
             _LOG.warning("registration rejected, redirect_uris=%s", [str(item)[:200] for item in client_info.redirect_uris or []])
-            raise RegistrationError("invalid_redirect_uri", "Only ChatGPT, Claude and Grok OAuth callback URLs are allowed.")
+            raise RegistrationError("invalid_redirect_uri", "Only ChatGPT, Claude, Grok and Gemini OAuth callback URLs are allowed.")
         if set(client_info.grant_types) - {"authorization_code", "refresh_token"}:
             raise RegistrationError("invalid_client_metadata", "Unsupported grant type.")
         if self.store.count_provisional("client") >= REGISTRATION_LIMIT:

@@ -18,7 +18,7 @@ from neckline.qihuo.api import create_router as create_qihuo_router
 from neckline.qihuo.services import close_default_services as close_qihuo_services
 
 VERSION = "v4.6.0"
-RELEASE_SET = "v4.6.0-b135"
+RELEASE_SET = "v4.6.0-b136"
 
 
 @asynccontextmanager

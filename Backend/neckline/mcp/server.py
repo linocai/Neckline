@@ -169,7 +169,10 @@ def _build(settings: McpSettings, limiter) -> McpBundle:
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=[host, "127.0.0.1:*", "testserver"],
-            allowed_origins=[settings.origin, "https://chatgpt.com", "https://claude.ai", "https://claude.com", "https://grok.com"],
+            allowed_origins=[
+                settings.origin, "https://chatgpt.com", "https://claude.ai",
+                "https://claude.com", "https://grok.com", "https://gemini.google.com",
+            ],
         ),
     )
     return McpBundle(server=server, asgi=asgi, resource=settings.resource, limiter=limiter)

@@ -169,7 +169,12 @@ def _login(test_client, client, redirect=CHATGPT):
     assert response.status_code == 303, response.text
     query = parse_qs(urlsplit(response.headers["location"]).query)
     assert query["state"] == ["roundtrip-state"]
-    assert urlsplit(response.headers["location"]).netloc in {"chatgpt.com", "claude.ai", "claude.com", "grok.com"}
+    assert urlsplit(response.headers["location"]).netloc in {
+        "chatgpt.com", "claude.ai", "claude.com", "grok.com",
+        "oauth-redirect.googleusercontent.com",
+        "oauth-redirect-test.googleusercontent.com",
+        "oauth-redirect-sandbox.googleusercontent.com",
+    }
     return query["code"][0]
 
 
@@ -226,6 +231,14 @@ def test_mcp_is_unavailable_until_configured(tmp_path, monkeypatch):
     "https://grok.com:8443/connectors-oauth-exchange-code/",
     "http://grok.com/connectors-oauth-exchange-code/",
     "https://grok.com/",
+    "https://oauth-redirect.googleusercontent.com/r/other-app-1234",
+    "https://oauth-redirect.googleusercontent.com/x/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567/extra",
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567?next=evil",
+    "https://oauth-redirect.googleusercontent.com:8443/r/user_bound_custom-mcp-0123456789abcdef01234567",
+    "http://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://evil.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect.googleusercontent.com.evil.example/r/user_bound_custom-mcp-0123456789abcdef01234567",
 ])
 def test_registration_rejects_callbacks_outside_the_allowlist(browser, url):
     test_client, _doc = browser
@@ -239,6 +252,12 @@ def test_registration_rejects_callbacks_outside_the_allowlist(browser, url):
     CLAUDE_COM,
     "https://grok.com/connectors-oauth-exchange-code/",
     "https://grok.com/connectors/oauth/callback",
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-0123456789abcdef01234567",
+    "https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-0123456789abcdef01234567",
 ])
 def test_chatgpt_and_claude_callbacks_can_register(browser, url):
     test_client, _doc = browser
@@ -406,6 +425,41 @@ def test_grok_connector_round_trip(browser):
                "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
     listing = _rpc(test_client, headers, "tools/list", identifier=9)
     assert listing.status_code == 200, listing.text
+
+
+def test_gemini_connector_round_trip(browser):
+    """Gemini 自定义 MCP 连接器会一次注册 6 个 googleusercontent 回调；登录后跳回、换到令牌、带 Gemini Origin 能列工具。"""
+    cid = "0123456789abcdef01234567"
+    redirects = [
+        f"https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-{cid}",
+        f"https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-{cid}",
+        f"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-{cid}",
+        f"https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-{cid}",
+        f"https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-{cid}",
+        f"https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-{cid}",
+    ]
+    test_client, _doc = browser
+    reg = test_client.post("/register", json={
+        "client_name": "Gemini MCP client", "redirect_uris": redirects,
+        "token_endpoint_auth_method": "client_secret_post",
+        "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
+        "scope": "neckline:read",
+    })
+    assert reg.status_code == 201, reg.text
+    client = reg.json()
+    gemini_cb = redirects[2]
+    code = _login(test_client, client, gemini_cb)
+    traded = _exchange(test_client, client, code, redirect_uri=gemini_cb)
+    assert traded.status_code == 200, traded.text
+    headers = {
+        "Authorization": "Bearer " + traded.json()["access_token"],
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-11-25",
+        "Origin": "https://gemini.google.com",
+    }
+    listing = _rpc(test_client, headers, "tools/list", identifier=10)
+    assert listing.status_code == 200, listing.text
+    assert {item["name"] for item in listing.json()["result"]["tools"]} == TOOLS
 
 
 def test_request_body_and_login_are_limited(browser):
