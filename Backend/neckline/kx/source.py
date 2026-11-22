@@ -1,4 +1,4 @@
-"""读 KX V3 总览。网络调用走可注入的 httpx 客户端，错误信息不带 URL（访问码在路径里）。"""
+"""读 KX V4 总览（schema_version 5）。盘中静默、永不返回 pending；错误信息不带 URL 与访问码。"""
 from __future__ import annotations
 
 import json
@@ -11,34 +11,20 @@ from neckline.kx import settings
 from neckline.market.util import silence_http_logs
 
 MAX_BYTES = 3_000_000
-_PENDING_TRIES = 3
 _UNAVAILABLE = "KX 看板暂时不可用。"
-# 只吃 URL 里能出现的 ASCII 字符，后面紧跟的中文说明（「，请稍后重试」）留着。
+# 只吃 URL 里能出现的 ASCII 字符，后面紧跟的中文说明留着。
 _URL = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+", re.IGNORECASE)
 _READ_SEGMENT = re.compile(r"/kx/read/[A-Za-z0-9_-]+")
 _HIDDEN = "…"  # 访问码的替换符，不在访问码的字符集里，删掉之后前后两段拼不回访问码
 
 
 class KxError(Exception):
-    """KX 不可达、返回了不合格的内容或还没取完数。message 是给人看的中文，不含 URL 与访问码。"""
+    """KX 不可达或返回了不合格的内容。message 是给人看的中文，不含 URL 与访问码。"""
 
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         self.message = message
         super().__init__(message)
-
-
-def is_pending(body: object) -> bool:
-    """正在取数：status 是 pending，或 code 是 refresh_pending。不是总览。"""
-    return isinstance(body, dict) and (body.get("status") == "pending" or body.get("code") == "refresh_pending")
-
-
-def retry_delay(body: object) -> float:
-    """retry_after_seconds 夹在 1～5 秒；缺、非正数或不是数字时用 3 秒。布尔不算数字。"""
-    raw = body.get("retry_after_seconds") if isinstance(body, dict) else None
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
-        return 3.0
-    return float(min(max(float(raw), 1.0), 5.0))
 
 
 def redact_upstream(text: str) -> str:
@@ -47,7 +33,7 @@ def redact_upstream(text: str) -> str:
     key = settings.read_key()
     if key:
         cleaned = cleaned.replace(key, _HIDDEN)
-        if key in cleaned:  # 用了不会拼出访问码的替换符，理论上到不了这里；到了就整句不用
+        if key in cleaned:
             return _UNAVAILABLE
     cleaned = cleaned.strip()
     return (cleaned[:200] or _UNAVAILABLE)
@@ -60,7 +46,7 @@ def _unavailable_message(body: object) -> str:
 
 
 class KxSource:
-    """真实的 KX 读取。client 可注入（测试用 MockTransport），默认自己建并在 aclose 时关掉。"""
+    """真实的 KX 只读 JSON 读取。client 可注入（测试用 MockTransport），默认自己建并在 aclose 时关掉。"""
 
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self.client = client
@@ -74,8 +60,11 @@ class KxSource:
 
     async def _http(self) -> httpx.AsyncClient:
         if self.client is None:
-            self.client = httpx.AsyncClient(timeout=httpx.Timeout(15, connect=5), trust_env=False,
-                                            follow_redirects=False)
+            self.client = httpx.AsyncClient(
+                timeout=httpx.Timeout(15, connect=5),
+                trust_env=False,
+                follow_redirects=False,
+            )
             self._owns = True
         return self.client
 
@@ -100,38 +89,20 @@ class KxSource:
         except ValueError:
             raise KxError("kx_bad_json", "KX 没有返回可解析的内容。") from None
 
-    async def _read_once(self) -> object:
+    async def overview(self, *, sleep: Callable[[float], Awaitable[None]] | None = None) -> object:
+        """读 KX V4 总览 JSON。V4 零外调、永不返回 pending（保留 sleep 关键字参数兼容调用方）。"""
+        del sleep
         key = settings.read_key()
         if key is None:
             raise KxError("kx_read_key_missing", "没有配置 KX 只读页面的访问码，无法读取看板。")
         status, body = await self._get_json(f"{settings.base_url()}/kx/read/{key}", {"format": "json"})
         if status == 404:
             raise KxError("kx_read_key_rejected", "KX 不认这枚只读访问码。")
-        if is_pending(body):
-            return body
         if isinstance(body, dict) and body.get("status") == "unavailable":
             raise KxError("kx_unavailable", _unavailable_message(body))
         if status != 200:
             raise KxError("kx_unavailable", f"KX 只读页面返回 HTTP {status}。")
         return body
 
-    async def overview(self, *, sleep: Callable[[float], Awaitable[None]] | None = None) -> object:
-        """读总览。pending 时按间隔再读，最多再读 3 次；仍然 pending 算这次失败。"""
-        pause = sleep or _asleep
-        body = await self._read_once()
-        extra = 0
-        while is_pending(body) and extra < _PENDING_TRIES:
-            await pause(retry_delay(body))
-            body = await self._read_once()
-            extra += 1
-        if is_pending(body):
-            raise KxError("kx_pending", "KX 还在取数，这次没有读到看板。")
-        return body
 
-
-async def _asleep(seconds: float) -> None:
-    import asyncio
-    await asyncio.sleep(seconds)
-
-
-__all__ = ["KxError", "KxSource", "is_pending", "retry_delay"]
+__all__ = ["KxError", "KxSource", "MAX_BYTES", "redact_upstream"]

@@ -1,30 +1,44 @@
-// iOS 推送登记。macOS 不编译。结果只写进设置里的通知状态，不弹窗。
+// iOS 推送登记与通知路由。macOS 不编译。结果只写进设置里的通知状态，不弹窗。
 
 #if os(iOS)
 import UIKit
 import UserNotifications
 
+enum NecklinePushTarget: Equatable {
+    case morning
+    case kx
+
+    static func parse(userInfo: [AnyHashable: Any]?) -> NecklinePushTarget {
+        if let raw = userInfo?["target"] as? String, raw.lowercased() == "kx" {
+            return .kx
+        }
+        return .morning
+    }
+}
+
 @MainActor
 final class MorningPush: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     private weak var model: MorningModel?
-    private var pendingTap = false
+    private weak var kx: KXBoardModel?
+    private var pendingTarget: NecklinePushTarget?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // 点按通知冷启动时，系统会在 delegate 装上之后回调 didReceive。
-        // 启动参数里的远程通知也先记下，attach 时同样走 handleNotificationTap。
+        // 启动参数里的远程通知也先记下，attach 时按 target 路由到 K10 或 KX。
         UNUserNotificationCenter.current().delegate = self
-        if launchOptions?[.remoteNotification] != nil {
-            pendingTap = true
+        if let payload = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
+            pendingTarget = NecklinePushTarget.parse(userInfo: payload)
         }
         return true
     }
 
-    func attach(_ model: MorningModel) async {
+    func attach(_ model: MorningModel, kx: KXBoardModel) async {
         self.model = model
+        self.kx = kx
         UNUserNotificationCenter.current().delegate = self
-        if pendingTap {
-            pendingTap = false
-            await model.handleNotificationTap()
+        if let target = pendingTarget {
+            pendingTarget = nil
+            await route(target)
         }
         await requestAuthorizationAndRegister()
     }
@@ -79,11 +93,25 @@ final class MorningPush: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
-        guard let model else {
-            pendingTap = true
+        let target = NecklinePushTarget.parse(userInfo: response.notification.request.content.userInfo)
+        guard model != nil else {
+            pendingTarget = target
             return
         }
-        await model.handleNotificationTap()
+        await route(target)
+    }
+
+    private func route(_ target: NecklinePushTarget) async {
+        guard let model else { return }
+        switch target {
+        case .morning:
+            await model.handleNotificationTap()
+        case .kx:
+            model.tab = .kx
+            if let kx {
+                await kx.handlePushTap()
+            }
+        }
     }
 
     private static func permission(_ status: UNAuthorizationStatus) -> MorningNoticePermission {

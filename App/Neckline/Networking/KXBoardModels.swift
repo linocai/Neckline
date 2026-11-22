@@ -1,653 +1,293 @@
-// KX 看板接口 v2（GET /api/v4/kx/board）。时间保持字符串，展示时再按北京时间格式化。
-// 可空字段缺了或类型不对，只把那一项留空，不让整份解码失败。金额是元。
+// KX V4 看板模型（schema_version 5）。严格分离程序事实（facts）与 DeepSeek 判断（judgment），
+// 缺失数值保留 nil，界面统一展示为“—”，绝不当成 0。
 
 import Foundation
 
-enum KXDeepseekStatus: Equatable {
-    case ok
-    case unknown(String)
+enum KXZone: String, Codable, CaseIterable, Sendable, Hashable {
+    case leader
+    case hot
+    case elim
+}
 
-    var isOK: Bool {
-        if case .ok = self { return true }
+enum KXRhythmKind: String, Codable, Sendable, Hashable {
+    case surge
+    case pullback
+    case divergence
+    case washout
+    case dead
+}
+
+enum KXChangeBadge: String, Codable, Sendable, Hashable {
+    case up
+    case new
+    case `return`
+    case elimNew = "elim_new"
+    case elimOut = "elim_out"
+    case stay
+}
+
+enum KXSeatBadgeKind: String, Codable, Sendable, Hashable {
+    case hot
+    case quant
+    case lasa
+    case inst
+    case north
+}
+
+struct KXBoard: Decodable, Equatable, Sendable {
+    let schemaVersion: Int
+    let status: String
+    let version: String
+    let asOf: String
+    let generatedAt: String
+    let generatedBy: String
+    let checkedAt: String?
+    let lastReadAt: String
+    let stale: Bool
+    let staleReason: String?
+    let deepseekStatus: String
+    let deepseekNotice: String?
+    let factWarnings: [String]
+    let pushSummary: String
+    let refresh: KXRefreshStatus?
+    let capacity: KXCapacity
+    let sentiment: KXSentiment
+    let factions: [KXFactionSummary]
+    let changes: KXChanges
+    let items: [KXBoardItem]
+
+    var latestSentimentDay: KXSentimentDay? {
+        sentiment.days.last
+    }
+
+    func items(in zone: KXZone) -> [KXBoardItem] {
+        items.filter { $0.zone == zone }
+    }
+
+    /// 合并所有仍有效的告警（缓存过期、上游整理未完成、DeepSeek 降级、事实核验提醒），去重后逐条展示，互不遮盖。
+    var alertMessages: [String] {
+        var result: [String] = []
+        func appendUnique(_ raw: String?) {
+            guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
+            if !result.contains(text) {
+                result.append(text)
+            }
+        }
+        if stale {
+            if let reason = staleReason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty {
+                appendUnique("当前展示缓存快照：\(reason)")
+            } else {
+                appendUnique("当前展示最近一次盘后缓存快照，最新拉取未成功。")
+            }
+        }
+        appendUnique(refresh?.notice)
+        appendUnique(deepseekNotice)
+        if deepseekStatus != "ok", deepseekNotice?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            appendUnique("DeepSeek 盘后判断未完成，当前已刷新程序事实并沿用旧结构。")
+        }
+        if (status == "partial" || refresh?.result == "failed"), result.isEmpty {
+            appendUnique(refresh?.message ?? "今日盘后整理未完整完成，当前展示已有快照。")
+        }
+        for warning in factWarnings {
+            appendUnique("事实核验提醒：\(warning)")
+        }
+        return result
+    }
+
+    var alertBannerText: String? {
+        alertMessages.first
+    }
+}
+
+struct KXRefreshStatus: Decodable, Equatable, Sendable {
+    let date: String?
+    let result: String?
+    let poolVersion: String?
+    let asOf: String?
+    let deepseekStatus: String?
+    let finishedAt: String?
+    let message: String?
+    let notice: String?
+    let elapsedSeconds: Double?
+}
+
+struct KXCapacity: Decodable, Equatable, Sendable {
+    let used: Int
+    let max: Int
+    let leaderCount: Int
+    let hotCount: Int
+    let elimCount: Int
+    let nextFree: Int
+}
+
+struct KXSentiment: Decodable, Equatable, Sendable {
+    let days: [KXSentimentDay]
+    let judgment: KXSentimentJudgment?
+}
+
+struct KXStockRef: Decodable, Equatable, Sendable, Hashable {
+    let code: String
+    let name: String
+    let boardType: String
+}
+
+struct KXSentimentDay: Decodable, Equatable, Sendable, Identifiable {
+    let date: String
+    let zt: Int?
+    let zb: Int?
+    let zbRate: Double?
+    let dt: Int?
+    let maxLbc: Int?
+    let highest: [KXStockRef]
+    let ladder: [String: [KXStockRef]]
+    let yZtN: Int?
+    let yCont: Int?
+    let yOpenMean: Double?
+    let yCloseMean: Double?
+    let yCloseMed: Double?
+
+    var id: String { date }
+}
+
+struct KXSentimentJudgment: Decodable, Equatable, Sendable {
+    let stage: String
+    let marketNote: String
+}
+
+struct KXFactionSummary: Decodable, Equatable, Sendable, Identifiable {
+    let name: String
+    let count: Int
+
+    var id: String { name }
+}
+
+struct KXChanges: Decodable, Equatable, Sendable {
+    let added: [String]
+    let promoted: [String]
+    let toElim: [String]
+    let returned: [String]
+    let removed: [KXRemovedItem]
+}
+
+struct KXRemovedItem: Decodable, Equatable, Sendable, Identifiable {
+    let code: String
+    let name: String
+    let reason: String
+
+    var id: String { code }
+}
+
+struct KXBoardItem: Decodable, Equatable, Sendable, Identifiable, Hashable {
+    let code: String
+    let name: String
+    let industry: String
+    let zone: KXZone
+    let firstSeen: String
+    let zoneSince: String
+    let daysInZone: Int
+    let elimSince: String?
+    let elimDays: Int
+    let nextRemove: Bool
+    let changeBadge: KXChangeBadge
+    let cycleTag: String
+    let facts: KXItemFacts
+    let judgment: KXItemJudgment
+
+    var id: String { code }
+
+    func matches(faction: String, query: String) -> Bool {
+        if faction != KXCopy.allFaction {
+            let hitFaction = judgment.factions.contains { $0.name == faction }
+            if !hitFaction { return false }
+        }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return true }
+        let lower = q.lowercased()
+        if name.lowercased().contains(lower) { return true }
+        if code.lowercased().contains(lower) { return true }
+        if industry.lowercased().contains(lower) { return true }
+        if judgment.factions.contains(where: { $0.name.lowercased().contains(lower) }) { return true }
         return false
     }
-
-    static func parse(_ raw: String?) -> KXDeepseekStatus? {
-        guard let raw else { return nil }
-        return raw == "ok" ? .ok : .unknown(raw)
-    }
 }
 
-enum KXQuoteStatus: Equatable {
-    case ok
-    case stale
-    case missing
-    case unknown(String)
-
-    static func parse(_ raw: String?) -> KXQuoteStatus? {
-        guard let raw else { return nil }
-        switch raw {
-        case "ok": return .ok
-        case "stale": return .stale
-        case "missing": return .missing
-        default: return .unknown(raw)
-        }
-    }
+struct KXItemFacts: Decodable, Equatable, Sendable, Hashable {
+    let close: Double?
+    let pct: Double?
+    let tr: Double?
+    let circMvYi: Double?
+    let boardType: String
+    let boardStatus: String
+    let lbc: Int?
+    let breakDays: Int?
+    let firstSealTime: String?
+    let lastSealTime: String?
+    let breakCount: Int?
+    let ma5: Double?
+    let ma5Diff: Double?
+    let ma10: Double?
+    let ma10Diff: Double?
+    let ddPeak: Double?
+    let volRatioPeak: Double?
+    let zt5dN: Int?
+    let dt5dN: Int?
+    let lhb5dN: Int?
+    let suspended: Bool
+    let traj: [KXTrajDay]
+    let lhbIsToday: Bool
+    let lhb: KXLHB?
 }
 
-enum KXSessionPhase: Equatable {
-    case callAuction
-    case preOpen
-    case unknown(String)
+struct KXTrajDay: Decodable, Equatable, Sendable, Hashable, Identifiable {
+    let date: String
+    let pct: Double?
+    let tr: Double?
+    let zt: Bool
+    let dt: Bool
+    let zb: Bool
+    let lhb: Bool
 
-    static func parse(_ raw: String?) -> KXSessionPhase? {
-        guard let raw else { return nil }
-        switch raw {
-        case "call_auction": return .callAuction
-        case "pre_open": return .preOpen
-        default: return .unknown(raw)
-        }
-    }
+    var id: String { date }
 }
 
-enum KXRole: Equatable {
-    case leader
-    case follower
-    case unknown(String)
-
-    static func parse(_ raw: String?) -> KXRole? {
-        guard let raw else { return nil }
-        switch raw {
-        case "龙头": return .leader
-        case "小弟": return .follower
-        default: return .unknown(raw)
-        }
-    }
+struct KXLHB: Decodable, Equatable, Sendable, Hashable {
+    let date: String
+    let reasons: [String]
+    let netW: Double?
+    let buyTotalW: Double?
+    let sellTotalW: Double?
+    let buys: [KXLHBSeat]
+    let sells: [KXLHBSeat]
 }
 
-/// 标签的 kind 是开放词，原文放在 unknown 里，不因为不认识的词让解码失败。
-enum KXFlagKind: Equatable {
-    case unknown(String)
-
-    var raw: String {
-        switch self {
-        case .unknown(let raw): return raw
-        }
-    }
+struct KXLHBSeat: Decodable, Equatable, Sendable, Hashable {
+    let org: String
+    let fullOrg: String
+    let buyW: Double?
+    let sellW: Double?
+    let netW: Double?
+    let badges: [KXSeatBadge]
 }
 
-enum KXRoom: String, Equatable, Hashable, Identifiable {
-    case leader
-    case waiting
-    case eliminated
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .leader: return "龙头室"
-        case .waiting: return "等候室"
-        case .eliminated: return "淘汰室"
-        }
-    }
+struct KXSeatBadge: Decodable, Equatable, Sendable, Hashable {
+    let text: String
+    let kind: KXSeatBadgeKind
 }
 
-struct KXSource: Decodable, Equatable {
-    var checkedAt: String?
-    var stale: Bool
-    var reason: String?
-    var lastReadAt: String?
-
-    init(checkedAt: String? = nil, stale: Bool = false, reason: String? = nil, lastReadAt: String? = nil) {
-        self.checkedAt = checkedAt
-        self.stale = stale
-        self.reason = reason
-        self.lastReadAt = lastReadAt
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        checkedAt = container.string("checkedAt")
-        stale = container.bool("stale") ?? false
-        reason = container.string("reason")
-        lastReadAt = container.string("lastReadAt")
-    }
+struct KXItemJudgment: Decodable, Equatable, Sendable, Hashable {
+    let rhythm: KXRhythm
+    let factions: [KXFactionTag]
+    let why: String
+    let lhbComment: String
+    let watchNote: String
 }
 
-struct KXRefreshInfo: Decodable, Equatable {
-    var date: String?
-    var result: String?
-    var finishedAt: String?
-    var message: String?
-    var notice: String?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        date = container.string("date")
-        result = container.string("result")
-        finishedAt = container.string("finishedAt")
-        message = container.string("message")
-        notice = container.string("notice")
-    }
+struct KXRhythm: Decodable, Equatable, Sendable, Hashable {
+    let kind: KXRhythmKind
+    let text: String
 }
 
-struct KXStructure: Decodable, Equatable {
-    var version: String?
-    var asOf: String?
-    var generatedAt: String?
-    var generatedBy: String?
-    var deepseekStatus: KXDeepseekStatus?
-    var deepseekNotice: String?
-    var marketNote: String?
-    var membershipLocked: Bool?
-    var refresh: KXRefreshInfo?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        version = container.string("version")
-        asOf = container.string("asOf")
-        generatedAt = container.string("generatedAt")
-        generatedBy = container.string("generatedBy")
-        deepseekStatus = KXDeepseekStatus.parse(container.string("deepseekStatus"))
-        deepseekNotice = container.string("deepseekNotice")
-        marketNote = container.string("marketNote")
-        membershipLocked = container.bool("membershipLocked")
-        refresh = container.object("refresh")
-    }
-}
-
-struct KXSession: Decodable, Equatable {
-    var inSession: Bool
-    var refreshSeconds: Double?
-
-    init(inSession: Bool = false, refreshSeconds: Double? = nil) {
-        self.inSession = inSession
-        self.refreshSeconds = refreshSeconds
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        inSession = container.bool("inSession") ?? false
-        refreshSeconds = container.double("refreshSeconds")
-    }
-}
-
-struct KXFetchedAt: Decodable, Equatable {
-    var limitUp: String?
-    var broken: String?
-    var limitDown: String?
-    var yesterdayLimitUp: String?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        limitUp = container.string("limitUp")
-        broken = container.string("broken")
-        limitDown = container.string("limitDown")
-        yesterdayLimitUp = container.string("yesterdayLimitUp")
-    }
-}
-
-struct KXHighestBoard: Decodable, Equatable {
-    var boards: Double?
-    var names: [String]
-    var codes: [String]
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        boards = container.double("boards")
-        names = container.strings("names")
-        codes = container.strings("codes")
-    }
-}
-
-struct KXSentiment: Decodable, Equatable {
-    var tradingDay: String?
-    var basis: String?
-    var boardPhrases: String?
-    var limitUpCount: Double?
-    var brokenCount: Double?
-    var brokenRate: Double?
-    var limitDownCount: Double?
-    var highestBoard: KXHighestBoard?
-    var yesterdayConsecutive: Double?
-    var yesterdayContinued: Double?
-    var yesterdayTradingDay: String?
-    var fetchedAt: KXFetchedAt?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        tradingDay = container.string("tradingDay")
-        basis = container.string("basis")
-        boardPhrases = container.string("boardPhrases")
-        limitUpCount = container.double("limitUpCount")
-        brokenCount = container.double("brokenCount")
-        brokenRate = container.double("brokenRate")
-        limitDownCount = container.double("limitDownCount")
-        highestBoard = container.object("highestBoard")
-        yesterdayConsecutive = container.double("yesterdayConsecutive")
-        yesterdayContinued = container.double("yesterdayContinued")
-        yesterdayTradingDay = container.string("yesterdayTradingDay")
-        fetchedAt = container.object("fetchedAt")
-    }
-}
-
-struct KXFactWarning: Decodable, Equatable {
-    var groupId: String?
-    var text: String
-
-    init(from decoder: Decoder) throws {
-        if let text = try? decoder.singleValueContainer().decode(String.self) {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "空的事实不符"))
-            }
-            groupId = nil
-            self.text = trimmed
-            return
-        }
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        let text = container.string("text") ?? ""
-        guard !text.isEmpty else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "事实不符没有原文"))
-        }
-        groupId = container.string("groupId")
-        self.text = text
-    }
-}
-
-struct KXQuote: Decodable, Equatable {
-    var price: Double?
-    var changePercent: Double?
-    var previousClose: Double?
-    var open: Double?
-    var high: Double?
-    var low: Double?
-    var turnoverAmount: Double?
-    var amplitudePercent: Double?
-    var turnoverPercent: Double?
-    var sourceTime: String?
-    var quoteStatus: KXQuoteStatus?
-    var sessionPhase: KXSessionPhase?
-    var warnings: [String]
-
-    static let empty = KXQuote()
-
-    init(price: Double? = nil, changePercent: Double? = nil, previousClose: Double? = nil, open: Double? = nil,
-         high: Double? = nil, low: Double? = nil, turnoverAmount: Double? = nil, amplitudePercent: Double? = nil,
-         turnoverPercent: Double? = nil, sourceTime: String? = nil, quoteStatus: KXQuoteStatus? = nil,
-         sessionPhase: KXSessionPhase? = nil, warnings: [String] = []) {
-        self.price = price
-        self.changePercent = changePercent
-        self.previousClose = previousClose
-        self.open = open
-        self.high = high
-        self.low = low
-        self.turnoverAmount = turnoverAmount
-        self.amplitudePercent = amplitudePercent
-        self.turnoverPercent = turnoverPercent
-        self.sourceTime = sourceTime
-        self.quoteStatus = quoteStatus
-        self.sessionPhase = sessionPhase
-        self.warnings = warnings
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        self.init(
-            price: container.double("price"),
-            changePercent: container.double("changePercent"),
-            previousClose: container.double("previousClose"),
-            open: container.double("open"),
-            high: container.double("high"),
-            low: container.double("low"),
-            turnoverAmount: container.double("turnoverAmount"),
-            amplitudePercent: container.double("amplitudePercent"),
-            turnoverPercent: container.double("turnoverPercent"),
-            sourceTime: container.string("sourceTime"),
-            quoteStatus: KXQuoteStatus.parse(container.string("quoteStatus")),
-            sessionPhase: KXSessionPhase.parse(container.string("sessionPhase")),
-            warnings: container.strings("warnings")
-        )
-    }
-}
-
-struct KXLimitUp: Decodable, Equatable {
-    var inLimitUp: Bool?
-    var inBroken: Bool?
-    var inLimitDown: Bool?
-    var consecutiveBoards: Double?
-    var firstSealTime: String?
-    var lastSealTime: String?
-    var breakCount: Double?
-    var sealAmount: Double?
-    var boardTypeText: String?
-    var poolFetchedAt: String?
-    var warnings: [String]
-
-    static let empty = KXLimitUp()
-
-    init(inLimitUp: Bool? = nil, inBroken: Bool? = nil, inLimitDown: Bool? = nil, consecutiveBoards: Double? = nil,
-         firstSealTime: String? = nil, lastSealTime: String? = nil, breakCount: Double? = nil, sealAmount: Double? = nil,
-         boardTypeText: String? = nil, poolFetchedAt: String? = nil, warnings: [String] = []) {
-        self.inLimitUp = inLimitUp
-        self.inBroken = inBroken
-        self.inLimitDown = inLimitDown
-        self.consecutiveBoards = consecutiveBoards
-        self.firstSealTime = firstSealTime
-        self.lastSealTime = lastSealTime
-        self.breakCount = breakCount
-        self.sealAmount = sealAmount
-        self.boardTypeText = boardTypeText
-        self.poolFetchedAt = poolFetchedAt
-        self.warnings = warnings
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        self.init(
-            inLimitUp: container.bool("inLimitUp"),
-            inBroken: container.bool("inBroken"),
-            inLimitDown: container.bool("inLimitDown"),
-            consecutiveBoards: container.double("consecutiveBoards"),
-            firstSealTime: container.string("firstSealTime"),
-            lastSealTime: container.string("lastSealTime"),
-            breakCount: container.double("breakCount"),
-            sealAmount: container.double("sealAmount"),
-            boardTypeText: container.string("boardTypeText"),
-            poolFetchedAt: container.string("poolFetchedAt"),
-            warnings: container.strings("warnings")
-        )
-    }
-}
-
-struct KXSealChange: Decodable, Equatable {
-    var amount: Double?
-    var baselineAmount: Double?
-    var baselineAgeSeconds: Double?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        amount = container.double("amount")
-        baselineAmount = container.double("baselineAmount")
-        baselineAgeSeconds = container.double("baselineAgeSeconds")
-    }
-}
-
-struct KXOrderBook: Decodable, Equatable {
-    var status: String?
-    var bid1Price: Double?
-    var bid1Volume: Double?
-    var bid1Amount: Double?
-    var asksClear: Bool?
-    var sealed: Bool?
-    var sealAmount: Double?
-    var sealChange5m: KXSealChange?
-    var sourceTime: String?
-    var warnings: [String]
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        status = container.string("status")
-        bid1Price = container.double("bid1Price")
-        bid1Volume = container.double("bid1Volume")
-        bid1Amount = container.double("bid1Amount")
-        asksClear = container.bool("asksClear")
-        sealed = container.bool("sealed")
-        sealAmount = container.double("sealAmount")
-        sealChange5m = container.object("sealChange5m")
-        sourceTime = container.string("sourceTime")
-        warnings = container.strings("warnings")
-    }
-}
-
-struct KXStock: Decodable, Equatable {
-    var code: String
-    var name: String
-    var role: KXRole?
-    var reason: String?
-    var divergent: Bool?
-    var quote: KXQuote
-    var limitUp: KXLimitUp
-    var orderBook: KXOrderBook?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        code = container.string("code") ?? ""
-        name = container.string("name") ?? ""
-        role = KXRole.parse(container.string("role"))
-        reason = container.string("reason")
-        divergent = container.bool("divergent")
-        quote = container.object("quote") ?? .empty
-        limitUp = container.object("limitUp") ?? .empty
-        orderBook = container.object("orderBook")
-    }
-}
-
-struct KXFlag: Decodable, Equatable {
-    var kind: KXFlagKind
-    var code: String?
-    var text: String
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        let kindText = container.string("kind")
-        let text = container.string("text") ?? kindText ?? ""
-        guard !text.isEmpty else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "空标签"))
-        }
-        kind = .unknown(kindText ?? text)
-        code = container.string("code")
-        self.text = text
-    }
-}
-
-struct KXJudgment: Decodable, Equatable {
-    var verdict: String?
-    var reason: String?
-    var height: String?
-    var drive: String?
-    var resilience: String?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        verdict = container.string("verdict")
-        reason = container.string("reason")
-        height = container.string("height")
-        drive = container.string("drive")
-        resilience = container.string("resilience")
-    }
-}
-
-struct KXGroup: Decodable, Equatable {
-    var id: String?
-    var theme: String?
-    var roomSince: String?
-    var brokeOn: String?
-    var observedTradingDays: Double?
-    var observedText: String?
-    var flags: [KXFlag]
-    var judgment: KXJudgment?
-    var note: String?
-    var leaders: [KXStock]
-    var followers: [KXStock]
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        id = container.string("id")
-        theme = container.string("theme")
-        roomSince = container.string("roomSince")
-        brokeOn = container.string("brokeOn")
-        observedTradingDays = container.double("observedTradingDays")
-        observedText = container.string("observedText")
-        flags = container.array("flags")
-        judgment = container.object("judgment")
-        note = container.string("note")
-        leaders = container.array("leaders")
-        followers = container.array("followers")
-    }
-}
-
-struct KXRooms: Decodable, Equatable {
-    var leader: [KXGroup]
-    var waiting: [KXGroup]
-    var eliminated: [KXGroup]
-
-    static let empty = KXRooms(leader: [], waiting: [], eliminated: [])
-
-    init(leader: [KXGroup], waiting: [KXGroup], eliminated: [KXGroup]) {
-        self.leader = leader
-        self.waiting = waiting
-        self.eliminated = eliminated
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        leader = container.array("leader")
-        waiting = container.array("waiting")
-        eliminated = container.array("eliminated")
-    }
-
-    /// 龙头室、等候室、淘汰室，固定这个顺序，不跟 JSON 键的书写顺序走。
-    var ordered: [KXRoomGroups] {
-        [
-            KXRoomGroups(room: .leader, groups: leader),
-            KXRoomGroups(room: .waiting, groups: waiting),
-            KXRoomGroups(room: .eliminated, groups: eliminated),
-        ]
-    }
-}
-
-struct KXRoomGroups: Equatable, Identifiable {
-    var room: KXRoom
-    var groups: [KXGroup]
-    var id: KXRoom { room }
-}
-
-struct KXBoard: Decodable, Equatable {
-    var generatedAt: String?
-    var source: KXSource?
-    var structure: KXStructure?
-    var status: String?
-    var errors: [String]
-    var warnings: [String]
-    var gaps: [String]
-    var factWarnings: [KXFactWarning]
-    var session: KXSession?
-    var sentiment: KXSentiment?
-    var rooms: KXRooms
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: KXLooseKey.self)
-        let markers = ["rooms", "generatedAt", "source", "structure", "sentiment", "session"]
-        guard markers.contains(where: { container.contains(KXLooseKey(stringValue: $0)!) }) else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "不是看板"))
-        }
-        generatedAt = container.string("generatedAt")
-        source = container.object("source")
-        structure = container.object("structure")
-        status = container.string("status")
-        errors = container.strings("errors")
-        warnings = container.strings("warnings")
-        gaps = container.strings("gaps")
-        factWarnings = container.array("factWarnings")
-        session = container.object("session")
-        sentiment = container.object("sentiment")
-        rooms = container.object("rooms") ?? .empty
-    }
-}
-
-struct KXLooseKey: CodingKey {
-    var stringValue: String
-    var intValue: Int?
-
-    init?(stringValue: String) { self.stringValue = stringValue }
-    init?(intValue: Int) { nil }
-}
-
-extension KeyedDecodingContainer where Key == KXLooseKey {
-    func string(_ name: String) -> String? {
-        let key = KXLooseKey(stringValue: name)!
-        guard contains(key), (try? decodeNil(forKey: key)) != true else { return nil }
-        guard let value = try? decode(String.self, forKey: key) else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    func double(_ name: String) -> Double? {
-        let key = KXLooseKey(stringValue: name)!
-        guard contains(key), (try? decodeNil(forKey: key)) != true else { return nil }
-        guard let value = try? decode(Double.self, forKey: key), value.isFinite else { return nil }
-        return value
-    }
-
-    func bool(_ name: String) -> Bool? {
-        let key = KXLooseKey(stringValue: name)!
-        guard contains(key), (try? decodeNil(forKey: key)) != true else { return nil }
-        return try? decode(Bool.self, forKey: key)
-    }
-
-    func strings(_ name: String) -> [String] {
-        let key = KXLooseKey(stringValue: name)!
-        guard contains(key), (try? decodeNil(forKey: key)) != true else { return [] }
-        if let values = try? decode([String].self, forKey: key) {
-            return values.compactMap { item in
-                let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : trimmed
-            }
-        }
-        return walk(key) { try $0.decode(String.self) }.compactMap { item in
-            let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-    }
-
-    func array<T: Decodable>(_ name: String) -> [T] {
-        let key = KXLooseKey(stringValue: name)!
-        guard contains(key), (try? decodeNil(forKey: key)) != true else { return [] }
-        if let values = try? decode([T].self, forKey: key) { return values }
-        return walk(key) { try $0.decode(T.self) }
-    }
-
-    func object<T: Decodable>(_ name: String) -> T? {
-        let key = KXLooseKey(stringValue: name)!
-        guard contains(key), (try? decodeNil(forKey: key)) != true else { return nil }
-        return try? decode(T.self, forKey: key)
-    }
-
-    private func walk<T>(_ key: KXLooseKey, _ decode: (inout UnkeyedDecodingContainer) throws -> T) -> [T] {
-        guard var nested = try? nestedUnkeyedContainer(forKey: key) else { return [] }
-        var out: [T] = []
-        while !nested.isAtEnd {
-            if let item = try? decode(&nested) {
-                out.append(item)
-            } else {
-                _ = try? nested.decode(KXAnyJSON.self)
-            }
-        }
-        return out
-    }
-}
-
-/// 用来跳过一个不合格的数组元素，避免它拖垮整份看板。
-struct KXAnyJSON: Decodable {
-    init(from decoder: Decoder) throws {
-        if var list = try? decoder.unkeyedContainer() {
-            while !list.isAtEnd {
-                _ = try list.decode(KXAnyJSON.self)
-            }
-            return
-        }
-        if let object = try? decoder.container(keyedBy: KXLooseKey.self) {
-            for key in object.allKeys {
-                _ = try object.decode(KXAnyJSON.self, forKey: key)
-            }
-            return
-        }
-        let single = try decoder.singleValueContainer()
-        if single.decodeNil() { return }
-        if (try? single.decode(Bool.self)) != nil { return }
-        if (try? single.decode(Double.self)) != nil { return }
-        if (try? single.decode(String.self)) != nil { return }
-        throw DecodingError.dataCorruptedError(in: single, debugDescription: "无法跳过")
-    }
+struct KXFactionTag: Decodable, Equatable, Sendable, Hashable {
+    let name: String
+    let primary: Bool
 }

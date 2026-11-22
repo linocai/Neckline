@@ -11,7 +11,8 @@ market_daily（创业板日线）、sector_events（板块线事件）。
 sector_events 增加 routes（JSON 数组）。新建库直接带这一列；
 从版本 6 升上来时补上这一列。已经是版本 7 但还没有这一列的（第一轮库）也补上，其余行不动。
 版本 8 只加表：limit_ups、limit_up_days（涨停）、sector_members_all（同花顺概念的全 A 成分）。
-init_schema 把版本 1～7 的库在同一个事务里升到版本 8，升级失败整体回滚。
+版本 9 只加表：kx_board_cache（KX V4 盘后看板快照缓存）、kx_push_log（KX 20:00 盘后推送去重记录）。
+init_schema 把版本 1～8 的库在同一个事务里升到版本 9，升级失败整体回滚。
 """
 from __future__ import annotations
 
@@ -30,8 +31,8 @@ from neckline.news.model import SourceDocument
 from neckline.news.tushare import clip_covered_to_lookback
 
 APPLICATION_ID = 1313552704  # 与 v3 库（1313552690）区分
-SCHEMA_VERSION = 8
-_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6, 7)  # 这些版本的库可由 init_schema 原地升级到当前版本
+SCHEMA_VERSION = 9
+_UPGRADABLE_FROM = (1, 2, 3, 4, 5, 6, 7, 8)  # 这些版本的库可由 init_schema 原地升级到当前版本
 # 版本 5 退役的三张表。索引随表一起删掉。
 _RETIRED_KX_TABLES = ("kx_daily_stats", "kx_picks", "kx_pool")
 
@@ -243,6 +244,39 @@ CREATE TABLE IF NOT EXISTS sector_members_all (
 );
 """
 
+# 版本 9 只加表：KX V4 盘后快照缓存、超时状态与 20:00 推送记录。降到版本 8 时保留不删。
+V9_DDL = """
+CREATE TABLE IF NOT EXISTS kx_board_cache (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  schema_version INTEGER NOT NULL,
+  board_version TEXT NOT NULL,
+  as_of TEXT NOT NULL,
+  generated_at TEXT NOT NULL,
+  deepseek_status TEXT NOT NULL,
+  status TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  last_error TEXT,
+  last_error_at TEXT
+);
+CREATE TABLE IF NOT EXISTS kx_watch_state (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  timeout_date TEXT,
+  timeout_notice TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kx_push_log (
+  trade_date TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('ready','partial','failed','timeout')),
+  board_version TEXT NOT NULL,
+  device_token TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('sending','sent','failed')),
+  detail TEXT,
+  sent_at TEXT NOT NULL,
+  PRIMARY KEY(trade_date, kind, board_version, device_token)
+);
+"""
+
 
 class NotReady(RuntimeError):
     """库不存在或不是 V4 晨报库。"""
@@ -287,7 +321,7 @@ def init_schema(path: Path) -> None:
             return
         try:
             conn.execute("BEGIN IMMEDIATE")
-            for statement in _statements(DDL) + _statements(V4_DDL) + _statements(V6_DDL) + _statements(V8_DDL):
+            for statement in _statements(DDL) + _statements(V4_DDL) + _statements(V6_DDL) + _statements(V8_DDL) + _statements(V9_DDL):
                 conn.execute(statement)
             for name in _RETIRED_KX_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
@@ -343,6 +377,28 @@ def write(path: Path) -> Iterator[sqlite3.Connection]:
         _check(conn, path)
         with conn:
             yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def write_immediate(path: Path) -> Iterator[sqlite3.Connection]:
+    """跨进程串行写事务（BEGIN IMMEDIATE），防止先读后写出现竞态倒序。"""
+    if not path.exists():
+        raise NotReady(f"{path} 不存在，先运行 init-db")
+    conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        _check(conn, path)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
     finally:
         conn.close()
 
@@ -960,3 +1016,228 @@ def merge_running_stats(conn: sqlite3.Connection, report_id: str, patch: Mapping
     stats = json.loads(row["stats_json"] or "{}")
     stats.update(dict(patch))
     conn.execute("UPDATE reports SET stats_json=? WHERE report_id=? AND status='running'", (_dumps(stats), report_id))
+
+
+# ------------------------------------------------------------------ KX V4 盘后缓存与推送
+
+def _iso_sort_key(value: str | None) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        return utc(datetime.fromisoformat(value.strip()))
+    except ValueError:
+        return value.strip()
+
+
+def _kx_refresh_confirmed(raw: Mapping, as_of: str, board_version: str) -> bool:
+    refresh = raw.get("refresh") if isinstance(raw, Mapping) else None
+    if not isinstance(refresh, Mapping):
+        return False
+    return (
+        refresh.get("result") == "updated"
+        and refresh.get("as_of") == as_of
+        and refresh.get("pool_version") == board_version
+    )
+
+
+def _kx_version_rank(as_of: str, generated_at: str, board_version: str, raw: Mapping) -> tuple[str, str, str, int, str, str, int, str]:
+    """比较两份 KX V4 快照的新旧：
+    1. 先比看板内容本身（as_of, generated_at, board_version）；
+    2. 看板内容相同时（例如下一交易日盘后整理失败，上游沿用旧看板但更新 refresh.date/finished_at），
+       先保留非空 refresh 回执（避免 refresh=None 擦除有效回执），再按回执业务日期与完成时间排序，
+       确保下一交易日的 failed 胜过上一交易日的 updated。
+    """
+    refresh = raw.get("refresh") if isinstance(raw, Mapping) else None
+    has_refresh = 1 if isinstance(refresh, Mapping) else 0
+    refresh_date = str(refresh.get("date") or "") if isinstance(refresh, Mapping) else ""
+    refresh_finished = _iso_sort_key(refresh.get("finished_at") if isinstance(refresh, Mapping) else None)
+    confirmed = 1 if _kx_refresh_confirmed(raw, as_of, board_version) else 0
+    checked_key = _iso_sort_key(raw.get("checked_at") if isinstance(raw, Mapping) else None)
+    return (
+        as_of,
+        _iso_sort_key(generated_at),
+        board_version,
+        has_refresh,
+        refresh_date,
+        refresh_finished,
+        confirmed,
+        checked_key,
+    )
+
+
+def get_kx_watch_state(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute("SELECT timeout_date, timeout_notice, updated_at FROM kx_watch_state WHERE id=1").fetchone()
+    if row is None:
+        return None
+    return {
+        "timeoutDate": row["timeout_date"],
+        "timeoutNotice": row["timeout_notice"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def get_kx_board_cache(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute("SELECT * FROM kx_board_cache WHERE id=1").fetchone()
+    watch = get_kx_watch_state(conn)
+    if row is None:
+        return None
+    return {
+        "schemaVersion": row["schema_version"],
+        "boardVersion": row["board_version"],
+        "asOf": row["as_of"],
+        "generatedAt": row["generated_at"],
+        "deepseekStatus": row["deepseek_status"],
+        "status": row["status"],
+        "raw": json.loads(row["raw_json"]),
+        "fetchedAt": row["fetched_at"],
+        "lastError": row["last_error"],
+        "lastErrorAt": row["last_error_at"],
+        "timeoutDate": watch["timeoutDate"] if watch else None,
+        "timeoutNotice": watch["timeoutNotice"] if watch else None,
+    }
+
+
+def save_kx_board_cache(conn: sqlite3.Connection, *, schema_version: int, board_version: str, as_of: str,
+                        generated_at: str, deepseek_status: str, status: str, raw: Mapping,
+                        fetched_at: datetime) -> dict:
+    """在写锁事务内单调写入 KX 快照：库中已有更新版或更完整回执时拒绝倒序覆盖，返回胜出的库中记录。
+    独立存储的同日超时提示仅在目标交易日新版已确认完成（或出现更晚交易日）时才清除。
+    """
+    existing = get_kx_board_cache(conn)
+    if existing is not None:
+        old_rank = _kx_version_rank(existing["asOf"], existing["generatedAt"], existing["boardVersion"], existing["raw"])
+        new_rank = _kx_version_rank(as_of, generated_at, board_version, raw)
+        if new_rank < old_rank:
+            return existing
+
+    fetched_iso = utc(fetched_at)
+    conn.execute(
+        """INSERT INTO kx_board_cache(
+             id, schema_version, board_version, as_of, generated_at, deepseek_status, status,
+             raw_json, fetched_at, last_error, last_error_at)
+           VALUES (1,?,?,?,?,?,?,?,?,NULL,NULL)
+           ON CONFLICT(id) DO UPDATE SET
+             schema_version=excluded.schema_version,
+             board_version=excluded.board_version,
+             as_of=excluded.as_of,
+             generated_at=excluded.generated_at,
+             deepseek_status=excluded.deepseek_status,
+             status=excluded.status,
+             raw_json=excluded.raw_json,
+             fetched_at=excluded.fetched_at,
+             last_error=NULL,
+             last_error_at=NULL""",
+        (schema_version, board_version, as_of, generated_at, deepseek_status, status,
+         _dumps(dict(raw)), fetched_iso))
+
+    watch = get_kx_watch_state(conn)
+    if watch and watch.get("timeoutDate"):
+        tdate = watch["timeoutDate"]
+        if as_of > tdate or (as_of == tdate and _kx_refresh_confirmed(raw, as_of, board_version)):
+            conn.execute("DELETE FROM kx_watch_state WHERE id=1")
+
+    return get_kx_board_cache(conn)  # type: ignore[return-value]
+
+
+def record_kx_board_error(conn: sqlite3.Connection, *, error: str, at: datetime) -> None:
+    conn.execute("UPDATE kx_board_cache SET last_error=?, last_error_at=? WHERE id=1",
+                 (error[:200], utc(at)))
+
+
+def record_kx_board_timeout(conn: sqlite3.Connection, *, trade_date: str, notice: str,
+                            at: datetime) -> tuple[bool, dict | None]:
+    """在写锁事务内记录当日超时 / 失败告警；若库中已提交该交易日确认更新或更晚交易日快照则拒绝并返回 (False, winner)。"""
+    existing = get_kx_board_cache(conn)
+    if existing is not None:
+        as_of = existing["asOf"]
+        if as_of > trade_date or (
+            as_of == trade_date and _kx_refresh_confirmed(existing["raw"], as_of, existing["boardVersion"])
+        ):
+            return False, existing
+    now_iso = utc(at)
+    conn.execute(
+        """INSERT INTO kx_watch_state(id, timeout_date, timeout_notice, updated_at)
+           VALUES (1,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             timeout_date=excluded.timeout_date,
+             timeout_notice=excluded.timeout_notice,
+             updated_at=excluded.updated_at""",
+        (trade_date, notice[:200], now_iso),
+    )
+    conn.execute("UPDATE kx_board_cache SET last_error=?, last_error_at=? WHERE id=1",
+                 (notice[:200], now_iso))
+    return True, get_kx_board_cache(conn)
+
+
+def _kx_push_existing_status(conn: sqlite3.Connection, *, trade_date: str, kind: str, board_version: str,
+                             token: str) -> str | None:
+    """查询同一去重键在 kx_push_log 中的持久态：'sent' | 'unknown' | 'permanent' | None（可发/可重试）。"""
+    if kind in ("ready", "partial"):
+        rows = conn.execute(
+            """SELECT state, detail FROM kx_push_log
+               WHERE trade_date=? AND kind IN ('ready','partial') AND board_version=? AND device_token=?""",
+            (trade_date, board_version, token),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT state, detail FROM kx_push_log
+               WHERE trade_date=? AND kind=? AND board_version=? AND device_token=?""",
+            (trade_date, kind, board_version, token),
+        ).fetchall()
+    states = [(row["state"], str(row["detail"] or "")) for row in rows]
+    if any(state == "sent" for state, _ in states):
+        return "sent"
+    if any(state == "sending" for state, _ in states):
+        return "unknown"
+    if any(state == "failed" and detail.startswith("permanent:") for state, detail in states):
+        return "permanent"
+    return None
+
+
+def kx_push_done(conn: sqlite3.Connection, *, trade_date: str, kind: str, board_version: str, token: str) -> bool:
+    return _kx_push_existing_status(
+        conn, trade_date=trade_date, kind=kind, board_version=board_version, token=token,
+    ) in ("sent", "unknown")
+
+
+def kx_version_push_claimed(conn: sqlite3.Connection, *, trade_date: str, board_version: str, token: str) -> bool:
+    """同一交易日同一版本，ready / partial 共用去重键；sending（结果未知）或 sent 均不再重发。"""
+    return _kx_push_existing_status(
+        conn, trade_date=trade_date, kind="ready", board_version=board_version, token=token,
+    ) in ("sent", "unknown")
+
+
+def kx_any_push_done(conn: sqlite3.Connection, *, trade_date: str, kinds: Sequence[str], token: str) -> bool:
+    if not kinds:
+        return False
+    placeholders = ",".join("?" for _ in kinds)
+    return conn.execute(
+        f"SELECT 1 FROM kx_push_log WHERE trade_date=? AND kind IN ({placeholders}) AND device_token=? AND state IN ('sending','sent')",
+        (trade_date, *kinds, token),
+    ).fetchone() is not None
+
+
+def claim_kx_push(conn: sqlite3.Connection, *, trade_date: str, kind: str, board_version: str,
+                  token: str, at: datetime) -> str:
+    """外呼 APNs 前原子占位为 sending。
+    返回 'claimed'（允许外呼）或已持久化的终态 'sent' / 'unknown' / 'permanent'（不再重复外呼）。
+    明确可重试失败（retryable / not_dispatched）允许重新占位。
+    """
+    existing = _kx_push_existing_status(
+        conn, trade_date=trade_date, kind=kind, board_version=board_version, token=token,
+    )
+    if existing is not None:
+        return existing
+    conn.execute(
+        "INSERT OR REPLACE INTO kx_push_log VALUES (?,?,?,?,?,?,?)",
+        (trade_date, kind, board_version, token, "sending", None, utc(at)),
+    )
+    return "claimed"
+
+
+def log_kx_push(conn: sqlite3.Connection, *, trade_date: str, kind: str, board_version: str, token: str,
+                state: str, detail: str | None, at: datetime) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO kx_push_log VALUES (?,?,?,?,?,?,?)",
+        (trade_date, kind, board_version, token, state, detail, utc(at)),
+    )

@@ -100,6 +100,11 @@ SERVICES = ["neckline.service"]
 TIMERS = ["neckline-v4-morning.timer", "neckline-v4-collect.timer", "neckline-v4-finalize.timer"]
 # V4 的出报与采集是一次性任务：切换前必须都不在运行，切换期间 timer 停住，结束后恢复原状态。
 V4_JOBS = ["neckline-v4-morning.service", "neckline-v4-collect.service", "neckline-v4-finalize.service"]
+# schema >= 9 起新增 KX 盘后监测 timer：首次从 B133 升级时主机上尚未安装，不能对不存在的 unit 调 stop；
+# 已安装时切换期间停住并检查 job 不在运行，仅目标版本 schema >= 9 才恢复，回退到 B133（schema < 9）时保持停止。
+KX_WATCH_TIMER = "neckline-v4-kx-watch.timer"
+KX_WATCH_JOB = "neckline-v4-kx-watch.service"
+KX_WATCH_SCHEMA = 9
 RUNTIME_PREFIXES = ("neckline/", "scripts/", "deploy/")
 RUNTIME_FILES = (".env.example", "pyproject.toml", "requirements.txt")
 SERVICE_USER = "neckline"
@@ -112,6 +117,7 @@ _KX_BASELINE_KEYS = ("kxPool", "kxPicks", "kxBoard")
 # 6→5 只改版本号。stock_pool 和板块概念都留着，B131 按 user_version=5 打开。
 # 7→6 和 8→6 按下面冻结的 v6 DDL 重建空的 market_daily 和索引，再把 user_version 设回 6。降到 5 及更早不重建日线。
 # 8→7 只改版本号。limit_ups、limit_up_days、sector_members_all 留着，不删。
+# 9→8 只改版本号。kx_board_cache、kx_push_log 留着，不删。
 # sector_events.routes 列保留：B132（v4.3.1-b132）按列名插入、按列名更新，SELECT * 多一列仍能读写。
 ADDITIVE_DOWNGRADES = frozenset({
     (2, 1), (3, 2), (3, 1), (4, 3), (4, 2), (4, 1),
@@ -119,6 +125,7 @@ ADDITIVE_DOWNGRADES = frozenset({
     (6, 5), (6, 4), (6, 3), (6, 2), (6, 1),
     (7, 6), (7, 5), (7, 4), (7, 3), (7, 2), (7, 1),
     (8, 7), (8, 6), (8, 5), (8, 4), (8, 3), (8, 2), (8, 1),
+    (9, 8), (9, 7), (9, 6), (9, 5), (9, 4), (9, 3), (9, 2), (9, 1),
 })
 # 冻结自 v4.2.1（B130）的 neckline/morning/db.py。5→4 与 5→3 用这份（kx_pool 带 theme、first_seen、buyable）。
 _KX_V4_DDL = """
@@ -209,14 +216,14 @@ def _sql_statements(script: str) -> list[str]:
 
 
 def _queue_kx_restore(current: int | None, target: int) -> None:
-    """5、6、7 或 8 降到 2/3/4 时补建空 KX 表。7 或 8 降到 6 时重建空的 market_daily。8→7 不删新表。"""
+    """5、6、7、8 或 9 降到 2/3/4 时补建空 KX 表。7、8 或 9 降到 6 时重建空的 market_daily。9→8 与 8→7 不删新表。"""
     global _PENDING_KX_DDL
     parts: list[str] = []
-    if current in (5, 6, 7, 8):
+    if current in (5, 6, 7, 8, 9):
         ddl = _KX_RESTORE_DDL.get(target)
         if ddl:
             parts.append(ddl)
-    if current in (7, 8) and target == 6:
+    if current in (7, 8, 9) and target == 6:
         parts.append(_MARKET_DAILY_V6_DDL)
     _PENDING_KX_DDL = "\n".join(parts) if parts else None
 
@@ -318,6 +325,10 @@ def run(*args: str, check: bool = True, cwd: Path | None = None) -> subprocess.C
 def unit_state(unit: str) -> dict:
     return {"active": run("systemctl", "is-active", unit, check=False).stdout.strip(),
             "enabled": run("systemctl", "is-enabled", unit, check=False).stdout.strip()}
+
+
+def unit_load_state(unit: str) -> str:
+    return run("systemctl", "show", "-p", "LoadState", "--value", unit, check=False).stdout.strip()
 
 
 def load_release(directory: Path, release: str) -> tuple[dict, dict[str, bytes], Path]:
@@ -847,7 +858,54 @@ def _restore_runtime(*, old: dict, old_entries: dict[str, bytes], old_wheel: Pat
         _raise_step("校验旧运行文件", exc)
 
 
-def _restore_units(before: dict) -> None:
+_INSTALLED_ENABLED_STATES = frozenset((
+    "enabled", "enabled-runtime", "disabled", "static", "indirect",
+    "masked", "masked-runtime", "generated", "transient", "linked", "linked-runtime",
+))
+_DISABLED_ENABLED_STATES = frozenset(("disabled", "masked", "masked-runtime", "static"))
+_RUNNING_UNIT_STATES = frozenset(("active", "activating", "reloading", "deactivating"))
+
+
+def _kx_watch_installed(state: dict) -> bool:
+    """判断 KX 盘后监测 timer 是否已安装在主机上（仅认可真实 systemd 的已安装状态）。"""
+    enabled = state.get("enabled", "")
+    active = state.get("active", "")
+    return (enabled in _INSTALLED_ENABLED_STATES) or (active in _RUNNING_UNIT_STATES)
+
+
+def _should_activate_kx_watch(before: dict, kx_watch_before: dict | None) -> bool:
+    """目标 schema >= 9 时，主服务活跃或切换前 timer 已活跃/已启用，都应激活 KX 盘后监测 timer。"""
+    if before["neckline.service"]["active"] == "active":
+        return True
+    if kx_watch_before is None:
+        return False
+    return kx_watch_before.get("active") == "active" or kx_watch_before.get("enabled") in ("enabled", "enabled-runtime")
+
+
+def _apply_kx_watch_state(*, target_schema: int | None, kx_watch_before: dict | None,
+                          should_activate: bool) -> None:
+    """按目标版本同步 KX 盘后监测 timer 的启停与开机状态：
+    - 目标 schema >= 9：若需要激活，确保 enable --now 并正向校验 active + enabled；
+    - 目标 schema < 9（回退到 B133）：disable --now 并正向校验 inactive + disabled（或 masked/static），
+      防止主机重启后调用 B133 不存在的 CLI。
+    """
+    if kx_watch_before is None or target_schema is None:
+        return
+    if target_schema >= KX_WATCH_SCHEMA:
+        if should_activate:
+            run("systemctl", "enable", "--now", KX_WATCH_TIMER)
+            state = unit_state(KX_WATCH_TIMER)
+            if state["active"] != "active" or state["enabled"] != "enabled":
+                raise RuntimeError(f"{KX_WATCH_TIMER} 启动或启用失败（{state}）")
+    else:
+        run("systemctl", "disable", "--now", KX_WATCH_TIMER)
+        state = unit_state(KX_WATCH_TIMER)
+        if state["active"] != "inactive" or state["enabled"] not in _DISABLED_ENABLED_STATES:
+            raise RuntimeError(f"{KX_WATCH_TIMER} 停用失败（{state}）")
+
+
+def _restore_units(before: dict, *, target_schema: int | None = None,
+                   kx_watch_before: dict | None = None, defer_kx_enable: bool = False) -> None:
     _check_database_for_service()  # 任何会让单元回来的路径都先过这一关；不过就保持 mask、不启动
     try:
         run("systemctl", "unmask", "--runtime", *SERVICES)
@@ -857,6 +915,12 @@ def _restore_units(before: dict) -> None:
         for unit in SERVICES + TIMERS:
             if before[unit]["active"] == "active":
                 run("systemctl", "start", unit, check=False)
+        if not defer_kx_enable or (target_schema is not None and target_schema < KX_WATCH_SCHEMA):
+            _apply_kx_watch_state(
+                target_schema=target_schema,
+                kx_watch_before=kx_watch_before,
+                should_activate=_should_activate_kx_watch(before, kx_watch_before),
+            )
     except Exception as exc:
         _raise_step("恢复单元", exc)
 
@@ -871,12 +935,13 @@ def _restore_schema_step(plan: SchemaPlan) -> None:
 
 
 def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | None, api_running: bool,
-                     schema: SchemaPlan | None = None) -> dict:
+                     schema: SchemaPlan | None = None, kx_watch_before: dict | None = None) -> dict:
     """旧文件已还原后的共用收尾：先恢复库结构版本（服务仍停着），再取消 mask 并恢复单元，
-    API 切换前在运行时按旧版本做就绪检查，核对单元状态。"""
+    API 切换前在运行时按旧版本做就绪检查，核对单元状态；目标 schema >= 9 的 KX timer 在就绪后才启用。"""
     if schema is not None and schema.touched:
         _restore_schema_step(schema)
-    _restore_units(before)
+    old_schema = manifest_schema_version(old)
+    _restore_units(before, target_schema=old_schema, kx_watch_before=kx_watch_before, defer_kx_enable=True)
     if api_running:
         version = old.get("version")
         if not isinstance(version, str) or not version:
@@ -885,6 +950,15 @@ def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | No
             health(previous, version=version, prior=prior)
         except Exception as exc:
             _raise_step("旧版本就绪检查", exc)
+    if old_schema >= KX_WATCH_SCHEMA:
+        try:
+            _apply_kx_watch_state(
+                target_schema=old_schema,
+                kx_watch_before=kx_watch_before,
+                should_activate=_should_activate_kx_watch(before, kx_watch_before),
+            )
+        except Exception as exc:
+            _raise_step("恢复单元", exc)
     try:
         after = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
     except Exception as exc:
@@ -894,34 +968,39 @@ def _finish_rollback(*, previous: str, old: dict, before: dict, prior: dict | No
     return after
 
 
-def _mask_and_stop() -> None:
-    """mask 服务单元、停 timer 和服务，并确认服务已停。mask 的错误原样抛出（可能已生效），其余带步骤名。"""
+def _mask_and_stop(*, stop_kx_watch: bool = False) -> None:
+    """mask 服务单元、停 timer 和主服务；若 KX 盘后 oneshot 任务仍在运行则单独停稳，绝不因未加载单元阻断回滚。"""
     run("systemctl", "mask", "--runtime", *SERVICES)
+    timers_to_stop = [*TIMERS, KX_WATCH_TIMER] if stop_kx_watch else list(TIMERS)
     try:
-        run("systemctl", "stop", *TIMERS)
+        run("systemctl", "stop", *timers_to_stop)
         run("systemctl", "stop", *SERVICES)
+        if stop_kx_watch and unit_state(KX_WATCH_JOB)["active"] in _RUNNING_UNIT_STATES:
+            run("systemctl", "stop", KX_WATCH_JOB, check=False)
     except Exception as exc:
         _raise_step("停止服务", exc)
     try:
         for _ in range(40):
-            if all(unit_state(unit)["active"] == "inactive" for unit in SERVICES):
+            services_stopped = all(unit_state(unit)["active"] == "inactive" for unit in SERVICES)
+            kx_job_stopped = (not stop_kx_watch) or (unit_state(KX_WATCH_JOB)["active"] not in _RUNNING_UNIT_STATES)
+            if services_stopped and kx_job_stopped:
                 break
             time.sleep(0.25)
         else:
-            raise RuntimeError("服务未停止")
+            raise RuntimeError("服务或盘后任务未停止")
     except Exception as exc:
         _raise_step("确认服务已停", exc)
 
 
 def _roll_back_to(*, previous: str, old: dict, old_entries: dict[str, bytes], old_wheel: Path, old_dir: Path,
                   new: dict, before: dict, prior: dict | None, api_running: bool,
-                  schema: SchemaPlan | None = None) -> None:
+                  schema: SchemaPlan | None = None, kx_watch_before: dict | None = None) -> None:
     """停服并还原上一版。只有文件、wheel、清单都还原且校验通过、库结构版本回到切换前之后才恢复单元。
     生产库只改 user_version，绝不还原或覆盖。"""
-    _mask_and_stop()
+    _mask_and_stop(stop_kx_watch=kx_watch_before is not None)
     _restore_runtime(old=old, old_entries=old_entries, old_wheel=old_wheel, old_dir=old_dir, new=new)
     _finish_rollback(previous=previous, old=old, before=before, prior=prior, api_running=api_running,
-                     schema=schema)
+                     schema=schema, kx_watch_before=kx_watch_before)
 
 
 def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
@@ -936,10 +1015,22 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     new, new_entries, new_wheel = load_release(new_dir, release)
     old, old_entries, old_wheel = load_release(old_dir, previous)
     manifest_schema_version(old)  # 回滚时要用，无效就在动手前报错
+    target_schema = manifest_schema_version(new)
     _SIDECAR_FIXES.clear()
     verify_runtime(ROOT, old)
     assert_ownership()
-    running = [unit for unit in V4_JOBS if unit_state(unit)["active"] in ("active", "activating", "reloading")]
+    kx_watch_raw = unit_state(KX_WATCH_TIMER)
+    kx_watch_before = kx_watch_raw if _kx_watch_installed(kx_watch_raw) else None
+    if target_schema >= KX_WATCH_SCHEMA:
+        timer_load = unit_load_state(KX_WATCH_TIMER)
+        job_load = unit_load_state(KX_WATCH_JOB)
+        if kx_watch_before is None or timer_load != "loaded" or job_load != "loaded":
+            raise RuntimeError(
+                f"缺少或未加载 systemd 单元（{KX_WATCH_TIMER}={timer_load or 'missing'}, "
+                f"{KX_WATCH_JOB}={job_load or 'missing'}），请先安装两份单元文件并执行 systemctl daemon-reload"
+            )
+    jobs_to_check = [*V4_JOBS, KX_WATCH_JOB] if kx_watch_before is not None else list(V4_JOBS)
+    running = [unit for unit in jobs_to_check if unit_state(unit)["active"] in _RUNNING_UNIT_STATES]
     if running:
         raise RuntimeError(f"V4 任务正在运行（{', '.join(running)}），稍后再切换")
     plan = plan_schema(new)  # 库结构动作在任何改动之前定下；不被支持的组合到这里就中止
@@ -952,7 +1043,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                   "removedFiles": sorted(set(old["backendFiles"]) - set(new["backendFiles"])),
                   "changedFiles": sorted(name for name in set(new["backendFiles"]) & set(old["backendFiles"])
                                          if new["backendFiles"][name] != old["backendFiles"][name]),
-                  "units": before}
+                  "units": before,
+                  "kxWatchTimer": kx_watch_before}
         if _SIDECAR_FIXES:
             report["sidecarFixes"] = list(_SIDECAR_FIXES)
         return report
@@ -1023,7 +1115,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
     try:
         # mask 命令可能先生效、后报错：从发出命令起就当作可能已 mask，任何错误都走统一恢复与记录。
         run("systemctl", "mask", "--runtime", *SERVICES)
-        run("systemctl", "stop", *TIMERS)
+        timers_to_stop = [*TIMERS, KX_WATCH_TIMER] if kx_watch_before is not None else list(TIMERS)
+        run("systemctl", "stop", *timers_to_stop)
         run("systemctl", "stop", *SERVICES)
         for _ in range(40):
             if all(unit_state(unit)["active"] == "inactive" for unit in SERVICES):
@@ -1031,7 +1124,11 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             time.sleep(0.25)
         else:
             raise RuntimeError("服务未停止")
-        if any(unit_state(unit)["active"] in ("active", "activating", "reloading") for unit in V4_JOBS):
+        for _ in range(40):
+            if not any(unit_state(unit)["active"] in _RUNNING_UNIT_STATES for unit in jobs_to_check):
+                break
+            time.sleep(0.25)
+        else:
             raise RuntimeError("停 timer 后仍有 V4 任务在运行")
         record["snapshot"] = snapshot(new_dir)
         try:
@@ -1055,7 +1152,8 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 fail_manual(getattr(restore_exc, "step", "还原旧版本"), restore_exc)
             try:
                 after_units = _finish_rollback(previous=previous, old=old, before=before, prior=prior_health,
-                                               api_running=api_running, schema=plan)
+                                               api_running=api_running, schema=plan,
+                                               kx_watch_before=kx_watch_before)
             except Exception as unit_exc:
                 fail_manual(getattr(unit_exc, "step", "恢复单元"), unit_exc)
             note_schema()
@@ -1067,7 +1165,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             _write_switch_state(new_dir, record)
             raise
         try:
-            _restore_units(before)
+            _restore_units(before, target_schema=target_schema, kx_watch_before=kx_watch_before, defer_kx_enable=True)
         except Exception as unit_exc:
             step = getattr(unit_exc, "step", "取消 mask")
             if step == "取消 mask":
@@ -1075,7 +1173,7 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 root_cause = unit_exc.__cause__ if unit_exc.__cause__ is not None else unit_exc
                 record["failure"] = record.get("failure") or f"{type(root_cause).__name__}: {root_cause}"
                 try:
-                    _mask_and_stop()
+                    _mask_and_stop(stop_kx_watch=kx_watch_before is not None)
                 except Exception as stop_exc:
                     fail_manual(getattr(stop_exc, "step", "重新 mask"), stop_exc)
                 try:
@@ -1088,12 +1186,22 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
                 fail_manual(step, unit_exc)
             raise
         record["unitsAfter"] = {unit: unit_state(unit) for unit in SERVICES + TIMERS}
+        if kx_watch_before is not None:
+            record["kxWatchTimerAfter"] = unit_state(KX_WATCH_TIMER)
         record["switched"] = True
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         _write_switch_state(new_dir, record)
         if record["unitsAfter"] != before:
             raise RuntimeError("服务或 timer 状态未恢复到切换前")
         if not api_running:
+            if target_schema >= KX_WATCH_SCHEMA:
+                _apply_kx_watch_state(
+                    target_schema=target_schema,
+                    kx_watch_before=kx_watch_before,
+                    should_activate=_should_activate_kx_watch(before, kx_watch_before),
+                )
+                if kx_watch_before is not None:
+                    record["kxWatchTimerAfter"] = unit_state(KX_WATCH_TIMER)
             note = "切换前 API 未运行，已跳过就绪检查"
             record["readiness"] = note
             _write_switch_state(new_dir, record)
@@ -1102,6 +1210,16 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
         if not isinstance(version, str) or not version:
             raise RuntimeError("新清单缺少 version")
         health(release, version=version, prior=_expected_prior(prior_health, new))
+        # 新版 API 与库就绪确认后再启用 KX 盘后监测 timer，避免就绪失败时提前触发 oneshot 任务
+        if target_schema >= KX_WATCH_SCHEMA:
+            _apply_kx_watch_state(
+                target_schema=target_schema,
+                kx_watch_before=kx_watch_before,
+                should_activate=_should_activate_kx_watch(before, kx_watch_before),
+            )
+            if kx_watch_before is not None:
+                record["kxWatchTimerAfter"] = unit_state(KX_WATCH_TIMER)
+                _write_switch_state(new_dir, record)
         return outcome()
     except Exception as exc:
         if settled:
@@ -1111,10 +1229,10 @@ def switch(*, release: str, previous: str, check_only: bool = False) -> dict:
             if switched:
                 _roll_back_to(previous=previous, old=old, old_entries=old_entries, old_wheel=old_wheel,
                               old_dir=old_dir, new=new, before=before, prior=prior_health, api_running=api_running,
-                              schema=plan)
+                              schema=plan, kx_watch_before=kx_watch_before)
             else:
                 _finish_rollback(previous=previous, old=old, before=before, prior=prior_health,
-                                 api_running=api_running, schema=plan)
+                                 api_running=api_running, schema=plan, kx_watch_before=kx_watch_before)
         except Exception as rollback_exc:
             fail_manual(getattr(rollback_exc, "step", "回滚"), rollback_exc)
         note_schema()

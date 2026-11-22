@@ -1,856 +1,723 @@
-// KX 看板。iPhone 单列，macOS 在够宽时左右分栏；结构、用词和颜色按样图。
+// KX V4 盘后情绪候选看板。
+// 严格对照已确认 HTML 样图「KX 看板」标签页：
+// 顶栏（盘后日期/整理时间/容量/刷新）→ 异常横幅 → 近5日情绪条 + DeepSeek 情绪周期判断 →
+// 情绪派系快捷过滤 + 搜索 → 三个候选区（龙头候选区 / 高情绪候选区 / 淘汰候选区）；
+// macOS 双栏（左列表右详情），iOS 纵向列表 + 推入详情。盘中彻底静默，无自动轮询。
 
 import SwiftUI
 
-enum KXBoardStyle {
-    case phone
-    case mac
-
-    var titleFont: Font { self == .phone ? NKKXFont.titlePhone : NKKXFont.titleMac }
-    var pageInset: CGFloat { self == .phone ? 16 : 18 }
-    var cardInset: CGFloat { self == .phone ? 12 : 18 }
-    var titleTop: CGFloat { self == .phone ? 4 : 14 }
-}
-
-extension KXStatusPiece.Tone {
-    var color: Color {
-        switch self {
-        case .up: return NKKX.up
-        case .broken: return NKKX.amber
-        case .down: return NKKX.down
-        case .off: return NKMorning.textSecondary
-        case .missing: return NKMorning.textTertiary
-        }
-    }
-}
-
-extension KXTrend {
-    var color: Color {
-        switch self {
-        case .up: return NKKX.up
-        case .down: return NKKX.down
-        case .flat: return NKKX.flat
-        }
-    }
-}
-
-extension KXDelta.Direction {
-    var color: Color {
-        switch self {
-        case .up: return NKKX.up
-        case .down: return NKKX.down
-        case .flat: return NKMorning.textSecondary
-        }
-    }
-}
-
 struct KXBoardView: View {
     @Bindable var kx: KXBoardModel
-    var openSettings: () -> Void = {}
-
-    private var style: KXBoardStyle {
-        #if os(iOS)
-        return .phone
-        #else
-        return .mac
-        #endif
-    }
+    var openSettings: () -> Void
+    @State private var marketNoteExpanded = false
 
     var body: some View {
-        scrolling {
-            switch kx.state {
-            case .loading:
-                VStack(spacing: 0) {
-                    KXTitleBar(style: style, meta: nil, sub: nil)
-                    MorningLoadingView()
+        #if os(macOS)
+        content
+            .background(NKKX.page)
+            .task { await kx.loadIfNeeded() }
+        #else
+        NavigationStack {
+            content
+                .background(NKKX.page)
+                .navigationTitle(KXCopy.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            Task { await kx.refresh() }
+                        } label: {
+                            if kx.isRefreshing {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .accessibilityLabel("刷新")
+                    }
                 }
-            case .error(let error):
-                VStack(spacing: 0) {
-                    KXTitleBar(style: style, meta: nil, sub: nil)
-                    MorningStatusView(
-                        message: KXCopy.message(for: error),
-                        retry: { Task { await kx.refresh() } },
-                        openSettings: openSettings
-                    )
+        }
+        .sheet(isPresented: Binding(
+            get: { kx.presentedDetailItem != nil },
+            set: { if !$0 { kx.closeDetail() } }
+        )) {
+            if let detailItem = kx.presentedDetailItem {
+                NavigationStack {
+                    KXStockDetailView(item: detailItem, onClose: { kx.closeDetail() })
                 }
-            case .ready(let board):
-                KXBoardPage(board: board, refreshFailed: kx.refreshFailed, style: style)
+                .presentationDragIndicator(.visible)
             }
         }
-        .frame(maxWidth: contentMaxWidth)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(NKMorning.page.ignoresSafeArea())
-    }
-
-    /// 截图验收可以用 NK_QA_KX_WIDTH 把看板收窄。
-    private var contentMaxWidth: CGFloat {
-        #if DEBUG
-        if let raw = ProcessInfo.processInfo.environment["NK_QA_KX_WIDTH"], let width = Double(raw), width > 0 {
-            return CGFloat(width)
-        }
+        .task { await kx.loadIfNeeded() }
         #endif
-        return .infinity
     }
 
     @ViewBuilder
-    private func scrolling<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    private var content: some View {
+        switch kx.state {
+        case .loading:
+            MorningLoadingView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(NKKX.page)
+        case .error(let error):
+            MorningStatusView(
+                message: KXCopy.errorMessage(for: error),
+                retry: { Task { await kx.refresh() } },
+                openSettings: openSettings
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(NKKX.page)
+        case .ready(let board):
+            #if os(macOS)
+            macLayout(board)
+            #else
+            phoneLayout(board)
+            #endif
+        }
+    }
+
+    // MARK: macOS 双栏布局
+
+    #if os(macOS)
+    private func macLayout(_ board: KXBoard) -> some View {
+        VStack(spacing: 0) {
+            headerBar(board)
+            let banners = effectiveBanners(board)
+            if !banners.isEmpty {
+                alertBanner(banners)
+            }
+            sentimentCard(board)
+            filterBar(board)
+            Rectangle().fill(NKKX.border).frame(height: 1)
+
+            HSplitView {
+                ScrollView {
+                    candidateZones(board, isMac: true)
+                        .padding(14)
+                }
+                .background(NKKX.page)
+                .frame(minWidth: 390, idealWidth: 450, maxWidth: 540)
+
+                Group {
+                    if let selected = kx.selectedItem {
+                        KXStockDetailView(item: selected)
+                            .id(selected.code)
+                    } else {
+                        VStack(spacing: 8) {
+                            Text(kx.hasActiveFilter ? KXCopy.emptyFilterTitle : KXCopy.selectLeftPrompt)
+                                .font(.system(size: 13))
+                                .foregroundStyle(NKKX.textSecondary)
+                            if kx.hasActiveFilter {
+                                Button(KXCopy.clearFilter) { kx.resetFilters() }
+                                    .buttonStyle(.bordered)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(NKKX.surface)
+                    }
+                }
+                .frame(minWidth: 420, maxWidth: .infinity)
+            }
+        }
+    }
+    #endif
+
+    // MARK: iOS 纵向布局
+
+    #if os(iOS)
+    private func phoneLayout(_ board: KXBoard) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                headerBar(board)
+                let banners = effectiveBanners(board)
+                if !banners.isEmpty {
+                    alertBanner(banners)
+                }
+                sentimentCard(board)
+                filterBar(board)
+                candidateZones(board, isMac: false)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                    .padding(.bottom, 24)
+            }
+        }
+        .background(NKKX.page)
+        .refreshable {
+            await kx.refresh()
+        }
+    }
+    #endif
+
+    // MARK: 1. 顶栏（盘后日期、20:00 整理时间、容量计数）
+
+    private func headerBar(_ board: KXBoard) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 8) {
+                #if os(macOS)
+                Text("KX 盘后看板")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(NKKX.textPrimary)
+                Text("盘后 \(board.asOf)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(NKKX.textSecondary)
+                #else
+                Text("盘后 \(board.asOf)")
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(NKKX.textPrimary)
+                #endif
+                Spacer(minLength: 6)
+                capacityBadge(board.capacity)
+            }
+            Text("整理于 \(KXCopy.generatedShortTime(board.generatedAt)) · 盘中静默快照")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(NKKX.textTertiary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(NKKX.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(NKKX.border).frame(height: 1)
+        }
+    }
+
+    private func capacityBadge(_ cap: KXCapacity) -> some View {
+        HStack(spacing: 4) {
+            Text("候选")
+                .foregroundStyle(NKKX.textSecondary)
+            Text("\(cap.used)")
+                .fontWeight(.semibold)
+                .foregroundStyle(NKKX.textPrimary)
+            Text("/ \(cap.max)")
+                .foregroundStyle(NKKX.textSecondary)
+            if cap.nextFree > 0 {
+                Text("· 拟空 \(cap.nextFree) 坑")
+                    .foregroundStyle(NKKX.amberInk)
+            } else {
+                Text("· 空 0 坑")
+                    .foregroundStyle(NKKX.textTertiary)
+            }
+        }
+        .font(.system(size: 11.5, design: .monospaced))
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(NKKX.surfaceSubtle)
+        .clipShape(Capsule())
+    }
+
+    // MARK: 2. 异常 / 未更新横幅
+
+    private func effectiveBanners(_ board: KXBoard) -> [String] {
+        var list: [String] = []
+        if kx.refreshFailed {
+            list.append(KXCopy.refreshFailedNotice)
+        }
+        for msg in board.alertMessages where !list.contains(msg) {
+            list.append(msg)
+        }
+        return list
+    }
+
+    private func alertBanner(_ messages: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(messages.enumerated()), id: \.offset) { _, text in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(NKKX.amber)
+                        .padding(.top, 1)
+                    Text(text)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(NKKX.amberInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(NKKX.amberBackground)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(NKKX.amber.opacity(0.25)).frame(height: 1)
+        }
+    }
+
+    // MARK: 3. 情绪分析区（程序事实 + DeepSeek 情绪周期判断分开展示）
+
+    private func sentimentCard(_ board: KXBoard) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let today = board.latestSentimentDay {
+                sentimentFactsStrip(today: today, days: board.sentiment.days)
+            }
+            if let judgment = board.sentiment.judgment {
+                deepseekSentimentBlock(judgment)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(NKKX.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(NKKX.border).frame(height: 1)
+        }
+    }
+
+    private func sentimentFactsStrip(today: KXSentimentDay, days: [KXSentimentDay]) -> some View {
+        let highestNames = today.highest.map(\.name).joined(separator: "、")
+        let contText: String = {
+            if let cont = today.yCont, let total = today.yZtN {
+                return "\(cont)/\(total) 续板"
+            }
+            return "—"
+        }()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            HStack(alignment: .top, spacing: 14) {
+                sentiCell(value: today.zt.map(String.init) ?? "—", unit: nil, color: NKKX.up, label: "主板涨停", sub: nil)
+                sentiCell(
+                    value: today.zb.map(String.init) ?? "—",
+                    unit: today.zbRate.map { String(format: "%.1f%%", $0) },
+                    color: NKKX.amber,
+                    label: "炸板 · 炸板率",
+                    sub: nil
+                )
+                sentiCell(value: today.dt.map(String.init) ?? "—", unit: nil, color: NKKX.down, label: "主板跌停", sub: nil)
+                sentiCell(
+                    value: today.maxLbc.map(String.init) ?? "—",
+                    unit: today.maxLbc == nil ? nil : "板",
+                    color: NKKX.textPrimary,
+                    label: "最高连板",
+                    sub: highestNames.isEmpty ? nil : highestNames
+                )
+                sentiCell(
+                    value: KXCopy.fmtPct1(today.yCloseMed),
+                    unit: nil,
+                    color: KXCopy.toneColor(today.yCloseMed),
+                    label: "昨涨停今收中位（\(contText)）",
+                    sub: "今开溢价 \(KXCopy.fmtPct(today.yOpenMean)) · 均收 \(KXCopy.fmtPct(today.yCloseMean))"
+                )
+                Spacer(minLength: 8)
+                fiveDayMiniStrip(days)
+            }
+            #else
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    sentiCell(value: today.zt.map(String.init) ?? "—", unit: nil, color: NKKX.up, label: "涨停", sub: nil)
+                    sentiCell(
+                        value: today.zb.map(String.init) ?? "—",
+                        unit: today.zbRate.map { String(format: "%.0f%%", $0) },
+                        color: NKKX.amber,
+                        label: "炸板·率",
+                        sub: nil
+                    )
+                    sentiCell(value: today.dt.map(String.init) ?? "—", unit: nil, color: NKKX.down, label: "跌停", sub: nil)
+                    sentiCell(
+                        value: today.maxLbc.map(String.init) ?? "—",
+                        unit: today.maxLbc == nil ? nil : "板",
+                        color: NKKX.textPrimary,
+                        label: "最高标",
+                        sub: highestNames.isEmpty ? nil : highestNames
+                    )
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("昨涨停今收中位")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(NKKX.textSecondary)
+                    Text(KXCopy.fmtPct1(today.yCloseMed))
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(KXCopy.toneColor(today.yCloseMed))
+                    Text("(\(contText))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(NKKX.textTertiary)
+                    Spacer()
+                    Text("开 \(KXCopy.fmtPct1(today.yOpenMean)) · 均 \(KXCopy.fmtPct1(today.yCloseMean))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(NKKX.textSecondary)
+                }
+                fiveDayMiniStrip(days)
+            }
+            #endif
+        }
+    }
+
+    private func sentiCell(value: String, unit: String?, color: Color, label: String, sub: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: 19, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(color)
+                if let unit {
+                    Text(unit)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(NKKX.textSecondary)
+                }
+            }
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(NKKX.textTertiary)
+                .lineLimit(1)
+            if let sub, !sub.isEmpty {
+                Text(sub)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(NKKX.textSecondary)
+                    .lineLimit(1)
+            }
+        }
         #if os(iOS)
-        ScrollView { content() }
-            .refreshable { await kx.refresh() }
-        #else
-        ScrollView { content() }
+        .frame(maxWidth: .infinity, alignment: .leading)
         #endif
     }
-}
 
-struct KXBoardPage: View {
-    var board: KXBoard
-    var refreshFailed: Bool
-    var style: KXBoardStyle
-
-    var body: some View {
-        let sentiment = KXCopy.sentiment(board.sentiment)
-        let footer = KXCopy.footer(board)
-        VStack(alignment: .leading, spacing: 0) {
-            KXTitleBar(
-                style: style,
-                meta: KXCopy.headerMeta(board: board, refreshFailed: refreshFailed),
-                sub: KXCopy.headerSub(board: board)
-            )
-            ForEach(Array(KXCopy.amberLines(board: board).enumerated()), id: \.offset) { _, line in
-                KXAmberBar(text: line)
-                    .padding(.horizontal, style.cardInset)
-                    .padding(.top, 4)
-                    .padding(.bottom, 2)
-            }
-            if let gray = KXCopy.grayLine(board: board) {
-                Text(verbatim: gray)
-                    .font(NKKXFont.gray)
-                    .foregroundStyle(NKMorning.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, style.pageInset)
-                    .padding(.vertical, 1)
-            }
-            KXSentimentBar(text: sentiment, style: style)
-                .padding(.horizontal, style.cardInset)
-                .padding(.top, 6)
-            if let note = KXCopy.clean(board.structure?.marketNote) {
-                KXMarketNote(note: note)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(NKKX.deepseekFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .padding(.horizontal, style.cardInset)
-                    .padding(.top, 8)
-            }
-            ForEach(board.rooms.ordered) { room in
-                KXRoomSection(room: room, board: board, style: style)
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                Text(verbatim: footer.line)
-                    .font(NKKXFont.foot)
-                if let version = footer.version {
-                    Text(verbatim: version)
-                        .font(NKKXFont.version)
-                }
-            }
-            .foregroundStyle(NKMorning.textTertiary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, style.pageInset)
-            .padding(.top, 6)
-            .padding(.bottom, style == .phone ? 10 : 16)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct KXTitleBar: View {
-    var style: KXBoardStyle
-    var meta: String?
-    var sub: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("KX")
-                    .font(style.titleFont)
-                    .tracking(0.2)
-                    .foregroundStyle(NKMorning.textPrimary)
-                Spacer(minLength: 8)
-                if let meta {
-                    Text(verbatim: meta)
-                        .font(NKKXFont.meta)
-                        .foregroundStyle(NKMorning.textSecondary)
-                        .monospacedDigit()
-                }
-            }
-            if let sub {
-                Text(verbatim: sub)
-                    .font(NKKXFont.meta)
-                    .foregroundStyle(NKMorning.textSecondary)
-            }
-        }
-        .padding(.horizontal, style.pageInset)
-        .padding(.top, style.titleTop)
-        .padding(.bottom, style == .phone ? 0 : 4)
-    }
-}
-
-struct KXAmberBar: View {
-    var text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "info.circle")
-                .font(.system(size: 14))
-                .padding(.top, 1)
-            Text(verbatim: text)
-                .font(NKKXFont.alert)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(NKKX.amberInk)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NKKX.amberBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct KXSentimentBar: View {
-    var text: KXSentimentText
-    var style: KXBoardStyle
-    @State private var namesOpen = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if style == .phone {
-                HStack(alignment: .top, spacing: 8) {
-                    count("主板涨停", text.limitUp)
-                    broken
-                    count("跌停", text.limitDown)
-                    highest
-                }
-                if let title = text.nameTitle, !text.names.isEmpty {
-                    KXFoldButton(title: title, open: $namesOpen)
-                    if namesOpen {
-                        Text(verbatim: text.names.joined(separator: "、"))
-                            .font(NKKXFont.names)
-                            .foregroundStyle(NKMorning.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+    private func fiveDayMiniStrip(_ days: [KXSentimentDay]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("近 5 日温度（涨停 / 跌停）")
+                .font(.system(size: 10.5))
+                .foregroundStyle(NKKX.textTertiary)
+            HStack(spacing: 5) {
+                ForEach(Array(days.enumerated()), id: \.element.id) { idx, day in
+                    let isLatest = idx == days.count - 1
+                    VStack(spacing: 1) {
+                        Text(KXCopy.monthDay(day.date))
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(NKKX.textTertiary)
+                        HStack(spacing: 1) {
+                            Text(day.zt.map(String.init) ?? "—")
+                                .foregroundStyle(NKKX.up)
+                            Text("/")
+                                .foregroundStyle(NKKX.textTertiary)
+                            Text(day.dt.map(String.init) ?? "—")
+                                .foregroundStyle(NKKX.down)
+                        }
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     }
-                }
-                Text(verbatim: text.yesterday)
-                    .font(NKKXFont.yesterdayPhone)
-                    .foregroundStyle(NKMorning.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .top) {
-                        Rectangle().fill(NKMorning.hairline).frame(height: 0.5)
+                    .frame(minWidth: 48)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 4)
+                    .background(isLatest ? NKKX.surface : NKKX.surfaceSubtle)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(isLatest ? NKKX.accent : NKKX.border, lineWidth: isLatest ? 1.2 : 1)
                     }
-            } else {
-                HStack(alignment: .top, spacing: 8) {
-                    count("主板涨停", text.limitUp)
-                    broken
-                    count("跌停", text.limitDown)
-                    highest
-                    Text(verbatim: text.yesterday)
-                        .font(NKKXFont.yesterdayMac)
-                        .foregroundStyle(NKMorning.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
-            if text.intraday {
-                Text("盘中统计")
-                    .font(NKKXFont.intraday)
-                    .foregroundStyle(NKMorning.textTertiary)
-            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NKMorning.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var broken: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(verbatim: text.broken)
-                    .font(NKKXFont.sentiValue)
-                    .monospacedDigit()
-                Text(verbatim: text.brokenRate)
-                    .font(NKKXFont.sentiRate)
-                    .foregroundStyle(NKMorning.textSecondary)
-                    .monospacedDigit()
-            }
-            Text("炸板")
-                .font(NKKXFont.label)
-                .foregroundStyle(NKMorning.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var highest: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .firstTextBaseline, spacing: 1) {
-                Text(verbatim: text.boards)
-                    .font(NKKXFont.sentiValue)
-                    .monospacedDigit()
-                if text.showsBoardUnit {
-                    Text("板")
-                        .font(NKKXFont.sentiUnit)
-                }
-            }
-            Text(verbatim: text.highestLabel)
-                .font(NKKXFont.label)
-                .foregroundStyle(NKMorning.textSecondary)
-                .lineLimit(1)
-            if style == .mac, !text.names.isEmpty {
-                Text(verbatim: text.names.joined(separator: "、"))
-                    .font(NKKXFont.names)
-                    .foregroundStyle(NKMorning.textSecondary)
-                    .lineLimit(2)
-                    .padding(.top, 4)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func count(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(verbatim: value)
-                .font(NKKXFont.sentiValue)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(label)
-                .font(NKKXFont.label)
-                .foregroundStyle(NKMorning.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct KXFoldButton: View {
-    var title: String
-    @Binding var open: Bool
-
-    var body: some View {
+    private func deepseekSentimentBlock(_ judgment: KXSentimentJudgment) -> some View {
         Button {
-            open.toggle()
+            marketNoteExpanded.toggle()
         } label: {
-            HStack(spacing: 0) {
-                Text(open ? "▾ " : "▸ ")
-                    .foregroundStyle(NKMorning.textTertiary)
-                Text(title)
-                    .foregroundStyle(NKMorning.accent)
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center, spacing: 6) {
+                    Text("DeepSeek 情绪周期判断")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(NKKX.accent)
+                    if !judgment.stage.isEmpty {
+                        Text(judgment.stage)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(NKKX.textPrimary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(NKKX.surface)
+                            .clipShape(Capsule())
+                    }
+                    Spacer()
+                    Text(marketNoteExpanded ? "收起" : "展开")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(NKKX.accent)
+                }
+
+                if !judgment.marketNote.isEmpty {
+                    Text(judgment.marketNote)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(NKKX.textSecondary)
+                        .lineLimit(marketNoteExpanded ? nil : 2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .font(NKKXFont.link)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(NKKX.deepseekFill)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
     }
-}
 
-struct KXMarketNote: View {
-    var note: String
-    var subdued: Bool = false
-    @State private var open = false
+    // MARK: 4. 筛选栏（派系快捷过滤 + 搜索）
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                open.toggle()
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("DeepSeek")
-                        .font(NKKXFont.mark)
-                        .foregroundStyle(NKMorning.accent)
-                        .tracking(0.4)
-                    if !open {
-                        Text(verbatim: note)
-                            .font(subdued ? NKKXFont.names : NKKXFont.market)
-                            .foregroundStyle(subdued ? NKMorning.textSecondary : NKMorning.textPrimary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    Text(open ? "收起" : "展开")
-                        .font(NKKXFont.disclosure)
-                        .foregroundStyle(NKMorning.accent)
-                }
-            }
-            .buttonStyle(.plain)
-            if open {
-                Text(verbatim: note)
-                    .font(subdued ? NKKXFont.names : NKKXFont.market)
-                    .foregroundStyle(subdued ? NKMorning.textSecondary : NKMorning.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-}
-
-struct KXRoomSection: View {
-    var room: KXRoomGroups
-    var board: KXBoard
-    var style: KXBoardStyle
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(room.room.title)
-                    .font(NKKXFont.section)
-                    .foregroundStyle(NKMorning.textSecondary)
-                Spacer(minLength: 8)
-                Text("\(room.groups.count) 组")
-                    .font(NKKXFont.sectionCount)
-                    .foregroundStyle(NKMorning.textTertiary)
-                    .monospacedDigit()
-            }
-            .padding(.horizontal, style.pageInset)
-            .padding(.top, 12)
-            .padding(.bottom, 6)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-
-            if room.groups.isEmpty {
-                Text(KXCopy.emptyRoom)
-                    .font(NKKXFont.empty)
-                    .foregroundStyle(NKMorning.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .background(NKMorning.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .padding(.horizontal, style.cardInset)
-                    .padding(.bottom, 10)
-            } else {
-                ForEach(Array(room.groups.enumerated()), id: \.offset) { _, group in
-                    KXGroupCard(group: group, room: room.room, board: board, style: style)
-                        .padding(.horizontal, style.cardInset)
-                        .padding(.bottom, 10)
-                }
-            }
-        }
-    }
-}
-
-struct KXGroupCard: View {
-    var group: KXGroup
-    var room: KXRoom
-    var board: KXBoard
-    var style: KXBoardStyle
-    @State private var width: CGFloat = 1200
-
-    private var mismatches: [String] { KXCopy.mismatches(group: group, board: board) }
-    private var deepseek: KXDeepseekBody? { KXCopy.deepseekBody(group) }
-    private var showsDeepseek: Bool { deepseek != nil || !mismatches.isEmpty }
-    private var sideBySide: Bool {
-        guard style == .mac else { return false }
-        let floor: CGFloat = group.followers.isEmpty ? 520 : 560
-        return width >= floor
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            if style == .phone {
-                leaders.padding(.top, 6)
-                if showsDeepseek {
-                    deepseekBox.padding(.top, 8)
-                }
-                if !group.followers.isEmpty {
-                    followers(divided: false).padding(.top, 8)
-                }
-            } else if !sideBySide {
-                leaders.padding(.top, 6)
-                if !group.followers.isEmpty {
-                    followers(divided: false).padding(.top, 8)
-                }
-                if showsDeepseek {
-                    deepseekBox.padding(.top, 8)
-                }
-            } else if group.followers.isEmpty {
-                HStack(alignment: .top, spacing: 18) {
-                    leaders.frame(maxWidth: .infinity, alignment: .topLeading)
-                    if showsDeepseek {
-                        deepseekBox.frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                }
-                .padding(.top, 6)
-            } else {
-                HStack(alignment: .top, spacing: 18) {
-                    leaders.frame(maxWidth: .infinity, alignment: .topLeading)
-                    followers(divided: true)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .padding(.top, 6)
-                if showsDeepseek {
-                    deepseekBox.padding(.top, 8)
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NKMorning.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { width = $0 }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(verbatim: group.theme ?? KXCopy.dash)
-                .font(NKKXFont.theme)
-                .foregroundStyle(NKMorning.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            KXWrapLayout(spacing: 6, lineSpacing: 4) {
-                Text(verbatim: KXCopy.roomSince(group))
-                    .font(NKKXFont.meta)
-                    .foregroundStyle(NKMorning.textSecondary)
-                ForEach(Array(KXCopy.flagLabels(group).enumerated()), id: \.offset) { _, label in
-                    KXTag(text: label)
-                }
-            }
-            .padding(.top, 4)
-            if room == .eliminated {
-                Text(verbatim: KXCopy.eliminatedLine(group))
-                    .font(NKKXFont.meta)
-                    .foregroundStyle(NKMorning.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
-            }
-        }
-    }
-
-    private var leaders: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(group.leaders.enumerated()), id: \.offset) { index, stock in
-                if index > 0 {
-                    Rectangle()
-                        .fill(NKMorning.hairline)
-                        .frame(height: 0.5)
-                        .padding(.vertical, 8)
-                }
-                KXLeaderRow(stock: stock)
-            }
-        }
-    }
-
-    private var deepseekBox: some View {
-        KXDeepseekBox(summary: deepseek, mismatches: mismatches)
-    }
-
-    private func followers(divided: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("小弟 \(group.followers.count)")
-                .font(NKKXFont.followerLabel)
-                .foregroundStyle(NKMorning.textTertiary)
-                .padding(.bottom, 4)
-            ForEach(Array(group.followers.enumerated()), id: \.offset) { _, stock in
-                KXFollowerRow(stock: stock)
-            }
-        }
-        .padding(.leading, divided ? 16 : 0)
-        .overlay(alignment: .leading) {
-            if divided {
-                Rectangle().fill(NKMorning.hairline).frame(width: 0.5)
-            }
-        }
-    }
-}
-
-struct KXDeepseekBox: View {
-    var summary: KXDeepseekBody?
-    var mismatches: [String]
-    @State private var open = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(mismatches.enumerated()), id: \.offset) { _, text in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(KXCopy.mismatchTitle)
-                        .font(NKKXFont.extra.weight(.semibold))
-                        .foregroundStyle(NKMorning.problem)
-                    Text(verbatim: text)
-                        .font(NKKXFont.extra)
-                        .foregroundStyle(NKMorning.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.bottom, 4)
-            }
-            switch summary {
-            case .judgment(let verdict, let reason, let title, let lines):
+    private func filterBar(_ board: KXBoard) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 HStack(spacing: 6) {
-                    Text("DeepSeek")
-                        .font(NKKXFont.mark)
-                        .foregroundStyle(NKMorning.accent)
-                        .tracking(0.4)
-                    Text(verbatim: verdict)
-                        .font(NKKXFont.verdict)
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 1)
-                        .background(NKMorning.accent, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundStyle(NKKX.textTertiary)
+                    TextField(KXCopy.searchPlaceholder, text: $kx.searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(NKKX.textPrimary)
+                    if !kx.searchText.isEmpty {
+                        Button {
+                            kx.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(NKKX.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清空搜索")
+                    }
                 }
-                Text(verbatim: reason)
-                    .font(NKKXFont.reason)
-                    .foregroundStyle(NKMorning.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
-                KXFoldButton(title: title, open: $open)
-                    .padding(.top, 6)
-                if open {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(lines, id: \.label) { line in
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                Text(line.label)
-                                    .font(NKKXFont.extra.weight(.semibold))
-                                    .foregroundStyle(NKMorning.textSecondary)
-                                    .frame(width: 36, alignment: .leading)
-                                Text(verbatim: line.value)
-                                    .font(NKKXFont.extra)
-                                    .foregroundStyle(NKMorning.textPrimary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(NKKX.surfaceSubtle)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8).stroke(NKKX.border, lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                if kx.hasActiveFilter {
+                    Text("\(kx.filteredItems.count)/\(board.items.count)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(NKKX.accent)
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    factionFilterButton(title: KXCopy.allFaction, count: board.items.count, value: KXCopy.allFaction)
+                    ForEach(board.factions) { faction in
+                        factionFilterButton(title: faction.name, count: faction.count, value: faction.name)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(NKKX.surface)
+    }
+
+    private func factionFilterButton(title: String, count: Int, value: String) -> some View {
+        let active = kx.selectedFaction == value
+        return Button {
+            kx.selectedFaction = value
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                if value != KXCopy.allFaction {
+                    Text("\(count)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .opacity(0.8)
+                }
+            }
+            .font(.system(size: 12, weight: active ? .semibold : .regular))
+            .foregroundStyle(active ? NKKX.accent : NKKX.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(active ? NKKX.accentFill : NKKX.surfaceSubtle)
+            .overlay {
+                Capsule().stroke(active ? NKKX.accent.opacity(0.45) : NKKX.border, lineWidth: 1)
+            }
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: 5. 三个候选区（龙头 / 高情绪 / 淘汰）
+
+    private func candidateZones(_ board: KXBoard, isMac: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if board.items.isEmpty {
+                emptyBlock(title: KXCopy.emptyBoardTitle, showClear: false)
+            } else if kx.filteredItems.isEmpty {
+                emptyBlock(title: KXCopy.emptyFilterTitle, showClear: true)
+            } else {
+                ForEach(KXZone.allCases, id: \.self) { zone in
+                    let items = kx.filteredItems(in: zone)
+                    if !items.isEmpty || !kx.hasActiveFilter {
+                        zoneSection(zone: zone, items: items, isMac: isMac)
+                    }
+                }
+            }
+
+            Text(KXCopy.footerNote)
+                .font(.system(size: 11))
+                .foregroundStyle(NKKX.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 4)
+        }
+    }
+
+    private func emptyBlock(title: String, showClear: Bool) -> some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 13))
+                .foregroundStyle(NKKX.textSecondary)
+            if showClear {
+                Button(KXCopy.clearFilter) { kx.resetFilters() }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+        .background(NKKX.surface)
+        .overlay {
+            RoundedRectangle(cornerRadius: 12).stroke(NKKX.border, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func zoneSection(zone: KXZone, items: [KXBoardItem], isMac: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(KXCopy.zoneDotColor(zone))
+                    .frame(width: 7, height: 7)
+                Text(KXCopy.zoneTitle(zone))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(NKKX.textPrimary)
+                Text(KXCopy.zoneHint(zone))
+                    .font(.system(size: 11))
+                    .foregroundStyle(NKKX.textTertiary)
+                    .lineLimit(1)
+                Spacer()
+                Text("\(items.count) 只")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(NKKX.textSecondary)
+            }
+            .padding(.horizontal, 2)
+
+            if items.isEmpty {
+                Text("当前无标的")
+                    .font(.system(size: 12))
+                    .foregroundStyle(NKKX.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(NKKX.surface)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11).stroke(NKKX.border, lineWidth: 1)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 11))
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                        Group {
+                            if isMac {
+                                Button {
+                                    kx.select(item.code)
+                                } label: {
+                                    stockRowContent(item, selected: kx.selectedItem?.code == item.code)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Button {
+                                    kx.openDetail(item.code)
+                                } label: {
+                                    stockRowContent(item, selected: false)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .overlay(alignment: .bottom) {
+                            if idx < items.count - 1 {
+                                Rectangle().fill(NKKX.border).frame(height: 1)
                             }
                         }
                     }
-                    .padding(.top, 4)
                 }
-            case .note(let note):
-                KXMarketNote(note: note, subdued: true)
-            case nil:
-                EmptyView()
+                .background(NKKX.surface)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11).stroke(NKKX.border, lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 11))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+    }
+
+    private func stockRowContent(_ item: KXBoardItem, selected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 第一行：名称 + 代码 | 涨跌幅 + 换手（绝不折行）
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(item.name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(NKKX.textPrimary)
+                        .lineLimit(1)
+                    Text(item.code)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(NKKX.textTertiary)
+                }
+                Spacer(minLength: 6)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(KXCopy.fmtPct(item.facts.pct))
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(KXCopy.toneColor(item.facts.pct))
+                    Text("换 \(KXCopy.fmtTurnover(item.facts.tr, decimals: 1))")
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(NKKX.textSecondary)
+                }
+            }
+
+            // 第二行：独立于分区的节奏状态胶囊 + 变动徽章 | 收盘板型
+            HStack(alignment: .center, spacing: 6) {
+                HStack(spacing: 5) {
+                    KXRhythmPill(rhythm: item.judgment.rhythm)
+                    KXChangeBadgePill(badge: item.changeBadge)
+                }
+                Spacer(minLength: 6)
+                Text(item.facts.boardStatus)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(NKKX.textSecondary)
+                    .lineLimit(1)
+            }
+
+            // 第三行：主/次情绪派系标签 | 今日龙虎榜净买或淘汰区停留提示
+            HStack(alignment: .center, spacing: 6) {
+                HStack(spacing: 4) {
+                    ForEach(Array(item.judgment.factions.prefix(3).enumerated()), id: \.offset) { _, tag in
+                        KXFactionPillView(text: tag.name, primary: tag.primary)
+                    }
+                }
+                Spacer(minLength: 6)
+                if item.zone == .elim {
+                    Text(item.cycleTag)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(item.nextRemove ? NKKX.amberInk : NKKX.textTertiary)
+                        .lineLimit(1)
+                } else if let lhb = item.facts.lhb, item.facts.lhbIsToday {
+                    Text("榜 \(KXCopy.fmtWanSigned(lhb.netW))")
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(KXCopy.toneColor(lhb.netW))
+                } else {
+                    Text("今日未上榜")
+                        .font(.system(size: 11))
+                        .foregroundStyle(NKKX.textTertiary)
+                }
+            }
+
+            // 第四行：二波核心事实（5日线、回撤、量/峰）
+            HStack(spacing: 12) {
+                Text("5日线 \(KXCopy.fmtPct1(item.facts.ma5Diff))")
+                    .foregroundStyle(NKKX.textSecondary)
+                Text("回撤 \(KXCopy.fmtPct1(item.facts.ddPeak))")
+                    .foregroundStyle(NKKX.textSecondary)
+                Text("量/峰 \(KXCopy.fmtRatioPct(item.facts.volRatioPeak))")
+                    .foregroundStyle(NKKX.textSecondary)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11, design: .monospaced))
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NKKX.deepseekFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-struct KXLeaderRow: View {
-    var stock: KXStock
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            KXQuoteLine(stock: stock, showsInlineStatus: false)
-            KXRichText.leaderFacts(stock)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 3)
-            if let order = KXCopy.orderLine(stock) {
-                KXOrderLineView(line: order)
-                    .padding(.top, 3)
-            }
-            if let extra = KXCopy.extraWarnings(stock) {
-                Text(verbatim: extra)
-                    .font(NKKXFont.why)
-                    .foregroundStyle(NKMorning.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct KXFollowerRow: View {
-    var stock: KXStock
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            KXQuoteLine(stock: stock, showsInlineStatus: true)
-            if let bits = KXCopy.poolFacts(stock.limitUp) {
-                KXRichText.factLine(bits)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 1)
-                    .padding(.bottom, 4)
-            }
-            if let reason = KXCopy.clean(stock.reason) {
-                Text(verbatim: reason)
-                    .font(NKKXFont.followerReason)
-                    .foregroundStyle(NKMorning.textTertiary)
-                    .lineLimit(1)
-                    .padding(.top, 1)
-                    .padding(.bottom, 7)
-            }
-        }
-    }
-}
-
-struct KXQuoteLine: View {
-    var stock: KXStock
-    var showsInlineStatus: Bool
-
-    private var trend: KXTrend { KXCopy.trend(stock.quote.changePercent) }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 4) {
-            if showsInlineStatus, stock.divergent == true {
-                KXTag(text: "背离")
-            }
-            // 名称按实际宽度显示、最后才压缩，代码紧跟其后（样图如此）；挤的时候先让代码和状态让位。
-            Text(stock.name.isEmpty ? KXCopy.dash : stock.name)
-                .font(NKKXFont.name)
-                .foregroundStyle(NKMorning.textPrimary)
-                .lineLimit(1)
-                .layoutPriority(3)
-            Text(verbatim: stock.code)
-                .font(NKKXFont.code)
-                .foregroundStyle(NKMorning.textTertiary)
-                .monospacedDigit()
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            Text(verbatim: KXCopy.price(stock.quote.price))
-                .font(NKKXFont.price)
-                .monospacedDigit()
-                .foregroundStyle(trend.color)
-                .layoutPriority(2)
-            Text(verbatim: KXCopy.percent(stock.quote.changePercent))
-                .font(NKKXFont.price)
-                .monospacedDigit()
-                .foregroundStyle(trend.color)
-                .layoutPriority(2)
-            if KXCopy.isAuction(stock) {
-                Text("竞价中")
-                    .font(NKKXFont.auction)
-                    .foregroundStyle(NKMorning.accent)
-                    .padding(.horizontal, 4)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .stroke(NKMorning.accent, lineWidth: 1)
-                    )
-                    .layoutPriority(2)
-            }
-            if showsInlineStatus {
-                KXRichText.statusLine(KXCopy.todayStatus(stock.limitUp))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(1)
-            }
-        }
-    }
-}
-
-struct KXOrderLineView: View {
-    var line: KXOrderLine
-
-    var body: some View {
-        KXWrapLayout(spacing: 6, lineSpacing: 2) {
-            Text(line.kind == .seal ? "封单" : "买一挂单")
-                .font(NKKXFont.facts)
-                .foregroundStyle(NKMorning.textSecondary)
-            Text(verbatim: line.amount)
-                .font(NKKXFont.facts.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(NKMorning.textPrimary)
-            if let delta = line.delta {
-                Text(verbatim: delta.text)
-                    .font(NKKXFont.facts)
-                    .monospacedDigit()
-                    .foregroundStyle(delta.direction.color)
-            }
-            if let warnings = line.warnings {
-                Text(verbatim: warnings)
-                    .font(NKKXFont.why)
-                    .foregroundStyle(NKMorning.textTertiary)
-            }
-        }
-    }
-}
-
-struct KXTag: View {
-    var text: String
-
-    var body: some View {
-        Text(verbatim: text)
-            .font(NKKXFont.tag)
-            .foregroundStyle(NKMorning.textSecondary)
-            .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .background(NKMorning.tagFill, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-    }
-}
-
-enum KXRichText {
-    static func leaderFacts(_ stock: KXStock) -> Text {
-        let status = statusLine(KXCopy.todayStatus(stock.limitUp))
-        guard let pool = KXCopy.poolFacts(stock.limitUp) else { return status }
-        return status + separator() + factLine(pool)
-    }
-
-    static func statusLine(_ pieces: [KXStatusPiece]) -> Text {
-        guard let first = pieces.first else { return Text(verbatim: "") }
-        return pieces.dropFirst().reduce(piece(first)) { partial, item in
-            partial + Text(verbatim: " ") + piece(item)
-        }
-    }
-
-    static func factLine(_ bits: [KXFactBit]) -> Text {
-        guard let first = bits.first else { return Text(verbatim: "") }
-        return bits.dropFirst().reduce(bit(first)) { partial, item in
-            partial + separator() + bit(item)
-        }
-    }
-
-    private static func piece(_ item: KXStatusPiece) -> Text {
-        let word = Text(verbatim: item.text).foregroundStyle(item.tone.color)
-        return item.tone == .missing ? word.font(NKKXFont.facts) : word.font(NKKXFont.status)
-    }
-
-    private static func bit(_ item: KXFactBit) -> Text {
-        Text(verbatim: item.text)
-            .font(NKKXFont.facts)
-            .foregroundStyle(item.missing ? NKMorning.textTertiary : NKMorning.textPrimary)
-    }
-
-    private static func separator() -> Text {
-        Text(verbatim: " · ")
-            .font(NKKXFont.facts)
-            .foregroundStyle(NKMorning.textTertiary)
-    }
-}
-
-struct KXWrapLayout: Layout {
-    var spacing: CGFloat = 6
-    var lineSpacing: CGFloat = 4
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let limit = proposal.width ?? .greatestFiniteMagnitude
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var row: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x > 0, x + size.width > limit {
-                x = 0
-                y += row + lineSpacing
-                row = 0
-            }
-            row = max(row, size.height)
-            x += size.width + (x > 0 || size.width > 0 ? spacing : 0)
-        }
-        return CGSize(width: proposal.width ?? max(0, x - spacing), height: y + row)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var row: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX + 0.5 {
-                x = bounds.minX
-                y += row + lineSpacing
-                row = 0
-            }
-            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: size.width, height: size.height))
-            row = max(row, size.height)
-            x += size.width + spacing
-        }
+        .background(selected ? NKKX.accentFill.opacity(0.75) : Color.clear)
+        .contentShape(Rectangle())
     }
 }

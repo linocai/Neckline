@@ -52,9 +52,10 @@ _JWT_TTL_SEC = 50 * 60
 @dataclass
 class PushResult:
     ok: bool
-    status: int            # HTTP 状态码(成功 200);本地未发=0
+    status: int            # HTTP 状态码(成功 200);本地未发或传输异常=0
     reason: str            # apns 错误 reason 或本地原因
     apns_id: str = ""
+    dispatched: bool = True  # False 表示尚未发起 HTTP 外呼（本地凭据/签名/依赖失败），可安全重试
 
 
 # —— JWT 缓存 ————————————————————————————————————————————————————
@@ -222,9 +223,13 @@ def _http2_post(url: str, headers: Dict[str, str], body: bytes) -> PushResult:
     try:
         import httpx
     except ImportError:
-        return PushResult(ok=False, status=0, reason="httpx 未安装")
+        return PushResult(ok=False, status=0, reason="httpx 未安装", dispatched=False)
     try:
-        with httpx.Client(http2=True, timeout=10.0) as client:
+        client = httpx.Client(http2=True, timeout=10.0)
+    except Exception as e:  # noqa: BLE001  缺少 h2 或本地客户端初始化失败，尚未发起 HTTP 外呼
+        return PushResult(ok=False, status=0, reason=f"客户端初始化失败: {e}", dispatched=False)
+    try:
+        with client:
             resp = client.post(url, headers=headers, content=body)
         apns_id = resp.headers.get("apns-id", "")
         if resp.status_code == 200:
@@ -235,8 +240,8 @@ def _http2_post(url: str, headers: Dict[str, str], body: bytes) -> PushResult:
         except Exception:  # noqa: BLE001
             reason = resp.text[:200]
         return PushResult(ok=False, status=resp.status_code, reason=reason, apns_id=apns_id)
-    except Exception as e:  # noqa: BLE001  网络/TLS/HTTP2 协商失败
-        return PushResult(ok=False, status=0, reason=f"传输异常: {e}")
+    except Exception as e:  # noqa: BLE001  网络/TLS/HTTP2 传输异常，APNs 受理结果未知
+        return PushResult(ok=False, status=0, reason=f"传输异常: {e}", dispatched=True)
 
 
 def _gateway() -> str:
@@ -257,10 +262,10 @@ def send_push(
     transport = transport or _http2_post
     readiness = apns_readiness()
     if jwt_token is None and not readiness.ready:
-        return PushResult(ok=False, status=0, reason=f"apns_{readiness.code}")
+        return PushResult(ok=False, status=0, reason=f"apns_{readiness.code}", dispatched=False)
     token = jwt_token if jwt_token is not None else get_jwt()
     if token is None:
-        return PushResult(ok=False, status=0, reason="apns_key_unreadable")
+        return PushResult(ok=False, status=0, reason="apns_key_unreadable", dispatched=False)
 
     payload = build_payload(title, body, category=category, thread_id=thread_id, custom=custom)
     body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Neckline KX V4 post-market watch at Beijing 20:02 every day (non-trading days skip)
+
+[Timer]
+OnCalendar=*-*-* 20:02:00 Asia/Shanghai
+AccuracySec=30s
+Persistent=false
+Unit=neckline-v4-kx-watch.service
+
+[Install]
+WantedBy=timers.target

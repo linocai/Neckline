@@ -31,8 +31,8 @@ from neckline.screening.select import Entry, Selection
 FIXTURES = Path(__file__).resolve().parents[2] / "App" / "NecklineTests" / "Fixtures"
 # KX 看板的夹具由 KX 测试从隔离库产出（Backend/tests/fixtures），App 原样复制；极限值夹具是 App 自己的。
 KX_BACKEND_FIXTURES = Path(__file__).resolve().parent / "fixtures"
-KX_COPIED = {"kx_board_v3.json", "kx_board_v3_partial.json", "kx_board_v3_sealed.json",
-             "kx_board_v3_auction.json", "kx_board_v3_stale.json", "kx_board_unavailable.json"}
+KX_COPIED = {"kx_board_v4.json", "kx_board_v4_partial.json", "kx_board_v4_stale.json",
+             "kx_board_v4_elim.json", "kx_board_unavailable.json"}
 KX_APP_ONLY: set[str] = set()
 # 两条线的晨报样例由板块线测试经隔离库真实入口产出（Backend/tests/fixtures），App 原样复制。
 SECTOR_COPIED = {"report-v7-two-lines.json"}

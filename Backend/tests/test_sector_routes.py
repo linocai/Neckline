@@ -790,7 +790,7 @@ def test_new_database_has_routes_and_v6_upgrade_adds_the_column(tmp_path):
         assert "routes" not in [row[1] for row in conn.execute("PRAGMA table_info(sector_events)")]
     db.init_schema(legacy)
     with closing(sqlite3.connect(legacy)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
         row = conn.execute("SELECT title, routes FROM sector_events").fetchone()
         assert row == ("旧事件", "[]")
         assert conn.execute("SELECT count(*) FROM limit_ups").fetchone()[0] == 0
@@ -802,6 +802,6 @@ def test_new_database_has_routes_and_v6_upgrade_adds_the_column(tmp_path):
         conn.commit()
     db.init_schema(already)
     with closing(sqlite3.connect(already)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
         assert "routes" in [row[1] for row in conn.execute("PRAGMA table_info(sector_events)")]
         assert "limit_up_days" in {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}

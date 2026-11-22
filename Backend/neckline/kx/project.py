@@ -1,457 +1,487 @@
-"""把 KX V3 总览（schema_version 4）投影成 Neckline 看板接口 v2。
+"""KX V4（schema_version 5）严格校验与看板投影。
 
-整份不合格由 require_overview 抛 KxError。组、股票不合格只剔除并记入 gaps。
-字段不合格置 null，不把 null 补成 0。金额保持 KX 给的元。history、rules、note、history_* 不投影。
+只认 schema_version == 5；遇到其他版本明确报 kx_unsupported_schema，绝不按旧逻辑硬读。
+客观程序事实与 DeepSeek 主观判断保持分离；缺失数值保留 None，绝不当成 0。
 """
 from __future__ import annotations
 
-import json
 import math
 import re
-from dataclasses import dataclass, field
-from datetime import datetime, time
+from collections.abc import Mapping
+from datetime import date, datetime
 
-from neckline.kx.days import in_session
-from neckline.kx.source import KxError
-from neckline.morning.schedule import CST, CalendarGap
+from neckline.kx.source import KxError, redact_upstream
+from neckline.morning.schedule import CST
 
-_CODE = re.compile(r"[036]\d{5}")
-_CLOCK = re.compile(r"\d{2}:\d{2}(?::\d{2})?")
-_ROOMS = ("leader", "waiting", "eliminated")
-_TEXT_MAX = 4000
-_MISSING = object()
-
-_QUOTE_NUMBERS = (
-    ("price", "price"), ("change_percent", "changePercent"), ("previous_close", "previousClose"),
-    ("open", "open"), ("high", "high"), ("low", "low"), ("turnover_amount", "turnoverAmount"),
-    ("amplitude_percent", "amplitudePercent"), ("turnover_percent", "turnoverPercent"),
-)
-_LIMIT_NUMBERS = (
-    ("consecutive_boards", "consecutiveBoards"), ("break_count", "breakCount"), ("seal_amount", "sealAmount"),
-)
-_LIMIT_BOOLS = (("in_limit_up", "inLimitUp"), ("in_broken", "inBroken"), ("in_limit_down", "inLimitDown"))
-_BOOK_NUMBERS = (("bid1_price", "bid1Price"), ("bid1_volume", "bid1Volume"), ("bid1_amount", "bid1Amount"),
-                 ("seal_amount", "sealAmount"))
+SCHEMA_VERSION = 5
+ZONES = ("leader", "hot", "elim")
+_ZONE_ORDER = {zone: idx for idx, zone in enumerate(ZONES)}
+_STATUSES = frozenset(("ok", "partial"))
+_DEEPSEEK_STATUSES = frozenset(("ok", "failed", "skipped"))
+_GENERATED_BY = frozenset(("deepseek", "program", "engineer"))
+_CHANGE_BADGES = frozenset(("up", "new", "return", "elim_new", "elim_out", "stay"))
+_RHYTHM_KINDS = frozenset(("surge", "pullback", "divergence", "washout", "dead"))
+_BADGE_KINDS = frozenset(("hot", "quant", "lasa", "inst", "north"))
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CODE_RE = re.compile(r"^\d{6}$")
 
 
-@dataclass
-class _Gaps:
-    groups: int = 0
-    stocks: int = 0
-    long_text: int = 0
-    bad_numbers: int = 0
-    bad_times: int = 0
-    notes: list[str] = field(default_factory=list)
-
-    def lines(self) -> list[str]:
-        out: list[str] = []
-        if self.groups:
-            out.append(f"{self.groups} 组数据不合格，没有显示")
-        if self.stocks:
-            out.append(f"{self.stocks} 只股票数据不合格，没有显示")
-        if self.long_text:
-            out.append(f"{self.long_text} 处文字超过 4000 字，没有显示")
-        if self.bad_numbers:
-            out.append(f"{self.bad_numbers} 处数字不合格，已留空")
-        if self.bad_times:
-            out.append(f"{self.bad_times} 处时间不合格，已留空")
-        out.extend(self.notes)
-        return out
+def _is_int(value: object) -> bool:
+    return type(value) is int
 
 
-def require_overview(body: object) -> dict:
-    """整份不用时抛 KxError。schema_version 只认整数 4（布尔、浮点、字符串和其他整数都不认）。"""
-    if not isinstance(body, dict):
-        raise KxError("kx_bad_board", "KX 看板不是一份完整的数据。")
-    version = body["schema_version"] if "schema_version" in body else _MISSING
-    if type(version) is not int or version != 4:
-        shown = "缺失" if version is _MISSING else repr(version)
-        raise KxError("kx_bad_board", f"KX 看板格式变了（schema_version={shown}），没有按旧逻辑读")
-    rooms = body.get("rooms")
-    if not isinstance(rooms, dict) or any(not isinstance(rooms.get(name), list) for name in _ROOMS):
-        raise KxError("kx_bad_board", "KX 看板的房间数据不合格，没有采用。")
-    return body
-
-
-def _text(value: object, gaps: _Gaps) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if len(text) > _TEXT_MAX:
-        gaps.long_text += 1
-        return None
-    return text
-
-
-def _number(value: object, gaps: _Gaps) -> int | float | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        gaps.bad_numbers += 1
+def _opt_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
-        # 整数和浮点同一条规则：能表示成有限的 float 才算数。10**400 转 float 会 OverflowError。
-        try:
-            float(value)
-        except OverflowError:
-            gaps.bad_numbers += 1
-            return None
         return value
-    if not math.isfinite(value):
-        gaps.bad_numbers += 1
-        return None
-    return value
-
-
-def _time(value: object, gaps: _Gaps) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        gaps.bad_times += 1
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        datetime.fromisoformat(text)
-    except ValueError:
-        gaps.bad_times += 1
-        return None
-    return text
-
-
-def _seal_time(value: object, gaps: _Gaps) -> str | None:
-    """封板时刻是当天的 HH:MM 或 HH:MM:SS，也可以是完整的 ISO 日期时间。合格就原样保留。"""
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        gaps.bad_times += 1
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if _CLOCK.fullmatch(text):
-        try:
-            time.fromisoformat(text)
-        except ValueError:
-            gaps.bad_times += 1
-            return None
-        return text
-    return _time(text, gaps)
-
-
-def _flag(value: object, gaps: _Gaps) -> bool | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    gaps.bad_numbers += 1
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
     return None
 
 
-def _stamp(moment: datetime) -> str:
-    return moment.astimezone(CST).isoformat(timespec="seconds")
-
-
-def _messages(value: object, gaps: _Gaps) -> list[str]:
-    """字符串列表。KX 给对象时取 message，没有就转成一行文字，不丢。"""
-    if value is None:
-        return []
-    items = value if isinstance(value, list) else [value]
-    out: list[str] = []
-    for item in items:
-        if isinstance(item, dict):
-            message = item.get("message")
-            if isinstance(message, str) and message.strip():
-                text = _text(message, gaps)
-            else:
-                text = _text(json.dumps(item, ensure_ascii=False, sort_keys=True), gaps)
-        elif item is None:
-            text = None
-        else:
-            text = _text(item if isinstance(item, str) else str(item), gaps)
-        if text:
-            out.append(text)
-    return out
-
-
-def _qualified(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    code, name = value.get("stock_code"), value.get("name")
-    return isinstance(code, str) and _CODE.fullmatch(code) is not None and isinstance(name, str) and bool(name.strip())
-
-
-def _flags(value: object, gaps: _Gaps) -> list[dict]:
-    if not isinstance(value, list):
-        return []
-    out: list[dict] = []
-    for item in value:
-        text = _text(item, gaps)
-        if text is None:
-            continue
-        if ":" in text:
-            kind, rest = text.split(":", 1)
-            kind = kind.strip() or text
-            code_text = rest.strip()
-            code = code_text if _CODE.fullmatch(code_text) else None
-        else:
-            kind, code = text, None
-        out.append({"kind": kind, "code": code, "text": text})
-    return out
-
-
-def _strings(value: object, gaps: _Gaps, *, codes: bool) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    out: list[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            continue
-        text = item.strip()
-        if not text or len(text) > _TEXT_MAX:
-            if isinstance(item, str) and len(item.strip()) > _TEXT_MAX:
-                gaps.long_text += 1
-            continue
-        if codes and _CODE.fullmatch(text) is None:
-            continue
-        out.append(text)
-    return out
-
-
-def _quote(value: object, gaps: _Gaps) -> dict:
-    raw = value if isinstance(value, dict) else {}
-    projected = {target: _number(raw.get(source), gaps) for source, target in _QUOTE_NUMBERS}
-    projected["sourceTime"] = _time(raw.get("source_time"), gaps)
-    projected["quoteStatus"] = _text(raw.get("quote_status"), gaps)
-    projected["sessionPhase"] = _text(raw.get("session_phase"), gaps)
-    projected["warnings"] = _messages(raw.get("warnings"), gaps)
-    return projected
-
-
-def _limit_up(value: object, gaps: _Gaps) -> dict:
-    raw = value if isinstance(value, dict) else {}
-    projected = {target: _flag(raw.get(source), gaps) for source, target in _LIMIT_BOOLS}
-    projected.update({target: _number(raw.get(source), gaps) for source, target in _LIMIT_NUMBERS})
-    projected["firstSealTime"] = _seal_time(raw.get("first_seal_time"), gaps)
-    projected["lastSealTime"] = _seal_time(raw.get("last_seal_time"), gaps)
-    projected["boardTypeText"] = _text(raw.get("board_type_text"), gaps)
-    projected["poolFetchedAt"] = _time(raw.get("pool_fetched_at"), gaps)
-    projected["warnings"] = _messages(raw.get("warnings"), gaps)
-    return projected
-
-
-def _seal_change(value: object, gaps: _Gaps) -> dict | None:
-    if not isinstance(value, dict):
+def _opt_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
         return None
-    raw = value
-    return {"amount": _number(raw.get("amount"), gaps),
-            "baselineAmount": _number(raw.get("baseline_amount"), gaps),
-            "baselineAgeSeconds": _number(raw.get("baseline_age_seconds"), gaps)}
+    if isinstance(value, (int, float)):
+        num = float(value)
+        return num if math.isfinite(num) else None
+    return None
 
 
-def _order_book(value: object, gaps: _Gaps) -> dict | None:
-    if value is None:
+def _req_str(mapping: Mapping, key: str, *, allow_empty: bool = False) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str):
+        raise KxError("kx_bad_board", f"KX 看板缺少字段 {key}，没有采用。")
+    text = value.strip()
+    if not allow_empty and not text:
+        raise KxError("kx_bad_board", f"KX 看板字段 {key} 为空，没有采用。")
+    return text
+
+
+def _opt_str(value: object) -> str | None:
+    if not isinstance(value, str):
         return None
-    if not isinstance(value, dict):
-        return None
-    projected = {target: _number(value.get(source), gaps) for source, target in _BOOK_NUMBERS}
-    projected["status"] = _text(value.get("status"), gaps)
-    projected["asksClear"] = _flag(value.get("asks_clear"), gaps)
-    projected["sealed"] = _flag(value.get("sealed"), gaps)
-    projected["sealChange5m"] = _seal_change(value.get("seal_change_5m"), gaps)
-    projected["sourceTime"] = _time(value.get("source_time"), gaps)
-    projected["warnings"] = _messages(value.get("warnings"), gaps)
-    return projected
+    text = value.strip()
+    return text or None
 
 
-def _stock(value: dict, gaps: _Gaps, *, with_book: bool) -> dict:
-    return {
-        "code": value["stock_code"],
-        "name": value["name"].strip(),
-        "role": _text(value.get("role"), gaps),
-        "reason": _text(value.get("reason"), gaps),
-        "divergent": value.get("divergent") if isinstance(value.get("divergent"), bool) else False,
-        "quote": _quote(value.get("quote"), gaps),
-        "limitUp": _limit_up(value.get("limit_up"), gaps),
-        "orderBook": _order_book(value.get("order_book"), gaps) if with_book else None,
-    }
-
-
-def _judgment(value: object, gaps: _Gaps) -> dict | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        return None
-    return {name: _text(value.get(name), gaps) for name in ("verdict", "reason", "height", "drive", "resilience")}
-
-
-def _group(value: object, gaps: _Gaps, *, room: str) -> dict | None:
-    if not isinstance(value, dict):
-        gaps.groups += 1
-        return None
-    ident, theme = value.get("id"), value.get("theme")
-    if _text(ident, gaps) is None or _text(theme, gaps) is None:
-        gaps.groups += 1
-        return None
-    leaders = value.get("leaders")
-    if not isinstance(leaders, list) or not 1 <= len(leaders) <= 2 or not all(_qualified(item) for item in leaders):
-        gaps.groups += 1
-        return None
-    if "followers" not in value:
-        followers_raw: list = []
-    elif not isinstance(value["followers"], list):
-        gaps.groups += 1
-        return None
-    else:
-        followers_raw = value["followers"]
-    with_book = room in ("leader", "waiting")
-    followers: list[dict] = []
-    for item in followers_raw:
-        if _qualified(item):
-            followers.append(_stock(item, gaps, with_book=False))
-        else:
-            gaps.stocks += 1
-    return {
-        "id": _text(ident, gaps),
-        "theme": _text(theme, gaps),
-        "roomSince": _time(value.get("room_since"), gaps),
-        "brokeOn": _time(value.get("broke_on"), gaps),
-        "observedTradingDays": _number(value.get("observed_trading_days"), gaps),
-        "observedText": _text(value.get("observed_text"), gaps),
-        "flags": _flags(value.get("flags"), gaps),
-        "judgment": _judgment(value.get("judgment"), gaps),
-        "note": _text(value.get("note"), gaps),
-        "leaders": [_stock(item, gaps, with_book=with_book) for item in leaders],
-        "followers": followers,
-    }
-
-
-def _highest(value: object, gaps: _Gaps) -> dict | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        return None
-    return {"boards": _number(value.get("boards"), gaps),
-            "names": _strings(value.get("names"), gaps, codes=False),
-            "codes": _strings(value.get("stock_codes"), gaps, codes=True)}
-
-
-def _fetched(value: object, gaps: _Gaps) -> dict:
-    raw = value if isinstance(value, dict) else {}
-    return {"limitUp": _time(raw.get("limit_up"), gaps), "broken": _time(raw.get("broken"), gaps),
-            "limitDown": _time(raw.get("limit_down"), gaps),
-            "yesterdayLimitUp": _time(raw.get("yesterday_limit_up"), gaps)}
-
-
-def _sentiment(value: object, gaps: _Gaps) -> dict:
-    raw = value if isinstance(value, dict) else {}
-    return {
-        "tradingDay": _time(raw.get("trading_day"), gaps),
-        "basis": _text(raw.get("basis"), gaps),
-        "boardPhrases": _text(raw.get("board_phrases"), gaps),
-        "limitUpCount": _number(raw.get("limit_up_count"), gaps),
-        "brokenCount": _number(raw.get("broken_count"), gaps),
-        "brokenRate": _number(raw.get("broken_rate"), gaps),
-        "limitDownCount": _number(raw.get("limit_down_count"), gaps),
-        "highestBoard": _highest(raw.get("highest_board"), gaps),
-        "yesterdayConsecutive": _number(raw.get("yesterday_consecutive"), gaps),
-        "yesterdayContinued": _number(raw.get("yesterday_continued"), gaps),
-        "yesterdayTradingDay": _time(raw.get("yesterday_trading_day"), gaps),
-        "fetchedAt": _fetched(raw.get("fetched_at"), gaps),
-    }
-
-
-def _refresh(value: object, gaps: _Gaps) -> dict | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        return None
-    return {"date": _time(value.get("date"), gaps), "result": _text(value.get("result"), gaps),
-            "finishedAt": _time(value.get("finished_at"), gaps), "message": _text(value.get("message"), gaps),
-            "notice": _text(value.get("notice"), gaps)}
-
-
-def _fact_warnings(value: object, gaps: _Gaps) -> list[dict]:
-    if not isinstance(value, list):
-        return []
-    out: list[dict] = []
-    for item in value:
-        if isinstance(item, str):
-            text = _text(item, gaps)
-            if text:
-                out.append({"groupId": None, "text": text})
-            continue
-        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
-            continue
-        text = _text(item.get("text"), gaps)
-        if not text:
-            continue
-        group = item.get("group_id")
-        group_id = group.strip() if isinstance(group, str) else None
-        if group_id is not None and len(group_id) > _TEXT_MAX:
-            gaps.long_text += 1
-            group_id = None
-        elif group_id == "":
-            group_id = None
-        out.append({"groupId": group_id, "text": text})
-    return out
-
-
-def _status(value: object, gaps: _Gaps) -> object:
-    if isinstance(value, str):
-        return _text(value, gaps)
+def _req_day(value: object, field: str) -> str:
+    if not isinstance(value, str) or not _DAY_RE.fullmatch(value):
+        raise KxError("kx_bad_board", f"KX 看板日期字段 {field} 格式无效，没有采用。")
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise KxError("kx_bad_board", f"KX 看板日期字段 {field} 无效，没有采用。") from None
     return value
 
 
-def _session(now: datetime, gaps: _Gaps) -> dict:
+def _req_iso_cst(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise KxError("kx_bad_board", f"KX 看板时间字段 {field} 缺失，没有采用。")
     try:
-        active = in_session(now)
-    except CalendarGap:
-        gaps.notes.append("交易日历没有覆盖今天，盘中不自动刷新")
-        active = False
-    return {"inSession": active, "refreshSeconds": 60 if active else None}
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        raise KxError("kx_bad_board", f"KX 看板时间字段 {field} 格式无效，没有采用。") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CST)
+    return parsed.astimezone(CST).isoformat(timespec="seconds")
 
 
-def project_board(body: dict, *, now: datetime, last_read_at: datetime, stale: bool, reason: str | None) -> dict:
-    """body 必须已经过 require_overview。房间、组、股票保持 KX 给的顺序。"""
-    gaps = _Gaps()
-    rooms_raw = body["rooms"]
-    rooms = {name: [item for item in (_group(group, gaps, room=name) for group in rooms_raw[name]) if item]
-             for name in _ROOMS}
-    session = _session(now, gaps)
-    source = {"checkedAt": _time(body.get("checked_at"), gaps), "stale": stale,
-              "reason": reason if stale else None, "lastReadAt": _stamp(last_read_at)}
-    structure = {
-        "version": _text(body.get("version"), gaps),
-        "asOf": _time(body.get("as_of"), gaps),
-        "generatedAt": _time(body.get("generated_at"), gaps),
-        "generatedBy": _text(body.get("generated_by"), gaps),
-        "deepseekStatus": _text(body.get("deepseek_status"), gaps),
-        "deepseekNotice": _text(body.get("deepseek_notice"), gaps),
-        "marketNote": _text(body.get("market_note"), gaps),
-        "membershipLocked": _flag(body.get("membership_locked"), gaps),
-        "refresh": _refresh(body.get("refresh"), gaps),
-    }
-    status = _status(body.get("status"), gaps)
-    errors = _messages(body.get("errors"), gaps)
-    warnings = _messages(body.get("warnings"), gaps)
-    fact_warnings = _fact_warnings(body.get("fact_warnings"), gaps)
-    sentiment = _sentiment(body.get("sentiment"), gaps)
+def _opt_iso_cst(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CST)
+    return parsed.astimezone(CST).isoformat(timespec="seconds")
+
+
+def require_overview(body: object) -> dict:
+    """严格校验 KX V4 schema_version == 5 顶层结构。未知版本明确报错不硬解。"""
+    if not isinstance(body, dict):
+        raise KxError("kx_bad_board", "KX 返回的内容不是有效的看板对象，没有采用。")
+    sv = body.get("schema_version")
+    if not _is_int(sv) or sv != SCHEMA_VERSION:
+        shown = "缺失" if sv is None else repr(sv)
+        raise KxError(
+            "kx_unsupported_schema",
+            f"KX 看板协议版本暂不支持（收到 schema_version={shown}，需要 {SCHEMA_VERSION}），未强行解析。",
+        )
+    status = body.get("status")
+    if not isinstance(status, str) or status not in _STATUSES:
+        raise KxError("kx_bad_board", "KX 看板状态字段无效，没有采用。")
+    _req_str(body, "version")
+    _req_day(body.get("as_of"), "as_of")
+    _req_iso_cst(body.get("generated_at"), "generated_at")
+    ds_status = body.get("deepseek_status")
+    if not isinstance(ds_status, str) or ds_status not in _DEEPSEEK_STATUSES:
+        raise KxError("kx_bad_board", "KX 看板 DeepSeek 状态无效，没有采用。")
+    if not isinstance(body.get("capacity"), dict):
+        raise KxError("kx_bad_board", "KX 看板缺少容量信息，没有采用。")
+    sentiment = body.get("sentiment")
+    if not isinstance(sentiment, dict) or not isinstance(sentiment.get("days"), list) or not sentiment["days"]:
+        raise KxError("kx_bad_board", "KX 看板缺少主板情绪事实，没有采用。")
+    if not isinstance(body.get("items"), list):
+        raise KxError("kx_bad_board", "KX 看板缺少候选股列表，没有采用。")
+    return body
+
+
+def _project_refresh(raw: object) -> dict | None:
+    if not isinstance(raw, Mapping):
+        return None
+    result = _opt_str(raw.get("result"))
+    if result not in {"updated", "failed", "skipped", None}:
+        result = None
+    notice = _opt_str(raw.get("notice"))
+    message = _opt_str(raw.get("message"))
     return {
-        "generatedAt": _stamp(now),
-        "source": source,
-        "structure": structure,
-        "status": status,
-        "errors": errors,
-        "warnings": warnings,
-        "gaps": gaps.lines(),
-        "factWarnings": fact_warnings,
-        "session": session,
-        "sentiment": sentiment,
-        "rooms": rooms,
+        "date": _opt_str(raw.get("date")),
+        "result": result,
+        "poolVersion": _opt_str(raw.get("pool_version")),
+        "asOf": _opt_str(raw.get("as_of")),
+        "deepseekStatus": _opt_str(raw.get("deepseek_status")),
+        "finishedAt": _opt_iso_cst(raw.get("finished_at")),
+        "message": redact_upstream(message) if message else None,
+        "notice": redact_upstream(notice) if notice else None,
+        "elapsedSeconds": _opt_float(raw.get("elapsed_seconds")),
     }
+
+
+def _project_stock_ref(raw: object) -> dict | None:
+    if not isinstance(raw, Mapping):
+        return None
+    code = _opt_str(raw.get("code"))
+    name = _opt_str(raw.get("name"))
+    if not code or not name:
+        return None
+    return {
+        "code": code,
+        "name": name,
+        "boardType": _opt_str(raw.get("board_type")) or "换手板",
+    }
+
+
+def _project_sentiment(raw: Mapping) -> dict:
+    days_out: list[dict] = []
+    for entry in raw.get("days") or ():
+        if not isinstance(entry, Mapping):
+            raise KxError("kx_bad_board", "KX 情绪日数据格式无效，没有采用。")
+        highest_out = [
+            ref for ref in (_project_stock_ref(item) for item in (entry.get("highest") or ()))
+            if ref is not None
+        ]
+        ladder_out: dict[str, list[dict]] = {}
+        raw_ladder = entry.get("ladder")
+        if isinstance(raw_ladder, Mapping):
+            for level, rows in raw_ladder.items():
+                if not isinstance(level, str) or not isinstance(rows, list):
+                    continue
+                refs = [ref for ref in (_project_stock_ref(r) for r in rows) if ref is not None]
+                if refs:
+                    ladder_out[level] = refs
+        days_out.append({
+            "date": _req_day(entry.get("date"), "sentiment.days.date"),
+            "zt": _opt_int(entry.get("zt")),
+            "zb": _opt_int(entry.get("zb")),
+            "zbRate": _opt_float(entry.get("zb_rate")),
+            "dt": _opt_int(entry.get("dt")),
+            "maxLbc": _opt_int(entry.get("max_lbc")),
+            "highest": highest_out,
+            "ladder": ladder_out,
+            "yZtN": _opt_int(entry.get("y_zt_n")),
+            "yCont": _opt_int(entry.get("y_cont")),
+            "yOpenMean": _opt_float(entry.get("y_open_mean")),
+            "yCloseMean": _opt_float(entry.get("y_close_mean")),
+            "yCloseMed": _opt_float(entry.get("y_close_med")),
+        })
+    if not days_out:
+        raise KxError("kx_bad_board", "KX 情绪日数据为空，没有采用。")
+
+    judgment_out = None
+    raw_judgment = raw.get("judgment")
+    if isinstance(raw_judgment, Mapping):
+        stage = _opt_str(raw_judgment.get("stage"))
+        market_note = _opt_str(raw_judgment.get("market_note"))
+        if stage or market_note:
+            judgment_out = {
+                "stage": stage or "",
+                "marketNote": market_note or "",
+            }
+    return {"days": days_out, "judgment": judgment_out}
+
+
+def _project_seat(raw: object) -> dict | None:
+    if not isinstance(raw, Mapping):
+        return None
+    org = _opt_str(raw.get("org")) or _opt_str(raw.get("full_org"))
+    if not org:
+        return None
+    badges_out: list[dict] = []
+    for badge in raw.get("badges") or ():
+        if not isinstance(badge, Mapping):
+            continue
+        text = _opt_str(badge.get("text"))
+        kind = _opt_str(badge.get("kind"))
+        if text and kind in _BADGE_KINDS:
+            badges_out.append({"text": text, "kind": kind})
+    return {
+        "org": org,
+        "fullOrg": _opt_str(raw.get("full_org")) or org,
+        "buyW": _opt_float(raw.get("buy_w")),
+        "sellW": _opt_float(raw.get("sell_w")),
+        "netW": _opt_float(raw.get("net_w")),
+        "badges": badges_out,
+    }
+
+
+def _project_lhb(raw: object) -> dict | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise KxError("kx_bad_board", "KX 龙虎榜字段格式无效，没有采用。")
+    reasons = [r.strip() for r in (raw.get("reasons") or ()) if isinstance(r, str) and r.strip()]
+    buys = [s for s in (_project_seat(row) for row in (raw.get("buys") or ())) if s is not None]
+    sells = [s for s in (_project_seat(row) for row in (raw.get("sells") or ())) if s is not None]
+    return {
+        "date": _req_day(raw.get("date"), "facts.lhb.date"),
+        "reasons": reasons,
+        "netW": _opt_float(raw.get("net_w")),
+        "buyTotalW": _opt_float(raw.get("buy_total_w")),
+        "sellTotalW": _opt_float(raw.get("sell_total_w")),
+        "buys": buys,
+        "sells": sells,
+    }
+
+
+def _project_item(raw: object, seen_codes: set[str]) -> dict:
+    if not isinstance(raw, Mapping):
+        raise KxError("kx_bad_board", "KX 候选条目不是对象，没有采用。")
+    code = _req_str(raw, "code")
+    if not _CODE_RE.fullmatch(code) or code in seen_codes:
+        raise KxError("kx_bad_board", f"KX 候选代码无效或重复：{code}。")
+    seen_codes.add(code)
+    name = _req_str(raw, "name")
+    industry = _opt_str(raw.get("industry")) or "其他"
+    zone = raw.get("zone")
+    if not isinstance(zone, str) or zone not in ZONES:
+        raise KxError("kx_bad_board", f"KX 候选分区无效：{zone!r}。")
+    first_seen = _req_day(raw.get("first_seen"), "items.first_seen")
+    zone_since = _req_day(raw.get("zone_since"), "items.zone_since")
+    days_in_zone = _opt_int(raw.get("days_in_zone"))
+    if days_in_zone is None or days_in_zone < 1:
+        raise KxError("kx_bad_board", f"KX 候选 {code} 在区天数无效，没有采用。")
+    elim_since = _req_day(raw.get("elim_since"), "items.elim_since") if raw.get("elim_since") is not None else None
+    elim_days = _opt_int(raw.get("elim_days")) or 0
+    next_remove = bool(raw.get("next_remove"))
+    change_badge = raw.get("change_badge")
+    if not isinstance(change_badge, str) or change_badge not in _CHANGE_BADGES:
+        raise KxError("kx_bad_board", f"KX 候选 {code} 变动标记无效，没有采用。")
+    cycle_tag = _req_str(raw, "cycle_tag")
+
+    facts = raw.get("facts")
+    if not isinstance(facts, Mapping):
+        raise KxError("kx_bad_board", f"KX 候选 {code} 缺少程序事实，没有采用。")
+    traj_out: list[dict] = []
+    for day in facts.get("traj") or ():
+        if not isinstance(day, Mapping):
+            continue
+        day_iso = _opt_str(day.get("date"))
+        if not day_iso or not _DAY_RE.fullmatch(day_iso):
+            continue
+        traj_out.append({
+            "date": day_iso,
+            "pct": _opt_float(day.get("pct")),
+            "tr": _opt_float(day.get("tr")),
+            "zt": bool(day.get("zt")),
+            "dt": bool(day.get("dt")),
+            "zb": bool(day.get("zb")),
+            "lhb": bool(day.get("lhb")),
+        })
+
+    judgment = raw.get("judgment")
+    if not isinstance(judgment, Mapping):
+        raise KxError("kx_bad_board", f"KX 候选 {code} 缺少 DeepSeek 判断，没有采用。")
+    rhythm = judgment.get("rhythm")
+    rhythm_kind = rhythm.get("kind") if isinstance(rhythm, Mapping) else None
+    if not isinstance(rhythm, Mapping) or not isinstance(rhythm_kind, str) or rhythm_kind not in _RHYTHM_KINDS:
+        raise KxError("kx_bad_board", f"KX 候选 {code} 节奏状态无效，没有采用。")
+    rhythm_text = _req_str(rhythm, "text")
+
+    factions_out: list[dict] = []
+    for fac in judgment.get("factions") or ():
+        if not isinstance(fac, Mapping):
+            continue
+        fname = _opt_str(fac.get("name"))
+        if fname:
+            factions_out.append({"name": fname, "primary": bool(fac.get("primary"))})
+    if not factions_out:
+        raise KxError("kx_bad_board", f"KX 候选 {code} 缺少情绪派系标签，没有采用。")
+
+    return {
+        "code": code,
+        "name": name,
+        "industry": industry,
+        "zone": zone,
+        "firstSeen": first_seen,
+        "zoneSince": zone_since,
+        "daysInZone": days_in_zone,
+        "elimSince": elim_since,
+        "elimDays": elim_days,
+        "nextRemove": next_remove,
+        "changeBadge": change_badge,
+        "cycleTag": cycle_tag,
+        "facts": {
+            "close": _opt_float(facts.get("close")),
+            "pct": _opt_float(facts.get("pct")),
+            "tr": _opt_float(facts.get("tr")),
+            "circMvYi": _opt_float(facts.get("circ_mv_yi")),
+            "boardType": _opt_str(facts.get("board_type")) or "普通",
+            "boardStatus": _opt_str(facts.get("board_status")) or "",
+            "lbc": _opt_int(facts.get("lbc")),
+            "breakDays": _opt_int(facts.get("break_days")),
+            "firstSealTime": _opt_str(facts.get("first_seal_time")),
+            "lastSealTime": _opt_str(facts.get("last_seal_time")),
+            "breakCount": _opt_int(facts.get("break_count")),
+            "ma5": _opt_float(facts.get("ma5")),
+            "ma5Diff": _opt_float(facts.get("ma5_diff")),
+            "ma10": _opt_float(facts.get("ma10")),
+            "ma10Diff": _opt_float(facts.get("ma10_diff")),
+            "ddPeak": _opt_float(facts.get("dd_peak")),
+            "volRatioPeak": _opt_float(facts.get("vol_ratio_peak")),
+            "zt5dN": _opt_int(facts.get("zt_5d_n")),
+            "dt5dN": _opt_int(facts.get("dt_5d_n")),
+            "lhb5dN": _opt_int(facts.get("lhb_5d_n")),
+            "suspended": bool(facts.get("suspended")),
+            "traj": traj_out,
+            "lhbIsToday": bool(facts.get("lhb_is_today")),
+            "lhb": _project_lhb(facts.get("lhb")),
+        },
+        "judgment": {
+            "rhythm": {"kind": rhythm["kind"], "text": rhythm_text},
+            "factions": factions_out,
+            "why": _req_str(judgment, "why"),
+            "lhbComment": _req_str(judgment, "lhb_comment"),
+            "watchNote": _req_str(judgment, "watch_note"),
+        },
+    }
+
+
+def _project_factions(raw_factions: object, items: list[dict]) -> list[dict]:
+    if isinstance(raw_factions, list) and raw_factions:
+        parsed = []
+        for row in raw_factions:
+            if not isinstance(row, Mapping):
+                continue
+            name = _opt_str(row.get("name"))
+            count = _opt_int(row.get("count"))
+            if name and count is not None and count > 0:
+                parsed.append({"name": name, "count": count})
+        if parsed:
+            return parsed
+    counts: dict[str, int] = {}
+    for item in items:
+        seen: set[str] = set()
+        for tag in item["judgment"]["factions"]:
+            name = tag["name"]
+            if name not in seen:
+                seen.add(name)
+                counts[name] = counts.get(name, 0) + 1
+    return [{"name": k, "count": v} for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _project_changes(raw: object) -> dict:
+    if not isinstance(raw, Mapping):
+        return {"added": [], "promoted": [], "toElim": [], "returned": [], "removed": []}
+    def codes(key: str) -> list[str]:
+        return [c.strip() for c in (raw.get(key) or ()) if isinstance(c, str) and c.strip()]
+    removed_out = []
+    for row in raw.get("removed") or ():
+        if not isinstance(row, Mapping):
+            continue
+        code = _opt_str(row.get("code"))
+        if not code:
+            continue
+        removed_out.append({
+            "code": code,
+            "name": _opt_str(row.get("name")) or code,
+            "reason": _opt_str(row.get("reason")) or "",
+        })
+    return {
+        "added": codes("added"),
+        "promoted": codes("promoted"),
+        "toElim": codes("to_elim"),
+        "returned": codes("returned"),
+        "removed": removed_out,
+    }
+
+
+def project_board(
+    document: dict,
+    *,
+    now: datetime,
+    last_read_at: datetime,
+    stale: bool = False,
+    reason: str | None = None,
+) -> dict:
+    """把校验通过的 KX schema 5 文档投影成 Neckline API 给双端的 JSON 结构。"""
+    del now  # V4 盘中彻底静默，不按当前钟点派生盘中时段或自动刷新间隔
+    doc = require_overview(document)
+
+    seen_codes: set[str] = set()
+    items = [_project_item(row, seen_codes) for row in doc["items"]]
+    items.sort(key=lambda item: _ZONE_ORDER[item["zone"]])
+
+    cap_raw = doc["capacity"]
+    leader_count = sum(1 for item in items if item["zone"] == "leader")
+    hot_count = sum(1 for item in items if item["zone"] == "hot")
+    elim_count = sum(1 for item in items if item["zone"] == "elim")
+    capacity = {
+        "used": _opt_int(cap_raw.get("used")) if _opt_int(cap_raw.get("used")) is not None else len(items),
+        "max": _opt_int(cap_raw.get("max")) or 25,
+        "leaderCount": _opt_int(cap_raw.get("leader_count")) if _opt_int(cap_raw.get("leader_count")) is not None else leader_count,
+        "hotCount": _opt_int(cap_raw.get("hot_count")) if _opt_int(cap_raw.get("hot_count")) is not None else hot_count,
+        "elimCount": _opt_int(cap_raw.get("elim_count")) if _opt_int(cap_raw.get("elim_count")) is not None else elim_count,
+        "nextFree": _opt_int(cap_raw.get("next_free")) if _opt_int(cap_raw.get("next_free")) is not None else elim_count,
+    }
+
+    generated_by = doc.get("generated_by")
+    if not isinstance(generated_by, str) or generated_by not in _GENERATED_BY:
+        generated_by = "program"
+    deepseek_notice = _opt_str(doc.get("deepseek_notice"))
+    fact_warnings = [
+        redact_upstream(w.strip())
+        for w in (doc.get("fact_warnings") or ())
+        if isinstance(w, str) and w.strip()
+    ]
+    raw_push_summary = _opt_str(doc.get("push_summary"))
+    push_summary = redact_upstream(raw_push_summary) if raw_push_summary else ""
+
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "status": doc["status"],
+        "version": _req_str(doc, "version"),
+        "asOf": _req_day(doc.get("as_of"), "as_of"),
+        "generatedAt": _req_iso_cst(doc.get("generated_at"), "generated_at"),
+        "generatedBy": generated_by,
+        "checkedAt": _opt_iso_cst(doc.get("checked_at")),
+        "lastReadAt": last_read_at.astimezone(CST).isoformat(timespec="seconds"),
+        "stale": bool(stale),
+        "staleReason": redact_upstream(reason) if (stale and reason) else None,
+        "deepseekStatus": doc["deepseek_status"],
+        "deepseekNotice": redact_upstream(deepseek_notice) if deepseek_notice else None,
+        "factWarnings": fact_warnings,
+        "pushSummary": push_summary,
+        "refresh": _project_refresh(doc.get("refresh")),
+        "capacity": capacity,
+        "sentiment": _project_sentiment(doc["sentiment"]),
+        "factions": _project_factions(doc.get("factions"), items),
+        "changes": _project_changes(doc.get("changes")),
+        "items": items,
+    }
+
+
+__all__ = ["SCHEMA_VERSION", "ZONES", "project_board", "require_overview"]

@@ -33,18 +33,27 @@ struct MorningRootView: View {
                     await kx.handleConnectionChange()
                 }
             }
-            // KX 只在页面在前台、App 处于活跃时自动续取；切到别的标签、进入后台或锁屏就停。
-            .onChange(of: model.tab) { _, tab in kx.setVisible(tab == .kx) }
+            // KX V4 盘中彻底静默：无自动轮询，首次进入、改连接或跨过 20:00 后重进按需取一次盘后快照。
+            .onChange(of: model.tab) { _, tab in
+                kx.setVisible(tab == .kx)
+                if tab == .kx {
+                    Task { await kx.loadIfNeeded() }
+                }
+            }
             .onChange(of: scenePhase) { _, phase in
-                kx.setActive(phase == .active)
-                #if os(iOS)
                 guard phase == .active else { return }
+                if model.tab == .kx {
+                    Task { await kx.loadIfNeeded() }
+                }
+                #if os(iOS)
                 Task { await model.retryFailedDeviceRegistration() }
                 #endif
             }
             .onAppear {
-                kx.setActive(scenePhase == .active)
                 kx.setVisible(model.tab == .kx)
+                if model.tab == .kx {
+                    Task { await kx.loadIfNeeded() }
+                }
             }
             #if DEBUG
             .environment(\.nkQAScrollBottom, qaRoute == "bottom")

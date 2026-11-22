@@ -85,59 +85,53 @@ extension Color {
     }
 }
 
-/// KX 看板的颜色。涨红、跌绿、平灰；琥珀色提示和 DeepSeek 底色按样图。
+/// KX V4 看板的颜色（对照已确认 HTML 样图，浅色暖灰纸面 / 深色炭黑）。
 enum NKKX {
-    static let up = Color(light: 0xE0312B, dark: 0xFF5A4E)
-    static let down = Color(light: 0x139A5B, dark: 0x30C67C)
-    static let flat = Color(light: 0x8E8E93, dark: 0x8E8E93)
-    static let amber = Color(light: 0x9C5D00, dark: 0xFFC14D)
-    static let amberInk = Color(light: 0x6B3E00, dark: 0xFFE7A3)
-    static let amberBackground = Color(light: 0xFF9F0A, lightAlpha: 0.18, dark: 0xFF9F0A, darkAlpha: 0.28)
-    static let deepseekFill = Color(light: 0x0754E9, lightAlpha: 0.08, dark: 0x4C8DFF, darkAlpha: 0.16)
+    static let page = Color(light: 0xF7F6F3, dark: 0x151412)
+    static let surface = Color(light: 0xFFFFFF, dark: 0x1E1D1A)
+    static let surfaceSubtle = Color(light: 0xF1EFE9, dark: 0x272521)
+    static let border = Color(light: 0xE6E3DC, dark: 0x312F2A)
+    static let borderStrong = Color(light: 0xD2CEC4, dark: 0x45423B)
+    static let textPrimary = Color(light: 0x1D1D1F, dark: 0xEDEBE6)
+    static let textSecondary = Color(light: 0x56554F, dark: 0xB5B0A6)
+    static let textTertiary = Color(light: 0x636059, dark: 0x9F9A90)
+
+    static let up = Color(light: 0xC93B2B, dark: 0xF06E5E)
+    static let upFill = Color(light: 0xFCECE9, dark: 0x341D1B)
+    static let down = Color(light: 0x1E7E4E, dark: 0x44B77B)
+    static let downFill = Color(light: 0xE8F6EE, dark: 0x182E22)
+    static let flat = Color(light: 0x8B877E, dark: 0x8A857C)
+
+    static let amber = Color(light: 0xB56B12, dark: 0xE09E3E)
+    static let amberInk = Color(light: 0x7A490C, dark: 0xF2C278)
+    static let amberBackground = Color(light: 0xFDF4E6, dark: 0x332717)
+
+    static let accent = Color(light: 0x2F5D8A, dark: 0x6BA0D6)
+    static let accentFill = Color(light: 0xEAF1F8, dark: 0x1B2938)
+    static let deepseekFill = Color(light: 0xEAF1F8, dark: 0x1B2938)
+
+    static let purple = Color(light: 0x6C4AB6, dark: 0xAE94E8)
+    static let purpleFill = Color(light: 0xF2EEF9, dark: 0x272038)
+
+    static let washInk = Color(light: 0xA83E1E, dark: 0xF08B68)
+    static let washFill = Color(light: 0xFCECE7, dark: 0x362019)
+
+    static let divergenceInk = Color(light: 0x8F4D0A, dark: 0xF0B25A)
+    static let divergenceFill = Color(light: 0xFBF1E0, dark: 0x332514)
+
+    static let deadInk = Color(light: 0x6E6B63, dark: 0x9A958C)
+    static let deadFill = Color(light: 0xEEEDE9, dark: 0x2A2925)
+
+    static let elimDot = Color(light: 0x9C988F, dark: 0x7A766D)
+
     /// 分段控件选中项的投影。K10 的分段控件还在用。
     static let segmentShadow = Color.black.opacity(0.12)
 }
 
-/// KX 看板的字号，按样图 CSS 像素换算成点。固定磅值，不随动态字体放大。
+/// 分段控件字号（K10 最新/历史分段控件在用；V3 KX 退役字号已清理）。
 enum NKKXFont {
     static let segment = Font.system(size: 13)
     static let segmentOn = Font.system(size: 13, weight: .semibold)
-    static let titlePhone = Font.system(size: 28, weight: .semibold)
-    static let titleMac = Font.system(size: 22, weight: .semibold)
-    static let meta = Font.system(size: 12)
-    static let alert = Font.system(size: 13, weight: .semibold)
-    static let sentiValue = Font.system(size: 20, weight: .semibold)
-    static let sentiRate = Font.system(size: 11, weight: .medium)
-    static let sentiUnit = Font.system(size: 12, weight: .semibold)
-    static let label = Font.system(size: 11)
-    static let yesterdayPhone = Font.system(size: 13)
-    static let yesterdayMac = Font.system(size: 14)
-    static let intraday = Font.system(size: 11)
-    static let link = Font.system(size: 12)
-    static let disclosure = Font.system(size: 11)
-    static let names = Font.system(size: 12)
-    static let market = Font.system(size: 13)
-    static let mark = Font.system(size: 10, weight: .bold)
-    static let section = Font.system(size: 12, weight: .semibold)
-    static let sectionCount = Font.system(size: 12)
-    static let empty = Font.system(size: 14)
-    static let theme = Font.system(size: 16, weight: .semibold)
-    static let tag = Font.system(size: 11)
-    static let name = Font.system(size: 15, weight: .semibold)
-    static let code = Font.system(size: 11)
-    static let price = Font.system(size: 15, weight: .semibold)
-    static let status = Font.system(size: 12, weight: .semibold)
-    static let facts = Font.system(size: 12)
-    static let auction = Font.system(size: 10, weight: .semibold)
-    static let reason = Font.system(size: 13)
-    static let extra = Font.system(size: 12)
-    static let why = Font.system(size: 11)
-    static let followerLabel = Font.system(size: 11, weight: .semibold)
-    static let followerReason = Font.system(size: 12)
-    static let verdict = Font.system(size: 12, weight: .semibold)
-    static let foot = Font.system(size: 10.5)
-    static let version = Font.system(size: 10)
-    static let gray = Font.system(size: 12)
 }
 
 /// 多行文字的字号规格。只在这里写磅值、相对的文本样式和字重。

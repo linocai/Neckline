@@ -1,0 +1,16 @@
+[Unit]
+Description=Neckline KX V4 post-market board watch and iPhone APNs push (20:02-20:45 CST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python -m neckline.kx.cli watch --db /opt/neckline/data/v4.db
+TimeoutStartSec=50min
+MemoryHigh=256M
+MemoryMax=384M

@@ -1,6 +1,6 @@
 {
   "detail": {
-    "message": "KX 看板还没读到过：KX 暂时连不上。",
-    "reason": "kx_unavailable"
+    "reason": "kx_unsupported_schema",
+    "message": "KX 看板协议版本暂不支持（收到 schema_version=4，需要 5），未强行解析。"
   }
 }

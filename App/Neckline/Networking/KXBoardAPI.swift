@@ -1,4 +1,4 @@
-// KX 看板请求。和晨报同一套 Bearer 令牌与传输层，错误单独定义，不混进晨报的错误。
+// KX V4 看板请求。和晨报同一套 Bearer 令牌与传输层，只认 schema_version == 5，未知版本不硬解。
 
 import Foundation
 
@@ -7,12 +7,14 @@ enum KXBoardError: Error, Equatable {
     case unauthorized
     case notConfigured
     case dbNotReady
-    /// 503，reason 为 kx_unavailable。附后端写的原因。
+    /// 503，reason 为 kx_unsupported_schema，或客户端收到非 5 的 schemaVersion。
+    case unsupportedSchema(String?)
+    /// 503，reason 为 kx_unavailable 等服务端明确原因。
     case unavailable(String?)
     case unreachable
     case unreadable
 
-    /// 连不上、读不了是暂时的：已经有数据时保留旧数据。其余是服务端明确说现在出不了看板。
+    /// 连不上、读不了是暂时的：已经有数据时保留旧数据并提示刷新失败。
     var isTransient: Bool {
         switch self {
         case .unreachable, .unreadable: return true
@@ -22,10 +24,18 @@ enum KXBoardError: Error, Equatable {
 }
 
 protocol KXBoardClient: Sendable {
-    func board() async throws -> KXBoard
+    func board(forceRefresh: Bool) async throws -> KXBoard
+}
+
+extension KXBoardClient {
+    func board() async throws -> KXBoard {
+        try await board(forceRefresh: false)
+    }
 }
 
 struct KXBoardAPI: KXBoardClient, Sendable {
+    static let expectedSchemaVersion = 5
+
     var baseURL: URL
     var token: String
     var transport: any MorningTransport
@@ -41,10 +51,10 @@ struct KXBoardAPI: KXBoardClient, Sendable {
         self.init(baseURL: config.resolvedBaseURL, token: config.apiToken, transport: transport)
     }
 
-    func board() async throws -> KXBoard {
+    func board(forceRefresh: Bool = false) async throws -> KXBoard {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { throw KXBoardError.missingToken }
-        var request = URLRequest(url: try endpoint())
+        var request = URLRequest(url: try endpoint(forceRefresh: forceRefresh))
         request.httpMethod = "GET"
         request.timeoutInterval = 30
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -64,21 +74,36 @@ struct KXBoardAPI: KXBoardClient, Sendable {
             throw KXBoardError.unreachable
         }
         guard (200..<300).contains(http.statusCode) else { throw Self.failure(status: http.statusCode, data: data) }
+        // 两段解码：先只读 schemaVersion，再解整板，避免未来 schema 6 字段变化时误报 .unreadable
+        if let probe = try? JSONDecoder().decode(KXSchemaProbe.self, from: data),
+           let version = probe.schemaVersion,
+           version != Self.expectedSchemaVersion {
+            throw KXBoardError.unsupportedSchema(
+                "KX 看板协议版本暂不支持（收到 schema_version=\(version)，需要 \(Self.expectedSchemaVersion)），未强行解析。"
+            )
+        }
+        let decoded: KXBoard
         do {
-            return try JSONDecoder().decode(KXBoard.self, from: data)
+            decoded = try JSONDecoder().decode(KXBoard.self, from: data)
         } catch {
             throw KXBoardError.unreadable
         }
+        guard decoded.schemaVersion == Self.expectedSchemaVersion else {
+            throw KXBoardError.unsupportedSchema(
+                "KX 看板协议版本暂不支持（收到 schema_version=\(decoded.schemaVersion)，需要 \(Self.expectedSchemaVersion)），未强行解析。"
+            )
+        }
+        return decoded
     }
 
-    private func endpoint() throws -> URL {
+    private func endpoint(forceRefresh: Bool) throws -> URL {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw KXBoardError.unreachable
         }
         let prefix = components.path == "/" ? "" : components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let root = prefix.isEmpty ? "" : "/" + prefix
         components.path = root + "/api/v4/kx/board"
-        components.queryItems = nil
+        components.queryItems = forceRefresh ? [URLQueryItem(name: "refresh", value: "1")] : nil
         guard let url = components.url else { throw KXBoardError.unreachable }
         return url
     }
@@ -89,10 +114,16 @@ struct KXBoardAPI: KXBoardClient, Sendable {
         switch (status, body?.reason) {
         case (503, "v4_not_configured"): return .notConfigured
         case (503, "v4_db_not_ready"): return .dbNotReady
-        case (503, "kx_unavailable"): return .unavailable(body?.message)
+        case (503, "kx_unsupported_schema"): return .unsupportedSchema(body?.message)
+        case (503, _): return .unavailable(body?.message)
         default: return .unreadable
         }
     }
+}
+
+/// 只探测协议版本的最小结构，用于在字段结构变化时先给出明确的协议不支持提示。
+private struct KXSchemaProbe: Decodable {
+    let schemaVersion: Int?
 }
 
 /// 503 的正文：`{"detail": {"reason": ..., "message": ...}}`。detail 是字符串时两项都没有。

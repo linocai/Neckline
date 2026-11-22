@@ -1,0 +1,4683 @@
+{
+  "schemaVersion": 5,
+  "status": "ok",
+  "version": "kx-20261120-003",
+  "asOf": "2026-11-20",
+  "generatedAt": "2026-11-22T12:16:01+08:00",
+  "generatedBy": "deepseek",
+  "checkedAt": "2026-11-22T12:38:12+08:00",
+  "lastReadAt": "2026-11-22T12:40:00+08:00",
+  "stale": false,
+  "staleReason": null,
+  "deepseekStatus": "ok",
+  "deepseekNotice": null,
+  "factWarnings": [],
+  "pushSummary": "11-20 盘后整理完成｜退潮加速 · 局部反核｜候选 19/25（新进 19）",
+  "refresh": {
+    "date": "2026-11-20",
+    "result": "updated",
+    "poolVersion": "kx-20261120-003",
+    "asOf": "2026-11-20",
+    "deepseekStatus": "ok",
+    "finishedAt": "2026-11-22T12:37:34+08:00",
+    "message": "KX V4 初始盘后整理完成（build 13）。",
+    "notice": null,
+    "elapsedSeconds": 205.9
+  },
+  "capacity": {
+    "used": 19,
+    "max": 25,
+    "leaderCount": 8,
+    "hotCount": 9,
+    "elimCount": 2,
+    "nextFree": 2
+  },
+  "sentiment": {
+    "days": [
+      {
+        "date": "2026-11-16",
+        "zt": 30,
+        "zb": 16,
+        "zbRate": 34.8,
+        "dt": 59,
+        "maxLbc": 4,
+        "highest": [
+          {
+            "code": "002148",
+            "name": "北纬科技",
+            "boardType": "T字"
+          }
+        ],
+        "ladder": {
+          "4": [
+            {
+              "code": "002148",
+              "name": "北纬科技",
+              "boardType": "T字"
+            }
+          ],
+          "3": [
+            {
+              "code": "002187",
+              "name": "广百股份",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002205",
+              "name": "国统股份",
+              "boardType": "换手板"
+            }
+          ],
+          "2": [
+            {
+              "code": "000595",
+              "name": "新能股份",
+              "boardType": "换手板"
+            },
+            {
+              "code": "000819",
+              "name": "岳阳兴长",
+              "boardType": "T字"
+            },
+            {
+              "code": "002425",
+              "name": "凯撒文化",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002548",
+              "name": "金新农",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002685",
+              "name": "华东重机",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002748",
+              "name": "世龙实业",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002905",
+              "name": "金逸影视",
+              "boardType": "一字"
+            },
+            {
+              "code": "600715",
+              "name": "文投控股",
+              "boardType": "换手板"
+            }
+          ]
+        },
+        "yZtN": 35,
+        "yCont": 11,
+        "yOpenMean": 2.33,
+        "yCloseMean": 1.37,
+        "yCloseMed": 0.11
+      },
+      {
+        "date": "2026-11-17",
+        "zt": 32,
+        "zb": 16,
+        "zbRate": 33.3,
+        "dt": 66,
+        "maxLbc": 3,
+        "highest": [
+          {
+            "code": "002685",
+            "name": "华东重机",
+            "boardType": "一字"
+          }
+        ],
+        "ladder": {
+          "3": [
+            {
+              "code": "002685",
+              "name": "华东重机",
+              "boardType": "一字"
+            }
+          ],
+          "2": [
+            {
+              "code": "000521",
+              "name": "长虹美菱",
+              "boardType": "换手板"
+            },
+            {
+              "code": "000533",
+              "name": "顺钠股份",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002861",
+              "name": "瀛通通讯",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002959",
+              "name": "小熊电器",
+              "boardType": "换手板"
+            },
+            {
+              "code": "600936",
+              "name": "北投科技",
+              "boardType": "换手板"
+            }
+          ]
+        },
+        "yZtN": 30,
+        "yCont": 6,
+        "yOpenMean": -0.43,
+        "yCloseMean": -0.18,
+        "yCloseMed": -0.45
+      },
+      {
+        "date": "2026-11-18",
+        "zt": 34,
+        "zb": 20,
+        "zbRate": 37.0,
+        "dt": 38,
+        "maxLbc": 4,
+        "highest": [
+          {
+            "code": "002685",
+            "name": "华东重机",
+            "boardType": "一字"
+          }
+        ],
+        "ladder": {
+          "4": [
+            {
+              "code": "002685",
+              "name": "华东重机",
+              "boardType": "一字"
+            }
+          ],
+          "2": [
+            {
+              "code": "000707",
+              "name": "双环科技",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002771",
+              "name": "真视通",
+              "boardType": "换手板"
+            },
+            {
+              "code": "002843",
+              "name": "泰嘉股份",
+              "boardType": "换手板"
+            },
+            {
+              "code": "600410",
+              "name": "华胜天成",
+              "boardType": "换手板"
+            },
+            {
+              "code": "603030",
+              "name": "全筑股份",
+              "boardType": "一字"
+            },
+            {
+              "code": "603324",
+              "name": "盛剑科技",
+              "boardType": "一字"
+            }
+          ]
+        },
+        "yZtN": 32,
+        "yCont": 7,
+        "yOpenMean": 2.18,
+        "yCloseMean": 0.71,
+        "yCloseMed": 0.27
+      },
+      {
+        "date": "2026-11-19",
+        "zt": 22,
+        "zb": 20,
+        "zbRate": 47.6,
+        "dt": 67,
+        "maxLbc": 3,
+        "highest": [
+          {
+            "code": "002771",
+            "name": "真视通",
+            "boardType": "一字"
+          },
+          {
+            "code": "603030",
+            "name": "全筑股份",
+            "boardType": "一字"
+          },
+          {
+            "code": "603324",
+            "name": "盛剑科技",
+            "boardType": "换手板"
+          }
+        ],
+        "ladder": {
+          "3": [
+            {
+              "code": "002771",
+              "name": "真视通",
+              "boardType": "一字"
+            },
+            {
+              "code": "603030",
+              "name": "全筑股份",
+              "boardType": "一字"
+            },
+            {
+              "code": "603324",
+              "name": "盛剑科技",
+              "boardType": "换手板"
+            }
+          ],
+          "2": [
+            {
+              "code": "000711",
+              "name": "京蓝科技",
+              "boardType": "换手板"
+            },
+            {
+              "code": "600156",
+              "name": "华升股份",
+              "boardType": "换手板"
+            }
+          ]
+        },
+        "yZtN": 34,
+        "yCont": 5,
+        "yOpenMean": 2.03,
+        "yCloseMean": -0.4,
+        "yCloseMed": -0.78
+      },
+      {
+        "date": "2026-11-20",
+        "zt": 25,
+        "zb": 7,
+        "zbRate": 21.9,
+        "dt": 57,
+        "maxLbc": 4,
+        "highest": [
+          {
+            "code": "002771",
+            "name": "真视通",
+            "boardType": "换手板"
+          },
+          {
+            "code": "603324",
+            "name": "盛剑科技",
+            "boardType": "T字"
+          }
+        ],
+        "ladder": {
+          "4": [
+            {
+              "code": "002771",
+              "name": "真视通",
+              "boardType": "换手板"
+            },
+            {
+              "code": "603324",
+              "name": "盛剑科技",
+              "boardType": "T字"
+            }
+          ],
+          "2": [
+            {
+              "code": "002579",
+              "name": "中京电子",
+              "boardType": "换手板"
+            }
+          ]
+        },
+        "yZtN": 22,
+        "yCont": 3,
+        "yOpenMean": -0.65,
+        "yCloseMean": -3.4,
+        "yCloseMed": -6.1
+      }
+    ],
+    "judgment": {
+      "stage": "退潮加速 · 局部反核",
+      "marketNote": "程序事实：近5日涨停30→32→34→22→25家，跌停59→66→38→67→57家，最高板4→3→4→3→4；炸板率34.8%→33.3%→37.0%→47.6%→21.9%，11-20封板率回升主要因涨停样本缩小，并非情绪转暖。11-20昨日涨停股平均-3.4%、中位数-6.1%，22只仅3只晋级，1进2仅6%，连板股只剩真视通、盛剑科技（4板）和中京电子（2板）三只，高度与梯队同时断层，属于系统性退潮冰点中的局部反核。结构上：银行、煤炭、电力等高股息尾盘创历史新高，护住上证50；半导体、存储、军工电子、CPO大幅下跌，中小市值资金持续流出（连续第7日超4100股下跌）。仍有资金聚集的方向：华为算力（真视通、华胜天成）、PCB（中京电子、超声电子、澳弘、满坤、光华科技）、光刻胶与洁净室（盛剑科技、全筑股份）、超跌反核及“海洋、东方”名字属性扩散（东方海洋、好当家、大东方）、冰雪经济（冰山冷热、龙江交通）。断板高换手的前核心仍被反复交易：北纬科技炸板收+8.17%（换手51.9%）、华东重机断板2天换手38.8%、华胜天成28%、襄阳轴承33.3%，说明资金通过“反核+二波”迂回，并未整体离场；相反，影视传媒（文投控股、浙文影业、慈文传媒、金逸影视、吉视传媒）与部分百货（上海九百）持续低换手、资金流出。龙虎榜上，活跃席位集中在章盟主（国泰海通江苏路）、玉兰路（东莞南京）、紫阳东路（国泰海通武汉）、原六一中路（东北武汉香港路）、作手新一（国泰海通南京太平南路）、国新北京、安贞门；拉萨、山南席位多在文投控股、凯撒文化、阳光照明等下跌股中承接。本版为初始化，淘汰候选区留空，只收录有持续资金、换手活跃的核心股与反核标的，不为凑数纳入拉萨散户接盘或纯量化一日标的。"
+    }
+  },
+  "factions": [
+    {
+      "name": "AI应用",
+      "count": 3
+    },
+    {
+      "name": "PCB",
+      "count": 3
+    },
+    {
+      "name": "先进封装",
+      "count": 2
+    },
+    {
+      "name": "冰雪经济",
+      "count": 2
+    },
+    {
+      "name": "华为算力",
+      "count": 2
+    },
+    {
+      "name": "大消费",
+      "count": 2
+    },
+    {
+      "name": "机器人",
+      "count": 2
+    },
+    {
+      "name": "海洋经济",
+      "count": 2
+    },
+    {
+      "name": "东北振兴",
+      "count": 1
+    },
+    {
+      "name": "东方系",
+      "count": 1
+    },
+    {
+      "name": "互联网服务",
+      "count": 1
+    },
+    {
+      "name": "信创",
+      "count": 1
+    },
+    {
+      "name": "光刻胶",
+      "count": 1
+    },
+    {
+      "name": "农业",
+      "count": 1
+    },
+    {
+      "name": "冷链设备",
+      "count": 1
+    },
+    {
+      "name": "半导体洁净室",
+      "count": 1
+    },
+    {
+      "name": "家电",
+      "count": 1
+    },
+    {
+      "name": "小家电",
+      "count": 1
+    },
+    {
+      "name": "影视传媒",
+      "count": 1
+    },
+    {
+      "name": "数控机床",
+      "count": 1
+    },
+    {
+      "name": "水产养殖",
+      "count": 1
+    },
+    {
+      "name": "汽车零部件",
+      "count": 1
+    },
+    {
+      "name": "海洋系",
+      "count": 1
+    },
+    {
+      "name": "消费电子",
+      "count": 1
+    },
+    {
+      "name": "猪肉",
+      "count": 1
+    },
+    {
+      "name": "电子化学品",
+      "count": 1
+    },
+    {
+      "name": "百货零售",
+      "count": 1
+    },
+    {
+      "name": "装修装饰",
+      "count": 1
+    }
+  ],
+  "changes": {
+    "added": [
+      "002771",
+      "603324",
+      "002685",
+      "002148",
+      "000530",
+      "002086",
+      "600327",
+      "002579",
+      "600410",
+      "600467",
+      "002548",
+      "002741",
+      "000823",
+      "000678",
+      "002242",
+      "600715",
+      "603030",
+      "002187",
+      "601188"
+    ],
+    "promoted": [],
+    "toElim": [],
+    "returned": [],
+    "removed": []
+  },
+  "items": [
+    {
+      "code": "002771",
+      "name": "真视通",
+      "industry": "软件服务",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "up",
+      "cycleTag": "↑ 今日晋升龙头区",
+      "facts": {
+        "close": 15.82,
+        "pct": 10.01,
+        "tr": 17.6,
+        "circMvYi": 28.57,
+        "boardType": "换手板",
+        "boardStatus": "4 连板 · 最高标",
+        "lbc": 4,
+        "breakDays": null,
+        "firstSealTime": "09:30:21",
+        "lastSealTime": "09:30:21",
+        "breakCount": 0,
+        "ma5": 13.19,
+        "ma5Diff": 19.94,
+        "ma10": 11.97,
+        "ma10Diff": 32.16,
+        "ddPeak": 0.0,
+        "volRatioPeak": 100.0,
+        "zt5dN": 4,
+        "dt5dN": 0,
+        "lhb5dN": 2,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 0.37,
+            "tr": 7.7,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 10.0,
+            "tr": 6.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 10.02,
+            "tr": 7.9,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 10.02,
+            "tr": 2.4,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.01,
+            "tr": 17.6,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "连续三个交易日内，涨幅偏离值累计达到20%的证券"
+          ],
+          "netW": 255.2,
+          "buyTotalW": 11522.8,
+          "sellTotalW": 11267.6,
+          "buys": [
+            {
+              "org": "国泰海通北京安贞门",
+              "fullOrg": "国泰海通证券股份有限公司北京安贞门证券营业部",
+              "buyW": 4988.2,
+              "sellW": 4.8,
+              "netW": 4983.4,
+              "badges": []
+            },
+            {
+              "org": "联储青岛香港中路",
+              "fullOrg": "联储证券股份有限公司青岛香港中路证券营业部",
+              "buyW": 1985.2,
+              "sellW": 6.3,
+              "netW": 1978.9,
+              "badges": []
+            },
+            {
+              "org": "国泰海通上海静安区新闸路",
+              "fullOrg": "国泰海通证券股份有限公司上海静安区新闸路证券营业部",
+              "buyW": 1567.9,
+              "sellW": 0.7,
+              "netW": 1567.2,
+              "badges": [
+                {
+                  "text": "上海超短帮",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "民生上海虹口区杨树浦路",
+              "fullOrg": "民生证券股份有限公司上海虹口区杨树浦路证券营业部",
+              "buyW": 1438.0,
+              "sellW": 0.0,
+              "netW": 1438.0,
+              "badges": []
+            },
+            {
+              "org": "招商合肥北一环",
+              "fullOrg": "招商证券股份有限公司合肥北一环证券营业部",
+              "buyW": 1424.2,
+              "sellW": 1434.5,
+              "netW": -10.3,
+              "badges": []
+            }
+          ],
+          "sells": [
+            {
+              "org": "信达山东第一分公司",
+              "fullOrg": "信达证券股份有限公司山东第一分公司",
+              "buyW": 0.0,
+              "sellW": 3729.6,
+              "netW": -3729.6,
+              "badges": []
+            },
+            {
+              "org": "浙商乐清千帆东路",
+              "fullOrg": "浙商证券股份有限公司乐清千帆东路证券营业部",
+              "buyW": 114.6,
+              "sellW": 2370.9,
+              "netW": -2256.4,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 0.0,
+              "sellW": 2205.1,
+              "netW": -2205.1,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 4.7,
+              "sellW": 1515.7,
+              "netW": -1511.0,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "招商合肥北一环",
+              "fullOrg": "招商证券股份有限公司合肥北一环证券营业部",
+              "buyW": 1424.2,
+              "sellW": 1434.5,
+              "netW": -10.3,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "华为算力",
+            "primary": true
+          },
+          {
+            "name": "AI应用",
+            "primary": false
+          }
+        ],
+        "why": "算力方向最高标，11-17起4连板；11-20小幅高开后快速上板，收实体换手板，日内分歧转一致，带动华胜天成反包与荣联科技等首板，是全场唯一有明显带动性的空间板。流通28.6亿，换手17.6%较前两日一字明显放量，5日4涨停、2次上榜。",
+        "lhbComment": "11-20榜（连续三日涨幅偏离20%）：净买255万；买方国泰海通北京安贞门4988万、联储青岛1985万、上海超短帮1568万接力；卖方信达山东3730万、浙商乐清2256万、两家机构合计约3716万离场，筹码由机构转向游资，净额基本对冲。",
+        "watchNote": "4进5是全场高度标尺，观察封板质量与量能能否维持，以及接近5板后氛围变化，仅作情绪观察。"
+      }
+    },
+    {
+      "code": "603324",
+      "name": "盛剑科技",
+      "industry": "环境保护",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "return",
+      "cycleTag": "↺ 淘汰区回流",
+      "facts": {
+        "close": 27.71,
+        "pct": 10.0,
+        "tr": 17.14,
+        "circMvYi": 40.42,
+        "boardType": "T字",
+        "boardStatus": "4 连板 · 最高标",
+        "lbc": 4,
+        "breakDays": null,
+        "firstSealTime": "09:25:01",
+        "lastSealTime": "14:07:49",
+        "breakCount": 4,
+        "ma5": 23.11,
+        "ma5Diff": 19.9,
+        "ma10": 21.67,
+        "ma10Diff": 27.87,
+        "ddPeak": 0.0,
+        "volRatioPeak": 100.0,
+        "zt5dN": 4,
+        "dt5dN": 0,
+        "lhb5dN": 3,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -4.73,
+            "tr": 1.7,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 9.98,
+            "tr": 1.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 9.99,
+            "tr": 1.3,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 10.0,
+            "tr": 7.0,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.0,
+            "tr": 17.1,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "非S证券连续三个交易日内收盘价格涨幅偏离值累计达到20%的证券"
+          ],
+          "netW": -4164.3,
+          "buyTotalW": 7888.7,
+          "sellTotalW": 12053.0,
+          "buys": [
+            {
+              "org": "国新北京亦庄",
+              "fullOrg": "国新证券股份有限公司北京亦庄证券营业部",
+              "buyW": 1848.3,
+              "sellW": 0.0,
+              "netW": 1848.3,
+              "badges": []
+            },
+            {
+              "org": "国泰海通长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司长宁区江苏路证券营业部",
+              "buyW": 1636.1,
+              "sellW": 0.0,
+              "netW": 1636.1,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "中信上海分公司",
+              "fullOrg": "中信证券股份有限公司上海分公司",
+              "buyW": 1520.8,
+              "sellW": 0.0,
+              "netW": 1520.8,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "国投绍兴延安东路",
+              "fullOrg": "国投证券股份有限公司绍兴延安东路证券营业部",
+              "buyW": 1442.1,
+              "sellW": 0.0,
+              "netW": 1442.1,
+              "badges": []
+            },
+            {
+              "org": "国泰海通东莞总部一路",
+              "fullOrg": "国泰海通证券股份有限公司东莞总部一路证券营业部",
+              "buyW": 1441.5,
+              "sellW": 0.0,
+              "netW": 1441.5,
+              "badges": []
+            }
+          ],
+          "sells": [
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 0.0,
+              "sellW": 2606.6,
+              "netW": -2606.6,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "瑞银上海花园石桥路",
+              "fullOrg": "瑞银证券有限责任公司上海花园石桥路证券营业部",
+              "buyW": 0.0,
+              "sellW": 2592.1,
+              "netW": -2592.1,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "兴业福州江滨中大道",
+              "fullOrg": "兴业证券股份有限公司福州江滨中大道证券营业部",
+              "buyW": 0.0,
+              "sellW": 2466.2,
+              "netW": -2466.2,
+              "badges": []
+            },
+            {
+              "org": "摩根大通(中国)有限公司上海银城中路",
+              "fullOrg": "摩根大通证券(中国)有限公司上海银城中路证券营业部",
+              "buyW": 0.0,
+              "sellW": 2455.9,
+              "netW": -2455.9,
+              "badges": []
+            },
+            {
+              "org": "中信上海分公司",
+              "fullOrg": "中信证券股份有限公司上海分公司",
+              "buyW": 0.0,
+              "sellW": 1932.3,
+              "netW": -1932.3,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "光刻胶",
+            "primary": true
+          },
+          {
+            "name": "先进封装",
+            "primary": false
+          }
+        ],
+        "why": "光刻胶与洁净室方向最高标4连板：11-20竞价一字后炸板、深水换手再回封T字，全天换手17.1%，5日4涨停、3次上榜。同板块指数大幅下跌，其独立性靠自身承接，量化参与痕迹明显。",
+        "lhbComment": "11-20榜（连续三日涨幅偏离20%）：净卖4164万；买方国新北京亦庄1848万、章盟主1636万、中信上海（量化）1521万分散；卖方机构2607万、瑞银2592万、兴业福州2466万、摩根大通2456万，另有中信上海量化双向做T，以机构减持、游资与量化承接为主。",
+        "watchNote": "T字板后量能已明显放大，观察次日能否脱离光刻胶板块走独立行情，以及换手是否继续放大。"
+      }
+    },
+    {
+      "code": "002685",
+      "name": "华东重机",
+      "industry": "机床制造",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 7.4,
+        "pct": -3.52,
+        "tr": 38.78,
+        "circMvYi": 74.56,
+        "boardType": "普通",
+        "boardStatus": "断板第 2 天",
+        "lbc": 0,
+        "breakDays": 2,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 7.05,
+        "ma5Diff": 4.96,
+        "ma10": 6.01,
+        "ma10Diff": 23.13,
+        "ddPeak": -8.75,
+        "volRatioPeak": 75.5,
+        "zt5dN": 3,
+        "dt5dN": 0,
+        "lhb5dN": 4,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 9.93,
+            "tr": 14.4,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 10.02,
+            "tr": 3.4,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 10.0,
+            "tr": 2.2,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 4.07,
+            "tr": 51.3,
+            "zt": false,
+            "dt": false,
+            "zb": true,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": -3.52,
+            "tr": 38.8,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日换手率达到20%的前5只证券"
+          ],
+          "netW": 781.8,
+          "buyTotalW": 28372.2,
+          "sellTotalW": 27590.3,
+          "buys": [
+            {
+              "org": "国泰海通上海长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司上海长宁区江苏路证券营业部",
+              "buyW": 7807.5,
+              "sellW": 305.0,
+              "netW": 7502.5,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "东莞南京分公司",
+              "fullOrg": "东莞证券股份有限公司南京分公司",
+              "buyW": 6767.2,
+              "sellW": 1237.3,
+              "netW": 5529.9,
+              "badges": [
+                {
+                  "text": "玉兰路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 4301.4,
+              "sellW": 2500.7,
+              "netW": 1800.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "东亚前海上海分公司",
+              "fullOrg": "东亚前海证券有限责任公司上海分公司",
+              "buyW": 3541.9,
+              "sellW": 1562.9,
+              "netW": 1979.0,
+              "badges": [
+                {
+                  "text": "思明南路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "中信建投福州东街",
+              "fullOrg": "中信建投证券股份有限公司福州东街证券营业部",
+              "buyW": 2953.5,
+              "sellW": 80.4,
+              "netW": 2873.1,
+              "badges": [
+                {
+                  "text": "大小说家",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "华鑫上海金山",
+              "fullOrg": "华鑫证券有限责任公司上海金山证券营业部",
+              "buyW": 4.5,
+              "sellW": 6484.2,
+              "netW": -6479.8,
+              "badges": [
+                {
+                  "text": "量化打板",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "银河庄河世纪大街",
+              "fullOrg": "中国银河证券股份有限公司庄河世纪大街证券营业部",
+              "buyW": 1433.4,
+              "sellW": 6132.3,
+              "netW": -4698.9,
+              "badges": []
+            },
+            {
+              "org": "国泰海通湛江万豪世家",
+              "fullOrg": "国泰海通证券股份有限公司湛江万豪世家证券营业部",
+              "buyW": 16.2,
+              "sellW": 4969.0,
+              "netW": -4952.8,
+              "badges": []
+            },
+            {
+              "org": "东财山南香曲东路",
+              "fullOrg": "东方财富证券股份有限公司山南香曲东路证券营业部",
+              "buyW": 1546.6,
+              "sellW": 4318.4,
+              "netW": -2771.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 4301.4,
+              "sellW": 2500.7,
+              "netW": 1800.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "pullback",
+          "text": "回调观察"
+        },
+        "factions": [
+          {
+            "name": "机器人",
+            "primary": true
+          },
+          {
+            "name": "数控机床",
+            "primary": false
+          }
+        ],
+        "why": "11-16至11-18三连板的前最高标，11-19炸板后断板第2天仅跌3.52%，换手仍达38.8%，5日4次上榜、3次涨停；收盘仍在5日线上方（偏离4.96%，距峰值仅-8.75%），属高位放量良性回调，是二波观察的核心标的。",
+        "lhbComment": "11-20榜（日换手20%前五）：净买782万；买方章盟主（国泰海通江苏路）7503万、玉兰路（东莞南京）5530万、北向1801万、思明南路1979万、大小说家2873万；卖方华鑫上海金山（量化）6480万、银河庄河4699万、湛江万豪4953万、拉萨山南2772万，筹码由量化与散户向一线游资集中。",
+        "watchNote": "观察回调至5日或10日线附近的缩量程度与承接，断板天数与换手变化是节奏关键。"
+      }
+    },
+    {
+      "code": "002148",
+      "name": "北纬科技",
+      "industry": "互联网",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 10.06,
+        "pct": 8.17,
+        "tr": 51.95,
+        "circMvYi": 45.37,
+        "boardType": "炸板",
+        "boardStatus": "高位炸板 · 强承接",
+        "lbc": 0,
+        "breakDays": null,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": 3,
+        "ma5": 9.03,
+        "ma5Diff": 11.41,
+        "ma10": 7.87,
+        "ma10Diff": 27.83,
+        "ddPeak": -1.66,
+        "volRatioPeak": 100.0,
+        "zt5dN": 2,
+        "dt5dN": 0,
+        "lhb5dN": 5,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 10.06,
+            "tr": 42.6,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -7.31,
+            "tr": 42.8,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 9.99,
+            "tr": 42.0,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 4.26,
+            "tr": 49.5,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 8.17,
+            "tr": 51.9,
+            "zt": false,
+            "dt": false,
+            "zb": true,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日换手率达到20%的前5只证券",
+            "连续三个交易日内，涨幅偏离值累计达到20%的证券"
+          ],
+          "netW": 18749.8,
+          "buyTotalW": 52673.0,
+          "sellTotalW": 33923.2,
+          "buys": [
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 7697.8,
+              "sellW": 1.1,
+              "netW": 7696.6,
+              "badges": []
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 4874.7,
+              "sellW": 5644.6,
+              "netW": -769.9,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 4314.3,
+              "sellW": 52.5,
+              "netW": 4261.8,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "开源西安西大街",
+              "fullOrg": "开源证券股份有限公司西安西大街证券营业部",
+              "buyW": 3435.6,
+              "sellW": 21.9,
+              "netW": 3413.7,
+              "badges": [
+                {
+                  "text": "量化打板",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "东方厦门仙岳路",
+              "fullOrg": "东方证券股份有限公司厦门仙岳路证券营业部",
+              "buyW": 2587.3,
+              "sellW": 26.5,
+              "netW": 2560.8,
+              "badges": [
+                {
+                  "text": "山东帮",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "东亚前海苏州分公司",
+              "fullOrg": "东亚前海证券有限责任公司苏州分公司",
+              "buyW": 1103.9,
+              "sellW": 6002.4,
+              "netW": -4898.5,
+              "badges": [
+                {
+                  "text": "粉葛",
+                  "kind": "hot"
+                },
+                {
+                  "text": "思明南路",
+                  "kind": "hot"
+                },
+                {
+                  "text": "低位挖掘",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 4874.7,
+              "sellW": 5644.6,
+              "netW": -769.9,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 2123.7,
+              "sellW": 2696.2,
+              "netW": -572.5,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 2059.7,
+              "sellW": 2127.0,
+              "netW": -67.3,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东财昌都两江大道",
+              "fullOrg": "东方财富证券股份有限公司昌都两江大道证券营业部",
+              "buyW": 1622.4,
+              "sellW": 2064.2,
+              "netW": -441.9,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "divergence",
+          "text": "高位分歧"
+        },
+        "factions": [
+          {
+            "name": "互联网服务",
+            "primary": true
+          },
+          {
+            "name": "AI应用",
+            "primary": false
+          }
+        ],
+        "why": "11-16曾走出4板T字，5日5次上榜、2次涨停，换手连续5日维持41%–52%；11-20炸板仍收+8.17%、距峰值仅-1.66%，高位承接强，属复盘中点名的抱团标的，走势可类比东方海洋断板后的犀利结构。",
+        "lhbComment": "11-20榜（换手20%+三日涨幅偏离20%）：净买1.87亿；买方国新北京7697万、北向4875万、机构4314万、开源西安（量化打板）3414万、山东帮（东方厦门仙岳路）2561万；卖方东亚前海苏州6002万、深股通5645万，拉萨仅小额对冲，买卖双向活跃、分歧明显。",
+        "watchNote": "炸板后处于高位分歧，观察次日能否重新封板或缩量回踩5日线，换手52%后的筹码稳定性是重点。"
+      }
+    },
+    {
+      "code": "000530",
+      "name": "冰山冷热",
+      "industry": "机械基件",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 12.29,
+        "pct": 10.03,
+        "tr": 42.64,
+        "circMvYi": 73.75,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 跌停反核",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "10:00:54",
+        "lastSealTime": "14:40:09",
+        "breakCount": 2,
+        "ma5": 11.74,
+        "ma5Diff": 4.68,
+        "ma10": 11.14,
+        "ma10Diff": 10.32,
+        "ddPeak": -4.95,
+        "volRatioPeak": 87.6,
+        "zt5dN": 1,
+        "dt5dN": 1,
+        "lhb5dN": 5,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 6.49,
+            "tr": 33.5,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 7.73,
+            "tr": 41.7,
+            "zt": false,
+            "dt": false,
+            "zb": true,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 4.73,
+            "tr": 47.2,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -9.99,
+            "tr": 30.1,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.03,
+            "tr": 42.6,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日换手率达到20%的前5只证券",
+            "日涨幅偏离值达到7%的前5只证券"
+          ],
+          "netW": 29865.9,
+          "buyTotalW": 53043.6,
+          "sellTotalW": 23177.8,
+          "buys": [
+            {
+              "org": "东莞南京分公司",
+              "fullOrg": "东莞证券股份有限公司南京分公司",
+              "buyW": 12045.3,
+              "sellW": 3536.0,
+              "netW": 8509.2,
+              "badges": [
+                {
+                  "text": "玉兰路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通武汉紫阳东路",
+              "fullOrg": "国泰海通证券股份有限公司武汉紫阳东路证券营业部",
+              "buyW": 9894.8,
+              "sellW": 39.6,
+              "netW": 9855.3,
+              "badges": [
+                {
+                  "text": "紫阳东路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通连云港巨龙南路",
+              "fullOrg": "国泰海通证券股份有限公司连云港巨龙南路证券营业部",
+              "buyW": 8516.9,
+              "sellW": 14.5,
+              "netW": 8502.4,
+              "badges": []
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 7699.5,
+              "sellW": 0.0,
+              "netW": 7699.5,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 6577.1,
+              "sellW": 746.4,
+              "netW": 5830.7,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 2578.7,
+              "sellW": 7913.1,
+              "netW": -5334.4,
+              "badges": []
+            },
+            {
+              "org": "平安深圳香蜜湖",
+              "fullOrg": "平安证券股份有限公司深圳香蜜湖证券营业部",
+              "buyW": 1242.1,
+              "sellW": 4069.8,
+              "netW": -2827.7,
+              "badges": []
+            },
+            {
+              "org": "东财山南香曲东路",
+              "fullOrg": "东方财富证券股份有限公司山南香曲东路证券营业部",
+              "buyW": 3233.3,
+              "sellW": 3632.8,
+              "netW": -399.5,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东莞南京分公司",
+              "fullOrg": "东莞证券股份有限公司南京分公司",
+              "buyW": 12045.3,
+              "sellW": 3536.0,
+              "netW": 8509.2,
+              "badges": [
+                {
+                  "text": "玉兰路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "广发广州寺右新马路",
+              "fullOrg": "广发证券股份有限公司广州寺右新马路证券营业部",
+              "buyW": 1255.8,
+              "sellW": 3225.6,
+              "netW": -1969.8,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "冰雪经济",
+            "primary": true
+          },
+          {
+            "name": "冷链设备",
+            "primary": false
+          }
+        ],
+        "why": "冰雪经济抱团核心：11-16至11-18三连阳后11-19跌停，11-20跌停开板完成地天反包涨停，换手42.6%、5日5次上榜，为复盘中明确点名的“资金持续抱团、涨停完成反包”标的，当日全市场净买额最高。",
+        "lhbComment": "11-20榜（换手20%+涨幅偏离7%）：净买2.99亿；买方玉兰路（东莞南京）1.20亿、紫阳东路（国泰海通武汉）9895万、国泰海通连云港8517万、国新北京7700万、机构6577万；卖方国信浙江7913万、平安香蜜湖4070万，一线游资与机构同时在场，集中度明显提升。",
+        "watchNote": "地天板后首日溢价与封单厚度是关键，观察是否出现分歧放量，以及与冰雪经济龙二（龙江交通）的联动。"
+      }
+    },
+    {
+      "code": "002086",
+      "name": "东方海洋",
+      "industry": "渔业",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 3.75,
+        "pct": 9.97,
+        "tr": 23.83,
+        "circMvYi": 59.29,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 09:42封死",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "09:42:06",
+        "lastSealTime": "09:42:06",
+        "breakCount": 0,
+        "ma5": 3.87,
+        "ma5Diff": -3.1,
+        "ma10": 4.3,
+        "ma10Diff": -12.79,
+        "ddPeak": -27.33,
+        "volRatioPeak": 45.0,
+        "zt5dN": 1,
+        "dt5dN": 2,
+        "lhb5dN": 5,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -9.96,
+            "tr": 32.4,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -4.61,
+            "tr": 43.3,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -9.9,
+            "tr": 17.6,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -8.58,
+            "tr": 40.9,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 9.97,
+            "tr": 23.8,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日涨幅偏离值达到7%的前5只证券"
+          ],
+          "netW": 31435.6,
+          "buyTotalW": 42297.6,
+          "sellTotalW": 10861.9,
+          "buys": [
+            {
+              "org": "民生宁波财神殿南路",
+              "fullOrg": "民生证券股份有限公司宁波财神殿南路证券营业部",
+              "buyW": 14113.0,
+              "sellW": 0.0,
+              "netW": 14113.0,
+              "badges": []
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 7699.0,
+              "sellW": 0.7,
+              "netW": 7698.2,
+              "badges": []
+            },
+            {
+              "org": "甬兴宁波和源路",
+              "fullOrg": "甬兴证券有限公司宁波和源路证券营业部",
+              "buyW": 6241.5,
+              "sellW": 0.6,
+              "netW": 6240.9,
+              "badges": [
+                {
+                  "text": "宁波和源路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通北京安贞门",
+              "fullOrg": "国泰海通证券股份有限公司北京安贞门证券营业部",
+              "buyW": 5982.2,
+              "sellW": 0.2,
+              "netW": 5982.0,
+              "badges": []
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 5530.3,
+              "sellW": 254.7,
+              "netW": 5275.6,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 771.4,
+              "sellW": 3595.0,
+              "netW": -2823.7,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨团结路第二",
+              "fullOrg": "东方财富证券股份有限公司拉萨团结路第二证券营业部",
+              "buyW": 498.9,
+              "sellW": 2345.2,
+              "netW": -1846.3,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 574.8,
+              "sellW": 1672.6,
+              "netW": -1097.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东财山南香曲东路",
+              "fullOrg": "东方财富证券股份有限公司山南香曲东路证券营业部",
+              "buyW": 500.0,
+              "sellW": 1524.9,
+              "netW": -1024.9,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "平安深圳香蜜湖",
+              "fullOrg": "平安证券股份有限公司深圳香蜜湖证券营业部",
+              "buyW": 386.5,
+              "sellW": 1468.1,
+              "netW": -1081.6,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "海洋经济",
+            "primary": true
+          },
+          {
+            "name": "海洋系",
+            "primary": false
+          }
+        ],
+        "why": "11-16、11-18两度跌停后，11-20平开快速上板，引领超跌反核，并带动万向德农、金新农、好当家等农业与海洋方向；5日5次上榜、换手23.8%、净买3.14亿，是当日反核情绪的发起标的。",
+        "lhbComment": "11-20榜（涨幅偏离7%）：净买3.14亿；买方民生宁波财神殿1.41亿、国新北京7698万、宁波和源路6241万、安贞门5982万、北向5530万；卖方国信浙江3595万、拉萨三席净卖约3969万，游资强攻、拉萨散户减仓，买盘结构偏主力。",
+        "watchNote": "观察反核次日能否给出正溢价、带动农业与海洋名字属性扩散；若冲高回落，则反核逻辑降温。"
+      }
+    },
+    {
+      "code": "600327",
+      "name": "大东方",
+      "industry": "医疗保健",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 4.83,
+        "pct": 10.02,
+        "tr": 27.77,
+        "circMvYi": 42.73,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 14:49回封",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "11:12:19",
+        "lastSealTime": "14:49:19",
+        "breakCount": 3,
+        "ma5": 4.99,
+        "ma5Diff": -3.21,
+        "ma10": 5.65,
+        "ma10Diff": -14.51,
+        "ddPeak": -34.46,
+        "volRatioPeak": 71.9,
+        "zt5dN": 1,
+        "dt5dN": 3,
+        "lhb5dN": 4,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -10.06,
+            "tr": 14.4,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -9.98,
+            "tr": 14.9,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -9.94,
+            "tr": 7.7,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -6.79,
+            "tr": 22.7,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.02,
+            "tr": 27.8,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "有价格涨跌幅限制的日换手率达到20%的前五只证券",
+            "有价格涨跌幅限制的日收盘价格涨幅偏离值达到7%的前五只证券"
+          ],
+          "netW": 7974.3,
+          "buyTotalW": 18784.7,
+          "sellTotalW": 10810.5,
+          "buys": [
+            {
+              "org": "华泰长沙湘江中路",
+              "fullOrg": "华泰证券股份有限公司长沙湘江中路证券营业部",
+              "buyW": 6016.3,
+              "sellW": 0.0,
+              "netW": 6016.3,
+              "badges": []
+            },
+            {
+              "org": "国泰海通武汉紫阳东路",
+              "fullOrg": "国泰海通证券股份有限公司武汉紫阳东路证券营业部",
+              "buyW": 5602.7,
+              "sellW": 0.0,
+              "netW": 5602.7,
+              "badges": [
+                {
+                  "text": "紫阳东路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 2641.0,
+              "sellW": 0.0,
+              "netW": 2641.0,
+              "badges": []
+            },
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 2348.3,
+              "sellW": 0.0,
+              "netW": 2348.3,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "中信海宁海昌南路",
+              "fullOrg": "中信证券股份有限公司海宁海昌南路证券营业部",
+              "buyW": 2176.5,
+              "sellW": 0.0,
+              "netW": 2176.5,
+              "badges": []
+            }
+          ],
+          "sells": [
+            {
+              "org": "国泰海通三亚迎宾路",
+              "fullOrg": "国泰海通证券股份有限公司三亚迎宾路证券营业部",
+              "buyW": 0.0,
+              "sellW": 5296.5,
+              "netW": -5296.5,
+              "badges": [
+                {
+                  "text": "佛山系",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 0.0,
+              "sellW": 1561.7,
+              "netW": -1561.7,
+              "badges": []
+            },
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 0.0,
+              "sellW": 1425.8,
+              "netW": -1425.8,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 0.0,
+              "sellW": 1298.8,
+              "netW": -1298.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东财山南香曲东路",
+              "fullOrg": "东方财富证券股份有限公司山南香曲东路证券营业部",
+              "buyW": 0.0,
+              "sellW": 1227.8,
+              "netW": -1227.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "东方系",
+            "primary": true
+          },
+          {
+            "name": "大消费",
+            "primary": false
+          }
+        ],
+        "why": "14天7板的大消费老龙，11-16至11-18三连跌停后，11-20尾盘14:49回封涨停，换手27.8%、5日4次上榜；随“东方”名字属性扩散修复，属老龙反抽二波形态，辨识度高。",
+        "lhbComment": "11-20榜（换手20%+涨幅偏离7%）：净买7974万；买方华泰长沙湘江中路6016万、紫阳东路5603万、国新北京2641万、国泰海通总部（量化）2348万、中信海宁2177万；卖方佛山系（三亚迎宾路）5297万、国信浙江1562万、拉萨两席2527万，游资接棒佛山系出货。",
+        "watchNote": "观察尾盘回封后的次日承接，以及14天7板高位筹码的消化情况，量能能否维持是观察点。"
+      }
+    },
+    {
+      "code": "002579",
+      "name": "中京电子",
+      "industry": "元器件",
+      "zone": "leader",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 13.39,
+        "pct": 10.02,
+        "tr": 12.97,
+        "circMvYi": 78.12,
+        "boardType": "换手板",
+        "boardStatus": "2 连板 · 换手板",
+        "lbc": 2,
+        "breakDays": null,
+        "firstSealTime": "09:36:24",
+        "lastSealTime": "09:36:24",
+        "breakCount": 0,
+        "ma5": 11.69,
+        "ma5Diff": 14.54,
+        "ma10": 11.99,
+        "ma10Diff": 11.68,
+        "ddPeak": 0.0,
+        "volRatioPeak": 97.3,
+        "zt5dN": 2,
+        "dt5dN": 0,
+        "lhb5dN": 2,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -5.93,
+            "tr": 5.7,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -0.46,
+            "tr": 5.9,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 1.47,
+            "tr": 6.5,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 10.04,
+            "tr": 13.3,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.02,
+            "tr": 13.0,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日涨幅偏离值达到7%的前5只证券",
+            "连续三个交易日内，涨幅偏离值累计达到20%的证券"
+          ],
+          "netW": 24422.6,
+          "buyTotalW": 43685.5,
+          "sellTotalW": 19262.8,
+          "buys": [
+            {
+              "org": "开源西安西大街",
+              "fullOrg": "开源证券股份有限公司西安西大街证券营业部",
+              "buyW": 10452.3,
+              "sellW": 1.7,
+              "netW": 10450.6,
+              "badges": [
+                {
+                  "text": "量化打板",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 8385.0,
+              "sellW": 2941.4,
+              "netW": 5443.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通湛江万豪世家",
+              "fullOrg": "国泰海通证券股份有限公司湛江万豪世家证券营业部",
+              "buyW": 2997.1,
+              "sellW": 0.0,
+              "netW": 2997.1,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 2163.0,
+              "sellW": 774.2,
+              "netW": 1388.8,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通上海普陀区大渡河路",
+              "fullOrg": "国泰海通证券股份有限公司上海普陀区大渡河路证券营业部",
+              "buyW": 1751.9,
+              "sellW": 6.8,
+              "netW": 1745.1,
+              "badges": [
+                {
+                  "text": "温州帮",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 8385.0,
+              "sellW": 2941.4,
+              "netW": 5443.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "东方深圳金田路",
+              "fullOrg": "东方证券股份有限公司深圳金田路证券营业部",
+              "buyW": 1.0,
+              "sellW": 2508.4,
+              "netW": -2507.3,
+              "badges": []
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 2.5,
+              "sellW": 2492.6,
+              "netW": -2490.1,
+              "badges": []
+            },
+            {
+              "org": "中信东阳吴宁西路",
+              "fullOrg": "中信证券股份有限公司东阳吴宁西路证券营业部",
+              "buyW": 6.1,
+              "sellW": 2332.3,
+              "netW": -2326.2,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 932.5,
+              "sellW": 1597.2,
+              "netW": -664.7,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "PCB",
+            "primary": true
+          },
+          {
+            "name": "先进封装",
+            "primary": false
+          }
+        ],
+        "why": "PCB方向唯一2连板，11-20早盘快速晋级，并带动超声电子、澳弘电子、骏亚科技、满坤科技涨停，形成当日唯一有明显梯队的新线；5日2涨停、2次上榜，净买2.44亿。",
+        "lhbComment": "11-20榜（涨幅偏离7%+三日涨幅偏离20%）：净买2.44亿；买方开源西安（量化打板）1.05亿、北向8385万、国泰海通湛江2997万、机构2163万、温州帮1752万；卖方东方深圳金田路2508万、国新北京2493万、中信东阳2332万，量化打板占比偏高是隐患。",
+        "watchNote": "观察PCB线次日能否延续（澳弘、超声、满坤联动），以及领先身位能否守住，量化资金占比高需防一日游。"
+      }
+    },
+    {
+      "code": "600410",
+      "name": "华胜天成",
+      "industry": "软件服务",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 17.32,
+        "pct": 3.71,
+        "tr": 28.0,
+        "circMvYi": 189.91,
+        "boardType": "普通",
+        "boardStatus": "断板第 2 天",
+        "lbc": 0,
+        "breakDays": 2,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 16.01,
+        "ma5Diff": 8.18,
+        "ma10": 14.48,
+        "ma10Diff": 19.61,
+        "ddPeak": -5.87,
+        "volRatioPeak": 94.6,
+        "zt5dN": 2,
+        "dt5dN": 0,
+        "lhb5dN": 3,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -2.8,
+            "tr": 20.2,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 10.0,
+            "tr": 8.5,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 10.01,
+            "tr": 19.0,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -0.71,
+            "tr": 29.6,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 3.71,
+            "tr": 28.0,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "有价格涨跌幅限制的日换手率达到20%的前五只证券"
+          ],
+          "netW": 669.7,
+          "buyTotalW": 36368.8,
+          "sellTotalW": 35699.0,
+          "buys": [
+            {
+              "org": "沪股通专用",
+              "fullOrg": "沪股通专用",
+              "buyW": 14869.7,
+              "sellW": 0.0,
+              "netW": 14869.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司长宁区江苏路证券营业部",
+              "buyW": 6197.4,
+              "sellW": 0.0,
+              "netW": 6197.4,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通北京安贞门",
+              "fullOrg": "国泰海通证券股份有限公司北京安贞门证券营业部",
+              "buyW": 5548.6,
+              "sellW": 0.0,
+              "netW": 5548.6,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 4923.6,
+              "sellW": 0.0,
+              "netW": 4923.6,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "中信建投福清福和路",
+              "fullOrg": "中信建投证券股份有限公司福清福和路证券营业部",
+              "buyW": 4829.4,
+              "sellW": 0.0,
+              "netW": 4829.4,
+              "badges": []
+            }
+          ],
+          "sells": [
+            {
+              "org": "浙商杭州五星路",
+              "fullOrg": "浙商证券股份有限公司杭州五星路证券营业部",
+              "buyW": 0.0,
+              "sellW": 10955.9,
+              "netW": -10955.9,
+              "badges": []
+            },
+            {
+              "org": "沪股通专用",
+              "fullOrg": "沪股通专用",
+              "buyW": 0.0,
+              "sellW": 7714.2,
+              "netW": -7714.2,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "东亚前海上海分公司",
+              "fullOrg": "东亚前海证券有限责任公司上海分公司",
+              "buyW": 0.0,
+              "sellW": 6347.9,
+              "netW": -6347.9,
+              "badges": [
+                {
+                  "text": "思明南路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 0.0,
+              "sellW": 5569.2,
+              "netW": -5569.2,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 0.0,
+              "sellW": 5111.8,
+              "netW": -5111.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "pullback",
+          "text": "回调观察"
+        },
+        "factions": [
+          {
+            "name": "华为算力",
+            "primary": true
+          },
+          {
+            "name": "信创",
+            "primary": false
+          }
+        ],
+        "why": "算力趋势中军：11-17、11-18两连板后断板第2天收+3.71%，换手仍28%，5日3次上榜；收盘在5日线上方8.18%，189.9亿流通盘中仍保持高换手，被复盘称为“趋势未走坏”的中军角色。",
+        "lhbComment": "11-20榜（换手20%前五）：净买670万；买方沪股通1.49亿、章盟主6197万、安贞门5549万、拉萨4924万、中信建投福清4829万；卖方浙商杭州五星路1.10亿、沪股通7714万、思明南路6348万、国信浙江5569万，北向与一线游资承接机构、游资减持。",
+        "watchNote": "大市值中军看趋势与量能延续性，观察是否回踩5日线缩量，以及算力方向整体情绪。"
+      }
+    },
+    {
+      "code": "600467",
+      "name": "好当家",
+      "industry": "渔业",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 2.86,
+        "pct": 10.0,
+        "tr": 22.54,
+        "circMvYi": 41.78,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 14:45回封",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "11:26:46",
+        "lastSealTime": "14:45:52",
+        "breakCount": 2,
+        "ma5": 2.7,
+        "ma5Diff": 5.93,
+        "ma10": 2.54,
+        "ma10Diff": 12.6,
+        "ddPeak": -4.35,
+        "volRatioPeak": 86.1,
+        "zt5dN": 2,
+        "dt5dN": 0,
+        "lhb5dN": 2,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -8.42,
+            "tr": 20.3,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 10.0,
+            "tr": 16.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 0.73,
+            "tr": 26.2,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -6.14,
+            "tr": 17.8,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.0,
+            "tr": 22.5,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "有价格涨跌幅限制的日价格振幅达到15%的前五只证券"
+          ],
+          "netW": 11969.8,
+          "buyTotalW": 19257.0,
+          "sellTotalW": 7287.2,
+          "buys": [
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 6115.8,
+              "sellW": 0.0,
+              "netW": 6115.8,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 5945.8,
+              "sellW": 0.0,
+              "netW": 5945.8,
+              "badges": []
+            },
+            {
+              "org": "开源西安太华路",
+              "fullOrg": "开源证券股份有限公司西安太华路证券营业部",
+              "buyW": 3208.5,
+              "sellW": 0.0,
+              "netW": 3208.5,
+              "badges": [
+                {
+                  "text": "量化打板",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "高盛中国上海浦东新区世纪大道",
+              "fullOrg": "高盛(中国)证券有限责任公司上海浦东新区世纪大道证券营业部",
+              "buyW": 2007.7,
+              "sellW": 0.0,
+              "netW": 2007.7,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "国新北京亦庄",
+              "fullOrg": "国新证券股份有限公司北京亦庄证券营业部",
+              "buyW": 1979.2,
+              "sellW": 0.0,
+              "netW": 1979.2,
+              "badges": []
+            }
+          ],
+          "sells": [
+            {
+              "org": "华泰北京东三环北路",
+              "fullOrg": "华泰证券股份有限公司北京东三环北路证券营业部",
+              "buyW": 0.0,
+              "sellW": 1897.4,
+              "netW": -1897.4,
+              "badges": []
+            },
+            {
+              "org": "瑞银上海花园石桥路",
+              "fullOrg": "瑞银证券有限责任公司上海花园石桥路证券营业部",
+              "buyW": 0.0,
+              "sellW": 1562.1,
+              "netW": -1562.1,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "摩根大通(中国)有限公司上海银城中路",
+              "fullOrg": "摩根大通证券(中国)有限公司上海银城中路证券营业部",
+              "buyW": 0.0,
+              "sellW": 1514.4,
+              "netW": -1514.4,
+              "badges": []
+            },
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 0.0,
+              "sellW": 1345.2,
+              "netW": -1345.2,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "东财昌都两江大道",
+              "fullOrg": "东方财富证券股份有限公司昌都两江大道证券营业部",
+              "buyW": 0.0,
+              "sellW": 968.1,
+              "netW": -968.1,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "海洋经济",
+            "primary": true
+          },
+          {
+            "name": "水产养殖",
+            "primary": false
+          }
+        ],
+        "why": "7天4板的水产与大消费标的，11-20低开下探后14:45回封涨停，5日2涨停、2次上榜；与东方海洋同属当日最强的农业与海洋反核方向，是板块内辨识度较高的龙二。",
+        "lhbComment": "11-20榜（振幅15%前五）：净买1.20亿；买方国泰海通总部（量化）6116万、国新北京5946万、开源西安太华路（量化打板）3209万、高盛（量化）2008万、国新北京亦庄1979万；卖方华泰北京东三环1897万、瑞银1562万、摩根大通1514万，买盘集中，但量化席位占比偏高。",
+        "watchNote": "观察回封后次日能否延续，农业与海洋方向的持续性、量化席位占比是主要不确定项。"
+      }
+    },
+    {
+      "code": "002548",
+      "name": "金新农",
+      "industry": "饲料",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 3.76,
+        "pct": 9.94,
+        "tr": 8.54,
+        "circMvYi": 30.25,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 10:47封死",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "10:47:21",
+        "lastSealTime": "10:47:21",
+        "breakCount": 0,
+        "ma5": 3.81,
+        "ma5Diff": -1.31,
+        "ma10": 3.7,
+        "ma10Diff": 1.62,
+        "ddPeak": -10.69,
+        "volRatioPeak": 54.0,
+        "zt5dN": 2,
+        "dt5dN": 0,
+        "lhb5dN": 1,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 9.92,
+            "tr": 6.8,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -6.89,
+            "tr": 15.8,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -4.08,
+            "tr": 10.3,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -9.04,
+            "tr": 10.1,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 9.94,
+            "tr": 8.5,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          }
+        ],
+        "lhbIsToday": false,
+        "lhb": {
+          "date": "2026-11-16",
+          "reasons": [
+            "连续三个交易日内，涨幅偏离值累计达到20%的证券"
+          ],
+          "netW": 2718.0,
+          "buyTotalW": 5150.1,
+          "sellTotalW": 2432.1,
+          "buys": [
+            {
+              "org": "国泰海通连云港巨龙南路",
+              "fullOrg": "国泰海通证券股份有限公司连云港巨龙南路证券营业部",
+              "buyW": 927.7,
+              "sellW": 0.0,
+              "netW": 927.7,
+              "badges": []
+            },
+            {
+              "org": "东海福州长乐北路",
+              "fullOrg": "东海证券股份有限公司福州长乐北路证券营业部",
+              "buyW": 861.2,
+              "sellW": 0.0,
+              "netW": 861.2,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 817.5,
+              "sellW": 170.5,
+              "netW": 647.1,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "东海长沙潇湘南路",
+              "fullOrg": "东海证券股份有限公司长沙潇湘南路证券营业部",
+              "buyW": 754.7,
+              "sellW": 64.8,
+              "netW": 689.9,
+              "badges": []
+            },
+            {
+              "org": "国泰海通上海闵行区号文路",
+              "fullOrg": "国泰海通证券股份有限公司上海闵行区号文路证券营业部",
+              "buyW": 500.0,
+              "sellW": 0.5,
+              "netW": 499.5,
+              "badges": [
+                {
+                  "text": "湖里大道",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 187.0,
+              "sellW": 475.9,
+              "netW": -288.9,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通上海松江区中山东路",
+              "fullOrg": "国泰海通证券股份有限公司上海松江区中山东路证券营业部",
+              "buyW": 415.6,
+              "sellW": 454.6,
+              "netW": -39.0,
+              "badges": [
+                {
+                  "text": "中山东路",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 135.3,
+              "sellW": 446.9,
+              "netW": -311.6,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "银河如皋健康路",
+              "fullOrg": "中国银河证券股份有限公司如皋健康路证券营业部",
+              "buyW": 404.5,
+              "sellW": 421.8,
+              "netW": -17.3,
+              "badges": []
+            },
+            {
+              "org": "国金上海静安区南京西路",
+              "fullOrg": "国金证券股份有限公司上海静安区南京西路证券营业部",
+              "buyW": 146.6,
+              "sellW": 397.2,
+              "netW": -250.6,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "猪肉",
+            "primary": true
+          },
+          {
+            "name": "农业",
+            "primary": false
+          }
+        ],
+        "why": "6天3板的猪肉标的，11-16涨停后三连阴，11-20于10:47换手板封死，属当日5家涨停的农业方向中辨识度较高的品种；5日2涨停，换手8.5%相对温和。",
+        "lhbComment": "当日未上榜；最近一次为11-16（三日涨幅偏离20%），净买2718万，买方国泰海通连云港928万、东海福州861万、机构818万、东海长沙755万，卖方以机构为主，席位结构偏散、缺少一线游资。",
+        "watchNote": "猪肉方向容量有限，观察封板与次日溢价，以及生猪价格与板块联动情况。"
+      }
+    },
+    {
+      "code": "002741",
+      "name": "光华科技",
+      "industry": "化工原料",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 18.76,
+        "pct": 10.03,
+        "tr": 9.43,
+        "circMvYi": 80.67,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 09:36封死",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "09:36:51",
+        "lastSealTime": "09:36:51",
+        "breakCount": 0,
+        "ma5": 17.81,
+        "ma5Diff": 5.33,
+        "ma10": 18.76,
+        "ma10Diff": 0.0,
+        "ddPeak": -11.59,
+        "volRatioPeak": 83.6,
+        "zt5dN": 1,
+        "dt5dN": 0,
+        "lhb5dN": 1,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -5.24,
+            "tr": 4.3,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -0.84,
+            "tr": 4.1,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -0.79,
+            "tr": 3.6,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -3.18,
+            "tr": 3.4,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 10.03,
+            "tr": 9.4,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日涨幅偏离值达到7%的前5只证券"
+          ],
+          "netW": 9423.7,
+          "buyTotalW": 24682.9,
+          "sellTotalW": 15259.2,
+          "buys": [
+            {
+              "org": "国泰海通南京太平南路",
+              "fullOrg": "国泰海通证券股份有限公司南京太平南路证券营业部",
+              "buyW": 12436.9,
+              "sellW": 0.9,
+              "netW": 12436.0,
+              "badges": [
+                {
+                  "text": "作手新一",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "浙商杭州五星路",
+              "fullOrg": "浙商证券股份有限公司杭州五星路证券营业部",
+              "buyW": 5829.5,
+              "sellW": 0.0,
+              "netW": 5829.5,
+              "badges": []
+            },
+            {
+              "org": "平安绍兴解放大道",
+              "fullOrg": "平安证券股份有限公司绍兴解放大道证券营业部",
+              "buyW": 2266.2,
+              "sellW": 0.0,
+              "netW": 2266.2,
+              "badges": []
+            },
+            {
+              "org": "华鑫上海东大名路",
+              "fullOrg": "华鑫证券有限责任公司上海东大名路证券营业部",
+              "buyW": 2170.3,
+              "sellW": 0.9,
+              "netW": 2169.4,
+              "badges": [
+                {
+                  "text": "低位挖掘",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 1975.2,
+              "sellW": 1835.1,
+              "netW": 140.1,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "国泰海通汕头中山中路",
+              "fullOrg": "国泰海通证券股份有限公司汕头中山中路证券营业部",
+              "buyW": 0.7,
+              "sellW": 7311.2,
+              "netW": -7310.5,
+              "badges": []
+            },
+            {
+              "org": "湘财北京北四环东路",
+              "fullOrg": "湘财证券股份有限公司北京北四环东路证券营业部",
+              "buyW": 1.3,
+              "sellW": 3033.4,
+              "netW": -3032.2,
+              "badges": []
+            },
+            {
+              "org": "银泰无锡兴源北路",
+              "fullOrg": "银泰证券有限责任公司无锡兴源北路证券营业部",
+              "buyW": 2.4,
+              "sellW": 2021.4,
+              "netW": -2019.0,
+              "badges": []
+            },
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 1975.2,
+              "sellW": 1835.1,
+              "netW": 140.1,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "中信北京国贸",
+              "fullOrg": "中信证券股份有限公司北京国贸证券营业部",
+              "buyW": 0.4,
+              "sellW": 1056.2,
+              "netW": -1055.8,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "电子化学品",
+            "primary": true
+          },
+          {
+            "name": "PCB",
+            "primary": false
+          }
+        ],
+        "why": "PCB与电子化学品方向9:36首封涨停，5日首次上榜即净买9424万；作手新一单席买入1.24亿，为当日最集中的游资买单之一；换手9.4%、流通80.7亿，属PCB线发酵标的。",
+        "lhbComment": "11-20榜（涨幅偏离7%）：净买9424万；买方作手新一（国泰海通南京太平南路）1.24亿、浙商杭州五星路5830万、平安绍兴2266万、华鑫上海东大名路（低位挖掘）2169万、北向1975万；卖方国泰海通汕头7311万、湘财北京3032万、银泰无锡2021万，一线游资承接游资和机构卖出。",
+        "watchNote": "观察作手新一席位的锁仓情况与次日承接，PCB线整体持续性决定其发酵空间。"
+      }
+    },
+    {
+      "code": "000823",
+      "name": "超声电子",
+      "industry": "元器件",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 18.51,
+        "pct": 9.98,
+        "tr": 19.95,
+        "circMvYi": 110.12,
+        "boardType": "换手板",
+        "boardStatus": "换手板 · 10:00封死",
+        "lbc": 1,
+        "breakDays": null,
+        "firstSealTime": "10:00:45",
+        "lastSealTime": "10:00:45",
+        "breakCount": 0,
+        "ma5": 17.38,
+        "ma5Diff": 6.5,
+        "ma10": 17.86,
+        "ma10Diff": 3.64,
+        "ddPeak": -6.28,
+        "volRatioPeak": 70.1,
+        "zt5dN": 1,
+        "dt5dN": 0,
+        "lhb5dN": 1,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -0.86,
+            "tr": 14.1,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -3.59,
+            "tr": 12.9,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 6.07,
+            "tr": 17.8,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -4.65,
+            "tr": 12.7,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 9.98,
+            "tr": 20.0,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日涨幅偏离值达到7%的前5只证券"
+          ],
+          "netW": 44121.3,
+          "buyTotalW": 57690.2,
+          "sellTotalW": 13568.9,
+          "buys": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 19779.0,
+              "sellW": 4896.0,
+              "netW": 14883.0,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "开源西安西大街",
+              "fullOrg": "开源证券股份有限公司西安西大街证券营业部",
+              "buyW": 12624.2,
+              "sellW": 6.4,
+              "netW": 12617.8,
+              "badges": [
+                {
+                  "text": "量化打板",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通上海长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司上海长宁区江苏路证券营业部",
+              "buyW": 8731.1,
+              "sellW": 97.6,
+              "netW": 8633.6,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 7699.2,
+              "sellW": 0.0,
+              "netW": 7699.2,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 7052.6,
+              "sellW": 2725.2,
+              "netW": 4327.5,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 19779.0,
+              "sellW": 4896.0,
+              "netW": 14883.0,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 7052.6,
+              "sellW": 2725.2,
+              "netW": 4327.5,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "东财拉萨团结路第一",
+              "fullOrg": "东方财富证券股份有限公司拉萨团结路第一证券营业部",
+              "buyW": 680.2,
+              "sellW": 2246.5,
+              "netW": -1566.3,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "财达唐山富康道",
+              "fullOrg": "财达证券股份有限公司唐山富康道证券营业部",
+              "buyW": 3.6,
+              "sellW": 1854.1,
+              "netW": -1850.5,
+              "badges": []
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 1120.4,
+              "sellW": 1743.2,
+              "netW": -622.8,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "surge",
+          "text": "主升 / 反核"
+        },
+        "factions": [
+          {
+            "name": "PCB",
+            "primary": true
+          },
+          {
+            "name": "消费电子",
+            "primary": false
+          }
+        ],
+        "why": "PCB方向10:01封板，换手20%放大至5日最高，净买4.41亿居当日个股前列；北向、章盟主、国新北京、机构同向买入，110亿流通盘，是PCB线中有资金容量的跟风主力。",
+        "lhbComment": "11-20榜（涨幅偏离7%）：净买4.41亿；买方北向1.98亿、开源西安（量化打板）1.26亿、章盟主8731万、国新北京7699万、机构7053万；卖方北向4896万、机构2725万、拉萨团结路2247万，北向与机构双向做T、游资单边买入，集中度提升。",
+        "watchNote": "观察与中京电子身位的联动及跟风强度，量化打板与北向同时在场，注意次日高开后的承接。"
+      }
+    },
+    {
+      "code": "000678",
+      "name": "襄阳轴承",
+      "industry": "汽车配件",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 16.98,
+        "pct": 1.43,
+        "tr": 33.28,
+        "circMvYi": 78.04,
+        "boardType": "断板",
+        "boardStatus": "断板第 1 天",
+        "lbc": 0,
+        "breakDays": 1,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 16.54,
+        "ma5Diff": 2.66,
+        "ma10": 18.24,
+        "ma10Diff": -6.91,
+        "ddPeak": -27.16,
+        "volRatioPeak": 87.9,
+        "zt5dN": 1,
+        "dt5dN": 2,
+        "lhb5dN": 4,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -9.97,
+            "tr": 22.3,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -10.01,
+            "tr": 19.1,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -4.88,
+            "tr": 25.2,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 9.99,
+            "tr": 32.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 1.43,
+            "tr": 33.3,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "日换手率达到20%的前5只证券"
+          ],
+          "netW": -27040.5,
+          "buyTotalW": 33837.9,
+          "sellTotalW": 60878.4,
+          "buys": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 14391.0,
+              "sellW": 14908.8,
+              "netW": -517.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 7403.9,
+              "sellW": 6040.1,
+              "netW": 1363.8,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 3409.1,
+              "sellW": 8780.0,
+              "netW": -5370.9,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 3213.9,
+              "sellW": 1604.8,
+              "netW": 1609.1,
+              "badges": []
+            },
+            {
+              "org": "国泰海通常州健身路",
+              "fullOrg": "国泰海通证券股份有限公司常州健身路证券营业部",
+              "buyW": 2570.7,
+              "sellW": 545.5,
+              "netW": 2025.3,
+              "badges": [
+                {
+                  "text": "温州帮",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 14391.0,
+              "sellW": 14908.8,
+              "netW": -517.7,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通上海长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司上海长宁区江苏路证券营业部",
+              "buyW": 312.5,
+              "sellW": 12214.2,
+              "netW": -11901.7,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 2520.5,
+              "sellW": 10539.5,
+              "netW": -8019.0,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 3409.1,
+              "sellW": 8780.0,
+              "netW": -5370.9,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通北京安贞门",
+              "fullOrg": "国泰海通证券股份有限公司北京安贞门证券营业部",
+              "buyW": 16.3,
+              "sellW": 6245.7,
+              "netW": -6229.4,
+              "badges": []
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "divergence",
+          "text": "高位分歧"
+        },
+        "factions": [
+          {
+            "name": "机器人",
+            "primary": true
+          },
+          {
+            "name": "汽车零部件",
+            "primary": false
+          }
+        ],
+        "why": "5日内两度跌停→11-19涨停→11-20断板第1天收+1.43%，换手33.3%仍高，5日4次上榜；当日净卖2.70亿为最大，属高位剧烈多空博弈的机器人、轴承方向标的。",
+        "lhbComment": "11-20榜（换手20%前五）：净卖2.70亿；买方北向1.44亿（双向）、机构7404万、机构3409万、国信浙江3214万、温州帮2571万；卖方章盟主1.22亿、机构8019万、机构5371万、安贞门6229万，章盟主与机构集中兑现，高位筹码松动。",
+        "watchNote": "观察断板后换手能否收敛、是否跌破5日线，主力大额兑现后的承接质量是核心观察点。"
+      }
+    },
+    {
+      "code": "002242",
+      "name": "九阳股份",
+      "industry": "家用电器",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 28.96,
+        "pct": -7.21,
+        "tr": 19.25,
+        "circMvYi": 220.61,
+        "boardType": "断板",
+        "boardStatus": "断板第 1 天",
+        "lbc": 0,
+        "breakDays": 1,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 29.74,
+        "ma5Diff": -2.62,
+        "ma10": 28.11,
+        "ma10Diff": 3.02,
+        "ddPeak": -16.47,
+        "volRatioPeak": 81.1,
+        "zt5dN": 2,
+        "dt5dN": 1,
+        "lhb5dN": 3,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 7.1,
+            "tr": 18.2,
+            "zt": false,
+            "dt": false,
+            "zb": true,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 10.02,
+            "tr": 16.4,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -9.99,
+            "tr": 23.1,
+            "zt": false,
+            "dt": true,
+            "zb": true,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 10.01,
+            "tr": 23.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": -7.21,
+            "tr": 19.2,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          }
+        ],
+        "lhbIsToday": false,
+        "lhb": {
+          "date": "2026-11-19",
+          "reasons": [
+            "日振幅值达到15%的前5只证券",
+            "日涨幅偏离值达到7%的前5只证券"
+          ],
+          "netW": 10630.3,
+          "buyTotalW": 69433.2,
+          "sellTotalW": 58802.9,
+          "buys": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 37984.4,
+              "sellW": 24656.4,
+              "netW": 13328.1,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "国新北京分公司",
+              "fullOrg": "国新证券股份有限公司北京分公司",
+              "buyW": 7703.9,
+              "sellW": 9.9,
+              "netW": 7694.0,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 7025.4,
+              "sellW": 8721.8,
+              "netW": -1696.4,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 6604.3,
+              "sellW": 7311.1,
+              "netW": -706.7,
+              "badges": []
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 6460.6,
+              "sellW": 3258.5,
+              "netW": 3202.1,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "深股通专用",
+              "fullOrg": "深股通专用",
+              "buyW": 37984.4,
+              "sellW": 24656.4,
+              "netW": 13328.1,
+              "badges": [
+                {
+                  "text": "北向",
+                  "kind": "north"
+                }
+              ]
+            },
+            {
+              "org": "机构专用",
+              "fullOrg": "机构专用",
+              "buyW": 7025.4,
+              "sellW": 8721.8,
+              "netW": -1696.4,
+              "badges": [
+                {
+                  "text": "机构",
+                  "kind": "inst"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通上海长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司上海长宁区江苏路证券营业部",
+              "buyW": 3564.2,
+              "sellW": 8667.9,
+              "netW": -5103.7,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 6604.3,
+              "sellW": 7311.1,
+              "netW": -706.7,
+              "badges": []
+            },
+            {
+              "org": "银河北京学院南路",
+              "fullOrg": "中国银河证券股份有限公司北京学院南路证券营业部",
+              "buyW": 90.3,
+              "sellW": 6177.3,
+              "netW": -6087.0,
+              "badges": [
+                {
+                  "text": "苏南帮",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "divergence",
+          "text": "高位分歧"
+        },
+        "factions": [
+          {
+            "name": "小家电",
+            "primary": true
+          },
+          {
+            "name": "家电",
+            "primary": false
+          }
+        ],
+        "why": "11-17涨停、11-18跌停、11-19涨停、11-20跌7.21%的天地巨震结构，5日3次上榜、换手19.25%，220.6亿流通盘中北向与机构反复参与，是前期抱团核心之一。",
+        "lhbComment": "11-19榜（振幅15%+涨幅偏离7%）：净买1.06亿；买方北向3.80亿（双向，净买1.33亿）、国新北京7704万、机构7025万、机构6461万；卖方章盟主5104万、苏南帮6077万、国信浙江7311万，北向与机构承接游资减持；11-20未上榜。",
+        "watchNote": "观察巨震后的量能收敛方向与5日线支撑，家电方向整体走弱对其形成压制。"
+      }
+    },
+    {
+      "code": "600715",
+      "name": "文投控股",
+      "industry": "影视音像",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 2.74,
+        "pct": 0.37,
+        "tr": 33.96,
+        "circMvYi": 78.43,
+        "boardType": "普通",
+        "boardStatus": "断板第 4 天",
+        "lbc": 0,
+        "breakDays": 4,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 3.12,
+        "ma5Diff": -12.18,
+        "ma10": 3.07,
+        "ma10Diff": -10.75,
+        "ddPeak": -26.74,
+        "volRatioPeak": 89.8,
+        "zt5dN": 1,
+        "dt5dN": 3,
+        "lhb5dN": 5,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 10.0,
+            "tr": 37.8,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-17",
+            "pct": -9.89,
+            "tr": 23.0,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -10.09,
+            "tr": 1.0,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -9.9,
+            "tr": 1.9,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-20",
+            "pct": 0.37,
+            "tr": 34.0,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "有价格涨跌幅限制的日价格振幅达到15%的前五只证券",
+            "有价格涨跌幅限制的日换手率达到20%的前五只证券"
+          ],
+          "netW": 2748.0,
+          "buyTotalW": 22052.6,
+          "sellTotalW": 19304.7,
+          "buys": [
+            {
+              "org": "国泰海通长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司长宁区江苏路证券营业部",
+              "buyW": 6578.9,
+              "sellW": 0.0,
+              "netW": 6578.9,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 5567.6,
+              "sellW": 0.0,
+              "netW": 5567.6,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 4468.1,
+              "sellW": 0.0,
+              "netW": 4468.1,
+              "badges": []
+            },
+            {
+              "org": "东财山南香曲东路",
+              "fullOrg": "东方财富证券股份有限公司山南香曲东路证券营业部",
+              "buyW": 2934.8,
+              "sellW": 0.0,
+              "netW": 2934.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东财拉萨东环路第二",
+              "fullOrg": "东方财富证券股份有限公司拉萨东环路第二证券营业部",
+              "buyW": 2503.2,
+              "sellW": 0.0,
+              "netW": 2503.2,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "广发厦门环岛东路",
+              "fullOrg": "广发证券股份有限公司厦门环岛东路证券营业部",
+              "buyW": 0.0,
+              "sellW": 6092.1,
+              "netW": -6092.1,
+              "badges": []
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 0.0,
+              "sellW": 4180.7,
+              "netW": -4180.7,
+              "badges": []
+            },
+            {
+              "org": "平安深圳香蜜湖",
+              "fullOrg": "平安证券股份有限公司深圳香蜜湖证券营业部",
+              "buyW": 0.0,
+              "sellW": 3026.8,
+              "netW": -3026.8,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 0.0,
+              "sellW": 3018.9,
+              "netW": -3018.9,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "东财山南香曲东路",
+              "fullOrg": "东方财富证券股份有限公司山南香曲东路证券营业部",
+              "buyW": 0.0,
+              "sellW": 2986.3,
+              "netW": -2986.3,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "washout",
+          "text": "剧烈杀跌洗筹"
+        },
+        "factions": [
+          {
+            "name": "影视传媒",
+            "primary": true
+          },
+          {
+            "name": "AI应用",
+            "primary": false
+          }
+        ],
+        "why": "11-16走出2板后连续3个跌停，11-20跌停板被撬开、盘中一度拉至+7，收+0.37%，换手放大至34.0%，5日5次上榜；是当日撬板反核的情绪标的（尾盘回落），传媒方向前核心，仍有大资金博弈。",
+        "lhbComment": "11-20榜（振幅15%+换手20%）：净买2748万；买方章盟主6579万、拉萨金融城南路5568万、国信浙江4468万、拉萨山南2935万、拉萨东环路2503万；卖方广发厦门6092万、国信浙江4181万、平安香蜜湖3027万，拉萨三席合计约1.10亿接盘、游资出货，筹码分散。",
+        "watchNote": "观察撬板后能否止跌及换手回落情况，拉萨席位占比高、筹码分散是主要风险点。"
+      }
+    },
+    {
+      "code": "603030",
+      "name": "全筑股份",
+      "industry": "装修装饰",
+      "zone": "hot",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": null,
+      "elimDays": 0,
+      "nextRemove": false,
+      "changeBadge": "new",
+      "cycleTag": "↑ 今日新进",
+      "facts": {
+        "close": 2.11,
+        "pct": -9.83,
+        "tr": 13.94,
+        "circMvYi": 27.79,
+        "boardType": "跌停",
+        "boardStatus": "跌停 · 换手13.9%",
+        "lbc": 0,
+        "breakDays": null,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 2.06,
+        "ma5Diff": 2.43,
+        "ma10": 1.92,
+        "ma10Diff": 9.9,
+        "ddPeak": -9.83,
+        "volRatioPeak": 100.0,
+        "zt5dN": 3,
+        "dt5dN": 1,
+        "lhb5dN": 2,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": -1.12,
+            "tr": 2.2,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 10.23,
+            "tr": 5.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 9.79,
+            "tr": 1.3,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": 9.86,
+            "tr": 2.4,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": -9.83,
+            "tr": 13.9,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": false
+          }
+        ],
+        "lhbIsToday": false,
+        "lhb": {
+          "date": "2026-11-18",
+          "reasons": [
+            "非S证券连续三个交易日内收盘价格涨幅偏离值累计达到20%的证券"
+          ],
+          "netW": 1419.4,
+          "buyTotalW": 3762.2,
+          "sellTotalW": 2342.8,
+          "buys": [
+            {
+              "org": "国泰海通长宁区江苏路",
+              "fullOrg": "国泰海通证券股份有限公司长宁区江苏路证券营业部",
+              "buyW": 1651.7,
+              "sellW": 0.0,
+              "netW": 1651.7,
+              "badges": [
+                {
+                  "text": "章盟主",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 655.9,
+              "sellW": 0.0,
+              "netW": 655.9,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "华鑫上海徐汇区瑞平路",
+              "fullOrg": "华鑫证券有限责任公司上海徐汇区瑞平路证券营业部",
+              "buyW": 569.3,
+              "sellW": 0.0,
+              "netW": 569.3,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨东城区江苏大道",
+              "fullOrg": "东方财富证券股份有限公司拉萨东城区江苏大道证券营业部",
+              "buyW": 445.8,
+              "sellW": 0.0,
+              "netW": 445.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            },
+            {
+              "org": "中信上海分公司",
+              "fullOrg": "中信证券股份有限公司上海分公司",
+              "buyW": 439.5,
+              "sellW": 0.0,
+              "netW": 439.5,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 0.0,
+              "sellW": 844.7,
+              "netW": -844.7,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "中信上海分公司",
+              "fullOrg": "中信证券股份有限公司上海分公司",
+              "buyW": 0.0,
+              "sellW": 416.7,
+              "netW": -416.7,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "摩根大通(中国)有限公司上海银城中路",
+              "fullOrg": "摩根大通证券(中国)有限公司上海银城中路证券营业部",
+              "buyW": 0.0,
+              "sellW": 371.3,
+              "netW": -371.3,
+              "badges": []
+            },
+            {
+              "org": "瑞银上海花园石桥路",
+              "fullOrg": "瑞银证券有限责任公司上海花园石桥路证券营业部",
+              "buyW": 0.0,
+              "sellW": 357.1,
+              "netW": -357.1,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "高盛中国上海浦东新区世纪大道",
+              "fullOrg": "高盛(中国)证券有限责任公司上海浦东新区世纪大道证券营业部",
+              "buyW": 0.0,
+              "sellW": 353.0,
+              "netW": -353.0,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "washout",
+          "text": "剧烈杀跌洗筹"
+        },
+        "factions": [
+          {
+            "name": "半导体洁净室",
+            "primary": true
+          },
+          {
+            "name": "装修装饰",
+            "primary": false
+          }
+        ],
+        "why": "11-17至11-19三连板（后两日一字），11-20直接跌停，换手由2.4%放大至13.9%，属洁净室、光刻机情绪链的3板前核心；虽跌停但换手明显放大，未被彻底抛弃。",
+        "lhbComment": "当日未上榜；最近为11-18（三日涨幅偏离20%），净买1419万，章盟主1652万居首，另有量化基金656万、拉萨446万，卖方为国泰海通总部（量化）845万等，筹码结构中原有资金仅章盟主较有辨识度。",
+        "watchNote": "观察跌停后首个交易日的换手与承接，一字板筹码断层能否消化是重点，光刻机板块强弱同步影响。"
+      }
+    },
+    {
+      "code": "002187",
+      "name": "广百股份",
+      "industry": "百货",
+      "zone": "elim",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": "2026-11-20",
+      "elimDays": 1,
+      "nextRemove": false,
+      "changeBadge": "elim_new",
+      "cycleTag": "淘汰区第 1 天 · 满1日再判",
+      "facts": {
+        "close": 5.9,
+        "pct": -10.06,
+        "tr": 20.87,
+        "circMvYi": 41.35,
+        "boardType": "跌停",
+        "boardStatus": "3连跌停 · 换手20.9%",
+        "lbc": 0,
+        "breakDays": null,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 7.1,
+        "ma5Diff": -16.9,
+        "ma10": 6.62,
+        "ma10Diff": -10.88,
+        "ddPeak": -30.09,
+        "volRatioPeak": 73.8,
+        "zt5dN": 1,
+        "dt5dN": 3,
+        "lhb5dN": 2,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 10.04,
+            "tr": 6.1,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 5.61,
+            "tr": 28.3,
+            "zt": false,
+            "dt": false,
+            "zb": true,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": -10.0,
+            "tr": 0.8,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -10.01,
+            "tr": 0.4,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": -10.06,
+            "tr": 20.9,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": false,
+        "lhb": null
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "dead",
+          "text": "失血缩量 · 死水"
+        },
+        "factions": [
+          {
+            "name": "百货零售",
+            "primary": true
+          },
+          {
+            "name": "大消费",
+            "primary": false
+          }
+        ],
+        "why": "11-16曾3板的核心标的，随后3个跌停，11-20盘中撬板后再度回封跌停，换手仍20.9%、5日2次上榜；原六一中路单席买入4734万，百货方向虽弱但多空博弈仍在。",
+        "lhbComment": "11-20榜（三日跌幅偏离20%）：净买1060万；买方原六一中路（东北武汉香港路）4734万、国泰海通东莞2455万、连云港1251万、东海福州1248万、温州帮1202万；卖方国新北京3918万、章盟主1408万、国新北京亦庄1367万，游资换手、国新系减持。",
+        "watchNote": "观察跌停打开后的承接能否连续，百货方向整体弱势，仅作反核后的换手跟踪。"
+      }
+    },
+    {
+      "code": "601188",
+      "name": "龙江交通",
+      "industry": "路桥",
+      "zone": "elim",
+      "firstSeen": "2026-11-20",
+      "zoneSince": "2026-11-20",
+      "daysInZone": 1,
+      "elimSince": "2026-11-19",
+      "elimDays": 2,
+      "nextRemove": true,
+      "changeBadge": "elim_out",
+      "cycleTag": "淘汰区第 2 天 · 下期可移出",
+      "facts": {
+        "close": 4.19,
+        "pct": -8.32,
+        "tr": 28.93,
+        "circMvYi": 54.7,
+        "boardType": "普通",
+        "boardStatus": "断板第 4 天",
+        "lbc": 0,
+        "breakDays": 4,
+        "firstSealTime": null,
+        "lastSealTime": null,
+        "breakCount": null,
+        "ma5": 4.66,
+        "ma5Diff": -10.09,
+        "ma10": 4.54,
+        "ma10Diff": -7.71,
+        "ddPeak": -19.58,
+        "volRatioPeak": 89.2,
+        "zt5dN": 1,
+        "dt5dN": 1,
+        "lhb5dN": 3,
+        "suspended": false,
+        "traj": [
+          {
+            "date": "2026-11-16",
+            "pct": 10.0,
+            "tr": 16.7,
+            "zt": true,
+            "dt": false,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-17",
+            "pct": 0.21,
+            "tr": 28.9,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-18",
+            "pct": 7.17,
+            "tr": 31.4,
+            "zt": false,
+            "dt": false,
+            "zb": true,
+            "lhb": true
+          },
+          {
+            "date": "2026-11-19",
+            "pct": -10.04,
+            "tr": 2.3,
+            "zt": false,
+            "dt": true,
+            "zb": false,
+            "lhb": false
+          },
+          {
+            "date": "2026-11-20",
+            "pct": -8.32,
+            "tr": 28.9,
+            "zt": false,
+            "dt": false,
+            "zb": false,
+            "lhb": true
+          }
+        ],
+        "lhbIsToday": true,
+        "lhb": {
+          "date": "2026-11-20",
+          "reasons": [
+            "有价格涨跌幅限制的日换手率达到20%的前五只证券"
+          ],
+          "netW": 553.0,
+          "buyTotalW": 15181.0,
+          "sellTotalW": 14628.0,
+          "buys": [
+            {
+              "org": "国泰海通广州珠江新城",
+              "fullOrg": "国泰海通证券股份有限公司广州珠江新城证券营业部",
+              "buyW": 4169.0,
+              "sellW": 0.0,
+              "netW": 4169.0,
+              "badges": []
+            },
+            {
+              "org": "国泰海通常州健身路",
+              "fullOrg": "国泰海通证券股份有限公司常州健身路证券营业部",
+              "buyW": 3142.8,
+              "sellW": 0.0,
+              "netW": 3142.8,
+              "badges": [
+                {
+                  "text": "温州帮",
+                  "kind": "hot"
+                }
+              ]
+            },
+            {
+              "org": "国信浙江互联网分公司",
+              "fullOrg": "国信证券股份有限公司浙江互联网分公司",
+              "buyW": 3133.2,
+              "sellW": 0.0,
+              "netW": 3133.2,
+              "badges": []
+            },
+            {
+              "org": "国泰海通连云港巨龙南路",
+              "fullOrg": "国泰海通证券股份有限公司连云港巨龙南路证券营业部",
+              "buyW": 2488.2,
+              "sellW": 0.0,
+              "netW": 2488.2,
+              "badges": []
+            },
+            {
+              "org": "东财拉萨金融城南环路",
+              "fullOrg": "东方财富证券股份有限公司拉萨金融城南环路证券营业部",
+              "buyW": 2247.8,
+              "sellW": 0.0,
+              "netW": 2247.8,
+              "badges": [
+                {
+                  "text": "拉萨",
+                  "kind": "lasa"
+                }
+              ]
+            }
+          ],
+          "sells": [
+            {
+              "org": "国泰海通总部",
+              "fullOrg": "国泰海通证券股份有限公司总部",
+              "buyW": 0.0,
+              "sellW": 4093.9,
+              "netW": -4093.9,
+              "badges": [
+                {
+                  "text": "量化基金",
+                  "kind": "quant"
+                }
+              ]
+            },
+            {
+              "org": "国泰海通连云港巨龙南路",
+              "fullOrg": "国泰海通证券股份有限公司连云港巨龙南路证券营业部",
+              "buyW": 0.0,
+              "sellW": 3038.7,
+              "netW": -3038.7,
+              "badges": []
+            },
+            {
+              "org": "华鑫上海徐汇区瑞平路",
+              "fullOrg": "华鑫证券有限责任公司上海徐汇区瑞平路证券营业部",
+              "buyW": 0.0,
+              "sellW": 2873.5,
+              "netW": -2873.5,
+              "badges": []
+            },
+            {
+              "org": "国泰海通湛江万豪世家",
+              "fullOrg": "国泰海通证券股份有限公司湛江万豪世家证券营业部",
+              "buyW": 0.0,
+              "sellW": 2391.4,
+              "netW": -2391.4,
+              "badges": []
+            },
+            {
+              "org": "平安浙江分公司",
+              "fullOrg": "平安证券股份有限公司浙江分公司",
+              "buyW": 0.0,
+              "sellW": 2230.5,
+              "netW": -2230.5,
+              "badges": [
+                {
+                  "text": "温州帮",
+                  "kind": "hot"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "judgment": {
+        "rhythm": {
+          "kind": "dead",
+          "text": "失血缩量 · 死水"
+        },
+        "factions": [
+          {
+            "name": "冰雪经济",
+            "primary": true
+          },
+          {
+            "name": "东北振兴",
+            "primary": false
+          }
+        ],
+        "why": "冰雪经济龙二：11-16涨停、11-18冲高炸板、11-19跌停、11-20再跌8.32%，换手仍28.9%，5日3次上榜；深水放量、资金未散，与核心冰山冷热同派系，复盘中被点名为全天背刺核心的龙二。",
+        "lhbComment": "11-20榜（换手20%前五）：净买553万；买方国泰海通广州珠江新城4169万、温州帮（常州健身路）3143万、国信浙江3133万、连云港2488万、拉萨2248万；卖方国泰海通总部（量化）4094万、连云港3039万、华鑫上海瑞平路2874万，买卖双向对冲、游资低吸。",
+        "watchNote": "观察深水换手后能否止跌及与冰山冷热的联动，若核心转弱则龙二更难独立。"
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-"""KX 测试的共用夹具：假 KX 总览、可推进的时钟，以及 v2/v4 的冻结 DDL。"""
+"""KX V4 测试的共用夹具：真实 schema 5 脱敏样本、可推进时钟，以及 v2/v4 冻结 DDL。"""
 from __future__ import annotations
 
 import asyncio
@@ -15,11 +15,11 @@ from neckline.kx.source import KxSource
 from neckline.morning import db
 
 READ_KEY = "k" * 40
-OVERVIEW_PATH = Path(__file__).resolve().parent / "fixtures" / "kx_v3_overview_20261104.json"
+OVERVIEW_PATH = Path(__file__).resolve().parent / "fixtures" / "kx_v4_overview_20261122.json"
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 APP_FIXTURE_DIR = Path(__file__).resolve().parents[2] / "App" / "NecklineTests" / "Fixtures"
 
-# 库结构版本 2（B121、B122）的三张 KX 表：kx_pool 没有 theme / first_seen / buyable。
+# 库结构版本 2（B121、B122）的三张退役 KX 表：kx_pool 没有 theme / first_seen / buyable。
 KX_V2_DDL = """
 CREATE TABLE IF NOT EXISTS kx_pool (
   code TEXT PRIMARY KEY CHECK(length(code) = 6),
@@ -95,7 +95,7 @@ def load_overview() -> dict:
     return json.loads(OVERVIEW_PATH.read_text(encoding="utf-8"))
 
 
-def at(day: str, hm: str = "10:30", seconds: int = 0) -> datetime:
+def at(day: str, hm: str = "20:05", seconds: int = 0) -> datetime:
     return datetime.fromisoformat(f"{day}T{hm}:{seconds:02d}+08:00")
 
 
@@ -126,30 +126,29 @@ class Clock:
 
 @dataclass
 class FakeKx:
-    """按真实页面的形态返回总览。pending、HTTP 状态、unavailable、连不上都可以单独设置。"""
+    """按 KX V4 只读 JSON 接口形态返回总览。支持按次序切换响应。"""
 
     body: dict
-    pending: int = 0
     status: int = 200
     unavailable: str | None = None
     down: bool = False
-    retry_after: float = 3
+    sequence: list[dict | Exception] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request.url.path)
+        if self.sequence:
+            step = self.sequence.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return httpx.Response(200, json=step)
         if self.down:
             raise httpx.ConnectError("down")
-        if self.pending > 0:
-            self.pending -= 1
-            return httpx.Response(200, json={
-                "status": "pending", "code": "refresh_pending", "retry_after_seconds": self.retry_after,
-            })
         if self.status == 404:
-            return httpx.Response(404, json={"status": "missing"})
+            return httpx.Response(404, json={"status": "not_found"})
         if self.unavailable is not None:
-            return httpx.Response(200, json={
-                "status": "unavailable", "code": "refresh_unavailable", "message": self.unavailable,
+            return httpx.Response(503, json={
+                "status": "unavailable", "code": "pool_unavailable", "message": self.unavailable,
             })
         if self.status != 200:
             return httpx.Response(self.status, json={"status": "error"})

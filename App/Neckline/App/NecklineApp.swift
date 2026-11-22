@@ -52,7 +52,7 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
 
     private func launch() async {
         #if os(iOS)
-        await push.attach(model)
+        await push.attach(model, kx: kx)
         #endif
         #if DEBUG && os(macOS)
         await renderQASnapshotIfRequested()
@@ -131,19 +131,24 @@ private struct EphemeralTokenStore: APIAccessTokenStore {
         guard let path = ProcessInfo.processInfo.environment["NK_QA_RENDER_PATH"],
               path.hasPrefix("/tmp/neckline-v3-qa/"),
               path.hasSuffix(".png") else { return }
-        await model.reload(.latest)
-        await model.reloadHistory()
+        if model.tab == .kx {
+            await kx.loadIfNeeded()
+        } else {
+            await model.reload(.latest)
+            await model.reloadHistory()
+        }
         let root = MorningRootView(model: model, kx: kx, config: config)
             .qaAppearance()
-            .frame(width: 1180, height: 760)
+            .frame(width: 1280, height: 860)
         let view = NSHostingView(rootView: root)
         view.appearance = Self.qaNSAppearance()
-        view.setFrameSize(NSSize(width: 1180, height: 760))
+        view.setFrameSize(NSSize(width: 1280, height: 860))
         view.layoutSubtreeIfNeeded()
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
         try? png.write(to: URL(fileURLWithPath: path), options: .atomic)
+        NSApp.terminate(nil)
     }
 
     private static func qaNSAppearance() -> NSAppearance? {
