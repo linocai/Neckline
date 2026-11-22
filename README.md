@@ -1,6 +1,6 @@
 # Neckline
 
-自用创业板选股器（K10-v6：以消息为起点，个股与板块热点两条线）。**现状（2026-11-10）：现役 4.4.1 B133（App 4.4.1 (133)）。** App 分为 K10（晨报，个股与板块热点两块）和 KX 两块。KX 看板（4.3.0 起）按 KX V3 显示：情绪条、龙头室、等候室、淘汰室，每组龙头带涨停事实与盘口，DeepSeek 的结论与理由单独成块；后端只读 KX 总览（schema 4），缓存 60 秒，KX 读不到时沿用上一份并标「未能核对」。不显示能否买入与买卖建议。
+自用创业板选股器（K10-v6：以消息为起点，个股与板块热点两条线）。**现状（2026-11-22）：现役 4.5.0 B134（App 4.5.0 (134)）。** App 分为 K10（晨报，个股与板块热点两块）和 KX 两块。KX 看板（4.5.0 起升为 KX V4）按盘后快照展示：顶栏容量、近 5 日主板情绪条与 DeepSeek 情绪周期判断、派系胶囊直滤与搜索、龙头/高情绪/淘汰三区、主次派系与独立节奏标签、6 项核心事实、5 日轨迹、可展开龙虎榜买卖前五与 DeepSeek 筹码点评；盘中彻底静默，后端只读 KX 总览（schema 5）单调落库 SQLite 持久缓存，交易日 20:02～20:45 由 `neckline-v4-kx-watch.timer` 轮询检测新版本并仅推 iPhone。不显示买卖建议，不记录持仓与收益。
 
 - **晨报**：每个交易日早上出一份，窗口为上个交易日 15:00 → 当天 08:00。
 - **流程**：一级初筛（DeepSeek 分类）→ 二级数据准备（公告 PDF、公司快照、价格背景、业绩另算，纯代码）→ 三级评估（每条一次，回答四个问题，①②一票否决）→ 只推判「推」的，最多 10 条，可以 0 条。判「不推」的评估连同数据包存在后台（`evaluations` 表），不显示。
@@ -14,7 +14,7 @@
 - 代码在 `App/`（iOS/macOS）和 `Backend/`；服务入口 `https://nk.linotsai.top`。V4 接口前缀 `/api/v4/`（Bearer 鉴权，`/api/v4/health` 除外），App 只调这些接口；`/api/v4/health` 报版本号与 `releaseSet`。凭据不得进入 Git、日志或回复。
 - 只读网页 `https://nk.linotsai.top/read/<访问码>`：顶部是给对话 Agent 的简要提示词；最新一期、`/day/<日期>`、`/history`、`/doc/<id>`、单票页 `/stock/<代码或简称>`（池内给收盘后与盘中的技术面概览，池外写「不在 K10 股票池」），加 `?format=json` 给 Agent 读。访问码只在 `/etc/neckline/v4.env` 和交付给用户本人的链接里；NPM 对 `/read/` 不写访问日志，改 nk 代理时必须保留。
 - 只读 MCP `https://nk.linotsai.top/mcp`（和 API 同一个服务）：工具 `read_brief`、`get_morning_report`、`get_document`、`check_pool`、`get_stock_overview`；OAuth 只放行 ChatGPT、Claude 与 Grok 的回调，登录用部署时生成的连接口令（服务器只存 salt 与 scrypt 哈希），不接受 `API_TOKEN`。单票技术面概览只限池内：收盘后数据来自 TuShare，盘中报价与分时来自麦蕊（证书与 KX 共用，同一证书 60 秒内最多 2 个来源 IP，本机不直连）。
-- 服务器是 NB 云，目录 `/opt/neckline`。API 是 `neckline.service`；V4 定时任务：`neckline-v4-morning.timer`（每天 08:00 采集，交易日接着出报并推送 iPhone）、`neckline-v4-collect.timer`（每天 20:00 采集）、`neckline-v4-finalize.timer`（09:15 还没出报就记失败并推送「晨报出问题了」）。
+- 服务器是 NB 云，目录 `/opt/neckline`。API 是 `neckline.service`；V4 定时任务：`neckline-v4-morning.timer`（每天 08:00 采集，交易日接着出报并推送 iPhone）、`neckline-v4-collect.timer`（每天 20:00 采集）、`neckline-v4-finalize.timer`（09:15 截止兜底）、`neckline-v4-kx-watch.timer`（交易日 20:02～20:45 轮询 KX V4 并仅推 iPhone）。
 - 配置：`/opt/neckline/.env`（TuShare、金十、麦蕊、APNs、API 令牌、MCP 公开地址与连接口令哈希、OAuth 状态库路径）、`/etc/neckline/v4.env`（V4 库路径、DeepSeek 密钥、网页访问码，root:neckline 0640）。V4 库 `/opt/neckline/data/v4.db`，MCP 的 OAuth 状态库 `/opt/neckline/data/mcp-auth.db`。DeepSeek 密钥已不归 App 设置页管。
 - V4 命令（以 neckline 用户、先加载两个环境文件）：`/opt/neckline/.venv/bin/python -m neckline.morning.cli {collect|morning|finalize|show|evaluations|refresh-pool|refresh-concepts|refresh-limit-ups}`（股票池每期出报前自动刷新；概念清单与全 A 成分每 7 天在 20:00 采集后刷新；涨停数据每天 20:00 采集后补到当天，晨报跑板块线前再补一次缺的天）。晨报服务的 `TimeoutStartSec` 为 80 分钟（`/etc/systemd/system/neckline-v4-morning.service`，不由 release.py 管，改动要手工备份后替换）。
 - 依赖另装：release.py 只装 Neckline 自己的 wheel；4.2.0 新增依赖 pypdf（读巨潮公告 PDF）。

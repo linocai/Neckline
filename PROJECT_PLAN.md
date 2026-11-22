@@ -1,8 +1,8 @@
-# Neckline · 4.5.0（KX V4 待部署，线上仍为 4.4.1）
+# Neckline · 4.5.0（已上线）
 
 唯一工程控制面。项目规则见 [AGENTS.md](AGENTS.md)。
 
-- **4.5.0（KX 看板升为 KX V4 / schema 5，盘中静默 + 20:00 仅推 iPhone，B134 待部署）**：方案、裁定、测试、五轮 Codex 审查（0 P0 / 0 P1）与部署/回退步骤见 [archive/v4.5.0-b134_execution.md](archive/v4.5.0-b134_execution.md)；需求来源是 `whynotme/KX.md`（KX V4）与已确认 HTML 样图（2026-11-22 用户拍板；原 K10 4.5.0 草案已放弃）。
+- **4.5.0（KX 看板升为 KX V4 / schema 5，盘中静默 + 20:00 仅推 iPhone，B134 已上线）**：方案、裁定、测试、五轮 Codex 审查（0 P0 / 0 P1）与上线/回退证据见 [archive/v4.5.0-b134_execution.md](archive/v4.5.0-b134_execution.md)；需求来源是 `whynotme/KX.md`（KX V4）与已确认 HTML 样图（2026-11-22 用户拍板；原 K10 4.5.0 草案已放弃）。
 - **4.4.1（承接股按题材辨识度、对板块取最窄，B133 已上线）**：方案、对比、裁定、施工、审查与上线证据见 [archive/v4.4.1_execution.md](archive/v4.4.1_execution.md)；需求来源是 `whynotme/K10.md` 第五节第 3–6 条（2026-11-10 用户确认）。
 - **4.4.0（K10 板块线按第一性重做，三路收消息；并入 4.4.1 随 B133 上线）**：方案、回放与缺陷见 [archive/v4.4.0_execution.md](archive/v4.4.0_execution.md)。
 - **4.3.1（K10-v6：全创业板股票池 + 板块线，已上线）**：方案、裁定与施工块见 [archive/v4.3.1_execution.md](archive/v4.3.1_execution.md)；需求来源是 `whynotme/K10.md`（K10-v6，2026-11-04 用户确认）。
@@ -40,18 +40,17 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 
 ## 当前状态（2026-11-22）
 
-- **现役生产后端**：仍为 **4.4.1 B133**（`4ed6901`，tag `v4.4.1-b133`，库结构 v8）；`KXMarketTool` V4（`0.5.0` build 13，schema 5）已于 11/22 在 HZ 上线。
-- **待部署版本 4.5.0 B134（KX V4）**：后端（库结构 v9、schema 5 校验与 SQLite 单调缓存、20:02～20:45 轮询检测与仅推 iPhone、`release.py` 9↔8 迁移与 systemd timer 生命周期）及 iOS/macOS SwiftUI 双端（HTML 样图原味原生还原、盘中彻底静默、派系直滤、龙虎榜可折叠、推送直达 KX Tab）已完成开发与宿主机验证（后端 684 passed、macOS 43/43、iOS 44/44、iOS 浅/深色真机模拟器截图验收、Codex 五轮复核 0 P0 / 0 P1），待用户放行后提交、部署 NB 并重装双端 App。详见 [archive/v4.5.0-b134_execution.md](archive/v4.5.0-b134_execution.md)。
+- **现役生产后端 4.5.0 B134**（`4a875b6`，tag `v4.5.0-b134`，11/22 15:20 切换，库结构 v9）；`KXMarketTool` V4（`0.5.0` build 13，schema 5）已于同日在 HZ 上线。NB 实测 `/api/v4/health`（本地与公网）全绿，`neckline-v4-kx-watch.timer` 已 `active + enabled`，`/api/v4/kx/board` 已返回 `schemaVersion: 5`（`kx-20261120-003`，19 只候选）并落库 `kx_board_cache`。详情与恢复点见 [archive/v4.5.0-b134_execution.md](archive/v4.5.0-b134_execution.md)。
+- **App 4.5.0 (134)**：macOS 与 iOS Release 构建签名均通过；macOS 已用 `ditto` 覆盖安装 `/Applications/Neckline.app`；iPhone 端待用户用 Xcode 安装（旧版解不了 schema 5）。
 - **晨报（K10-v6 主线 + 4.4.1 板块线）**：保持 B133 口径不变（此前 4.5.0 K10 草案已取消）。
 - **MCP**：5 个只读工具，`get_morning_report` 带板块热点。
 - **额度**：麦蕊体验版总量 20 万次（约到 12-28），与 KX 共用。TuShare major_news 每天 40 次；limit_list_d 每天 1 次。DeepSeek 4.3.1 口径每天约 160 万 token。
-- **待用户清理的 NB 临时目录**：`/var/tmp/neckline-replay-b134`（已放弃的 K10 4.5.0 回放缓存约 4.3G）及历史 `/var/tmp/neckline-trash-20261111/`（约 1.75G）。
+- **待用户清理**：本机废纸篓及 NB `/var/tmp/neckline-replay-b134`（已放弃的 K10 4.5.0 回放缓存约 4.3G）。
 
 ## 当前 Plan
 
-1. **4.5.0 B134 发布（待用户放行）**：提交并打 tag `v4.5.0-b134` → 在 NB 安装 `neckline-v4-kx-watch.{service,timer}` 并 `daemon-reload` → `release.py build` / `switch --check-only` / `switch` 切至 B134（schema 8→9）→ 验证 `/api/v4/health` 与 `/api/v4/kx/board` → 覆盖安装 macOS 4.5.0 (134) App → 用户用 Xcode 安装 iPhone 4.5.0 (134) 并于下个交易日 20:00 核对首条 KX 完成推送。
-2. **用户清理**：清空本机废纸篓，确认后清理 NB `/var/tmp/neckline-replay-b134` 与 `/var/tmp/neckline-trash-20261111/`。
-3. **复盘与后续**：按 `whynotme/research/K10实盘复盘日志.md` 持续复盘；板块配置校验分离（4.4.1 F3）、`post_json` 期限关连接等留待后续。
+1. **用户**：iPhone 用 Xcode 安装 App 4.5.0 (134)；于下个交易日（11/23 周一）20:02 后核对首条 KX V4 完成推送（仅推 iPhone、点通知直达 KX Tab）；清空本机废纸篓并按需清理 NB `/var/tmp/neckline-replay-b134`。
+2. **复盘与后续**：按 `whynotme/research/K10实盘复盘日志.md` 持续复盘；板块配置校验分离（4.4.1 F3）、`post_json` 期限关连接等留待后续。
 
 ## 待决定（用户）
 
@@ -111,4 +110,4 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 - 2026-11-10：4.4.1 B133 上线（含 4.4.0 三路收消息；库结构 v8；C 路关、辨识度 40 天 2%；不回放；Codex 发布前审查三轮；App 4.4.1 (133)）；见 [4.4.1 记录 §9](archive/v4.4.1_execution.md#9-发布前审查与上线b1332026-11-10-晚)。
 - 2026-11-16：仓库搬入 `trading` 工作区（`/Users/linotsai/Lino/trading/Neckline`），跨项目边界移到工作区 `../AGENTS.md`；搬迁前基线 tag `workspace-baseline-20261116`（未推送）。
 - 2026-11-17：统一双机规范，项目与工作区 `CLAUDE.md` 收口为 `AGENTS.md`。
-- 2026-11-22：4.5.0 B134（KX V4 / schema 5，盘中彻底静默 + 20:00 仅推 iPhone，库结构 v9，App 4.5.0 (134)）完成实现、宿主机全绿验证（后端 684 / macOS 43 / iOS 44）、iOS 浅/深色截图验收及 Codex 五轮审查（0 P0 / 0 P1），待部署上线；见 [B134 记录](archive/v4.5.0-b134_execution.md)。
+- 2026-11-22：4.5.0 B134 上线（KX V4 / schema 5，盘中彻底静默 + 20:00 仅推 iPhone，库结构 v9，`4a875b6`，tag `v4.5.0-b134`，Codex 审查五轮 0 P0 / 0 P1，App 4.5.0 (134)）；见 [B134 记录](archive/v4.5.0-b134_execution.md)。
