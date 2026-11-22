@@ -41,11 +41,11 @@ V4 覆盖全部创业板（不含 ST，去掉流通市值最大的 10%，每期�
 
 ## 当前状态（2026-11-22）
 
-- **现役生产后端 4.6.0 B135**（`e417b0a`，tag `v4.6.0-b135`，11/22 19:58 切换，库结构 v10）；`Qihuo` V2（`0.2.0` build 13，schema 3）与 `KXMarketTool` V4（`0.5.0` build 13，schema 5）均已在 HZ 上线。NB 实测 `/api/v4/health`（本地与公网）全绿（`kxBoard: true`、`qihuoBoard: true`），`neckline-v4-qihuo-sync.timer` 已 `active + enabled`（完全静默零推送），`/api/v4/qihuo/board` 已返回 `schemaVersion: 3`（`qihuo-20261120-r54`，5 启用品种 `SH`/`L`/`MA`/`pp`/`eg`、11 停用），`/read/<访问码>/qihuo*` 全绿。详情与恢复点见 [archive/v4.6.0-b135_execution.md](archive/v4.6.0-b135_execution.md)。
-- **App 4.6.0 (135)**：macOS 与 iOS Release 构建签名均通过；macOS 已用 `ditto` 覆盖安装 `/Applications/Neckline.app`；iPhone 端待用户用 Xcode 安装。
-- **晨报（K10-v6 主线 + 4.4.1 板块线）与 KX V4**：保持 B133 / B134 口径不变。
-- **MCP**：8 个只读工具（K10 5 个 + Q 期货 3 个：`read_qihuo_rules`、`get_qihuo_overview`、`get_qihuo_product`），明确鼓励对话 Agent 结合实时搜索自由研究。
-- **额度**：麦蕊体验版总量 20 万次（约到 12-28），与 KX 共用。TuShare major_news 每天 40 次；limit_list_d 每天 1 次。DeepSeek 4.3.1 口径每天约 160 万 token。
+- **现役生产后端 4.6.0 B135**（`e417b0a`，tag `v4.6.0-b135`，11/22 19:58 切换，库结构 v10）；`Qihuo` V2（schema 3）与 `KXMarketTool` V4（schema 5）均已在 HZ 上线。NB `/api/v4/health` 全绿，`neckline-v4-kx-watch.timer`（20:02 仅推 iPhone）与 `neckline-v4-qihuo-sync.timer`（20:15 静默零推送）均 `active + enabled`，`/api/v4/qihuo/board`（5 启用/11 停用）与 `/read/<访问码>/qihuo*` 均正常。详情见 [archive/v4.6.0-b135_execution.md](archive/v4.6.0-b135_execution.md)。
+- **K10 晨报已暂停（2026-11-22 20:09 用户定）**：已于 NB `systemctl disable --now` 停用 `neckline-v4-morning.timer`、`neckline-v4-finalize.timer`、`neckline-v4-collect.timer`（三者均 `inactive + disabled` 且 `Persistent=false`），不再调 DeepSeek、不再发 K10 推送、不报错不补跑；代码、单元文件与全部历史数据原样保留，主服务/APNs/KX/Q/MCP 不受影响。
+- **App 4.6.0 (135)**：macOS 已用 `ditto` 覆盖 `/Applications/Neckline.app`；iPhone 端 Release 构建签名通过待 Xcode 安装。
+- **MCP**：8 个只读工具（K10 5 + Q 期货 3：`read_qihuo_rules`、`get_qihuo_overview`、`get_qihuo_product`），鼓励对话 Agent 自由联网拓展。
+- **额度**：麦蕊体验版 20 万次（约到 12-28，与 KX 共用）；TuShare `major_news` 每天 40 次；K10 暂停期间不消耗 DeepSeek 晨报额度。
 - **待用户清理**：本机废纸篓及 NB `/var/tmp/neckline-replay-b134`（已放弃的 K10 4.5.0 回放缓存约 4.3G）。
 
 ## 当前 Plan
